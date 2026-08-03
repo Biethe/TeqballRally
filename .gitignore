@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .firebase/
+.vite/
 
 # Local configuration and logs
 .env
