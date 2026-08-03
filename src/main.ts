@@ -1,0 +1,939 @@
+import "./style.css";
+import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
+import { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Viewport } from "@babylonjs/core/Maths/math.viewport";
+import { createGameScene, loadBall, type GameScene } from "./scene";
+import { Ball, type Side } from "./ball";
+import { Character } from "./character";
+import { MatchController, type ReplayControl } from "./match";
+import { AIController, DIFFICULTIES, type DifficultyLevel } from "./ai";
+import { Input, type InputState, type VersusAssign } from "./input";
+import { UI } from "./ui";
+import { AudioManager } from "./audio";
+import { ModelViewer } from "./viewer";
+import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
+import { BALLS, CAMERA, CHARACTERS, GROUND_Y, type CameraMode, type CharacterDef } from "./config";
+
+/** How one match should be set up and what to do when it ends. */
+interface MatchOpts {
+  opponent: CharacterDef;
+  difficulty: DifficultyLevel;
+  /** Second human drives the opponent (split screen); device assignment for both. */
+  versus: VersusAssign | null;
+  labels: [string, string];
+  practice?: boolean;
+  onEnd: (winner: Side, sets: [number, number]) => void;
+}
+
+async function boot(): Promise<void> {
+  const canvas = document.getElementById("game-canvas") as HTMLCanvasElement;
+  const uiRoot = document.getElementById("ui-root") as HTMLElement;
+
+  const ui = new UI(uiRoot);
+  const audio = new AudioManager();
+  const input = new Input(uiRoot);
+
+  // Browsers gate audio behind a user gesture.
+  const unlock = () => {
+    audio.unlock();
+    window.removeEventListener("pointerdown", unlock);
+    window.removeEventListener("keydown", unlock);
+  };
+  window.addEventListener("pointerdown", unlock);
+  window.addEventListener("keydown", unlock);
+
+  ui.showLoading("Building the court…");
+  const gs: GameScene = await createGameScene(canvas);
+  const viewer = new ModelViewer(gs.engine, canvas);
+  (window as unknown as Record<string, unknown>).__viewer = viewer;
+
+  const ball = new Ball();
+  let ballMesh: AbstractMesh | null = null;
+  let ballMeshId: string | null = null;
+
+  let match: MatchController | null = null;
+  let aiCtl: AIController | null = null;
+  let practiceCoach: PracticeCoach | null = null;
+  let chars: Character[] = [];
+
+  // Dev knob: ?ts=8 speeds up game time for headless testing.
+  const timeScale = Number(new URLSearchParams(location.search).get("ts") ?? 1) || 1;
+
+  // Low-priority browser prefetches let the next picker item download while
+  // the player reads the menu. Do not spend a metered/very-slow connection's
+  // bandwidth on a speculative 20–60 MB model; on-demand loading remains the
+  // fallback in that case.
+  const prefetchLinks = new Set<string>();
+  const scheduleAssetPrefetch = (url: string, delayMs = 1200): void => {
+    if (typeof document === "undefined" || typeof navigator === "undefined") return;
+    const connection = (navigator as Navigator & {
+      connection?: { saveData?: boolean; effectiveType?: string };
+    }).connection;
+    if (connection?.saveData || connection?.effectiveType === "slow-2g" || connection?.effectiveType === "2g") {
+      return;
+    }
+    if (prefetchLinks.has(url)) return;
+    prefetchLinks.add(url);
+    window.setTimeout(() => {
+      const link = document.createElement("link");
+      link.rel = "prefetch";
+      link.as = "fetch";
+      link.href = url;
+      link.crossOrigin = "anonymous";
+      link.dataset.teqopenPrefetch = "true";
+      document.head.appendChild(link);
+    }, delayMs);
+  };
+
+  // ---- split screen (versus mode) ----
+  let versusCam: TargetCamera | null = null;
+  let cameraMode: CameraMode = "court";
+  const enableSplit = (assign: VersusAssign) => {
+    input.versusAssign = assign;
+    gs.camera.viewport = new Viewport(0, 0, 0.5, 1);
+    versusCam = new TargetCamera(
+      "cam2",
+      new Vector3(CAMERA.p2Court.x, GROUND_Y + CAMERA.p2Court.height, 0),
+      gs.scene
+    );
+    versusCam.setTarget(new Vector3(0, GROUND_Y + CAMERA.p2Court.lookY, 0));
+    versusCam.minZ = 0.1;
+    // Half-width viewports are tall; widen both views a touch.
+    gs.camera.fov = 1.0;
+    versusCam.fov = CAMERA.p2Court.fov;
+    versusCam.viewport = new Viewport(0.5, 0, 0.5, 1);
+    gs.scene.activeCameras = [gs.camera, versusCam];
+  };
+  const disableSplit = () => {
+    input.versusAssign = null;
+    if (!versusCam) return;
+    gs.scene.activeCameras = [];
+    gs.scene.activeCamera = gs.camera;
+    gs.camera.viewport = new Viewport(0, 0, 1, 1);
+    gs.camera.fov = gs.engine.getRenderWidth() < gs.engine.getRenderHeight() ? 1.1 : 0.85;
+    versusCam.dispose();
+    versusCam = null;
+  };
+
+  // Debug free-fly camera (F2): place the camera by hand to evaluate the scene.
+  // WASD/arrows move, drag mouse to look, E/Q up/down, hold Shift for speed.
+  // Toggling it off logs the position/target so values can be copied into code.
+  let freecam: UniversalCamera | null = null;
+  const toggleFreecam = () => {
+    if (viewer.active || match?.isReplayActive) return; // replay owns the game camera
+    if (freecam) {
+      const p = freecam.position;
+      const t = freecam.getTarget();
+      console.log(
+        `[freecam] position (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})` +
+          ` target (${t.x.toFixed(2)}, ${t.y.toFixed(2)}, ${t.z.toFixed(2)})`
+      );
+      freecam.detachControl();
+      freecam.dispose();
+      freecam = null;
+      gs.scene.activeCamera = gs.camera;
+    } else {
+      freecam = new UniversalCamera("freecam", gs.camera.position.clone(), gs.scene);
+      freecam.setTarget(gs.camera.getTarget().clone());
+      freecam.minZ = 0.1;
+      freecam.speed = 0.35;
+      freecam.keysUp.push(87); // W
+      freecam.keysDown.push(83); // S
+      freecam.keysLeft.push(65); // A
+      freecam.keysRight.push(68); // D
+      freecam.keysUpward.push(69); // E
+      freecam.keysDownward.push(81); // Q
+      freecam.attachControl(canvas, true);
+      gs.scene.activeCamera = freecam;
+      (window as unknown as Record<string, unknown>).__freecam = freecam;
+      console.log("[freecam] ON — WASD move, drag to look, E/Q up/down, Shift = fast, F2 to exit");
+    }
+  };
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "F2") toggleFreecam();
+    if (e.key === "Shift" && freecam) freecam.speed = 1.2;
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "Shift" && freecam) freecam.speed = 0.35;
+  });
+
+  const idleInput: InputState = { moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false };
+
+  // ---- replay camera orbit ----
+  // Match cameras are authored and reset every frame. During a replay only,
+  // rotate that freshly authored view around the action; when the replay ends
+  // the next normal camera update restores the exact regular match framing.
+  const replayOrbit = {
+    yaw: 0,
+    pitch: 0,
+    session: false,
+    drag: null as { pointerId: number; x: number; y: number } | null,
+  };
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+  const resetReplayOrbit = () => {
+    replayOrbit.yaw = 0;
+    replayOrbit.pitch = 0;
+    const drag = replayOrbit.drag;
+    if (drag && canvas.hasPointerCapture(drag.pointerId)) canvas.releasePointerCapture(drag.pointerId);
+    replayOrbit.drag = null;
+  };
+  const nudgeReplayOrbit = (yaw: number, pitch: number) => {
+    if (!match?.isReplayActive) return;
+    replayOrbit.yaw = clamp(replayOrbit.yaw + yaw, -Math.PI, Math.PI);
+    // Keep the eye inside the gym and above the court while still allowing a
+    // low or elevated inspection of a backflip/reception.
+    replayOrbit.pitch = clamp(replayOrbit.pitch + pitch, -0.62, 0.62);
+  };
+  const replayFocus = (): Vector3 | null => {
+    if (!match?.isReplayActive || chars.length === 0) return null;
+    // Prefer the action owner; late in a flight, choose the closest player so
+    // the focal point stays with the readable action rather than a fixed end.
+    const actionActor = chars.find((c) => c.busy);
+    let actor = actionActor ?? chars[0];
+    if (!actionActor) {
+      for (const c of chars) {
+        if (Vector3.DistanceSquared(c.position, ball.state.pos) < Vector3.DistanceSquared(actor.position, ball.state.pos)) {
+          actor = c;
+        }
+      }
+    }
+    const focus = Vector3.Lerp(actor.position, ball.state.pos, 0.46);
+    focus.y = clamp(focus.y + actor.height * 0.3, GROUND_Y + 0.7, GROUND_Y + 3.3);
+    return focus;
+  };
+  const applyReplayOrbit = (camera: TargetCamera) => {
+    if (Math.abs(replayOrbit.yaw) < 1e-4 && Math.abs(replayOrbit.pitch) < 1e-4) return;
+    const focus = replayFocus();
+    if (!focus) return;
+
+    // `updateCamera()` has just restored the safe authored replay shot,
+    // including +/- zoom. Rotate its vector instead of swapping camera types,
+    // so lens settings and controls cannot leak into the live match. Bounds
+    // protect P2's asymmetric interior camera from the outer gym shell.
+    const offset = camera.position.subtract(focus);
+    const radius = clamp(offset.length(), 4.5, 13);
+    const baseElevation = Math.atan2(offset.y, Math.max(0.001, Math.hypot(offset.x, offset.z)));
+    const elevation = clamp(baseElevation + replayOrbit.pitch, -0.08, 1.2);
+    const azimuth = Math.atan2(offset.z, offset.x) + replayOrbit.yaw;
+    const horizontal = radius * Math.cos(elevation);
+    camera.position.set(
+      clamp(focus.x + horizontal * Math.cos(azimuth), -12.0, 9.4),
+      clamp(focus.y + radius * Math.sin(elevation), GROUND_Y + 1.1, GROUND_Y + 10),
+      clamp(focus.z + horizontal * Math.sin(azimuth), -7.6, 7.6)
+    );
+    camera.setTarget(focus);
+  };
+  const beginReplayDrag = (e: PointerEvent) => {
+    if (!match?.isReplayActive || (e.pointerType === "mouse" && e.button !== 0)) return;
+    replayOrbit.drag = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+    canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const moveReplayDrag = (e: PointerEvent) => {
+    const drag = replayOrbit.drag;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const dx = e.clientX - drag.x;
+    const dy = e.clientY - drag.y;
+    drag.x = e.clientX;
+    drag.y = e.clientY;
+    nudgeReplayOrbit(dx * 0.007, -dy * 0.0055);
+    e.preventDefault();
+  };
+  const endReplayDrag = (e: PointerEvent) => {
+    if (replayOrbit.drag?.pointerId !== e.pointerId) return;
+    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    replayOrbit.drag = null;
+  };
+  canvas.addEventListener("pointerdown", beginReplayDrag);
+  canvas.addEventListener("pointermove", moveReplayDrag);
+  canvas.addEventListener("pointerup", endReplayDrag);
+  canvas.addEventListener("pointercancel", endReplayDrag);
+
+  // ---- pause ----
+  let paused = false;
+  let shutdownInProgress = false;
+  const canShutdownLocalServer = import.meta.env.DEV;
+  const leaveMatch = () => {
+    practiceCoach?.dispose();
+    practiceCoach = null;
+    for (const c of chars) c.dispose();
+    chars = [];
+    match = null;
+    aiCtl = null;
+    disableSplit();
+    audio.startMusic();
+    showModes();
+  };
+  /**
+   * The browser is never allowed to stop a production host. In a Vite dev
+   * session this reaches the explicitly scoped same-origin endpoint supplied
+   * by vite.config.ts, then stops the local game loop after Vite acknowledges
+   * the request.
+   */
+  const shutdownLocalServer = async () => {
+    if (!canShutdownLocalServer || shutdownInProgress) return;
+    shutdownInProgress = true;
+    audio.stopMusic();
+    try {
+      const response = await fetch("/__teqopen/dev/shutdown", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      if (!response.ok) throw new Error(`shutdown endpoint returned ${response.status}`);
+      ui.hidePause();
+      ui.showLoading("Local server stopped. You can close this tab.");
+      gs.engine.stopRenderLoop();
+    } catch (error) {
+      // Keep the match frozen and return the player to a usable pause menu if
+      // the dev process disappeared before it could acknowledge the request.
+      console.warn("[shutdown] local server did not acknowledge request:", error);
+      shutdownInProgress = false;
+      showPauseMenu();
+    }
+  };
+  const showPauseMenu = () => {
+    ui.showPause(
+      () => setPaused(false),
+      () => {
+        match?.reset();
+        practiceCoach?.reset();
+        practiceCoach?.start();
+        setPaused(false);
+      },
+      () => {
+        paused = false;
+        ui.hidePause();
+        leaveMatch();
+      },
+      canShutdownLocalServer ? shutdownLocalServer : undefined
+    );
+  };
+  const setPaused = (v: boolean) => {
+    // A guided lesson owns its own short-lived pause card. Do not stack the
+    // full pause menu on top of it or let Escape skip the lesson by accident.
+    if (practiceCoach?.isPaused) return;
+    if (!match || paused === v) return;
+    paused = v;
+    if (v) {
+      showPauseMenu();
+    } else {
+      ui.hidePause();
+    }
+  };
+  const cycleCameraMode = () => {
+    if (!match || match.isReplayActive || paused || freecam || viewer.active) return;
+    const modes: CameraMode[] = ["court", "side", "top"];
+    cameraMode = modes[(modes.indexOf(cameraMode) + 1) % modes.length];
+    ui.setCameraMode(cameraMode);
+    const label = cameraMode === "court" ? "COURT VIEW" : cameraMode === "side" ? "SIDE VIEW" : "TOP VIEW";
+    ui.banner(label, "C or Y / △ to switch");
+  };
+  ui.onPauseRequest = () => {
+    // The replay transport owns pause while a highlight is on screen; never
+    // put the match pause overlay over its touch controls.
+    if (match?.isReplayActive) {
+      match.controlReplay("toggle");
+      return;
+    }
+    if (!practiceCoach?.isPaused) setPaused(!paused);
+  };
+  ui.onCameraRequest = cycleCameraMode;
+  ui.onReplayControl = (control) => {
+    if (control === "reset-camera") {
+      resetReplayOrbit();
+      return;
+    }
+    match?.controlReplay(control as ReplayControl);
+  };
+  const hasBlockingScreen = () =>
+    ["title-screen", "menu-screen", "standings-screen", "select-screen", "end-screen"].some(
+      (id) => !document.getElementById(id)?.classList.contains("hidden")
+    );
+
+  // ---- pad/keyboard menu navigation ----
+  // Overlays (end, pause) come last so they win over the screens they cover.
+  const NAV_SCREENS = ["title-screen", "menu-screen", "standings-screen", "select-screen", "end-screen", "pause-screen"];
+  let navFocus: HTMLButtonElement | null = null;
+  const menuNav = () => {
+    const nav = input.pollMenuNav(); // poll every frame so edge states stay fresh
+    let target: HTMLElement | null = null;
+    for (const id of NAV_SCREENS) {
+      const el = document.getElementById(id);
+      if (el && !el.classList.contains("hidden")) target = el;
+    }
+    if (!target) {
+      navFocus?.classList.remove("pad-focus");
+      navFocus = null;
+      return;
+    }
+    if (nav.back) {
+      const back = target.querySelector<HTMLButtonElement>("button[data-menu-back]");
+      if (back && back.offsetParent !== null) {
+        back.click();
+        return;
+      }
+    }
+    const btns = [...target.querySelectorAll<HTMLButtonElement>("button")].filter(
+      (b) => b.offsetParent !== null
+    );
+    if (btns.length === 0) return;
+    if (!navFocus || !btns.includes(navFocus)) {
+      navFocus?.classList.remove("pad-focus");
+      navFocus = btns.find((b) => b.dataset.menuPrimary === "true") ?? btns[0];
+      navFocus.classList.add("pad-focus");
+    }
+    const idx = btns.indexOf(navFocus);
+    const next = nav.down ? (idx + 1) % btns.length : nav.up ? (idx - 1 + btns.length) % btns.length : idx;
+    if (next !== idx) {
+      navFocus.classList.remove("pad-focus");
+      navFocus = btns[next];
+      navFocus.classList.add("pad-focus");
+    }
+    if (nav.confirm) navFocus.click();
+  };
+
+  gs.engine.runRenderLoop(() => {
+    const dt = Math.min(gs.engine.getDeltaTime() / 1000, 1 / 20) * timeScale;
+    menuNav();
+    // Poll even off-court so a held C / Y can never leak into the next match.
+    const cameraCycle = input.pollCameraCycle();
+    const replayControls = input.pollReplayControls();
+    const pauseControls = input.pollPauseControls();
+    if (viewer.active) {
+      viewer.update(dt);
+      viewer.scene.render();
+      return;
+    }
+    // A replay owns Start/Options: it toggles replay playback rather than the
+    // match pause menu. Escape retains its established role of skipping it.
+    if (match?.hasReplayPresentation) {
+      if (pauseControls.escape) match.controlReplay("skip");
+    } else if (
+      pauseControls.toggle &&
+      match &&
+      !practiceCoach?.isPaused &&
+      !hasBlockingScreen()
+    ) {
+      setPaused(!paused);
+    }
+    if (paused) {
+      input.poll(cameraMode); // discard queued presses so nothing fires on resume
+      return; // no update, no render: the frame freezes under the overlay
+    }
+    if (practiceCoach?.isPaused) {
+      // The card uses the same action buttons as the game, but this frame is
+      // consumed as CONTINUE so it can never leak into a serve or return.
+      practiceCoach.updatePaused(input.poll(cameraMode));
+      gs.scene.render();
+      return;
+    }
+    // Replay commands and view cycling settle before either local player's
+    // gameplay poll, so P1 and P2 use the same mapping on the cycle frame.
+    if (match?.hasReplayPresentation) {
+      if (replayControls.skip) match.controlReplay("skip");
+      else {
+        if (replayControls.back) match.controlReplay("back");
+        if (replayControls.forward) match.controlReplay("forward");
+        if (replayControls.zoomOut) match.controlReplay("zoom-out");
+        if (replayControls.zoomIn) match.controlReplay("zoom-in");
+        if (replayControls.toggle) match.controlReplay("toggle");
+      }
+    }
+    if (cameraCycle && match) {
+      if (match.isReplayActive) resetReplayOrbit();
+      else cycleCameraMode();
+    }
+    const inp = input.poll(cameraMode);
+    if (match) {
+      if (versusCam) {
+        // Player 2's device, flipped into their court frame (they attack -x).
+        const p2 = input.pollP2(cameraMode);
+        match.versusInput = {
+          moveX: -p2.moveX,
+          moveZ: -p2.moveZ,
+          strikePressed: p2.strikePressed,
+          popPressed: p2.popPressed,
+          confirmPressed: p2.confirmPressed,
+        };
+      }
+      // While a replay is active, a dedicated WASD/analogue-only poll drives
+      // the free-angle orbit. D-pad/arrows stay assigned to the replay
+      // timeline transport above, so a seek never rotates view.
+      match.update(dt, freecam ? idleInput : inp, (d) => aiCtl?.update(d));
+      practiceCoach?.update(dt, inp);
+      if (match.isReplayActive) {
+        if (!replayOrbit.session) {
+          resetReplayOrbit();
+          replayOrbit.session = true;
+        }
+        const orbit = input.pollReplayOrbit();
+        nudgeReplayOrbit(orbit.x * dt * 1.55, -orbit.y * dt * 1.1);
+      } else if (replayOrbit.session) {
+        resetReplayOrbit();
+        replayOrbit.session = false;
+      }
+      if (!freecam) {
+        match.updateCamera(gs.camera, cameraMode);
+        if (versusCam) match.updateCamera2(versusCam, cameraMode);
+        if (match.isReplayActive) {
+          applyReplayOrbit(gs.camera);
+          if (versusCam) applyReplayOrbit(versusCam);
+        }
+      }
+    }
+    gs.scene.render();
+  });
+
+  const showTitle = () => {
+    ui.showTitle(() => {
+      audio.startMusic();
+      // Prefetch the decorative gym only after the first screen is visible.
+      // The model viewer and selection menus give it time to arrive without
+      // making the initial page appear stuck on “Building the court…”.
+      void gs.ensureArena();
+      showModes();
+    });
+  };
+
+  // ------------------------------------------------------------- mode flow
+
+  const showModes = () => {
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    ui.showMenu(
+      "GAME MODE",
+      [
+        { id: "btn-mode-practice", label: "PRACTICE", sub: "Learn one skill at a time", tag: "LEARN" },
+        {
+          id: "btn-mode-friendly",
+          label: "FRIENDLY",
+          sub: "Start a quick match against the CPU",
+          tag: "QUICK PLAY",
+          primary: true,
+        },
+        { id: "btn-mode-competition", label: "COMPETITION", sub: "Play a cup or league campaign", tag: "TOURNAMENT" },
+        { id: "btn-mode-versus", label: "2 PLAYERS", sub: "Share the court in split screen", tag: "LOCAL" },
+      ],
+      (id) => {
+        if (id === "btn-mode-practice") showPractice();
+        else if (id === "btn-mode-friendly") showDifficulty();
+        else if (id === "btn-mode-competition") showFormats();
+        else showVersusSelect();
+      },
+      "Pick a route and get on the table.",
+      showTitle
+    );
+  };
+
+  const showPractice = () => {
+    // The trainer is fixed, so it is a safe useful prefetch while the user is
+    // choosing their own player.
+    scheduleAssetPrefetch("/models/characters/SpanishPlayer.glb", 700);
+    showSelect("PRACTICE SETUP", (charId, ballId) => {
+      const playerDef = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+      const trainer =
+        CHARACTERS.find((c) => c.id !== playerDef.id && c.id === "SpanishPlayer") ??
+        CHARACTERS.find((c) => c.id !== playerDef.id) ??
+        CHARACTERS[0];
+      void startMatch(playerDef, ballId, {
+        opponent: trainer,
+        difficulty: "easy",
+        versus: null,
+        labels: ["YOU", "TRAINER"],
+        practice: true,
+        onEnd: () => match?.reset(),
+      });
+    }, showModes);
+  };
+
+  const showDifficulty = () => {
+    ui.showMenu(
+      "DIFFICULTY",
+      [
+        { id: "btn-diff-easy", label: "EASY", sub: "Relaxed rallies and extra room", tag: "RELAXED" },
+        { id: "btn-diff-normal", label: "NORMAL", sub: "A balanced match", tag: "RECOMMENDED", primary: true },
+        { id: "btn-diff-hard", label: "HARD", sub: "Tournament pace and sharper returns", tag: "CHALLENGE" },
+      ],
+      (id) => {
+        const diff = id.replace("btn-diff-", "") as DifficultyLevel;
+        showSelect("CHOOSE YOUR SETUP", (charId, ballId) => {
+          const playerDef = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+          const others = CHARACTERS.filter((c) => c.id !== charId);
+          const opponent = others[Math.floor(Math.random() * others.length)];
+          void startMatch(playerDef, ballId, {
+            opponent,
+            difficulty: diff,
+            versus: null,
+            labels: ["YOU", opponent.label],
+            onEnd: (winner) => {
+              ui.showEnd(winner, () => match?.reset(), () => leaveMatch());
+            },
+          });
+        }, showDifficulty);
+      },
+      "Friendly match",
+      showModes
+    );
+  };
+
+  const showFormats = () => {
+    ui.showMenu(
+      "COMPETITION",
+      [
+        { id: "btn-format-cup", label: "CUP", sub: "A knockout run to the final", tag: "ELIMINATION", primary: true },
+        { id: "btn-format-league", label: "LEAGUE", sub: "Three rounds. Every result counts.", tag: "ROUND ROBIN" },
+      ],
+      (id) => {
+        const format = id === "btn-format-cup" ? ("cup" as const) : ("league" as const);
+        showSelect("CHOOSE YOUR SETUP", (charId, ballId) => {
+          startCompetition(format, charId, ballId);
+        }, showFormats);
+      },
+      "Build your run",
+      showModes
+    );
+  };
+
+  const showVersusSelect = () => {
+    if (!input.hasGamepad()) {
+      ui.showMenu(
+        "2 PLAYERS",
+        [
+          { id: "btn-versus-retry", label: "CHECK CONTROLLER", sub: "Press a controller button, then try again", tag: "RETRY", primary: true },
+          {
+            id: "btn-versus-kb",
+            label: "SHARED KEYBOARD",
+            sub: "P1: WASD + SPACE/K · P2: ARROWS + ENTER/R-SHIFT",
+            tag: "LOCAL",
+          },
+        ],
+        (id) => {
+          if (id === "btn-versus-retry") showVersusSelect();
+          else versusSelectFlow({ p1: "kbWASD", p2: "kbArrows" });
+        },
+        "Connect a controller, or share one keyboard.",
+        showModes
+      );
+      return;
+    }
+    console.log("[versus] pads:", input.padCount(), input.padName());
+    showVersusDevices();
+  };
+
+  /** Let the players decide who uses which device (controller order included). */
+  const showVersusDevices = () => {
+    const pads = input.padCount();
+    const options =
+      pads >= 2
+        ? [
+            { id: "btn-assign-a", label: "P1 CONTROLLER 1 · P2 CONTROLLER 2", assign: { p1: "pad1", p2: "pad2" } as VersusAssign },
+            { id: "btn-assign-b", label: "P1 CONTROLLER 2 · P2 CONTROLLER 1", assign: { p1: "pad2", p2: "pad1" } as VersusAssign },
+            { id: "btn-assign-c", label: "P1 KEYBOARD · P2 CONTROLLER 1", assign: { p1: "kb", p2: "pad1" } as VersusAssign },
+            { id: "btn-assign-d", label: "SHARED KEYBOARD", sub: "P1 WASD + SPACE/K · P2 ARROWS + ENTER/R-SHIFT", assign: { p1: "kbWASD", p2: "kbArrows" } as VersusAssign },
+          ]
+        : [
+            { id: "btn-assign-a", label: "P1 KEYBOARD · P2 CONTROLLER", assign: { p1: "kb", p2: "pad1" } as VersusAssign },
+            { id: "btn-assign-b", label: "P1 CONTROLLER · P2 KEYBOARD", assign: { p1: "pad1", p2: "kb" } as VersusAssign },
+            { id: "btn-assign-c", label: "SHARED KEYBOARD", sub: "P1 WASD + SPACE/K · P2 ARROWS + ENTER/R-SHIFT", assign: { p1: "kbWASD", p2: "kbArrows" } as VersusAssign },
+          ];
+    ui.showMenu(
+      "WHO PLAYS WITH WHAT?",
+      options.map(({ id, label, sub }) => ({ id, label, sub })),
+      (picked) => {
+        const opt = options.find((o) => o.id === picked)!;
+        versusSelectFlow(opt.assign);
+      },
+      pads >= 2 ? "Two controllers detected" : "One controller detected",
+      showModes
+    );
+  };
+
+  const versusSelectFlow = (assign: VersusAssign) => {
+    const showPlayerOne = () => {
+      showSelect("PLAYER 1 — CHOOSE", (p1Id) => {
+        // Both players get the same picker; the ball is shared, last choice wins.
+        showSelect("PLAYER 2 — CHOOSE", (p2Id, ballId) => {
+          const p1 = CHARACTERS.find((c) => c.id === p1Id) ?? CHARACTERS[0];
+          const p2 = CHARACTERS.find((c) => c.id === p2Id) ?? CHARACTERS[1];
+          void startMatch(p1, ballId, {
+            opponent: p2,
+            difficulty: "normal",
+            versus: assign,
+            labels: ["P1", "P2"],
+            onEnd: (winner) => {
+              ui.showEnd(winner, () => match?.reset(), () => leaveMatch());
+            },
+          });
+        }, showPlayerOne);
+      }, showVersusDevices);
+    };
+    showPlayerOne();
+  };
+
+  const showSelect = (
+    title: string,
+    onConfirm: (charId: string, ballId: string) => void,
+    onBack: () => void
+  ) => {
+    viewer.activate();
+    input.setTouchControlsEnabled(false);
+    // WHITE is the default picker item and the most common choice. Begin it
+    // at idle priority while the selected character preview is being readied.
+    scheduleAssetPrefetch(`/models/Ball_and_Table/${BALLS[0].id}.glb`, 900);
+    ui.showSelect({
+      characters: CHARACTERS,
+      balls: BALLS,
+      title,
+      onBrowse: async (kind, id) => {
+        const shown = await viewer.show(kind, id);
+        // If the player is browsing, make the next arrow press instant on a
+        // normal connection. Only one adjacent item is scheduled at a time;
+        // slow/data-saver connections skip this entirely above.
+        const list = kind === "character" ? CHARACTERS : BALLS;
+        const index = list.findIndex((item) => item.id === id);
+        if (index >= 0 && list.length > 1) {
+          const next = list[(index + 1) % list.length];
+          scheduleAssetPrefetch(
+            kind === "character"
+              ? `/models/characters/${next.id}.glb`
+              : `/models/Ball_and_Table/${next.id}.glb`,
+            1600
+          );
+        }
+        return shown;
+      },
+      onConfirm: (charId, ballId) => {
+        viewer.deactivate();
+        onConfirm(charId, ballId);
+      },
+      onBack: () => {
+        viewer.deactivate();
+        onBack();
+      },
+    });
+  };
+
+  // ---------------------------------------------------------- competitions
+
+  /** Trait-weighted coin flip for CPU-vs-CPU matches (winner takes 2 sets). */
+  const simulateMatch = (a: CharacterDef, b: CharacterDef): { winA: boolean; sets: [number, number] } => {
+    const rate = (d: CharacterDef) => d.power * 1.5 + d.precision + d.speed / 4.5;
+    const ra = rate(a) ** 2;
+    const rb = rate(b) ** 2;
+    const winA = Math.random() < ra / (ra + rb);
+    const loserSets = Math.random() < 0.45 ? 1 : 0;
+    return { winA, sets: winA ? [2, loserSets] : [loserSets, 2] };
+  };
+
+  const scoreline = (a: CharacterDef, b: CharacterDef, sets: [number, number]) =>
+    `${a.label} <b>${sets[0]} : ${sets[1]}</b> ${b.label}`;
+
+  const playCompMatch = (
+    human: CharacterDef,
+    opponent: CharacterDef,
+    ballId: string,
+    difficulty: DifficultyLevel,
+    onEnd: (won: boolean, sets: [number, number]) => void
+  ) => {
+    void startMatch(human, ballId, {
+      opponent,
+      difficulty,
+      versus: null,
+      labels: ["YOU", opponent.label],
+      onEnd: (winner, sets) => onEnd(winner === "player", sets),
+    });
+  };
+
+  const startCompetition = (format: "cup" | "league", charId: string, ballId: string) => {
+    const human = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+    const others = CHARACTERS.filter((c) => c.id !== human.id).sort(() => Math.random() - 0.5);
+    if (format === "cup") runCup(human, others, ballId);
+    else runLeague(human, others, ballId);
+  };
+
+  const runCup = (human: CharacterDef, others: CharacterDef[], ballId: string) => {
+    // Draw: SF1 = human vs others[0], SF2 = others[1] vs others[2].
+    const [sf1Opp, sf2a, sf2b] = others;
+    ui.showStandings("CUP — THE DRAW", [
+      `SEMI-FINAL 1 — ${human.label} vs ${sf1Opp.label}`,
+      `SEMI-FINAL 2 — ${sf2a.label} vs ${sf2b.label}`,
+      `then the losers meet for 3rd place and the winners for the trophy`,
+    ], "PLAY SEMI-FINAL", () => {
+      playCompMatch(human, sf1Opp, ballId, "normal", (won, sets) => {
+        const sf2 = simulateMatch(sf2a, sf2b);
+        const sf2Winner = sf2.winA ? sf2a : sf2b;
+        const sf2Loser = sf2.winA ? sf2b : sf2a;
+        const finalOpp = won ? sf2Winner : sf2Loser;
+        const finalName = won ? "WINNER FINAL" : "LOSER FINAL (3rd place)";
+        ui.showStandings("CUP — SEMI-FINALS", [
+          scoreline(human, sf1Opp, sets),
+          scoreline(sf2a, sf2b, sf2.sets),
+          `next: ${finalName} — ${human.label} vs ${finalOpp.label}`,
+        ], "PLAY FINAL", () => {
+          playCompMatch(human, finalOpp, ballId, "hard", (wonFinal, finalSets) => {
+            // The final the human didn't play, simulated between the two others:
+            // the 3rd-place match if the human reached the winner final, or the
+            // winner final if the human dropped to the 3rd-place match.
+            const pair: [CharacterDef, CharacterDef] = won ? [sf1Opp, sf2Loser] : [sf1Opp, sf2Winner];
+            const sim = simulateMatch(pair[0], pair[1]);
+            const simWinner = sim.winA ? pair[0] : pair[1];
+            const simLoser = sim.winA ? pair[1] : pair[0];
+            const standings: string[] = won
+              ? wonFinal
+                ? [`🏆 CHAMPION — ${human.label}`, `2nd — ${finalOpp.label}`,
+                   `3rd — ${simWinner.label}`, `4th — ${simLoser.label}`]
+                : [`🏆 CHAMPION — ${finalOpp.label}`, `2nd — ${human.label}`,
+                   `3rd — ${simWinner.label}`, `4th — ${simLoser.label}`]
+              : wonFinal
+                ? [`🏆 CHAMPION — ${simWinner.label}`, `2nd — ${simLoser.label}`,
+                   `3rd — ${human.label}`, `4th — ${finalOpp.label}`]
+                : [`🏆 CHAMPION — ${simWinner.label}`, `2nd — ${simLoser.label}`,
+                   `3rd — ${finalOpp.label}`, `4th — ${human.label}`];
+            ui.showStandings("CUP — FINAL RESULT", [
+              `your final: ${scoreline(human, finalOpp, finalSets)}`,
+              ...standings,
+            ], "BACK TO MENU", () => leaveMatch());
+          });
+        });
+      });
+    });
+  };
+
+  const runLeague = (human: CharacterDef, others: CharacterDef[], ballId: string) => {
+    const players = [human, ...others]; // human = index 0
+    // Standard 4-player round robin; the human plays one match per round.
+    const rounds: [number, number][][] = [
+      [[0, 1], [2, 3]],
+      [[0, 2], [1, 3]],
+      [[0, 3], [1, 2]],
+    ];
+    const table = players.map(() => ({ pts: 0, diff: 0 }));
+    const record = (a: number, b: number, sets: [number, number]) => {
+      table[a].pts += sets[0] > sets[1] ? 3 : 0;
+      table[b].pts += sets[1] > sets[0] ? 3 : 0;
+      table[a].diff += sets[0] - sets[1];
+      table[b].diff += sets[1] - sets[0];
+    };
+    const tableRows = () =>
+      players
+        .map((p, i) => ({ p, ...table[i] }))
+        .sort((x, y) => y.pts - x.pts || y.diff - x.diff)
+        .map((r, i) => `${i + 1}. ${r.p.label} — ${r.pts} pts (sets ${r.diff >= 0 ? "+" : ""}${r.diff})`);
+
+    const playRound = (round: number) => {
+      const [humanPair, cpuPair] = rounds[round];
+      const opponent = players[humanPair[1]];
+      const difficulty: DifficultyLevel = round === rounds.length - 1 ? "hard" : "normal";
+      playCompMatch(human, opponent, ballId, difficulty, (_won, sets) => {
+        record(humanPair[0], humanPair[1], sets);
+        const sim = simulateMatch(players[cpuPair[0]], players[cpuPair[1]]);
+        record(cpuPair[0], cpuPair[1], sim.sets);
+        const rows = [
+          scoreline(human, opponent, sets),
+          scoreline(players[cpuPair[0]], players[cpuPair[1]], sim.sets),
+          "—",
+          ...tableRows(),
+        ];
+        if (round < rounds.length - 1) {
+          ui.showStandings(`LEAGUE — ROUND ${round + 1}`, rows, "PLAY NEXT ROUND", () => playRound(round + 1));
+        } else {
+          const champion = tableRows()[0];
+          ui.showStandings("LEAGUE — FINAL TABLE", [...rows, "—", `🏆 ${champion}`], "BACK TO MENU", () =>
+            leaveMatch()
+          );
+        }
+      });
+    };
+    ui.showStandings("LEAGUE — SCHEDULE", [
+      `round 1: ${human.label} vs ${players[1].label} · ${players[2].label} vs ${players[3].label}`,
+      `round 2: ${human.label} vs ${players[2].label} · ${players[1].label} vs ${players[3].label}`,
+      `round 3: ${human.label} vs ${players[3].label} · ${players[1].label} vs ${players[2].label}`,
+    ], "PLAY ROUND 1", () => playRound(0));
+  };
+
+  // ------------------------------------------------------------ match setup
+
+  const startMatch = async (playerDef: CharacterDef, ballId: string, opts: MatchOpts) => {
+    ui.showLoading("Loading the court…");
+    input.setTouchControlsEnabled(true);
+    practiceCoach?.dispose();
+    practiceCoach = null;
+
+    // If the user selected a match before the background prefetch finished,
+    // keep the loading state honest and wait for the same memoized request.
+    await gs.ensureArena();
+    // The viewer has already warmed the selected character's HTTP cache while
+    // the user browsed. Start the ball and both character imports together so
+    // startup time is governed by the slowest asset rather than their sum.
+    const needsNewBall = ballMeshId !== ballId;
+    ui.setLoadingText(needsNewBall ? "Loading players and ball…" : "Loading players…");
+    const ballTask = needsNewBall ? loadBall(gs.scene, ballId) : Promise.resolve(ballMesh);
+    const [loadedBall, playerChar, aiChar] = await Promise.all([
+      ballTask,
+      Character.load(gs.scene, playerDef),
+      Character.load(gs.scene, opts.opponent),
+    ]);
+    if (needsNewBall && loadedBall) {
+      if (ballMesh) {
+        gs.shadows.removeShadowCaster(ballMesh, true);
+        ballMesh.dispose(false, true);
+      }
+      ballMesh = loadedBall;
+      ballMeshId = ballId;
+      gs.shadows.addShadowCaster(ballMesh, true);
+      ball.mesh = ballMesh;
+      ball.place(ball.state.pos);
+    }
+    for (const c of [playerChar, aiChar]) {
+      for (const m of c.meshes) {
+        if (m.getTotalVertices() > 0) gs.shadows.addShadowCaster(m, false);
+      }
+    }
+    chars = [playerChar, aiChar];
+
+    audio.stopMusic();
+    ui.setLabels(opts.labels[0], opts.labels[1]);
+    const controller = new MatchController(ball, playerChar, aiChar, {
+      setScore: (p, a, s, sp, sa) => ui.setScore(p, a, s, sp, sa),
+      banner: (t, sub) => ui.banner(t, sub),
+      hint: (t) => ui.hint(t),
+      meter: (f, s0, s1) => ui.meter(f, s0, s1),
+      meterResult: (q) => ui.meterResult(q),
+      setReplay: (active, label, replayPaused, zoom, replayPosition, replayDuration, replaySegment) => {
+        ui.setReplay(active, label, replayPaused, zoom, replayPosition, replayDuration, replaySegment);
+        // Keep the normal STRIKE/RECEPTION touch buttons out of a cinematic
+        // replay, leaving only the explicit transport controls above them.
+        input.setTouchControlsEnabled(!active);
+      },
+      onMatchEnd: (winner) => {
+        const sets: [number, number] = [controller.sets.player, controller.sets.ai];
+        window.setTimeout(() => opts.onEnd(winner, sets), 1800);
+      },
+    }, audio);
+    controller.aimMarker = gs.aimMarker;
+    controller.landingMarker = gs.landingMarker;
+    controller.versus = opts.versus !== null;
+    controller.practice = opts.practice === true;
+    match = controller;
+    aiCtl = opts.versus
+      ? null
+      : new AIController(controller, opts.practice ? PRACTICE_DIFFICULTY : DIFFICULTIES[opts.difficulty]);
+    cameraMode = "court";
+    ui.setCameraMode(cameraMode);
+    if (opts.versus) enableSplit(opts.versus);
+    else disableSplit();
+    match.reset();
+    ui.showHUD();
+    practiceCoach = opts.practice
+      ? new PracticeCoach(controller, ui, () => input.hasGamepad(), () => input.isTouch)
+      : null;
+    practiceCoach?.start();
+    (window as unknown as Record<string, unknown>).__teq = { match, ball, engine: gs.engine };
+  };
+
+  showTitle();
+}
+
+void boot();
