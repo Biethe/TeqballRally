@@ -78,7 +78,7 @@ npm run build && npm run preview -- --port 5199 --strictPort
 node scripts/ui-shots.mjs     # screenshots in /tmp/ui, problems on stdout
 ```
 
-It checks four things a screenshot alone will not tell you: controls outside
+It checks five things a screenshot alone will not tell you: controls outside
 the viewport, tap targets under 44px, controls covered by something drawn over
 them, panels overlapping each other, and text clipped mid-line. The last two
 matter because a `pointer-events: none` overlay passes a hit test while still
@@ -97,18 +97,78 @@ overridable from the in-game SETTINGS menu and remembered in `localStorage`.
 Applying a tier reloads the page — the engine's MSAA is fixed when the WebGL
 context is created.
 
-| | Pixel ratio cap | MSAA | Shadow map | Gym backdrop |
+| | Pixel ratio cap | MSAA | Shadow map | Venue backdrop |
 | --- | --- | --- | --- | --- |
 | LOW | 1.0 | off | 512 | skipped |
 | MEDIUM | 1.5 | off | 1024 | loaded |
 | HIGH | 2.0 | on | 1024 | loaded |
 
-Skipping the gym on LOW avoids a 4.8 MB download and ~88 meshes; the
+Skipping the backdrop on LOW avoids a 1-5 MB download and its meshes; the
 procedural court is fully playable on its own.
 
 The match simulates at a fixed 60 Hz regardless of display rate (`SIM_DT` in
 `src/main.ts`), so a 30fps phone and a 120fps phone play the same game. Presses
 are latched between simulation steps — see `latchInput` in `src/input.ts`.
+
+## Venues
+
+A venue is a backdrop model plus a procedural court that suits it, defined in
+`src/venue.ts` and picked from SETTINGS → VENUE (`?venue=` overrides it for a
+session). There are four: the indoor sports hall, and three outdoor grounds.
+
+Nothing in a venue touches gameplay. The bounds players move inside
+(`COURT.minX`, `maxX`, `maxZ`) and `GROUND_Y` are the same everywhere, which is
+what lets it stay a local choice: two peers online can be looking at a
+basketball hall and a football pitch and still run the same simulation. Only
+the floor, the line colours, the boards and the sky change.
+
+The outdoor courts set `surface: "venue"`, meaning the model's own blacktop,
+grass or hard court is what the players stand on and only the teqball lines are
+drawn over it. That is what makes them look like three places rather than one
+court with three wallpapers — and when the tier skips the backdrop, the court
+falls back to painting its own floor in the venue's colour, so LOW still gets
+green grass or blue hard court for no download at all.
+
+### Preparing a backdrop model
+
+The three outdoor arenas arrived at ~8 MB each, split into 400-720 meshes over
+15-21 materials. Draw calls are what a backdrop costs on a phone — not
+triangles — and 723 of them is more than ten times the rest of the scene.
+
+```bash
+scripts/pack-arena.sh raw/Basketball.glb assets/models/Arena/Basketball.glb
+```
+
+That is `gltfpack -cc -mm -km`, and the flags are explained in the script. It
+takes each arena to ~1.2 MB in one mesh per material:
+
+| | before | after |
+| --- | --- | --- |
+| Basketball | 8.10 MB, 723 meshes | 1.22 MB, 21 |
+| Soccer | 9.02 MB, 685 meshes | 1.45 MB, 15 |
+| Tennis | 6.96 MB, 400 meshes | 1.10 MB, 16 |
+
+`mergeByMaterial` in `src/scene.ts` does the same merge at runtime for models
+that arrive unpacked — the sports hall goes 86 → 41 that way. It skips any mesh
+that has instances: `MergeMeshes` disposes the sources it consumed, and
+disposing a mesh takes its instances with it, so merging a model whose exporter
+shared one mesh across many nodes would silently delete every bench but the
+first. `-mm` above exists to avoid handing it that shape in the first place.
+
+```bash
+npm run build && npm run preview -- --port 5199 --strictPort
+node scripts/venue-shots.mjs             # draw calls per frame + a screenshot each
+node scripts/venue-shots.mjs --no-merge  # the same without merging, to compare
+QUALITY=low node scripts/venue-shots.mjs # the no-backdrop fallback
+```
+
+`venue-shots.mjs` counts real draw calls by wrapping the engine's draw entry
+points for a couple of seconds, because counting meshes misleads in both
+directions: one mesh with several submeshes is several calls, and a hundred
+instanced copies are one. Comparing merged against `--no-merge` is also the
+only way to know the merge draws the same picture — on the basketball court it
+took 723 calls to 21 with every differing pixel belonging to the characters and
+the HUD.
 
 ## Texture budget
 
@@ -132,22 +192,27 @@ which is the only thing that proves a rewritten GLB still works.
 Music must be MP3: a 30-second 24-bit stereo WAV is 7.9 MB against 0.5 MB at
 128 kbps.
 
-## Online play (in progress)
+## Online play
 
-The netcode uses **authority handoff**, not lockstep. Teqball's possession
-alternates — at any instant exactly one player is about to touch the ball — and
-every random roll in the game (aim spray, clip choice, whiffs) happens at the
-moment of a strike. So the striking peer rolls its own dice, computes the
-launch, and sends the *result*: a position and a velocity on a given tick.
-`stepBall` is a pure function of that state, so the other peer reproduces the
-same flight exactly, and every strike resynchronises the ball from scratch.
+The netcode is **host-authoritative with client-side prediction**. One peer
+runs the whole match — both characters, the ball, the rules — and sends a full
+snapshot at 20 Hz; the other sends its controls every step and applies what
+comes back. The guest predicts its own character locally so its stick still
+feels immediate, and `reconcile` in `src/net/reconcile.ts` eases that
+prediction back onto each snapshot, snapping only when the error is large
+enough that easing would be visible as sliding.
 
-That means **no seeded PRNG and no rollback are needed**. Time is counted in
-`SIM_DT` ticks; a receiver fast-forwards a late message by the ticks that have
-passed since it was sent (`applyStrike` in `src/net/protocol.ts`).
+An earlier design let the striking peer roll its own dice and send the
+resulting ball state, with authority passing back and forth. It was elegant and
+it did not work: both peers were running complete independent matches, so
+everything not carried by a strike message — where the *other* player was
+standing, which clip they were playing — drifted apart within a rally.
+`snap` carries positions, velocities and clip names for both sides precisely
+because guessing at any of them is what broke.
 
-Rules arbitration stays with the host, which owns the score and match phase, so
-two peers can never disagree about a point.
+The guest's world is mirrored so both players see themselves on the near side;
+`reframe` in `src/net/protocol.ts` rotates every message 180° about the
+vertical axis on the way in and out, and swaps the two seats with it.
 
 ```bash
 npm run relay        # PORT=8787, health check on /healthz
@@ -222,13 +287,19 @@ clients and can be restarted mid-match. A WebSocket relay rather than WebRTC
 because a DataChannel needs signalling plus a TURN fallback, which is not where
 a deadline should go.
 
-`tests/relay.test.ts` runs the real server and two real sockets, and asserts a
-struck ball lands on the same position on both peers after the same number of
-ticks.
+`tests/relay.test.ts` and `tests/rally.test.ts` run the real server and two real
+sockets, and assert that a rally's worth of frames leaves both peers agreeing
+about the score and each player on their own side of their own table.
 
-**Not yet wired into the game.** `MatchController` still needs to take its
-remote player's input from the network rather than from `versusInput`, and to
-emit a strike message when the local player launches.
+```bash
+npm run build && npm run preview -- --port 5199 --strictPort
+npm run relay
+node scripts/verify-online-match.mjs   # two headless clients play a real match
+```
+
+That one is worth the wall-clock: it caught a guest whose opponent never moved,
+and again a guest whose opponent moved but never animated, both of which
+typecheck and pass every unit test.
 
 ## Testing on a phone
 
@@ -291,7 +362,8 @@ npx firebase-tools deploy --only hosting --project YOUR_FIREBASE_PROJECT_ID
 
 ## Project notes
 
-- `src/scene.ts` — Babylon scene, court, table, arena, and asset loading.
+- `src/scene.ts` — Babylon scene, court, table, backdrop, and asset loading.
+- `src/venue.ts` — venue presets: which backdrop, which court palette.
 - `src/character.ts` — character rigs, animation timing, and contact offsets.
 - `src/ball.ts` / `src/match.ts` — ball physics, rallies, scoring, sets, and replays.
 - `src/ai.ts` / `src/input.ts` — CPU behavior and keyboard, touch, and gamepad input.

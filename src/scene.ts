@@ -20,8 +20,9 @@ import "@babylonjs/core/Materials/Textures/Loaders/envTextureLoader";
 // 2.0 binary); pulling the barrel entry would also bundle the glTF 1.0 loader,
 // which nothing here can ever use.
 import "@babylonjs/loaders/glTF/2.0";
-import { ARENA, BALL_RADIUS, CAMERA, COURT, GROUND_Y, SERVE_X, SPAWN, TABLE, TABLE_VISUAL } from "./config";
+import { BALL_RADIUS, CAMERA, GROUND_Y, SERVE_X, SPAWN, TABLE, TABLE_VISUAL } from "./config";
 import type { QualitySettings } from "./quality";
+import { VENUES, type ArenaModel, type CourtStyle, type Rgb, type Venue } from "./venue";
 
 // Meshopt-compressed GLBs are decoded locally so hosted builds do not depend
 // on a third-party CDN just to display a character or the arena.
@@ -57,7 +58,8 @@ function mat(scene: Scene, name: string, color: Color3, specular = 0.05): Standa
 
 export async function createGameScene(
   canvas: HTMLCanvasElement,
-  quality: QualitySettings
+  quality: QualitySettings,
+  venue: Venue = VENUES.gym
 ): Promise<GameScene> {
   const engine = new Engine(canvas, true, { stencil: false, antialias: quality.antialias });
   // Hardware scaling is the inverse of the pixel ratio: > 1 renders fewer
@@ -65,7 +67,7 @@ export async function createGameScene(
   // biggest framerate lever on a fill-rate-bound mobile GPU.
   engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, quality.maxPixelRatio));
   const scene = new Scene(engine);
-  scene.clearColor = new Color4(0.045, 0.05, 0.09, 1);
+  scene.clearColor = new Color4(venue.sky[0], venue.sky[1], venue.sky[2], 1);
 
   const camera = new TargetCamera("cam", new Vector3(-SPAWN.x - CAMERA.back, GROUND_Y + CAMERA.height, 0), scene);
   camera.setTarget(new Vector3(0, GROUND_Y + CAMERA.lookY, 0));
@@ -85,7 +87,10 @@ export async function createGameScene(
     shadows.darkness = 0.45;
   }
 
-  buildCourt(scene);
+  // A venue that plays on its backdrop's surface still needs a floor painted
+  // when that backdrop is never going to arrive.
+  const backdrop = quality.arena && venue.arena !== null;
+  buildCourt(scene, venue.court, venue.court.surface === "own" || !backdrop);
 
   // The table is small and required for the first playable frame.  The gym
   // backdrop is a 21+ MB GLB, so waiting for it here makes the hosted title
@@ -94,11 +99,13 @@ export async function createGameScene(
   const tableMeshes = await loadTable(scene);
   let arenaPromise: Promise<void> | null = null;
   const ensureArena = (): Promise<void> => {
-    // Tiers that skip the gym never fetch it: the download, the ~135 meshes and
+    // Tiers that skip the backdrop never fetch it: the download, the meshes and
     // their textures are the largest single memory saving available on a phone.
-    if (!quality.arena) return Promise.resolve();
+    // The procedural court keeps the venue's palette either way.
+    if (!quality.arena || !venue.arena) return Promise.resolve();
+    const model = venue.arena;
     if (!arenaPromise) {
-      arenaPromise = loadArena(scene).catch((e) => {
+      arenaPromise = loadArena(scene, model).catch((e) => {
         // The procedural court remains playable if an offline session or a
         // restrictive host cannot fetch the decorative gym model.
         console.warn("Arena failed to load:", e);
@@ -150,12 +157,31 @@ export async function createGameScene(
   return { engine, scene, camera, shadows, quality, ensureArena, aimMarker, landingMarker };
 }
 
-function buildCourt(scene: Scene): void {
-  if (!COURT.visible) return;
-  const L = COURT.floorHalfLen;
-  const W = COURT.floorHalfWid;
+/**
+ * The floor, the three lines and the perimeter boards.
+ *
+ * `paintFloor` is false for a venue that plays on its backdrop's own surface,
+ * and the caller forces it true when that backdrop is not going to load —
+ * lines drawn on nothing would leave the players standing in the void.
+ */
+function buildCourt(scene: Scene, style: CourtStyle, paintFloor: boolean): void {
+  const rgb = (c: Rgb): Color3 => new Color3(c[0], c[1], c[2]);
+  const L = style.halfLen;
+  const W = style.halfWid;
+  if (paintFloor) buildFloor(scene, style, rgb, L, W);
+  buildLines(scene, style, rgb, W);
+  if (style.boards) buildBoards(scene, style, rgb, L, W);
+}
+
+function buildFloor(
+  scene: Scene,
+  style: CourtStyle,
+  rgb: (c: Rgb) => Color3,
+  L: number,
+  W: number
+): void {
   let floor: Mesh;
-  if (COURT.shape === "oval") {
+  if (style.shape === "oval") {
     // Elliptical floor: a flat disc stretched to the oval's radii, so the
     // court can meet a gymnasium's oval side band without gaps or overshoot.
     floor = MeshBuilder.CreateDisc(
@@ -170,11 +196,13 @@ function buildCourt(scene: Scene): void {
     floor = MeshBuilder.CreateGround("floor", { width: L * 2, height: W * 2 }, scene);
   }
   // Court space: x = table length axis, z = width. Ground "height" maps to z.
-  floor.material = mat(scene, "floorMat", new Color3(0.13, 0.22, 0.38));
+  floor.material = mat(scene, "floorMat", rgb(style.floor));
   floor.receiveShadows = true;
   floor.position.y = GROUND_Y;
+}
 
-  const lineMat = mat(scene, "lineMat", new Color3(0.92, 0.93, 0.95));
+function buildLines(scene: Scene, style: CourtStyle, rgb: (c: Rgb) => Color3, W: number): void {
+  const lineMat = mat(scene, "lineMat", rgb(style.line));
   const mkLine = (name: string, w: number, d: number, x: number, z: number) => {
     const l = MeshBuilder.CreateBox(name, { width: w, depth: d, height: 0.012 }, scene);
     l.position.set(x, GROUND_Y + 0.006, z);
@@ -182,14 +210,21 @@ function buildCourt(scene: Scene): void {
     return l;
   };
   // Halfway line across the court under the net, and the two service lines.
-  mkLine("half", 0.05, COURT.floorHalfWid * 2, 0, 0);
+  mkLine("half", 0.05, W * 2, 0, 0);
   mkLine("svc-l", 0.05, 4.2, -(SERVE_X - 0.4), 0);
   mkLine("svc-r", 0.05, 4.2, SERVE_X - 0.4, 0);
+}
 
-  // Orange court surrounds (low boards around the perimeter).
-  if (!COURT.boards) return;
-  const surMat = mat(scene, "surMat", new Color3(0.93, 0.42, 0.08));
-  if (COURT.shape === "oval") {
+/** Low boards around the perimeter. */
+function buildBoards(
+  scene: Scene,
+  style: CourtStyle,
+  rgb: (c: Rgb) => Color3,
+  L: number,
+  W: number
+): void {
+  const surMat = mat(scene, "surMat", rgb(style.board));
+  if (style.shape === "oval") {
     // Low wall along the floor's elliptical rim: a ribbon between a ground
     // ring and the same ring raised to board height.
     const bottom: Vector3[] = [];
@@ -221,28 +256,103 @@ function buildCourt(scene: Scene): void {
   mkBoard("board-w", 0.1, W * 2 + 0.2, -L, 0);
 }
 
-/** Generic arena backdrop, normalised to surround the court and grounded at y = 0. */
-async function loadArena(scene: Scene): Promise<void> {
-  const res = await SceneLoader.ImportMeshAsync(
-    "",
-    "/models/Arena/",
-    "indoor_arena_inside_out_improved_version.glb",
-    scene
-  );
+/**
+ * Collapse an imported model to one mesh per material.
+ *
+ * The outdoor venues arrive as 400-720 separate meshes sharing 15-21
+ * materials — every bench, railing and floodlight exported as its own node.
+ * On a phone the cost of a backdrop is the draw calls, not the triangles: 723
+ * calls is over ten times the rest of the scene put together, for geometry
+ * that never moves. Merging by material leaves one call per material.
+ *
+ * Merging happens *before* the wrapper transform, in the model's own space.
+ * `MergeMeshes` bakes each source's world matrix into its vertices, so the
+ * results are flat meshes that the wrapper then scales and places once — bake
+ * afterwards and the normalisation would be applied twice.
+ *
+ * Returns the meshes now representing the model.
+ */
+function mergeByMaterial(meshes: AbstractMesh[]): AbstractMesh[] {
+  const groups = new Map<string, Mesh[]>();
+  const untouched: AbstractMesh[] = [];
+  for (const m of meshes) {
+    // Skinned or morphed meshes carry per-vertex data a merge would flatten,
+    // and anything without geometry (the loader's __root__) has nothing to add.
+    //
+    // A mesh with instances must be left alone as well, and this one is not
+    // obvious: `MergeMeshes` disposes the sources it consumed, and disposing a
+    // mesh takes its instances with it. A model whose exporter shared one mesh
+    // between many nodes — every bench, every fence panel — would lose all but
+    // the first copy of each, which is exactly what merging is supposed to be
+    // invisible about.
+    const mergeable =
+      m instanceof Mesh &&
+      m.getTotalVertices() > 0 &&
+      m.instances.length === 0 &&
+      !m.skeleton &&
+      !m.morphTargetManager;
+    if (!mergeable) {
+      untouched.push(m);
+      continue;
+    }
+    const key = m.material?.uniqueId.toString() ?? "none";
+    const group = groups.get(key);
+    if (group) group.push(m);
+    else groups.set(key, [m]);
+  }
+
+  const merged: AbstractMesh[] = [];
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      merged.push(group[0]);
+      continue;
+    }
+    // allow32BitsIndices: these groups run well past 65k vertices.
+    const one = Mesh.MergeMeshes(group, true, true, undefined, false, false);
+    if (one) {
+      merged.push(one);
+    } else {
+      // A refusal (mismatched sideOrientation, an instance) is not fatal: the
+      // originals are untouched when MergeMeshes returns null.
+      merged.push(...group);
+    }
+  }
+  return [...untouched, ...merged];
+}
+
+/**
+ * Dev flag: `?merge=0` loads the backdrop unmerged. Kept because the merge is
+ * only worth having if it draws the same picture, and the honest way to check
+ * that is two screenshots from the same machine.
+ */
+function mergeEnabled(): boolean {
+  return new URLSearchParams(location.search).get("merge") !== "0";
+}
+
+/** Venue backdrop, normalised to surround the court and grounded at y = 0. */
+async function loadArena(scene: Scene, model: ArenaModel): Promise<void> {
+  const res = await SceneLoader.ImportMeshAsync("", "/models/Arena/", model.file, scene);
+  const hidden = new Set(model.hideMaterials ?? []);
+  const kept = res.meshes.filter((m) => {
+    if (!m.material || !hidden.has(m.material.name)) return true;
+    m.dispose();
+    return false;
+  });
+  const meshes = mergeEnabled() ? mergeByMaterial(kept) : kept;
   const wrapper = new TransformNode("arena-wrapper", scene);
-  for (const m of res.meshes) if (!m.parent) m.parent = wrapper;
-  wrapper.rotation = new Vector3(0, ARENA.rotationY, 0);
+  for (const m of meshes) if (!m.parent) m.parent = wrapper;
+  wrapper.rotation = new Vector3(0, model.rotationY, 0);
   const { min, max } = wrapper.getHierarchyBoundingVectors(true);
   const ext = max.subtract(min);
   const span = Math.max(ext.x, ext.z);
-  if (span > 0.01) wrapper.scaling.setAll(ARENA.span / span);
+  if (span > 0.01) wrapper.scaling.setAll(model.span / span);
   const b2 = wrapper.getHierarchyBoundingVectors(true);
   const c = b2.max.add(b2.min).scale(0.5);
   // Centre the arena on the table, grounded at y = 0, then apply the tuning offsets.
-  wrapper.position.x += ARENA.offsetX - c.x;
-  wrapper.position.z += ARENA.offsetZ - c.z;
-  wrapper.position.y += ARENA.offsetY - b2.min.y;
-  for (const m of res.meshes) {
+  wrapper.position.x += model.offsetX - c.x;
+  wrapper.position.z += model.offsetZ - c.z;
+  wrapper.position.y += model.offsetY - b2.min.y;
+  for (const m of meshes) {
     m.isPickable = false;
     m.freezeWorldMatrix();
   }

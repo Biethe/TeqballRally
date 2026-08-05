@@ -13,6 +13,7 @@ import {
   settingsFor,
   storeTier,
 } from "./quality";
+import { VENUE_IDS, resolveVenue, storeVenue, venueFor } from "./venue";
 import { Ball, type Side } from "./ball";
 import { Character } from "./character";
 import { MatchController } from "./match";
@@ -83,7 +84,10 @@ async function boot(): Promise<void> {
   // phone itself, so online is offered as unavailable rather than failing at
   // the end of a lobby flow.
   const onlineAvailable = looksReachable(relayUrl(), Capacitor.isNativePlatform());
-  const gs: GameScene = await createGameScene(canvas, settingsFor(qualityTier));
+  // The venue is purely cosmetic — backdrop model plus court palette — so it is
+  // a local choice and never negotiated with an opponent.
+  const venueId = resolveVenue(location.search);
+  const gs: GameScene = await createGameScene(canvas, settingsFor(qualityTier), venueFor(venueId));
   const viewer = new ModelViewer(gs.engine, canvas);
   (window as unknown as Record<string, unknown>).__viewer = viewer;
 
@@ -605,7 +609,7 @@ async function boot(): Promise<void> {
         {
           id: "btn-mode-settings",
           label: "SETTINGS",
-          sub: `Graphics quality · currently ${TIER_LABELS[qualityTier].label}`,
+          sub: `Graphics ${TIER_LABELS[qualityTier].label} · venue ${venueFor(venueId).label}`,
           tag: "OPTIONS",
         },
       ],
@@ -622,6 +626,68 @@ async function boot(): Promise<void> {
     );
   };
 
+  const showSettings = () => {
+    ui.showMenu(
+      "SETTINGS",
+      [
+        {
+          id: "btn-settings-graphics",
+          label: "GRAPHICS",
+          sub: `Framerate against detail · currently ${TIER_LABELS[qualityTier].label}`,
+          tag: TIER_LABELS[qualityTier].label,
+          primary: true,
+        },
+        {
+          id: "btn-settings-venue",
+          label: "VENUE",
+          sub: `Where the court is set up · currently ${venueFor(venueId).label}`,
+          tag: "LOOK",
+        },
+      ],
+      (id) => {
+        if (id === "btn-settings-graphics") showGraphics();
+        else showVenues();
+      },
+      "Change how the game looks and how hard it works your phone.",
+      showModes
+    );
+  };
+
+  /**
+   * Venue picker. Like the graphics tier this reloads: the backdrop is merged
+   * and normalised once at load, and the court's floor, lines and boards are
+   * built with the scene, so swapping venues live would mean tearing both down
+   * mid-frame for a setting players change between matches at most.
+   */
+  const showVenues = () => {
+    ui.showMenu(
+      "VENUE",
+      VENUE_IDS.map((id) => {
+        const v = venueFor(id);
+        return {
+          id: `btn-venue-${id}`,
+          label: v.label,
+          sub: id === venueId ? `${v.sub} · IN USE` : v.sub,
+          tag: id === venueId ? "CURRENT" : undefined,
+          primary: id === venueId,
+        };
+      }),
+      (id) => {
+        const picked = VENUE_IDS.find((v) => id === `btn-venue-${v}`);
+        if (!picked) return;
+        if (picked === venueId) {
+          showSettings();
+          return;
+        }
+        storeVenue(picked);
+        ui.showLoading("Setting up the new court…");
+        location.reload();
+      },
+      "The venue is yours alone — an opponent online keeps their own.",
+      showSettings
+    );
+  };
+
   /**
    * Graphics quality picker. Applying a tier reloads the page rather than
    * reconfiguring a live scene: the engine's MSAA is fixed at context
@@ -629,7 +695,7 @@ async function boot(): Promise<void> {
    * is a lot of moving parts for a setting players change once. A reload from
    * the packaged app is cheap because every asset is already local.
    */
-  const showSettings = () => {
+  const showGraphics = () => {
     ui.showMenu(
       "GRAPHICS",
       QUALITY_TIERS.map((tier) => ({
@@ -643,7 +709,7 @@ async function boot(): Promise<void> {
         const picked = QUALITY_TIERS.find((tier) => id === `btn-quality-${tier}`);
         if (!picked) return;
         if (picked === qualityTier) {
-          showModes();
+          showSettings();
           return;
         }
         storeTier(picked);
@@ -651,7 +717,7 @@ async function boot(): Promise<void> {
         location.reload();
       },
       "Lower settings mean a smoother game on older phones.",
-      showModes
+      showSettings
     );
   };
 

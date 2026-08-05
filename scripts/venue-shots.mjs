@@ -1,0 +1,147 @@
+// Loads every venue in a real browser, counts what the GPU is asked to draw,
+// and saves a screenshot of each.
+//
+// The count is the point. A backdrop's cost on a phone is draw calls, not
+// triangles, and the number of meshes a GLB turns into is invisible from the
+// file size — these arenas are 400-720 meshes over 15-21 materials. Run with
+// `--no-merge` to load them unmerged and compare both numbers and pictures.
+//
+//   npm run build && npm run preview -- --port 5199 --strictPort
+//   node scripts/venue-shots.mjs
+//   node scripts/venue-shots.mjs --no-merge
+import { chromium } from "playwright-core";
+import { mkdirSync } from "node:fs";
+
+const PORT = Number(process.env.PORT ?? 5199);
+const OUT = process.env.OUT ?? "/tmp/venues";
+const MERGE = !process.argv.includes("--no-merge");
+// LOW skips the backdrop entirely, which is the case worth looking at for a
+// venue that plays on its backdrop's surface: it has to fall back to painting
+// its own floor rather than leaving the players on nothing.
+const QUALITY = process.env.QUALITY ?? "high";
+const VENUES = process.env.VENUES?.split(",") ?? ["gym", "basketball", "football", "tennis"];
+mkdirSync(OUT, { recursive: true });
+
+const browser = await chromium.launch({
+  ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
+  args: ["--use-gl=angle", "--use-angle=swiftshader", "--no-sandbox"],
+});
+
+/**
+ * Real draw calls per frame, counted by wrapping the engine's own draw entry
+ * points for a couple of seconds.
+ *
+ * Counting meshes is not the same thing and would mislead in both directions:
+ * a mesh with several submeshes is several calls, while a hundred instanced
+ * copies of one mesh are a single instanced call. This is the number the phone
+ * pays.
+ */
+async function drawCalls(page, seconds = 2) {
+  return page.evaluate(async (secs) => {
+    const engine = window.__teq?.engine;
+    const scene = engine?.scenes?.[0];
+    if (!scene) return null;
+    let calls = 0;
+    let frames = 0;
+    const wrapped = ["drawElementsType", "drawArraysType"].map((name) => {
+      const original = engine[name].bind(engine);
+      engine[name] = (...args) => {
+        calls++;
+        return original(...args);
+      };
+      return name;
+    });
+    const observer = scene.onAfterRenderObservable.add(() => frames++);
+    await new Promise((r) => setTimeout(r, secs * 1000));
+    scene.onAfterRenderObservable.remove(observer);
+    for (const name of wrapped) delete engine[name];
+    return frames > 0 ? Math.round(calls / frames) : null;
+  }, seconds);
+}
+
+/** Meshes and triangles, split by whether they belong to the backdrop. */
+async function measure(page) {
+  return page.evaluate(() => {
+    const teq = window.__teq;
+    const scene = teq?.engine?.scenes?.[0];
+    if (!scene) return { error: "no scene" };
+    const arena = scene.getTransformNodeByName("arena-wrapper");
+    const inArena = new Set(arena ? arena.getChildMeshes(false).map((m) => m.uniqueId) : []);
+    let arenaMeshes = 0;
+    let arenaCalls = 0;
+    let arenaTris = 0;
+    let otherMeshes = 0;
+    let otherCalls = 0;
+    for (const m of scene.meshes) {
+      if (m.getTotalVertices() === 0 || !m.isEnabled()) continue;
+      const calls = Math.max(1, m.subMeshes ? m.subMeshes.length : 1);
+      if (inArena.has(m.uniqueId)) {
+        arenaMeshes++;
+        arenaCalls += calls;
+        arenaTris += m.getTotalIndices() / 3;
+      } else {
+        otherMeshes++;
+        otherCalls += calls;
+      }
+    }
+    const mats = new Set();
+    for (const m of scene.meshes) if (inArena.has(m.uniqueId) && m.material) mats.add(m.material.uniqueId);
+    return {
+      arenaMeshes,
+      arenaSubmeshes: arenaCalls,
+      arenaTris: Math.round(arenaTris),
+      arenaMaterials: mats.size,
+      otherMeshes,
+      otherSubmeshes: otherCalls,
+    };
+  });
+}
+
+const rows = [];
+
+for (const venue of VENUES) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => {
+    if (m.type() === "error") errors.push(m.text());
+  });
+
+  const url = `http://localhost:${PORT}/?q=${QUALITY}&venue=${venue}${MERGE ? "" : "&merge=0"}`;
+  await page.goto(url, { waitUntil: "load" });
+  await page.waitForTimeout(4000);
+  await page.locator("#btn-play").click();
+  await page.locator("#btn-mode-friendly").click();
+  await page.locator("#btn-diff-normal").click();
+  // The character viewer loads two rigs before the start button does anything.
+  await page.waitForTimeout(25000);
+  await page.locator("#btn-start").click();
+  // Both characters, the ball and the backdrop have to arrive before counting.
+  await page.waitForFunction(() => window.__teq !== undefined, null, { timeout: 120000 });
+  await page.waitForTimeout(12000);
+
+  const m = await measure(page);
+  const calls = await drawCalls(page);
+  const tag = `${QUALITY === "high" ? "" : QUALITY + "-"}${MERGE ? "merged" : "raw"}`;
+  await page.screenshot({ path: `${OUT}/${venue}-${tag}.png` });
+  rows.push({ venue, calls, ...m, errors: errors.slice(0, 3) });
+  console.log(venue, JSON.stringify({ calls, ...m }));
+  await page.close();
+}
+
+await browser.close();
+
+console.log(`\n${MERGE ? "merged" : "unmerged"} — screenshots in ${OUT}`);
+console.log("venue        draws/frame  arena meshes  submeshes  materials  triangles");
+for (const r of rows) {
+  if (r.error) {
+    console.log(`${r.venue.padEnd(12)} ${r.error}`);
+    continue;
+  }
+  console.log(
+    `${r.venue.padEnd(12)} ${String(r.calls).padStart(11)} ${String(r.arenaMeshes).padStart(13)}` +
+      ` ${String(r.arenaSubmeshes).padStart(10)} ${String(r.arenaMaterials).padStart(10)}` +
+      ` ${String(r.arenaTris).padStart(10)}`
+  );
+  for (const e of r.errors) console.log(`   ! ${e}`);
+}

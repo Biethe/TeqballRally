@@ -15,23 +15,14 @@ export const TABLE = {
 export const BALL_RADIUS = 0.08095; // size 5 football, ~67.5 cm circumference
 export const GRAVITY = 9.81;
 
+// How far the players may travel. These are gameplay, not decoration: they are
+// identical in every venue, so two peers looking at different backdrops still
+// run the same simulation. What the court *looks* like — its size, shape,
+// colours and boards — is a venue preset in `venue.ts`.
 export const COURT = {
   minX: 1.55, // players stay behind the table end
   maxX: 6.8,
   maxZ: 4.6,
-  floorHalfLen: 9,
-  floorHalfWid: 6.7,
-  // Draw the procedural floor/lines/boards. Turn off to play directly on the
-  // arena's own court (it sits at GROUND_Y, so physics still matches).
-  visible: true,
-  // "oval" fits gymnasium-style arenas: the floor becomes an ellipse with
-  // radii floorHalfLen x floorHalfWid and the boards follow its rim — grow the
-  // radii until the floor meets the arena's own side band. "rect" is the
-  // classic rectangular court with four straight boards.
-  shape: "oval" as "oval" | "rect",
-  // Low perimeter boards around the floor. Turn off if the arena's own band
-  // already borders the play space.
-  boards: true,
 };
 
 // ---------------- world layout tuning (hand-editable) ----------------
@@ -51,14 +42,6 @@ export const SPAWN = {
   x: 2.9, // distance from the net along the table axis
   z: 0, // lateral offset (+z = controlled player's left)
   lift: 0, // extra y lift if a model's feet still sink into the floor
-};
-
-export const ARENA = {
-  span: 55, // arena size: its longest horizontal side is scaled to this
-  offsetX: -0.45, // shift arena along the table axis (+x = toward the AI side)
-  offsetY: -0.05, // raise/lower the whole arena (lower it if its court floor swallows feet)
-  offsetZ: -1.2, // shift arena laterally (+z = to the controlled player's left)
-  rotationY: 0, // radians, in case the arena court markings need re-aligning
 };
 
 // Visual-only fine-tuning of the table model. The *physical* table (what the
