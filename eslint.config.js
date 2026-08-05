@@ -56,9 +56,10 @@ export default tseslint.config(
     },
   },
 
-  // Playwright dev helpers: plain ESM run by Node, no type information.
+  // Node-side ESM with no type information: the Playwright dev helpers and the
+  // relay server.
   {
-    files: ["scripts/**/*.mjs"],
+    files: ["scripts/**/*.mjs", "server/**/*.mjs"],
     extends: [js.configs.recommended],
     languageOptions: {
       ecmaVersion: "latest",
