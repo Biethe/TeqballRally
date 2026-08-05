@@ -38,7 +38,6 @@ function fakeMatch() {
   const applySnapshot = vi.fn();
   const match = {
     versus: false,
-    remote: null,
     netFollower: false,
     score: { player: 0, ai: 0 },
     sets: { player: 0, ai: 0 },
@@ -94,16 +93,18 @@ function snapshot(over: Partial<SnapshotMessage> = {}): SnapshotMessage {
 }
 
 describe("session setup", () => {
-  it("puts the match into versus mode with a remote opponent", () => {
-    const { s, match } = session();
+  it("puts the match into two-human mode", () => {
+    // Online is a versus match whose second seat is a socket, so the host
+    // drives the opponent through the same field split screen uses.
+    const { match } = session();
     expect(match.versus).toBe(true);
-    expect(match.remote).toBe(s.remote);
   });
 
-  it("releases the match on dispose", () => {
-    const { s, match } = session();
+  it("stops sending once disposed", () => {
+    const { s, sent } = session({}, "guest");
     s.dispose();
-    expect(match.remote).toBeNull();
+    s.step(SIM_DT);
+    expect(sent).toHaveLength(0);
   });
 });
 

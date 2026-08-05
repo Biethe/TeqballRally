@@ -55,7 +55,6 @@ import {
 } from "./config";
 import type { InputState } from "./input";
 import type { AudioManager } from "./audio";
-import type { RemotePlayer } from "./net/remote";
 
 export type MatchState = "serve_move" | "serve_ready" | "serve_anim" | "rally" | "point" | "over";
 export type ReplayControl = "toggle" | "skip" | "back" | "forward" | "zoom-in" | "zoom-out";
@@ -290,7 +289,6 @@ export class MatchController {
    * takes precedence over it — the second seat is filled from the network
    * rather than from a second local controller.
    */
-  remote: RemotePlayer | null = null;
   /**
    * Online guest: this controller shows a match it does not run.
    *
@@ -1926,11 +1924,10 @@ export class MatchController {
           bp.ttl -= dt;
           if (done || bp.ttl <= 0) this.bufferedPress = null;
         }
-        // Online: the opponent is neither simulated from input nor by the AI.
-        // Its pose is reported by the peer and its strikes arrive already
-        // resolved, so there is nothing to decide here — only to follow.
-        if (this.remote) this.remote.update(dt, this.chars.ai);
-        else if (this.versus) this.updateVersusRally(dt);
+        // Online play arrives here as an ordinary two-human match: the second
+        // seat's controls come off the wire into versusInput, exactly where a
+        // second local controller would put them.
+        if (this.versus) this.updateVersusRally(dt);
         else aiUpdate(dt);
         break;
       }

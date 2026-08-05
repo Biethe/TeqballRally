@@ -1,12 +1,11 @@
 /**
- * One online match: the wiring between the socket, the remote opponent and the
- * match controller.
+ * One online match: the wiring between the socket and the match controller.
  *
  * Both peers experience themselves as the near side with the primary camera,
  * so the guest's world is the host's reflected through the net. Everything
  * crossing the wire passes through `reframe`, which makes that the only place
- * the asymmetry lives — the match, the remote player and the UI all work in
- * local coordinates and never learn which peer they are.
+ * the asymmetry lives — the match and the UI work in local coordinates and
+ * never learn which peer they are.
  *
  * The host runs the only match. The guest sends what its controls are doing and
  * renders the frames it is sent, running no rules of its own — two rule engines
@@ -18,7 +17,6 @@ import type { MatchController } from "../match";
 import type { InputState } from "../input";
 import type { Side } from "../ball";
 import type { NetConnection } from "./connection";
-import { RemotePlayer } from "./remote";
 import {
   isValidInput,
   isValidSnapshot,
@@ -64,7 +62,6 @@ export interface SessionHandlers {
 }
 
 export class OnlineSession {
-  readonly remote = new RemotePlayer();
   private tick = 0;
   private sinceMove = 0;
   private disposed = false;
@@ -72,9 +69,9 @@ export class OnlineSession {
   /**
    * Seconds since any traffic arrived from the opponent.
    *
-   * Owned here rather than read off RemotePlayer, whose clock only advances
-   * while the match is in a rally — an opponent who walks out between points
-   * would otherwise never be noticed at all.
+   * Owned here rather than by anything inside the match, whose clocks only
+   * advance during a rally — an opponent who walks out between points would
+   * otherwise never be noticed at all.
    */
   private sinceMessage = 0;
   /** Seconds the opponent has been absent, or 0 while they are present. */
@@ -99,7 +96,6 @@ export class OnlineSession {
     private handlers: SessionHandlers = {}
   ) {
     match.versus = true;
-    match.remote = this.remote;
     conn.setHandlers({
       onMessage: (msg) => this.onNetMessage(msg),
       // A clean disconnect is reported by the relay; silence is noticed by the
@@ -286,7 +282,6 @@ export class OnlineSession {
 
   dispose(): void {
     this.disposed = true;
-    this.match.remote = null;
     this.conn.setHandlers({ onMessage: undefined });
   }
 }
