@@ -583,25 +583,57 @@ export class MatchController {
         if (gap > FOLLOWER_SNAP) {
           c.position.x = target.x;
           c.position.z = target.z;
-          c.velocity.setAll(0);
         } else if (gap > FOLLOWER_ARRIVE) {
           const speed = Math.min(gap / FOLLOWER_CONVERGE, c.def.speed);
           const step = Math.min(gap, speed * dt);
           c.position.x += (dx / gap) * step;
           c.position.z += (dz / gap) * step;
-          c.velocity.set((dx / gap) * speed, 0, (dz / gap) * speed);
         } else {
           c.position.x = target.x;
           c.position.z = target.z;
-          c.velocity.setAll(0);
         }
+        // The blend runs off what the host reported, not off how far this
+        // frame happened to travel.
+        const v = this.followerVel[side];
+        c.velocity.set(v.x, 0, v.z);
       }
       c.update(dt);
     }
   }
 
-  /** Latest reported positions for each side, set from the host's snapshots. */
+  /** Latest reported pose, court velocity and action clip, per side. */
   private followerPose: Record<Side, { x: number; z: number } | null> = { player: null, ai: null };
+  private followerVel: Record<Side, { x: number; z: number }> = {
+    player: { x: 0, z: 0 },
+    ai: { x: 0, z: 0 },
+  };
+  private followerClip: Record<Side, string | null> = { player: null, ai: null };
+
+  /**
+   * Take one side of a snapshot.
+   *
+   * The reported velocity is kept as well as the position, because the
+   * locomotion blend reads velocity and the residual speed of easing toward a
+   * 20 Hz target sits below its threshold — a character that slid while
+   * standing still in an idle pose was exactly that.
+   *
+   * A clip that has changed is started here, since a guest runs no rules and
+   * would otherwise never play a kick, reception or serve at all.
+   */
+  private applyFollowerSide(
+    side: Side,
+    pos: { x: number; z: number },
+    vel: { x: number; z: number },
+    clip: string | null
+  ): void {
+    this.followerPose[side] = { x: pos.x, z: pos.z };
+    this.followerVel[side] = { x: vel.x, z: vel.z };
+    if (clip !== this.followerClip[side]) {
+      this.followerClip[side] = clip;
+      if (clip) this.chars[side].playAction(clip);
+      else this.chars[side].stopAction();
+    }
+  }
 
   /**
    * Apply an authoritative frame from the host. Everything here is already in
@@ -614,6 +646,10 @@ export class MatchController {
     ballHeld: boolean;
     selfPos: { x: number; z: number };
     opponentPos: { x: number; z: number };
+    selfVel: { x: number; z: number };
+    opponentVel: { x: number; z: number };
+    selfClip: string | null;
+    opponentClip: string | null;
     score: [number, number];
     sets: [number, number];
     serveOwner: Side;
@@ -621,8 +657,8 @@ export class MatchController {
     this.ball.state.pos.set(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z);
     this.ball.state.vel.set(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z);
     this.ball.held = snap.ballHeld;
-    this.followerPose.player = { x: snap.selfPos.x, z: snap.selfPos.z };
-    this.followerPose.ai = { x: snap.opponentPos.x, z: snap.opponentPos.z };
+    this.applyFollowerSide("player", snap.selfPos, snap.selfVel, snap.selfClip);
+    this.applyFollowerSide("ai", snap.opponentPos, snap.opponentVel, snap.opponentClip);
     const changed =
       this.score.player !== snap.score[0] ||
       this.score.ai !== snap.score[1] ||

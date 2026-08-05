@@ -72,6 +72,11 @@ async function sample(page, ms) {
     });
     const first = read();
     const spread = { self: 0, opp: 0, ball: 0 };
+    // Position moving is not the same as the character being animated: a
+    // player sliding in an idle pose passes a position check and still looks
+    // broken. Track the locomotion clip and any action clip separately.
+    const locos = new Set();
+    const clips = new Set();
     const t0 = Date.now();
     while (Date.now() - t0 < duration) {
       await new Promise((r) => setTimeout(r, 50));
@@ -82,8 +87,18 @@ async function sample(page, ms) {
           Math.hypot(now[k][0] - first[k][0], now[k][1] - first[k][1])
         );
       }
+      for (const side of ["player", "ai"]) {
+        const c = m.chars[side];
+        if (c.currentLoco) locos.add(side + ":" + c.currentLoco);
+        if (c.currentActionClip) clips.add(side + ":" + c.currentActionClip);
+      }
     }
-    return { spread, follower: m.netFollower === true, pose: m.followerPose ?? null };
+    return {
+      spread,
+      follower: m.netFollower === true,
+      locos: [...locos],
+      clips: [...clips],
+    };
   }, ms);
 }
 
@@ -109,7 +124,10 @@ const [guestSample, hostSample] = await Promise.all([
 
 console.log("host  spread:", JSON.stringify(hostSample.spread));
 console.log("guest spread:", JSON.stringify(guestSample.spread));
-console.log("guest followerPose:", JSON.stringify(guestSample.pose));
+console.log("host  locomotion:", JSON.stringify(hostSample.locos));
+console.log("guest locomotion:", JSON.stringify(guestSample.locos));
+console.log("host  action clips:", JSON.stringify(hostSample.clips));
+console.log("guest action clips:", JSON.stringify(guestSample.clips));
 
 await guest.screenshot({ path: "/tmp/online-guest.png" });
 await browser.close();
@@ -123,6 +141,10 @@ const checks = [
   ["guest sees its own player move", guestSample.spread.self > MOVED],
   ["guest sees the opponent move", guestSample.spread.opp > MOVED],
   ["guest sees the ball move", guestSample.spread.ball > MOVED],
+  // The checks that would have caught this round's bug: moving is not
+  // animating, and a guest that runs no rules never starts a clip by itself.
+  ["guest animates a run, not a slide", guestSample.locos.some((l) => l !== "player:Idle" && l !== "ai:Idle")],
+  ["guest plays action clips", guestSample.clips.length > 0],
   ["no page errors", errors.length === 0],
 ];
 for (const [name, ok] of checks) console.log(`${ok ? "ok  " : "FAIL"} ${name}`);

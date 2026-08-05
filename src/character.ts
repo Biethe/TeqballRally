@@ -356,6 +356,20 @@ export class Character {
     return this.action !== null;
   }
 
+  private actionClip: string | null = null;
+
+  /**
+   * Name of the action clip playing right now, or null while idle.
+   *
+   * An online guest runs no rules, so it never calls playAction itself. The
+   * host reports this in each snapshot and the guest mirrors it, which is what
+   * makes a kick look like a kick rather than the ball changing direction on
+   * its own.
+   */
+  get currentActionClip(): string | null {
+    return this.actionClip;
+  }
+
   /** Progress of the current action clip in [0, 1], or null when idle. */
   actionFraction(): number | null {
     const g = this.action;
@@ -479,6 +493,7 @@ export class Character {
     g.start(opts.loop ?? false, opts.speed ?? 1, from, g.to);
     g.setWeightForAllAnimatables(1);
     this.action = g;
+    this.actionClip = name;
     this.actionCallbacks = [...(opts.callbacks ?? [])].sort((a, b) => a.frac - b.frac);
     this.actionOnEnd = opts.onEnd ?? null;
     if (!(opts.loop ?? false)) {
@@ -540,6 +555,7 @@ export class Character {
     if (this.action) {
       this.action.stop();
       this.action = null;
+      this.actionClip = null;
       this.actionCallbacks = [];
       this.actionOnEnd = null;
     }
