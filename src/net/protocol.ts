@@ -126,6 +126,20 @@ export interface SnapshotMessage {
   phase: string;
 }
 
+/**
+ * Each peer's chosen character and ball, exchanged before the match loads.
+ *
+ * Neither side can pick the other's model for it, and both have to be known
+ * before anything is loaded — without this each peer showed a stand-in for
+ * its opponent. Ids, not geometry, so there is nothing to mirror.
+ */
+export interface SetupMessage {
+  t: "setup";
+  tick: number;
+  character: string;
+  ball: string;
+}
+
 /** Host-only: the authoritative score and phase. */
 export interface StateMessage {
   t: "state";
@@ -160,6 +174,7 @@ export interface PongMessage {
 }
 
 export type GameMessage =
+  | SetupMessage
   | InputMessage
   | SnapshotMessage
   | MoveMessage
@@ -347,6 +362,14 @@ export function isValidStrike(msg: unknown): msg is StrikeMessage {
     typeof m.clip === "string" &&
     Number.isFinite(m.spin)
   );
+}
+
+export function isValidSetup(msg: unknown): msg is SetupMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<SetupMessage>;
+  // The ids are looked up against the roster by the caller, which falls back
+  // to a default; this only guarantees there is a string to look up.
+  return m.t === "setup" && typeof m.character === "string" && typeof m.ball === "string";
 }
 
 export function isValidInput(msg: unknown): msg is InputMessage {

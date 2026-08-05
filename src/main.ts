@@ -31,7 +31,13 @@ import { NetConnection } from "./net/connection";
 import { OnlineSession } from "./net/session";
 import { looksReachable, relayUrl } from "./net/endpoint";
 import { Capacitor } from "@capacitor/core";
-import { makeRoomCode, normalizeRoomCode, isValidRoomCode, type PeerRole } from "./net/protocol";
+import {
+  makeRoomCode,
+  normalizeRoomCode,
+  isValidRoomCode,
+  isValidSetup,
+  type PeerRole,
+} from "./net/protocol";
 import { ModelViewer } from "./viewer";
 import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
 import { BALLS, CAMERA, CHARACTERS, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
@@ -639,15 +645,27 @@ async function boot(): Promise<void> {
   // ------------------------------------------------------------ online play
 
   /**
-   * Start an online match once a seat is secured. Both players pick their own
-   * character; the ball is the host's choice, since the two must agree.
+   * Start an online match once a seat is secured.
+   *
+   * Both peers pick their own character, then exchange the choice before
+   * anything loads: neither can pick the other's model for it, and the models
+   * have to be known before the scene is built. The listener is installed
+   * before the picker opens, because an opponent who chooses first would
+   * otherwise have their message arrive with nobody listening.
+   *
+   * The ball has to be one ball, so the host's choice settles it.
    */
   const startOnlineMatch = (conn: NetConnection, role: PeerRole) => {
-    showSelect("CHOOSE YOUR PLAYER", (charId, ballId) => {
-      const me = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
-      // The opponent's character is not known until they pick; until the
-      // protocol carries it, both sides show a fixed stand-in.
-      const them = CHARACTERS.find((c) => c.id !== me.id) ?? CHARACTERS[1];
+    let mine: { character: string; ball: string } | null = null;
+    let theirs: { character: string; ball: string } | null = null;
+    let launched = false;
+
+    const launch = () => {
+      if (launched || !mine || !theirs) return;
+      launched = true;
+      const me = CHARACTERS.find((c) => c.id === mine!.character) ?? CHARACTERS[0];
+      const them = CHARACTERS.find((c) => c.id === theirs!.character) ?? CHARACTERS[0];
+      const ballId = role === "host" ? mine.ball : theirs.ball;
       void startMatch(me, ballId, {
         opponent: them,
         difficulty: "normal",
@@ -658,6 +676,21 @@ async function boot(): Promise<void> {
           ui.showEnd(winner, () => leaveMatch(), () => leaveMatch());
         },
       });
+    };
+
+    conn.setHandlers({
+      onMessage: (msg) => {
+        if (!isValidSetup(msg)) return;
+        theirs = { character: msg.character, ball: msg.ball };
+        launch();
+      },
+    });
+
+    showSelect("CHOOSE YOUR PLAYER", (charId, ballId) => {
+      mine = { character: charId, ball: ballId };
+      conn.send({ t: "setup", character: charId, ball: ballId });
+      ui.showLobbyStatus("READY", "Waiting for your opponent to choose…", null, abandonLobby);
+      launch();
     }, showOnline);
   };
 
