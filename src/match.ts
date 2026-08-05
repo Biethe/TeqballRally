@@ -69,7 +69,25 @@ export type MatchEvent =
   | { type: "serve-committed"; side: Side }
   | { type: "possession-start"; side: Side }
   | { type: "touch-committed"; side: Side; action: "strike" | "pop"; afterSetup?: boolean }
-  | { type: "point-awarded"; winner: Side; reason: string };
+  | { type: "point-awarded"; winner: Side; reason: string }
+  /**
+   * The ball has just been given a new velocity by a serve, strike or pop —
+   * the exact moment that decides the flight ahead.
+   *
+   * Online play is built on this: because `stepBall` is pure, sending this
+   * launch state is all the other peer needs to reproduce the same trajectory.
+   * It is an event rather than a call into a net layer so the controller stays
+   * unaware of the network, and so the launch sites keep their single job.
+   */
+  | {
+      type: "ball-launched";
+      side: Side;
+      action: "serve" | "strike" | "pop";
+      pos: Vector3;
+      vel: Vector3;
+      clip: string;
+      spin: number;
+    };
 
 export interface MatchUI {
   setScore(player: number, ai: number, server: Side, setsPlayer: number, setsAi: number): void;
@@ -526,6 +544,24 @@ export class MatchController {
 
   private emit(event: MatchEvent): void {
     for (const listener of [...this.eventListeners]) listener(event);
+  }
+
+  /**
+   * Announce the ball's new flight, right after it was launched. The vectors
+   * are cloned because the live ball state keeps mutating every step, and a
+   * listener that forwards this over a network must not have it change
+   * underneath it.
+   */
+  private emitLaunch(side: Side, action: "serve" | "strike" | "pop", clip: string, spin: number): void {
+    this.emit({
+      type: "ball-launched",
+      side,
+      action,
+      pos: this.ball.state.pos.clone(),
+      vel: this.ball.state.vel.clone(),
+      clip,
+      spin,
+    });
   }
 
   /** Capture the exact setup for a replayable action. */
@@ -1151,6 +1187,7 @@ export class MatchController {
     this.ball.launch(v);
     this.audio.playKick();
     this.state = "rally";
+    this.emitLaunch(this.serveOwner, "serve", this.serveClip, 1);
     this.emit({ type: "serve-committed", side: this.serveOwner });
   }
 
@@ -1346,6 +1383,7 @@ export class MatchController {
       this.commitReplaySeed(replaySeed, this.ball.state.pos, v);
       this.ball.launch(v, 0.7 + relH); // smashes visibly spin faster
       this.audio.playKick();
+      this.emitLaunch(side, "strike", clip, 0.7 + relH);
       this.emit({ type: "touch-committed", side, action: "strike", afterSetup: popped });
     };
 
@@ -1416,6 +1454,7 @@ export class MatchController {
       const v = new Vector3((target.x - pos.x) / t, vy, (target.z - pos.z) / t);
       this.ball.launch(v, 0.45); // a set-up pop floats with little spin
       this.audio.playKick();
+      this.emitLaunch(side, "pop", clip, 0.45);
       // Auto-run there (slightly behind, so the ball drops in front of the player).
       const spot = new Vector3(target.x - c.forward.x * 0.35, GROUND_Y, target.z);
       if (side === "player") this.selfSetupSpot = spot;
