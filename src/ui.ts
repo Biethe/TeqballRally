@@ -450,6 +450,34 @@ export class UI {
     this.standingsEl.classList.remove("hidden");
   }
 
+  /**
+   * Online pause overlay. Serves the whole negotiation — asking, being asked,
+   * and paused — because they differ only in what they say and which buttons
+   * make sense. `actions` is a list of [label, handler] pairs.
+   */
+  showOnlinePause(title: string, detail: string, actions: [string, () => void][]): void {
+    this.pauseEl.innerHTML = `
+      <div class="pause-card">
+        <div class="logo small">${title}</div>
+        <div class="standings-rows"><div class="standings-row" id="net-pause-detail"></div></div>
+        <div class="pause-actions"></div>
+      </div>`;
+    this.pauseEl.querySelector<HTMLDivElement>("#net-pause-detail")!.textContent = detail;
+    const box = this.pauseEl.querySelector<HTMLDivElement>(".pause-actions")!;
+    actions.forEach(([label, fn], i) => {
+      const b = document.createElement("button");
+      b.className = `big-btn${i > 0 ? " alt" : ""}`;
+      b.textContent = label;
+      b.onclick = () => fn();
+      box.appendChild(b);
+    });
+    this.pauseEl.classList.remove("hidden");
+  }
+
+  hideOnlinePause(): void {
+    this.pauseEl.classList.add("hidden");
+  }
+
   /** Update the waiting room's status line without rebuilding the screen. */
   setLobbyDetail(detail: string): void {
     const el = this.standingsEl.querySelector<HTMLDivElement>("#lobby-detail");

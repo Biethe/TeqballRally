@@ -52,7 +52,7 @@ interface MatchOpts {
   /** Second human drives the opponent (split screen); device assignment for both. */
   versus: VersusAssign | null;
   /** Online: the opponent is a remote human on the far end of this connection. */
-  online?: { conn: NetConnection; role: PeerRole };
+  online?: { conn: NetConnection; role: PeerRole; private: boolean };
   labels: [string, string];
   practice?: boolean;
   onEnd: (winner: Side, sets: [number, number]) => void;
@@ -386,15 +386,23 @@ async function boot(): Promise<void> {
     const label = cameraMode === "court" ? "COURT VIEW" : cameraMode === "side" ? "SIDE VIEW" : "TOP VIEW";
     ui.banner(label, "C or Y / △ to switch");
   };
-  ui.onPauseRequest = () => {
+  const requestPauseToggle = () => {
     // The replay transport owns pause while a highlight is on screen; never
     // put the match pause overlay over its touch controls.
     if (match?.isReplayActive) {
       match.controlReplay("toggle");
       return;
     }
+    // Online: a pause belongs to both players, so it is asked for rather than
+    // taken. Outside a private game there is no request to make.
+    if (session) {
+      if (session.pauseAllowed) session.requestPause();
+      else ui.banner("PAUSE UNAVAILABLE", "Only in games with a friend");
+      return;
+    }
     if (!practiceCoach?.isPaused) setPaused(!paused);
   };
+  ui.onPauseRequest = requestPauseToggle;
   ui.onCameraRequest = cycleCameraMode;
   ui.onReplayControl = (control) => {
     if (control === "reset-camera") {
@@ -474,7 +482,7 @@ async function boot(): Promise<void> {
       !practiceCoach?.isPaused &&
       !hasBlockingScreen()
     ) {
-      setPaused(!paused);
+      requestPauseToggle();
     }
     if (paused) {
       input.poll(cameraMode); // discard queued presses so nothing fires on resume
@@ -522,8 +530,13 @@ async function boot(): Promise<void> {
         // A guest's controls belong to the host's match, so they go to the
         // wire before the local update — which, as a follower, ignores them.
         session?.setLocalInput(stepInput);
-        match.update(SIM_DT, freecam ? idleInput : stepInput, (d) => aiCtl?.update(d));
-        practiceCoach?.update(SIM_DT, stepInput);
+        // A negotiated pause freezes the match on both peers, but not the
+        // session: traffic has to keep flowing or a pause would look exactly
+        // like a disconnect and forfeit the game it was meant to interrupt.
+        if (!session?.isPaused) {
+          match.update(SIM_DT, freecam ? idleInput : stepInput, (d) => aiCtl?.update(d));
+          practiceCoach?.update(SIM_DT, stepInput);
+        }
         // Stepped with the simulation, not the frame, so the tick stamped on
         // outgoing messages is the same clock the receiver counts against.
         session?.step(SIM_DT);
@@ -655,7 +668,7 @@ async function boot(): Promise<void> {
    *
    * The ball has to be one ball, so the host's choice settles it.
    */
-  const startOnlineMatch = (conn: NetConnection, role: PeerRole) => {
+  const startOnlineMatch = (conn: NetConnection, role: PeerRole, isPrivate: boolean) => {
     let mine: { character: string; ball: string } | null = null;
     let theirs: { character: string; ball: string } | null = null;
     let launched = false;
@@ -670,7 +683,7 @@ async function boot(): Promise<void> {
         opponent: them,
         difficulty: "normal",
         versus: null,
-        online: { conn, role },
+        online: { conn, role, private: isPrivate },
         labels: ["YOU", "RIVAL"],
         onEnd: (winner) => {
           ui.showEnd(winner, () => leaveMatch(), () => leaveMatch());
@@ -713,7 +726,7 @@ async function boot(): Promise<void> {
     ui.showLobbyStatus("QUICK MATCH", "Connecting…", null, abandonLobby);
     conn
       .quickMatch()
-      .then(({ role }) => startOnlineMatch(conn, role))
+      .then(({ role }) => startOnlineMatch(conn, role, false))
       .catch((e: unknown) => {
         if (netConn !== conn) return; // the player already cancelled
         ui.showLobbyStatus(
@@ -750,7 +763,7 @@ async function boot(): Promise<void> {
           });
         });
       })
-      .then(({ role }) => startOnlineMatch(conn, role))
+      .then(({ role }) => startOnlineMatch(conn, role, true))
       .catch((e: unknown) => {
         if (netConn !== conn) return;
         ui.showLobbyStatus(
@@ -782,10 +795,10 @@ async function boot(): Promise<void> {
             if (!ready) {
               // Seated, but alone: the host left between hosting and joining.
               ui.setLobbyDetail("Waiting for the host…");
-              conn.setHandlers({ onPeer: (p) => p && startOnlineMatch(conn, role) });
+              conn.setHandlers({ onPeer: (p) => p && startOnlineMatch(conn, role, true) });
               return;
             }
-            startOnlineMatch(conn, role);
+            startOnlineMatch(conn, role, true);
           })
           .catch((e: unknown) => {
             if (netConn !== conn) return;
@@ -1243,7 +1256,33 @@ async function boot(): Promise<void> {
           ui.banner("OPPONENT LEFT", "Match awarded to you");
           ui.showEnd("player", () => leaveMatch(), () => leaveMatch());
         },
+        onPauseState: (state, detail) => {
+          switch (state) {
+            case "asking":
+              ui.showOnlinePause("PAUSE?", "Asking your opponent…", [
+                ["LEAVE MATCH", () => leaveMatch()],
+              ]);
+              return;
+            case "asked":
+              ui.showOnlinePause("PAUSE REQUEST", "Your opponent would like to pause", [
+                ["ALLOW", () => session?.respondToPause(true)],
+                ["DECLINE", () => session?.respondToPause(false)],
+              ]);
+              return;
+            case "paused":
+              ui.showOnlinePause("PAUSED", "Either player can resume", [
+                ["RESUME", () => session?.resume()],
+                ["LEAVE MATCH", () => leaveMatch()],
+              ]);
+              return;
+            case "none":
+              ui.hideOnlinePause();
+              if (detail) ui.banner("PAUSE", detail);
+              return;
+          }
+        },
       });
+      session.pauseAllowed = opts.online.private;
     }
     cameraMode = "court";
     ui.setCameraMode(cameraMode);
