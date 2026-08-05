@@ -33,7 +33,11 @@ page.on("requestfailed", (r) => {
   console.log("[requestfailed]", r.url(), r.failure()?.errorText);
 });
 
-await page.goto(`http://localhost:${PORT}/?ts=10&light=1`, { waitUntil: "load" });
+// Forcing the tier keeps the run independent of what the headless browser
+// reports about its device. The default exercises everything the build has to
+// be able to load; QUALITY=low checks the tier that skips the gym backdrop.
+const QUALITY = process.env.QUALITY ?? "high";
+await page.goto(`http://localhost:${PORT}/?ts=10&q=${QUALITY}`, { waitUntil: "load" });
 await page.waitForTimeout(4000);
 
 // Title -> friendly match at normal difficulty -> select screen.
@@ -61,13 +65,19 @@ console.log(JSON.stringify(report, null, 2));
 
 await browser.close();
 
-// Both characters bring a skeleton and their full animation set; the arena and
-// table add most of the geometry. A loader failure leaves only the procedural
-// court behind, which is far below every one of these floors.
+// Both characters bring a skeleton and their full animation set. A loader
+// failure leaves only the procedural court behind, which is far below every one
+// of these floors. The gym is the bulk of the geometry, so only the tiers that
+// load it are held to the high vertex count — and on "low" its absence is
+// itself asserted, since skipping that download is the point of the tier.
+const withArena = QUALITY !== "low";
 const checks = [
   ["skeletons", report.skeletons >= 2],
   ["animationGroups", report.animationGroups > 20],
-  ["vertices", report.verticesTotal > 50000],
+  ["vertices", report.verticesTotal > (withArena ? 500000 : 20000)],
+  // Measured: 141 meshes with the gym, 53 without (court, table, ball, markers
+  // and the two characters). 80 separates the two cleanly.
+  [withArena ? "gym loaded" : "gym skipped", withArena ? report.meshCount > 80 : report.meshCount < 80],
   ["no page errors", errors.length === 0],
 ];
 for (const [name, ok] of checks) console.log(`${ok ? "ok  " : "FAIL"} ${name}`);

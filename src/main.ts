@@ -5,16 +5,43 @@ import { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Viewport } from "@babylonjs/core/Maths/math.viewport";
 import { createGameScene, loadBall, type GameScene } from "./scene";
+import {
+  QUALITY_TIERS,
+  TIER_LABELS,
+  readSignals,
+  resolveTier,
+  settingsFor,
+  storeTier,
+} from "./quality";
 import { Ball, type Side } from "./ball";
 import { Character } from "./character";
 import { MatchController } from "./match";
 import { AIController, DIFFICULTIES, type DifficultyLevel } from "./ai";
-import { Input, type InputState, type VersusAssign } from "./input";
+import {
+  Input,
+  consumeInput,
+  latchInput,
+  newLatch,
+  type InputState,
+  type VersusAssign,
+} from "./input";
 import { UI } from "./ui";
 import { AudioManager } from "./audio";
 import { ModelViewer } from "./viewer";
 import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
 import { BALLS, CAMERA, CHARACTERS, GROUND_Y, type CameraMode, type CharacterDef } from "./config";
+
+/**
+ * The match simulates at a fixed rate, decoupled from the display. A phone
+ * rendering at 30fps and one at 120fps then play exactly the same game: with a
+ * variable step the ball's substepping is sliced differently on each device,
+ * so identical inputs produced measurably different rallies. It is also the
+ * precondition for two devices agreeing on a rally over the network.
+ */
+const SIM_HZ = 60;
+const SIM_DT = 1 / SIM_HZ;
+/** Longest real frame the simulation will honour; beyond this, time is dropped. */
+const MAX_FRAME_DT = 1 / 20;
 
 /** How one match should be set up and what to do when it ends. */
 interface MatchOpts {
@@ -45,7 +72,10 @@ async function boot(): Promise<void> {
   window.addEventListener("keydown", unlock);
 
   ui.showLoading("Building the court…");
-  const gs: GameScene = await createGameScene(canvas);
+  // The tier decides the engine's MSAA, which cannot be changed on a live
+  // context, so it has to be resolved before the scene exists.
+  const qualityTier = resolveTier(location.search, readSignals());
+  const gs: GameScene = await createGameScene(canvas, settingsFor(qualityTier));
   const viewer = new ModelViewer(gs.engine, canvas);
   (window as unknown as Record<string, unknown>).__viewer = viewer;
 
@@ -160,6 +190,15 @@ async function boot(): Promise<void> {
   });
 
   const idleInput: InputState = { moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false };
+
+  // Fixed-step simulation state. The accumulator only ever grows on frames
+  // that actually simulate, so pausing cannot bank time and burst on resume.
+  let simAccumulator = 0;
+  const latchedP1 = newLatch();
+  const latchedP2 = newLatch();
+  // The frame delta is already clamped to MAX_FRAME_DT before the time scale is
+  // applied, so this bound is simply that clamp expressed in simulation steps.
+  const maxSimSteps = Math.ceil((MAX_FRAME_DT * timeScale) / SIM_DT) + 1;
 
   // ---- replay camera orbit ----
   // Match cameras are authored and reset every frame. During a replay only,
@@ -396,7 +435,9 @@ async function boot(): Promise<void> {
   };
 
   gs.engine.runRenderLoop(() => {
-    const dt = Math.min(gs.engine.getDeltaTime() / 1000, 1 / 20) * timeScale;
+    // Frame time drives everything presentational (the model viewer, the
+    // replay orbit). Gameplay is stepped separately, at SIM_DT.
+    const dt = Math.min(gs.engine.getDeltaTime() / 1000, MAX_FRAME_DT) * timeScale;
     menuNav();
     // Poll even off-court so a held C / Y can never leak into the next match.
     const cameraCycle = input.pollCameraCycle();
@@ -448,22 +489,31 @@ async function boot(): Promise<void> {
     }
     const inp = input.poll(cameraMode);
     if (match) {
+      latchInput(latchedP1, inp);
       if (versusCam) {
         // Player 2's device, flipped into their court frame (they attack -x).
         const p2 = input.pollP2(cameraMode);
-        match.versusInput = {
-          moveX: -p2.moveX,
-          moveZ: -p2.moveZ,
-          strikePressed: p2.strikePressed,
-          popPressed: p2.popPressed,
-          confirmPressed: p2.confirmPressed,
-        };
+        latchInput(latchedP2, { ...p2, moveX: -p2.moveX, moveZ: -p2.moveZ });
       }
+      // Step the match in fixed SIM_DT slices, consuming whatever real time
+      // this frame delivered. A slow frame runs several steps, a fast one may
+      // run none — which is why the presses are latched rather than sampled.
+      simAccumulator += dt;
+      let steps = 0;
+      while (simAccumulator >= SIM_DT && steps < maxSimSteps) {
+        const stepInput = consumeInput(latchedP1);
+        if (versusCam) match.versusInput = consumeInput(latchedP2);
+        match.update(SIM_DT, freecam ? idleInput : stepInput, (d) => aiCtl?.update(d));
+        practiceCoach?.update(SIM_DT, stepInput);
+        simAccumulator -= SIM_DT;
+        steps++;
+      }
+      // A frame long enough to exhaust the step budget (tab restore, a GC
+      // pause) drops the remainder instead of trying to catch up forever.
+      if (steps >= maxSimSteps) simAccumulator = 0;
       // While a replay is active, a dedicated WASD/analogue-only poll drives
       // the free-angle orbit. D-pad/arrows stay assigned to the replay
       // timeline transport above, so a seek never rotates view.
-      match.update(dt, freecam ? idleInput : inp, (d) => aiCtl?.update(d));
-      practiceCoach?.update(dt, inp);
       if (match.isReplayActive) {
         if (!replayOrbit.session) {
           resetReplayOrbit();
@@ -516,15 +566,55 @@ async function boot(): Promise<void> {
         },
         { id: "btn-mode-competition", label: "COMPETITION", sub: "Play a cup or league campaign", tag: "TOURNAMENT" },
         { id: "btn-mode-versus", label: "2 PLAYERS", sub: "Share the court in split screen", tag: "LOCAL" },
+        {
+          id: "btn-mode-settings",
+          label: "SETTINGS",
+          sub: `Graphics quality · currently ${TIER_LABELS[qualityTier].label}`,
+          tag: "OPTIONS",
+        },
       ],
       (id) => {
         if (id === "btn-mode-practice") showPractice();
         else if (id === "btn-mode-friendly") showDifficulty();
         else if (id === "btn-mode-competition") showFormats();
+        else if (id === "btn-mode-settings") showSettings();
         else showVersusSelect();
       },
       "Pick a route and get on the table.",
       showTitle
+    );
+  };
+
+  /**
+   * Graphics quality picker. Applying a tier reloads the page rather than
+   * reconfiguring a live scene: the engine's MSAA is fixed at context
+   * creation, and rebuilding the shadow generator and its caster list mid-match
+   * is a lot of moving parts for a setting players change once. A reload from
+   * the packaged app is cheap because every asset is already local.
+   */
+  const showSettings = () => {
+    ui.showMenu(
+      "GRAPHICS",
+      QUALITY_TIERS.map((tier) => ({
+        id: `btn-quality-${tier}`,
+        label: TIER_LABELS[tier].label,
+        sub: tier === qualityTier ? `${TIER_LABELS[tier].sub} · IN USE` : TIER_LABELS[tier].sub,
+        tag: tier === qualityTier ? "CURRENT" : undefined,
+        primary: tier === qualityTier,
+      })),
+      (id) => {
+        const picked = QUALITY_TIERS.find((tier) => id === `btn-quality-${tier}`);
+        if (!picked) return;
+        if (picked === qualityTier) {
+          showModes();
+          return;
+        }
+        storeTier(picked);
+        ui.showLoading("Applying graphics settings…");
+        location.reload();
+      },
+      "Lower settings mean a smoother game on older phones.",
+      showModes
     );
   };
 
@@ -878,18 +968,18 @@ async function boot(): Promise<void> {
     ]);
     if (needsNewBall && loadedBall) {
       if (ballMesh) {
-        gs.shadows.removeShadowCaster(ballMesh, true);
+        gs.shadows?.removeShadowCaster(ballMesh, true);
         ballMesh.dispose(false, true);
       }
       ballMesh = loadedBall;
       ballMeshId = ballId;
-      gs.shadows.addShadowCaster(ballMesh, true);
+      gs.shadows?.addShadowCaster(ballMesh, true);
       ball.mesh = ballMesh;
       ball.place(ball.state.pos);
     }
     for (const c of [playerChar, aiChar]) {
       for (const m of c.meshes) {
-        if (m.getTotalVertices() > 0) gs.shadows.addShadowCaster(m, false);
+        if (m.getTotalVertices() > 0) gs.shadows?.addShadowCaster(m, false);
       }
     }
     chars = [playerChar, aiChar];

@@ -2,7 +2,9 @@
 // Usage: node scripts/screenshot.mjs [secondsInMatch]
 import { chromium } from "playwright-core";
 
+// Set CHROMIUM_PATH if playwright-core cannot find a browser on its own.
 const browser = await chromium.launch({
+  ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
   args: ["--use-gl=angle", "--use-angle=swiftshader", "--no-sandbox"],
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });

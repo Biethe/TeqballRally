@@ -2,7 +2,9 @@
 // Usage: node scripts/simulate.mjs [seconds]
 import { chromium } from "playwright-core";
 
+// Set CHROMIUM_PATH if playwright-core cannot find a browser on its own.
 const browser = await chromium.launch({
+  ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
   args: ["--use-gl=angle", "--use-angle=swiftshader", "--no-sandbox"],
 });
 // Viewport must be big enough for the select screen's PLAY button to be on-screen.

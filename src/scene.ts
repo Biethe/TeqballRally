@@ -21,6 +21,7 @@ import "@babylonjs/core/Materials/Textures/Loaders/envTextureLoader";
 // which nothing here can ever use.
 import "@babylonjs/loaders/glTF/2.0";
 import { ARENA, BALL_RADIUS, CAMERA, COURT, GROUND_Y, SERVE_X, SPAWN, TABLE, TABLE_VISUAL } from "./config";
+import type { QualitySettings } from "./quality";
 
 // Meshopt-compressed GLBs are decoded locally so hosted builds do not depend
 // on a third-party CDN just to display a character or the arena.
@@ -30,11 +31,15 @@ export interface GameScene {
   engine: Engine;
   scene: Scene;
   camera: TargetCamera;
-  shadows: ShadowGenerator;
+  /** null when the active quality tier renders without shadows. */
+  shadows: ShadowGenerator | null;
+  /** The tier this scene was built for; the engine's MSAA cannot change later. */
+  quality: QualitySettings;
   /**
    * Start (or await) the optional gym backdrop.  The table and procedural
    * court are enough to render the first frame, so the large arena GLB is
-   * deliberately deferred until the player leaves the title screen.
+   * deliberately deferred until the player leaves the title screen.  Resolves
+   * immediately, without downloading anything, on tiers that skip the arena.
    */
   ensureArena: () => Promise<void>;
   /** Glowing ring showing where the player's strike will land. */
@@ -50,9 +55,15 @@ function mat(scene: Scene, name: string, color: Color3, specular = 0.05): Standa
   return m;
 }
 
-export async function createGameScene(canvas: HTMLCanvasElement): Promise<GameScene> {
-  const engine = new Engine(canvas, true, { stencil: false, antialias: true });
-  engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, 1.5));
+export async function createGameScene(
+  canvas: HTMLCanvasElement,
+  quality: QualitySettings
+): Promise<GameScene> {
+  const engine = new Engine(canvas, true, { stencil: false, antialias: quality.antialias });
+  // Hardware scaling is the inverse of the pixel ratio: > 1 renders fewer
+  // pixels than the canvas has and upscales. Capping the ratio is the single
+  // biggest framerate lever on a fill-rate-bound mobile GPU.
+  engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, quality.maxPixelRatio));
   const scene = new Scene(engine);
   scene.clearColor = new Color4(0.045, 0.05, 0.09, 1);
 
@@ -67,11 +78,12 @@ export async function createGameScene(canvas: HTMLCanvasElement): Promise<GameSc
   const sun = new DirectionalLight("sun", new Vector3(-0.35, -1, 0.25), scene);
   sun.position = new Vector3(3, 9, -3);
   sun.intensity = 1.1;
-  const lowSpec = new URLSearchParams(location.search).has("light");
-  const shadows = new ShadowGenerator(lowSpec ? 256 : 1024, sun);
-  shadows.useExponentialShadowMap = true;
-  shadows.darkness = 0.45;
-  if (lowSpec) shadows.getShadowMap()!.refreshRate = 0; // effectively static
+  let shadows: ShadowGenerator | null = null;
+  if (quality.shadowMapSize !== null) {
+    shadows = new ShadowGenerator(quality.shadowMapSize, sun);
+    shadows.useExponentialShadowMap = true;
+    shadows.darkness = 0.45;
+  }
 
   buildCourt(scene);
 
@@ -82,6 +94,9 @@ export async function createGameScene(canvas: HTMLCanvasElement): Promise<GameSc
   const tableMeshes = await loadTable(scene);
   let arenaPromise: Promise<void> | null = null;
   const ensureArena = (): Promise<void> => {
+    // Tiers that skip the gym never fetch it: the download, the ~135 meshes and
+    // their textures are the largest single memory saving available on a phone.
+    if (!quality.arena) return Promise.resolve();
     if (!arenaPromise) {
       arenaPromise = loadArena(scene).catch((e) => {
         // The procedural court remains playable if an offline session or a
@@ -93,7 +108,7 @@ export async function createGameScene(canvas: HTMLCanvasElement): Promise<GameSc
   };
   for (const m of tableMeshes) {
     m.receiveShadows = true;
-    shadows.addShadowCaster(m, false);
+    shadows?.addShadowCaster(m, false);
   }
 
   const aimMarker = MeshBuilder.CreateTorus(
@@ -132,7 +147,7 @@ export async function createGameScene(canvas: HTMLCanvasElement): Promise<GameSc
   });
   camera.fov = engine.getRenderWidth() < engine.getRenderHeight() ? 1.1 : 0.85;
 
-  return { engine, scene, camera, shadows, ensureArena, aimMarker, landingMarker };
+  return { engine, scene, camera, shadows, quality, ensureArena, aimMarker, landingMarker };
 }
 
 function buildCourt(scene: Scene): void {
