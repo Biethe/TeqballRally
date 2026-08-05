@@ -103,6 +103,21 @@ export interface SnapshotMessage {
   /** Both characters, in the sender's frame. */
   hostPos: Vec3Wire;
   guestPos: Vec3Wire;
+  /**
+   * Court velocities, so the receiver can drive the locomotion blend. Easing
+   * toward a reported position yields a residual speed far below the blend's
+   * threshold, which reads as a character sliding in an idle pose.
+   */
+  hostVel: Vec3Wire;
+  guestVel: Vec3Wire;
+  /**
+   * Action clip each character is playing, or null. A guest runs no rules and
+   * so never starts one itself; without this a kick is just the ball changing
+   * direction beside a motionless player. Clip names are not mirrored — a
+   * player's own right foot is their right foot from either end of the table.
+   */
+  hostClip: string | null;
+  guestClip: string | null;
   /** Score in the host's frame: [host, guest]. */
   score: [number, number];
   sets: [number, number];
@@ -269,6 +284,10 @@ export function reframe<T extends GameMessage>(msg: T, role: PeerRole): T {
         ballVel: mirror(msg.ballVel),
         hostPos: mirror(msg.guestPos),
         guestPos: mirror(msg.hostPos),
+        hostVel: mirror(msg.guestVel),
+        guestVel: mirror(msg.hostVel),
+        hostClip: msg.guestClip,
+        guestClip: msg.hostClip,
         score: [msg.score[1], msg.score[0]],
         sets: [msg.sets[1], msg.sets[0]],
         serveOwner: msg.serveOwner === "player" ? "ai" : "player",
@@ -363,6 +382,10 @@ export function isValidSnapshot(msg: unknown): msg is SnapshotMessage {
     typeof m.ballHeld === "boolean" &&
     isFiniteVec(m.hostPos) &&
     isFiniteVec(m.guestPos) &&
+    isFiniteVec(m.hostVel) &&
+    isFiniteVec(m.guestVel) &&
+    (m.hostClip === null || typeof m.hostClip === "string") &&
+    (m.guestClip === null || typeof m.guestClip === "string") &&
     isScorePair(m.score) &&
     isScorePair(m.sets) &&
     (m.serveOwner === "player" || m.serveOwner === "ai")
