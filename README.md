@@ -144,6 +144,55 @@ ticks.
 remote player's input from the network rather than from `versusInput`, and to
 emit a strike message when the local player launches.
 
+## Testing on a phone
+
+**Quickest — no Android tooling at all.** The game is a web app, so a phone on
+the same Wi-Fi can just open the dev server:
+
+```bash
+npm run dev:lan          # prints a Network: http://192.168.x.x:5173 URL
+```
+
+Open that URL on the phone. This exercises the real GPU, the real touch
+controls and the real device tier detection, and it hot-reloads on save. It is
+the fastest way to check how the game actually feels.
+
+The one thing it does not test is the WebView: Chrome on Android and the
+WebView the packaged app runs in are not always the same engine version. For
+anything performance- or WebGL-sensitive, confirm in a real build too.
+
+### Android build
+
+```bash
+npm run android:apk      # build, sync, then assembleDebug
+```
+
+The APK lands at `android/app/build/outputs/apk/debug/app-debug.apk`. Copy it
+to the phone and install, or `adb install -r <path>`.
+
+Requires the Android SDK (platform 35 and build-tools) plus JDK 21.
+`npm run android:open` opens the project in Android Studio, which will offer to
+install anything missing — the easiest first-time route.
+
+### Live reload inside the real WebView
+
+Best of both: the packaged app, but loading from the dev server so edits appear
+without a rebuild.
+
+```bash
+npm run dev:lan
+CAP_SERVER_URL=http://192.168.x.x:5173 npx cap sync android
+npm run android:apk
+```
+
+Unset `CAP_SERVER_URL` and re-sync before building anything you intend to ship,
+or the app will point at a dev machine that is not there.
+
+Debug builds allow cleartext HTTP and WebSockets to the local network
+(`android/app/src/debug/res/xml/network_security_config.xml`) so the device can
+reach the dev server and a relay running on a laptop. Release builds refuse
+cleartext, so a shipped app must use `https://` and `wss://`.
+
 ## Deploy
 
 TeqOpen is a static site; Firebase Hosting serves the built `dist/` folder.

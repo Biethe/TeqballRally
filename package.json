@@ -5,8 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:lan": "vite --host",
     "build": "vite build",
     "preview": "vite preview",
+    "android:sync": "npm run build && cap sync android",
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug",
+    "android:open": "cap open android",
     "relay": "node server/relay.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -16,9 +20,12 @@
   },
   "dependencies": {
     "@babylonjs/core": "^7.35.0",
-    "@babylonjs/loaders": "^7.35.0"
+    "@babylonjs/loaders": "^7.35.0",
+    "@capacitor/android": "^7.6.8",
+    "@capacitor/core": "^7.6.8"
   },
   "devDependencies": {
+    "@capacitor/cli": "^7.6.8",
     "@eslint/js": "^9.39.5",
     "@types/node": "^22.20.1",
     "eslint": "^9.39.5",

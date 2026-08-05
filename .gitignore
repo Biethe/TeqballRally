@@ -9,11 +9,15 @@ dist/
 !.env.example
 *.log
 
-# Browser test output
+# Browser test output. The helper scripts write to /tmp; these catch stray
+# local runs that drop captures into the working tree.
 playwright-report/
 test-results/
 *.png
 *.webm
+# ...but the Android launcher icons are source assets, not test output. Without
+# this the native build fails on a missing @mipmap/ic_launcher resource.
+!android/app/src/main/res/**/*.png
 
 # Windows download metadata accidentally copied with assets
 *:Zone.Identifier

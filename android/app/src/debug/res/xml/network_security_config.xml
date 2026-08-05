@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG BUILDS ONLY. This file overrides the release config so the app can
+  reach http:// and ws:// endpoints on the local network:
+    - the Vite dev server, when CAP_SERVER_URL is set for live reload
+    - the match relay running on a development machine
+
+  It is never part of a release build, so a shipped app still refuses
+  cleartext.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
