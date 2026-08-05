@@ -24,6 +24,9 @@ concurrency:
   group: android-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   apk:
     name: Debug APK
@@ -87,3 +90,27 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      # Artifacts download as a zip that has to be extracted before Android
+      # will install anything — awkward on a phone, which is exactly where
+      # these builds are needed. A release asset is a direct .apk link instead.
+      # The repository is private, so the release is visible only to people who
+      # can already see the code.
+      - name: Publish the APK as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELAY: ${{ inputs.relay_url || vars.VITE_RELAY_URL }}
+        run: |
+          tag="build-${{ github.run_number }}"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "teqopen-${tag}.apk"
+          gh release create "$tag" "teqopen-${tag}.apk" \
+            --title "TeqOpen debug ${tag}" \
+            --notes "Commit \`${GITHUB_SHA:0:7}\` on \`${GITHUB_REF_NAME}\`.
+          Relay: \`${RELAY:-none — online play disabled in this build}\`
+
+          Install on Android: open the .apk below and allow installs from unknown sources.
+          Debug build — not for the Play Store." \
+            --prerelease \
+            --target "$GITHUB_SHA"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct download: $(gh release view "$tag" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
