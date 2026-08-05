@@ -16,7 +16,10 @@ import { MeshoptCompression } from "@babylonjs/core/Meshes/Compression/meshoptCo
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent";
 import "@babylonjs/core/Materials/Textures/Loaders/envTextureLoader";
-import "@babylonjs/loaders/glTF";
+// Register the glTF 2.0 loader only. Every asset in assets/ is a .glb (glTF
+// 2.0 binary); pulling the barrel entry would also bundle the glTF 1.0 loader,
+// which nothing here can ever use.
+import "@babylonjs/loaders/glTF/2.0";
 import { ARENA, BALL_RADIUS, CAMERA, COURT, GROUND_Y, SERVE_X, SPAWN, TABLE, TABLE_VISUAL } from "./config";
 
 // Meshopt-compressed GLBs are decoded locally so hosted builds do not depend

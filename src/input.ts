@@ -217,11 +217,11 @@ export class Input {
 
     window.addEventListener("gamepadconnected", (e) => {
       this.padSeen = true;
-      console.log("[gamepad] connected:", (e as GamepadEvent).gamepad.id);
+      console.log("[gamepad] connected:", e.gamepad.id);
     });
     window.addEventListener("gamepaddisconnected", (e) => {
-      this.hatIdleByPad.delete((e as GamepadEvent).gamepad.index);
-      console.log("[gamepad] disconnected:", (e as GamepadEvent).gamepad.id);
+      this.hatIdleByPad.delete(e.gamepad.index);
+      console.log("[gamepad] disconnected:", e.gamepad.id);
     });
 
     if (this.isTouch) this.buildTouchControls(uiRoot);

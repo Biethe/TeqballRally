@@ -662,7 +662,7 @@ export class MatchController {
     const useSetPoint = setWinning && pointSeed !== null;
     const useBackflip = !useSetPoint && flipSeed !== null && Math.random() < REPLAY_BACKFLIP_CHANCE;
     if (!useSetPoint && !useBackflip) return;
-    const seed = useSetPoint ? pointSeed! : flipSeed!;
+    const seed = useSetPoint ? pointSeed : flipSeed!;
     const matchWinning = setWinning && this.sets[winner] + 1 >= SETS_TO_WIN;
     this.replayPending = {
       seed,

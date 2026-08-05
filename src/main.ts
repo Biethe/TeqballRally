@@ -7,7 +7,7 @@ import { Viewport } from "@babylonjs/core/Maths/math.viewport";
 import { createGameScene, loadBall, type GameScene } from "./scene";
 import { Ball, type Side } from "./ball";
 import { Character } from "./character";
-import { MatchController, type ReplayControl } from "./match";
+import { MatchController } from "./match";
 import { AIController, DIFFICULTIES, type DifficultyLevel } from "./ai";
 import { Input, type InputState, type VersusAssign } from "./input";
 import { UI } from "./ui";
@@ -307,7 +307,8 @@ async function boot(): Promise<void> {
         ui.hidePause();
         leaveMatch();
       },
-      canShutdownLocalServer ? shutdownLocalServer : undefined
+      // Fire-and-forget: shutdownLocalServer reports its own failures.
+      canShutdownLocalServer ? () => void shutdownLocalServer() : undefined
     );
   };
   const setPaused = (v: boolean) => {
@@ -345,7 +346,7 @@ async function boot(): Promise<void> {
       resetReplayOrbit();
       return;
     }
-    match?.controlReplay(control as ReplayControl);
+    match?.controlReplay(control);
   };
   const hasBlockingScreen = () =>
     ["title-screen", "menu-screen", "standings-screen", "select-screen", "end-screen"].some(
