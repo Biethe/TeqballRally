@@ -13,7 +13,7 @@ import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { GlowLayer } from "@babylonjs/core/Layers/glowLayer";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
-import { GLTFLoaderAnimationStartMode } from "@babylonjs/loaders/glTF";
+import { GLTFLoaderAnimationStartMode } from "@babylonjs/loaders/glTF/glTFFileLoader";
 import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent";
 import { importBall, fixMetallicMaterials } from "./scene";
 import { maskJerseyPlaceholder, trimIdleTail } from "./character";
