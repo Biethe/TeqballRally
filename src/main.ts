@@ -513,6 +513,9 @@ async function boot(): Promise<void> {
       while (simAccumulator >= SIM_DT && steps < maxSimSteps) {
         const stepInput = consumeInput(latchedP1);
         if (versusCam) match.versusInput = consumeInput(latchedP2);
+        // A guest's controls belong to the host's match, so they go to the
+        // wire before the local update — which, as a follower, ignores them.
+        session?.setLocalInput(stepInput);
         match.update(SIM_DT, freecam ? idleInput : stepInput, (d) => aiCtl?.update(d));
         practiceCoach?.update(SIM_DT, stepInput);
         // Stepped with the simulation, not the frame, so the tick stamped on
@@ -1195,6 +1198,10 @@ async function boot(): Promise<void> {
         ? null
         : new AIController(controller, opts.practice ? PRACTICE_DIFFICULTY : DIFFICULTIES[opts.difficulty]);
     if (opts.online) {
+      // The guest shows a match the host runs. Without this both peers would
+      // run their own rule engine, disagree from the first serve, and end up
+      // playing two unrelated games over one socket.
+      controller.netFollower = opts.online.role === "guest";
       session = new OnlineSession(opts.online.conn, controller, opts.online.role, {
         onOpponentAbsent: (left) =>
           ui.banner("OPPONENT DISCONNECTED", `Awarding the match in ${Math.ceil(left)}s`),
