@@ -12,13 +12,21 @@ on:
   workflow_dispatch:
     inputs:
       relay_url:
-        description: "Match relay, e.g. wss://teqopen-relay.onrender.com (blank = repo variable)"
+        description: "Match relay (blank = repo variable, then the default below)"
         required: false
         type: string
   push:
     branches: ["claude/**"]
     paths-ignore:
       - "**/*.md"
+
+env:
+  # Last resort so a build is never quietly shipped with online play disabled.
+  # Builds 22-24 went out that way: only the runs dispatched by hand carried a
+  # relay, because nothing had ever set the repository variable the push builds
+  # fall back to. Set `VITE_RELAY_URL` under Settings -> Secrets and variables
+  # -> Actions -> Variables to point every build somewhere else.
+  DEFAULT_RELAY: wss://teqopen-relay.onrender.com
 
 concurrency:
   group: android-${{ github.ref }}
@@ -54,12 +62,12 @@ jobs:
 
       # A packaged app cannot discover the relay: its own origin is
       # https://localhost, so a same-origin guess would point at the phone.
-      # The address is baked in here, from the dispatch input if one was typed
-      # and otherwise from the repository variable, so a build can be produced
-      # entirely from the GitHub UI with no machine involved.
+      # The address is baked in here — the dispatch input if one was typed,
+      # then the repository variable, then DEFAULT_RELAY above — so a build can
+      # be produced entirely from the GitHub UI with no machine involved.
       - name: Build web assets and sync into the native project
         env:
-          VITE_RELAY_URL: ${{ inputs.relay_url || vars.VITE_RELAY_URL }}
+          VITE_RELAY_URL: ${{ inputs.relay_url || vars.VITE_RELAY_URL || env.DEFAULT_RELAY }}
         run: |
           if [ -z "$VITE_RELAY_URL" ]; then
             echo "::warning::No relay configured — online play will show as unavailable."
@@ -80,7 +88,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "\`$(du -h "$apk" | cut -f1)\` — commit \`${GITHUB_SHA:0:7}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          relay="${{ inputs.relay_url || vars.VITE_RELAY_URL }}"
+          relay="${{ inputs.relay_url || vars.VITE_RELAY_URL || env.DEFAULT_RELAY }}"
           echo "Relay: \`${relay:-none — online play disabled}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload APK
@@ -99,7 +107,7 @@ jobs:
       - name: Publish the APK as a release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELAY: ${{ inputs.relay_url || vars.VITE_RELAY_URL }}
+          RELAY: ${{ inputs.relay_url || vars.VITE_RELAY_URL || env.DEFAULT_RELAY }}
         run: |
           tag="build-${{ github.run_number }}"
           cp android/app/build/outputs/apk/debug/app-debug.apk "teqopen-${tag}.apk"
