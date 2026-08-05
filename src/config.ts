@@ -133,6 +133,15 @@ export const CAMERA = {
   },
 };
 
+/**
+ * Fixed simulation rate. The match advances in whole SIM_DT slices regardless
+ * of display refresh, so every device computes the same rally from the same
+ * inputs — the precondition for two of them agreeing over a network. Ticks are
+ * counted in these slices and are the shared unit of time between peers.
+ */
+export const SIM_HZ = 60;
+export const SIM_DT = 1 / SIM_HZ;
+
 export const SERVE_X = 4.0; // service line is 3.5 m from table centre
 export const MAX_TOUCHES = 3; // touches allowed per possession (reception, prep, kick)
 export const PLAYER_REACH = 1.2;

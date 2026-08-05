@@ -109,6 +109,41 @@ which is the only thing that proves a rewritten GLB still works.
 Music must be MP3: a 30-second 24-bit stereo WAV is 7.9 MB against 0.5 MB at
 128 kbps.
 
+## Online play (in progress)
+
+The netcode uses **authority handoff**, not lockstep. Teqball's possession
+alternates — at any instant exactly one player is about to touch the ball — and
+every random roll in the game (aim spray, clip choice, whiffs) happens at the
+moment of a strike. So the striking peer rolls its own dice, computes the
+launch, and sends the *result*: a position and a velocity on a given tick.
+`stepBall` is a pure function of that state, so the other peer reproduces the
+same flight exactly, and every strike resynchronises the ball from scratch.
+
+That means **no seeded PRNG and no rollback are needed**. Time is counted in
+`SIM_DT` ticks; a receiver fast-forwards a late message by the ticks that have
+passed since it was sent (`applyStrike` in `src/net/protocol.ts`).
+
+Rules arbitration stays with the host, which owns the score and match phase, so
+two peers can never disagree about a point.
+
+```bash
+npm run relay        # PORT=8787, health check on /healthz
+```
+
+`server/relay.mjs` knows only about rooms and seats and forwards every other
+frame verbatim — no game state lives there, so it cannot disagree with the
+clients and can be restarted mid-match. A WebSocket relay rather than WebRTC
+because a DataChannel needs signalling plus a TURN fallback, which is not where
+a deadline should go.
+
+`tests/relay.test.ts` runs the real server and two real sockets, and asserts a
+struck ball lands on the same position on both peers after the same number of
+ticks.
+
+**Not yet wired into the game.** `MatchController` still needs to take its
+remote player's input from the network rather than from `versusInput`, and to
+emit a strike message when the local player launches.
+
 ## Deploy
 
 TeqOpen is a static site; Firebase Hosting serves the built `dist/` folder.

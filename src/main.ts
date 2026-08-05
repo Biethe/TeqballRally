@@ -29,17 +29,8 @@ import { UI } from "./ui";
 import { AudioManager } from "./audio";
 import { ModelViewer } from "./viewer";
 import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
-import { BALLS, CAMERA, CHARACTERS, GROUND_Y, type CameraMode, type CharacterDef } from "./config";
+import { BALLS, CAMERA, CHARACTERS, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
 
-/**
- * The match simulates at a fixed rate, decoupled from the display. A phone
- * rendering at 30fps and one at 120fps then play exactly the same game: with a
- * variable step the ball's substepping is sliced differently on each device,
- * so identical inputs produced measurably different rallies. It is also the
- * precondition for two devices agreeing on a rally over the network.
- */
-const SIM_HZ = 60;
-const SIM_DT = 1 / SIM_HZ;
 /** Longest real frame the simulation will honour; beyond this, time is dropped. */
 const MAX_FRAME_DT = 1 / 20;
 
