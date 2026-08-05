@@ -69,6 +69,48 @@ export interface StrikeMessage {
   spin: number;
 }
 
+/**
+ * Guest -> host: what the guest's controls are doing.
+ *
+ * The host runs the only match, so the guest sends intent rather than results.
+ * Presses are latched by the sender until acknowledged by a snapshot, because
+ * dropping the frame a strike was pressed on loses the shot entirely.
+ */
+export interface InputMessage {
+  t: "input";
+  tick: number;
+  moveX: number;
+  moveZ: number;
+  strike: boolean;
+  pop: boolean;
+  confirm: boolean;
+}
+
+/**
+ * Host -> guest: the whole authoritative frame.
+ *
+ * One message rather than several, because the parts have to agree: a ball
+ * that belongs to a different tick than the score it was won by is how two
+ * screens end up telling different stories.
+ */
+export interface SnapshotMessage {
+  t: "snap";
+  tick: number;
+  /** Ball position and velocity; `held` while it is in a hand between points. */
+  ballPos: Vec3Wire;
+  ballVel: Vec3Wire;
+  ballHeld: boolean;
+  /** Both characters, in the sender's frame. */
+  hostPos: Vec3Wire;
+  guestPos: Vec3Wire;
+  /** Score in the host's frame: [host, guest]. */
+  score: [number, number];
+  sets: [number, number];
+  /** Whose serve, in the host's frame. */
+  serveOwner: Side;
+  phase: string;
+}
+
 /** Host-only: the authoritative score and phase. */
 export interface StateMessage {
   t: "state";
@@ -103,6 +145,8 @@ export interface PongMessage {
 }
 
 export type GameMessage =
+  | InputMessage
+  | SnapshotMessage
   | MoveMessage
   | StrikeMessage
   | StateMessage
@@ -211,6 +255,24 @@ export function reframe<T extends GameMessage>(msg: T, role: PeerRole): T {
       return { ...msg, pos: mirror(msg.pos) };
     case "strike":
       return { ...msg, pos: mirror(msg.pos), vel: mirror(msg.vel) };
+    case "input":
+      // Court-space stick directions reflect with everything else, exactly as
+      // the second local player's already do in split screen.
+      return { ...msg, moveX: -msg.moveX, moveZ: -msg.moveZ };
+    case "snap":
+      // A snapshot reflects *and* swaps seats: the host's "host" is the
+      // guest's opponent. Mirroring the vectors without swapping who is who
+      // would put each player in the other's body.
+      return {
+        ...msg,
+        ballPos: mirror(msg.ballPos),
+        ballVel: mirror(msg.ballVel),
+        hostPos: mirror(msg.guestPos),
+        guestPos: mirror(msg.hostPos),
+        score: [msg.score[1], msg.score[0]],
+        sets: [msg.sets[1], msg.sets[0]],
+        serveOwner: msg.serveOwner === "player" ? "ai" : "player",
+      };
     default:
       // Scores, phases and clock probes carry no geometry.
       return msg;
@@ -265,6 +327,45 @@ export function isValidStrike(msg: unknown): msg is StrikeMessage {
     isFiniteVec(m.vel) &&
     typeof m.clip === "string" &&
     Number.isFinite(m.spin)
+  );
+}
+
+export function isValidInput(msg: unknown): msg is InputMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<InputMessage>;
+  return (
+    m.t === "input" &&
+    Number.isFinite(m.tick) &&
+    Number.isFinite(m.moveX) &&
+    Number.isFinite(m.moveZ) &&
+    typeof m.strike === "boolean" &&
+    typeof m.pop === "boolean" &&
+    typeof m.confirm === "boolean"
+  );
+}
+
+function isScorePair(v: unknown): v is [number, number] {
+  return Array.isArray(v) && v.length === 2 && v.every((n) => Number.isFinite(n));
+}
+
+/**
+ * A snapshot drives the guest's entire display, so a malformed one would put
+ * the ball, both players and the score into an unrecoverable state at once.
+ */
+export function isValidSnapshot(msg: unknown): msg is SnapshotMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<SnapshotMessage>;
+  return (
+    m.t === "snap" &&
+    Number.isFinite(m.tick) &&
+    isFiniteVec(m.ballPos) &&
+    isFiniteVec(m.ballVel) &&
+    typeof m.ballHeld === "boolean" &&
+    isFiniteVec(m.hostPos) &&
+    isFiniteVec(m.guestPos) &&
+    isScorePair(m.score) &&
+    isScorePair(m.sets) &&
+    (m.serveOwner === "player" || m.serveOwner === "ai")
   );
 }
 

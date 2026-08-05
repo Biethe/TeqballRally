@@ -8,32 +8,33 @@
  * the asymmetry lives — the match, the remote player and the UI all work in
  * local coordinates and never learn which peer they are.
  *
- * Authority is split along the line that matters. The ball is resynchronised by
- * whoever strikes it, because that is latency-sensitive and uncontended. The
- * score is the host's, because two peers disagreeing about a point is worse
- * than a peer waiting a round trip to hear about one.
+ * The host runs the only match. The guest sends what its controls are doing and
+ * renders the frames it is sent, running no rules of its own — two rule engines
+ * fed by different inputs disagree within a single rally, which is exactly what
+ * an earlier design of this did.
  */
 
-import type { MatchController, MatchEvent } from "../match";
+import type { MatchController } from "../match";
+import type { InputState } from "../input";
 import type { Side } from "../ball";
 import type { NetConnection } from "./connection";
 import { RemotePlayer } from "./remote";
 import {
-  isValidMove,
-  isValidStrike,
+  isValidInput,
+  isValidSnapshot,
   reframe,
   vec,
   type GameMessage,
   type PeerRole,
 } from "./protocol";
 
-/** Pose updates per second. Well below the simulation rate; smoothing covers the gap. */
-const MOVE_HZ = 20;
+/** Authoritative frames per second. Guests ease between them. */
+const SNAPSHOT_HZ = 20;
 
 /**
  * Silence long enough to call the opponent absent.
  *
- * Poses arrive every 50 ms unconditionally, so a second of nothing is already
+ * Traffic flows every step or every 50 ms, so a second of nothing is already
  * abnormal; two gives a hiccup room to recover without the player seeing a
  * warning for a blip that fixed itself.
  */
@@ -66,7 +67,6 @@ export class OnlineSession {
   readonly remote = new RemotePlayer();
   private tick = 0;
   private sinceMove = 0;
-  private unsubscribe: (() => void) | null = null;
   private disposed = false;
   private peerPresent = true;
   /**
@@ -81,6 +81,16 @@ export class OnlineSession {
   private absentFor = 0;
   /** A forfeit is announced once; the match cannot be won twice. */
   private forfeited = false;
+  /** Guest presses awaiting a simulation step on the host. */
+  private pendingGuest = { strike: false, pop: false, confirm: false };
+  /** Guest: this frame's controls, latched until sent. */
+  private localInput: InputState = {
+    moveX: 0,
+    moveZ: 0,
+    strikePressed: false,
+    popPressed: false,
+    confirmPressed: false,
+  };
 
   constructor(
     private conn: NetConnection,
@@ -90,7 +100,6 @@ export class OnlineSession {
   ) {
     match.versus = true;
     match.remote = this.remote;
-    this.unsubscribe = match.subscribe((e) => this.onMatchEvent(e));
     conn.setHandlers({
       onMessage: (msg) => this.onNetMessage(msg),
       // A clean disconnect is reported by the relay; silence is noticed by the
@@ -105,44 +114,6 @@ export class OnlineSession {
     return this.role === "host";
   }
 
-  /**
-   * Outbound. Every launch the local player produces is authoritative for the
-   * flight that follows, so it goes out immediately rather than on the next
-   * pose tick — a strike delayed by up to a frame is a strike the opponent
-   * sees late for the whole rally.
-   */
-  private onMatchEvent(e: MatchEvent): void {
-    if (this.disposed) return;
-
-    if (e.type === "ball-launched") {
-      // The remote player's own launches arrive from the wire; echoing them
-      // back would have each peer re-applying the other's ball.
-      if (e.side !== "player") return;
-      this.conn.send(
-        reframe(
-          {
-            t: "strike",
-            tick: this.tick,
-            pos: vec(e.pos),
-            vel: vec(e.vel),
-            clip: e.clip,
-            spin: e.spin,
-          },
-          this.role
-        )
-      );
-      return;
-    }
-
-    // Only the host announces points; a guest's local rule engine is a
-    // prediction that the host's message confirms or corrects.
-    if (e.type === "point-awarded" && this.isHost) {
-      this.conn.send(
-        reframe({ t: "point", tick: this.tick, winner: e.winner, reason: e.reason }, this.role)
-      );
-    }
-  }
-
   /** Inbound. Everything is validated before it can touch the simulation. */
   private onNetMessage(raw: GameMessage): void {
     if (this.disposed) return;
@@ -151,25 +122,49 @@ export class OnlineSession {
     const msg = reframe(raw, this.role);
 
     switch (msg.t) {
-      case "move":
-        if (isValidMove(msg)) this.remote.onMove(msg);
+      // Host: the guest's controls. Fed into the same field a second local
+      // controller would drive, so online reuses the tested split-screen path
+      // rather than a parallel one.
+      case "input": {
+        if (!this.isHost || !isValidInput(msg)) return;
+        this.match.versusInput = {
+          moveX: msg.moveX,
+          moveZ: msg.moveZ,
+          // Presses latch until a simulation step consumes them, for the same
+          // reason local input does: the guest's frame rate is not ours.
+          strikePressed: this.pendingGuest.strike || msg.strike,
+          popPressed: this.pendingGuest.pop || msg.pop,
+          confirmPressed: this.pendingGuest.confirm || msg.confirm,
+        };
+        this.pendingGuest.strike = this.match.versusInput.strikePressed;
+        this.pendingGuest.pop = this.match.versusInput.popPressed;
+        this.pendingGuest.confirm = this.match.versusInput.confirmPressed;
         return;
+      }
 
-      case "strike":
-        // A NaN here would poison every later step of the ball, so a malformed
-        // frame is dropped rather than trusted.
-        if (isValidStrike(msg)) this.remote.onStrike(msg, this.match.ball.state, this.tick);
-        return;
-
-      case "state":
-        if (this.isHost) return; // the host is the source; it never takes one
+      // Guest: the authoritative frame. Already reflected and seat-swapped by
+      // reframe, so it is in this peer's own coordinates.
+      case "snap": {
+        if (this.isHost || !isValidSnapshot(msg)) return;
+        this.match.applySnapshot({
+          ballPos: msg.ballPos,
+          ballVel: msg.ballVel,
+          ballHeld: msg.ballHeld,
+          // After reframe, hostPos is this peer and guestPos is the opponent.
+          selfPos: msg.hostPos,
+          opponentPos: msg.guestPos,
+          score: msg.score,
+          sets: msg.sets,
+          serveOwner: msg.serveOwner,
+        });
         this.handlers.onScore?.({
-          player: msg.scorePlayer,
-          ai: msg.scoreAi,
-          sets: [msg.setsPlayer, msg.setsAi],
+          player: msg.score[0],
+          ai: msg.score[1],
+          sets: msg.sets,
           serveOwner: msg.serveOwner,
         });
         return;
+      }
 
       default:
         return;
@@ -186,13 +181,80 @@ export class OnlineSession {
     this.tick++;
     this.conn.tick = this.tick;
 
-    this.sinceMove += dt;
-    if (this.sinceMove >= 1 / MOVE_HZ) {
-      this.sinceMove = 0;
-      this.sendPose();
+    if (this.isHost) {
+      // The host holds the only match, so it publishes; the guest has nothing
+      // authoritative to say beyond what its controls are doing.
+      this.sinceMove += dt;
+      if (this.sinceMove >= 1 / SNAPSHOT_HZ) {
+        this.sinceMove = 0;
+        this.sendSnapshot();
+      }
+      // Presses handed to the match this step are spent.
+      this.pendingGuest = { strike: false, pop: false, confirm: false };
+    } else {
+      this.sendInput();
     }
 
     this.trackPresence(dt);
+  }
+
+  /** Guest: the local player's controls, every step. */
+  private sendInput(): void {
+    const held = this.localInput;
+    this.conn.send(
+      reframe(
+        {
+          t: "input",
+          tick: this.tick,
+          moveX: held.moveX,
+          moveZ: held.moveZ,
+          strike: held.strikePressed,
+          pop: held.popPressed,
+          confirm: held.confirmPressed,
+        },
+        this.role
+      )
+    );
+    // Edges are sent once; axes persist until the next frame overwrites them.
+    this.localInput = { ...held, strikePressed: false, popPressed: false, confirmPressed: false };
+  }
+
+  /**
+   * Guest: record this step's controls for sending. Called by the game loop
+   * with the same input the local match would have used, so a press is never
+   * observed by one and missed by the other.
+   */
+  setLocalInput(input: InputState): void {
+    this.localInput = {
+      moveX: input.moveX,
+      moveZ: input.moveZ,
+      strikePressed: this.localInput.strikePressed || input.strikePressed,
+      popPressed: this.localInput.popPressed || input.popPressed,
+      confirmPressed: this.localInput.confirmPressed || input.confirmPressed,
+    };
+  }
+
+  /** Host: publish the whole authoritative frame in one message. */
+  private sendSnapshot(): void {
+    const ball = this.match.ball;
+    this.conn.send(
+      reframe(
+        {
+          t: "snap",
+          tick: this.tick,
+          ballPos: vec(ball.state.pos),
+          ballVel: vec(ball.state.vel),
+          ballHeld: ball.held,
+          hostPos: vec(this.match.chars.player.position),
+          guestPos: vec(this.match.chars.ai.position),
+          score: [this.match.score.player, this.match.score.ai],
+          sets: [this.match.sets.player, this.match.sets.ai],
+          serveOwner: this.match.serveOwner,
+          phase: this.match.state,
+        },
+        this.role
+      )
+    );
   }
 
   /**
@@ -222,47 +284,8 @@ export class OnlineSession {
     }
   }
 
-  private sendPose(): void {
-    const me = this.match.chars.player;
-    this.conn.send(
-      reframe(
-        {
-          t: "move",
-          tick: this.tick,
-          pos: vec(me.position),
-          yaw: 0,
-          moveX: me.velocity.x,
-          moveZ: me.velocity.z,
-        },
-        this.role
-      )
-    );
-  }
-
-  /** Host only: publish the authoritative score. */
-  publishScore(): void {
-    if (!this.isHost || this.disposed) return;
-    this.conn.send(
-      reframe(
-        {
-          t: "state",
-          tick: this.tick,
-          scorePlayer: this.match.score.player,
-          scoreAi: this.match.score.ai,
-          setsPlayer: this.match.sets.player,
-          setsAi: this.match.sets.ai,
-          serveOwner: this.match.serveOwner,
-          phase: this.match.state,
-        },
-        this.role
-      )
-    );
-  }
-
   dispose(): void {
     this.disposed = true;
-    this.unsubscribe?.();
-    this.unsubscribe = null;
     this.match.remote = null;
     this.conn.setHandlers({ onMessage: undefined });
   }

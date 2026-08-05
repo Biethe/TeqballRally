@@ -155,6 +155,12 @@ const PRESS_BUFFER = 0.35;
 // flat or rolls (a contact every few ms) — same-side contacts within this
 // window count as the same bounce for the rules.
 const TABLE_BOUNCE_DEBOUNCE = 0.25;
+// Guest-side character easing between the host's 20 Hz snapshots: run toward
+// the reported spot, snap if the gap is too big to be a run, and take the
+// position exactly once close, so the locomotion blend can reach idle.
+const FOLLOWER_SNAP = 3.0;
+const FOLLOWER_CONVERGE = 0.12;
+const FOLLOWER_ARRIVE = 0.01;
 // Precision gauge: shown only for kicks (once the ball has been set up by a
 // control touch — never during receptions) and only against the CPU. The bar
 // fills over this approach horizon (s); only the green segment sends a kick
@@ -285,6 +291,14 @@ export class MatchController {
    * rather than from a second local controller.
    */
   remote: RemotePlayer | null = null;
+  /**
+   * Online guest: this controller shows a match it does not run.
+   *
+   * Scoring, serve order and every rule decision belong to the host. The guest
+   * applies the snapshots it is sent and animates between them, because two
+   * rule engines fed by different inputs will not agree for a single rally.
+   */
+  netFollower = false;
   versusInput: InputState = {
     moveX: 0,
     moveZ: 0,
@@ -547,6 +561,84 @@ export class MatchController {
 
   get isTutorialFrozen(): boolean {
     return this.tutorialFrozen;
+  }
+
+  /**
+   * Guest-side frame: no rules, only presentation.
+   *
+   * The ball keeps stepping locally between snapshots — `stepBall` is pure and
+   * identical on both peers, so this interpolates correctly rather than
+   * guessing, and each arriving snapshot corrects any drift. Characters are
+   * eased toward their reported positions rather than snapped, so a 20 Hz feed
+   * still reads as running.
+   */
+  private updateAsFollower(dt: number): void {
+    this.matchClock += dt;
+    this.ball.update(dt);
+    for (const side of ["player", "ai"] as Side[]) {
+      const target = this.followerPose[side];
+      const c = this.chars[side];
+      if (target && !c.busy) {
+        const dx = target.x - c.position.x;
+        const dz = target.z - c.position.z;
+        const gap = Math.hypot(dx, dz);
+        if (gap > FOLLOWER_SNAP) {
+          c.position.x = target.x;
+          c.position.z = target.z;
+          c.velocity.setAll(0);
+        } else if (gap > FOLLOWER_ARRIVE) {
+          const speed = Math.min(gap / FOLLOWER_CONVERGE, c.def.speed);
+          const step = Math.min(gap, speed * dt);
+          c.position.x += (dx / gap) * step;
+          c.position.z += (dz / gap) * step;
+          c.velocity.set((dx / gap) * speed, 0, (dz / gap) * speed);
+        } else {
+          c.position.x = target.x;
+          c.position.z = target.z;
+          c.velocity.setAll(0);
+        }
+      }
+      c.update(dt);
+    }
+  }
+
+  /** Latest reported positions for each side, set from the host's snapshots. */
+  private followerPose: Record<Side, { x: number; z: number } | null> = { player: null, ai: null };
+
+  /**
+   * Apply an authoritative frame from the host. Everything here is already in
+   * this peer's own coordinates — the wire layer reflects and swaps seats
+   * before it arrives.
+   */
+  applySnapshot(snap: {
+    ballPos: { x: number; y: number; z: number };
+    ballVel: { x: number; y: number; z: number };
+    ballHeld: boolean;
+    selfPos: { x: number; z: number };
+    opponentPos: { x: number; z: number };
+    score: [number, number];
+    sets: [number, number];
+    serveOwner: Side;
+  }): void {
+    this.ball.state.pos.set(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z);
+    this.ball.state.vel.set(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z);
+    this.ball.held = snap.ballHeld;
+    this.followerPose.player = { x: snap.selfPos.x, z: snap.selfPos.z };
+    this.followerPose.ai = { x: snap.opponentPos.x, z: snap.opponentPos.z };
+    const changed =
+      this.score.player !== snap.score[0] ||
+      this.score.ai !== snap.score[1] ||
+      this.sets.player !== snap.sets[0] ||
+      this.sets.ai !== snap.sets[1] ||
+      this.serveOwner !== snap.serveOwner;
+    this.score.player = snap.score[0];
+    this.score.ai = snap.score[1];
+    this.sets.player = snap.sets[0];
+    this.sets.ai = snap.sets[1];
+    this.serveOwner = snap.serveOwner;
+    if (changed) {
+      this.ui.setScore(this.score.player, this.score.ai, this.serveOwner, this.sets.player, this.sets.ai);
+    }
   }
 
   private emit(event: MatchEvent): void {
@@ -1670,6 +1762,12 @@ export class MatchController {
 
   update(dt: number, input: InputState, aiUpdate: (dt: number) => void): void {
     if (this.tutorialFrozen) return;
+    // Online guest: the host owns the rules, so running them here too would
+    // produce a second, disagreeing match. Only presentation advances.
+    if (this.netFollower) {
+      this.updateAsFollower(dt);
+      return;
+    }
     if (this.replay) {
       this.updateReplay(dt);
       return;

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { SIM_DT } from "../src/config";
-import type { MatchController, MatchEvent } from "../src/match";
+import type { MatchController } from "../src/match";
 import type { NetConnection } from "../src/net/connection";
 import type { NetHandlers } from "../src/net/connection";
 import {
@@ -10,7 +10,7 @@ import {
   OnlineSession,
   type SessionHandlers,
 } from "../src/net/session";
-import type { GameMessage } from "../src/net/protocol";
+import type { GameMessage, SnapshotMessage } from "../src/net/protocol";
 
 /** A connection that records what was sent and lets a test drive its handlers. */
 function fakeConn() {
@@ -29,29 +29,30 @@ function fakeConn() {
   };
 }
 
+/**
+ * A stand-in match. `applySnapshot` is a spy rather than a reimplementation:
+ * the session's job is to translate the wire into that one call, and asserting
+ * its arguments tests that without a fake pretending to be the controller.
+ */
 function fakeMatch() {
-  const listeners = new Set<(e: MatchEvent) => void>();
+  const applySnapshot = vi.fn();
   const match = {
     versus: false,
     remote: null,
+    netFollower: false,
     score: { player: 0, ai: 0 },
     sets: { player: 0, ai: 0 },
     serveOwner: "player",
     state: "rally",
-    ball: { state: { pos: new Vector3(0, 1, 0), vel: new Vector3(0, 0, 0) } },
+    versusInput: { moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false },
+    ball: { state: { pos: new Vector3(0, 1, 0), vel: new Vector3(0, 0, 0) }, held: false },
     chars: {
       player: { position: new Vector3(-3, 0.4, 0), velocity: new Vector3(0, 0, 0) },
       ai: { position: new Vector3(3, 0.4, 0), velocity: new Vector3(0, 0, 0), busy: false },
     },
-    subscribe: (fn: (e: MatchEvent) => void) => {
-      listeners.add(fn);
-      return () => listeners.delete(fn);
-    },
+    applySnapshot,
   };
-  return {
-    match: match as unknown as MatchController,
-    emit: (e: MatchEvent) => listeners.forEach((l) => l(e)),
-  };
+  return { match: match as unknown as MatchController, applySnapshot };
 }
 
 function session(handlers: SessionHandlers = {}, role: "host" | "guest" = "host") {
@@ -66,12 +67,30 @@ function run(s: OnlineSession, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / SIM_DT); i++) s.step(SIM_DT);
 }
 
-/** Keep the opponent alive by feeding a pose every step. */
+/** Keep the opponent alive by feeding traffic every step. */
 function runPresent(s: OnlineSession, deliver: (m: GameMessage) => void, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / SIM_DT); i++) {
-    deliver({ t: "move", tick: i, pos: { x: 3, y: 0.4, z: 0 }, yaw: 0, moveX: 0, moveZ: 0 });
+    deliver({ t: "input", tick: i, moveX: 0, moveZ: 0, strike: false, pop: false, confirm: false });
     s.step(SIM_DT);
   }
+}
+
+/** A well-formed snapshot, with any field overridden. */
+function snapshot(over: Partial<SnapshotMessage> = {}): SnapshotMessage {
+  return {
+    t: "snap",
+    tick: 1,
+    ballPos: { x: 0, y: 1, z: 0 },
+    ballVel: { x: 0, y: 0, z: 0 },
+    ballHeld: false,
+    hostPos: { x: -3, y: 0.4, z: 0 },
+    guestPos: { x: 3, y: 0.4, z: 0 },
+    score: [0, 0],
+    sets: [0, 0],
+    serveOwner: "player",
+    phase: "rally",
+    ...over,
+  };
 }
 
 describe("session setup", () => {
@@ -178,111 +197,138 @@ describe("opponent presence", () => {
   });
 });
 
-describe("outbound traffic", () => {
-  it("sends a launch the moment it happens, not on the next pose tick", () => {
-    const { s, sent, emit } = session();
-    s.step(SIM_DT);
-    sent.length = 0;
+describe("host and guest exchange", () => {
+  it("has the guest send its controls, not its position", () => {
+    const g = session({}, "guest");
+    g.s.setLocalInput({ moveX: 1, moveZ: -0.5, strikePressed: true, popPressed: false, confirmPressed: false });
+    g.s.step(SIM_DT);
 
-    emit({
-      type: "ball-launched",
-      side: "player",
-      action: "strike",
-      pos: new Vector3(-2, 1.2, 0.3),
-      vel: new Vector3(6, 3, -1),
-      clip: "RightFootKick",
-      spin: 1.1,
-    });
-
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ t: "strike", clip: "RightFootKick", spin: 1.1 });
+    const inputs = g.sent.filter((m) => m.t === "input");
+    expect(inputs).toHaveLength(1);
+    // Reflected on the way out: the guest's world is the host's mirrored, so
+    // pushing right in its own frame is pushing left in the host's.
+    expect(inputs[0]).toMatchObject({ moveX: -1, moveZ: 0.5, strike: true });
+    // A guest is authoritative for nothing, so it publishes no state.
+    expect(g.sent.some((m) => m.t === "snap")).toBe(false);
   });
 
-  it("does not echo the opponent's own launches back to them", () => {
-    const { s, sent, emit } = session();
-    s.step(SIM_DT);
-    sent.length = 0;
+  it("sends a guest press once, not on every step until released", () => {
+    const g = session({}, "guest");
+    g.s.setLocalInput({ moveX: 0, moveZ: 0, strikePressed: true, popPressed: false, confirmPressed: false });
+    g.s.step(SIM_DT);
+    g.s.step(SIM_DT);
 
-    emit({
-      type: "ball-launched",
-      side: "ai",
-      action: "strike",
-      pos: new Vector3(2, 1.2, 0),
-      vel: new Vector3(-6, 3, 0),
-      clip: "LeftFootKick",
-      spin: 1,
-    });
-
-    expect(sent).toHaveLength(0);
+    const strikes = g.sent.filter((m) => m.t === "input" && m.strike);
+    expect(strikes).toHaveLength(1);
   });
 
-  it("sends poses at a fraction of the simulation rate", () => {
-    const { s, sent } = session();
-    run(s, 1);
+  it("keeps a press that arrived between sends", () => {
+    // The render loop can hand over two frames before a step consumes them.
+    const g = session({}, "guest");
+    g.s.setLocalInput({ moveX: 0, moveZ: 0, strikePressed: true, popPressed: false, confirmPressed: false });
+    g.s.setLocalInput({ moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false });
+    g.s.step(SIM_DT);
 
-    const moves = sent.filter((m) => m.t === "move");
-    // 20 Hz, not 60 — smoothing on the far side covers the gap.
-    expect(moves.length).toBeGreaterThanOrEqual(18);
-    expect(moves.length).toBeLessThanOrEqual(22);
+    expect(g.sent.filter((m) => m.t === "input" && m.strike)).toHaveLength(1);
   });
 
-  it("only lets the host announce points", () => {
-    const point: MatchEvent = { type: "point-awarded", winner: "player", reason: "out" };
+  it("has the host publish snapshots at a fraction of the simulation rate", () => {
+    const h = session({}, "host");
+    run(h.s, 1);
 
-    const asHost = session({}, "host");
-    asHost.s.step(SIM_DT);
-    asHost.sent.length = 0;
-    asHost.emit(point);
-    expect(asHost.sent.filter((m) => m.t === "point")).toHaveLength(1);
+    const snaps = h.sent.filter((m) => m.t === "snap");
+    expect(snaps.length).toBeGreaterThanOrEqual(18);
+    expect(snaps.length).toBeLessThanOrEqual(22);
+    // The host is authoritative, so it never sends its controls anywhere.
+    expect(h.sent.some((m) => m.t === "input")).toBe(false);
+  });
 
-    const asGuest = session({}, "guest");
-    asGuest.s.step(SIM_DT);
-    asGuest.sent.length = 0;
-    asGuest.emit(point);
-    expect(asGuest.sent.filter((m) => m.t === "point")).toHaveLength(0);
+  it("carries everything a frame needs in one message", () => {
+    // Split across messages, a ball could arrive belonging to a different tick
+    // than the score it was won by, and the two screens would disagree.
+    const h = session({}, "host");
+    run(h.s, 0.1);
+    const snap = h.sent.find((m) => m.t === "snap");
+
+    expect(snap).toBeDefined();
+    const frame = snap as SnapshotMessage;
+    expect(typeof frame.ballHeld).toBe("boolean");
+    expect(frame.score).toHaveLength(2);
+    expect(frame.sets).toHaveLength(2);
+    expect(["player", "ai"]).toContain(frame.serveOwner);
+  });
+
+  it("feeds the guest's controls into the match's second seat", () => {
+    const h = session({}, "host");
+    h.deliver({ t: "input", tick: 1, moveX: 0.5, moveZ: -1, strike: true, pop: false, confirm: false });
+
+    expect(h.match.versusInput).toMatchObject({ moveX: 0.5, moveZ: -1, strikePressed: true });
+  });
+
+  it("ignores controls arriving at a guest, and snapshots arriving at a host", () => {
+    const g = session({}, "guest");
+    g.deliver({ t: "input", tick: 1, moveX: 1, moveZ: 1, strike: true, pop: false, confirm: false });
+    expect(g.match.versusInput.moveX).toBe(0);
+
+    const h = session({}, "host");
+    const before = h.match.score.player;
+    h.deliver(snapshot({ score: [7, 3] }));
+    expect(h.match.score.player).toBe(before);
+  });
+
+  it("holds a guest press until a step consumes it", () => {
+    // The guest's frame rate is not the host's; a press that arrives between
+    // steps must survive to the next one rather than being overwritten.
+    const h = session({}, "host");
+    h.deliver({ t: "input", tick: 1, moveX: 0, moveZ: 0, strike: true, pop: false, confirm: false });
+    h.deliver({ t: "input", tick: 2, moveX: 0, moveZ: 0, strike: false, pop: false, confirm: false });
+
+    expect(h.match.versusInput.strikePressed).toBe(true);
   });
 });
 
-describe("inbound score", () => {
-  it("is applied by a guest and ignored by the host", () => {
-    const state = {
-      t: "state" as const,
-      tick: 1,
-      scorePlayer: 4,
-      scoreAi: 2,
-      setsPlayer: 1,
-      setsAi: 0,
-      serveOwner: "ai" as const,
-      phase: "rally",
-    };
+describe("guest applies the authoritative frame", () => {
+  it("hands the host's score, sets and serve to the match", () => {
+    const g = session({}, "guest");
+    g.deliver(snapshot({ score: [5, 2], sets: [1, 0], serveOwner: "ai" }));
 
-    const onScore = vi.fn();
-    const guest = session({ onScore }, "guest");
-    guest.deliver(state);
-    expect(onScore).toHaveBeenCalledTimes(1);
-
-    const hostScore = vi.fn();
-    const host = session({ onScore: hostScore }, "host");
-    host.deliver(state);
-    expect(hostScore).not.toHaveBeenCalled();
+    expect(g.applySnapshot).toHaveBeenCalledTimes(1);
+    // Scores arrive as [host, guest] and are swapped into [me, them]; the
+    // serving side flips with the seats for the same reason.
+    expect(g.applySnapshot.mock.calls[0][0]).toMatchObject({
+      score: [2, 5],
+      sets: [0, 1],
+      serveOwner: "player",
+    });
   });
 
-  it("drops a malformed strike rather than poisoning the ball", () => {
-    const { s, match } = session();
-    const before = match.ball.state.pos.clone();
+  it("hands over the ball, including whether it is being held", () => {
+    const g = session({}, "guest");
+    g.deliver(snapshot({ ballPos: { x: 1, y: 2, z: 3 }, ballVel: { x: 4, y: 5, z: 6 }, ballHeld: true }));
 
-    s.step(SIM_DT);
-    // NaN would propagate through every later physics step.
-    (s as unknown as { onNetMessage: (m: unknown) => void }).onNetMessage({
-      t: "strike",
-      tick: 0,
-      pos: { x: NaN, y: 1, z: 0 },
-      vel: { x: 1, y: 1, z: 1 },
-      clip: "ChestKick",
-      spin: 1,
+    // Position and velocity reflect through the net; height is untouched.
+    expect(g.applySnapshot.mock.calls[0][0]).toMatchObject({
+      ballPos: { x: -1, y: 2, z: -3 },
+      ballVel: { x: -4, y: 5, z: -6 },
+      ballHeld: true,
     });
+  });
 
-    expect(match.ball.state.pos.x).toBe(before.x);
-    expect(Number.isNaN(match.ball.state.pos.x)).toBe(false);
+  it("names the seats from the receiver's point of view", () => {
+    // reframe has already swapped them, so what the host called "host" is this
+    // peer. Getting this backwards puts each player in the other's body.
+    const g = session({}, "guest");
+    g.deliver(snapshot({ hostPos: { x: -2, y: 0.4, z: 1 }, guestPos: { x: 2, y: 0.4, z: -1 } }));
+
+    const arg = g.applySnapshot.mock.calls[0][0] as { selfPos: { x: number }; opponentPos: { x: number } };
+    expect(arg.selfPos.x).toBe(-2);
+    expect(arg.opponentPos.x).toBe(2);
+  });
+
+  it("drops a malformed snapshot rather than wrecking the whole display", () => {
+    const g = session({}, "guest");
+    g.deliver({ ...snapshot({}), ballPos: { x: NaN, y: 0, z: 0 } });
+
+    expect(g.applySnapshot).not.toHaveBeenCalled();
   });
 });
