@@ -146,6 +146,46 @@ export function vec(v: { x: number; y: number; z: number }): Vec3Wire {
   return { x: v.x, y: v.y, z: v.z };
 }
 
+/**
+ * Reflect a point or vector through the net.
+ *
+ * Both players must experience themselves as the near side, x < 0, with the
+ * primary camera and the unmirrored control mapping — being the away player is
+ * a worse game, so neither peer should have to be it. The host's frame is
+ * canonical and the guest mirrors everything crossing the wire in both
+ * directions.
+ *
+ * The transform is a 180-degree rotation about the vertical axis, so it
+ * preserves the court's handedness: negating x alone would turn every player's
+ * left into their right.
+ */
+export function mirror(v: Vec3Wire): Vec3Wire {
+  return { x: -v.x, y: v.y, z: -v.z };
+}
+
+/** Which side of the table a peer occupies in the canonical (host) frame. */
+export function canonicalSide(role: PeerRole): Side {
+  return role === "host" ? "player" : "ai";
+}
+
+/**
+ * Convert a message between a peer's own frame and the canonical one. The host
+ * is already canonical, so this is identity for it; the guest reflects. The
+ * same function serves both directions because a reflection is its own inverse.
+ */
+export function reframe<T extends GameMessage>(msg: T, role: PeerRole): T {
+  if (role === "host") return msg;
+  switch (msg.t) {
+    case "move":
+      return { ...msg, pos: mirror(msg.pos) };
+    case "strike":
+      return { ...msg, pos: mirror(msg.pos), vel: mirror(msg.vel) };
+    default:
+      // Scores, phases and clock probes carry no geometry.
+      return msg;
+  }
+}
+
 export function toVector3(v: Vec3Wire): Vector3 {
   return new Vector3(v.x, v.y, v.z);
 }

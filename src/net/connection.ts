@@ -80,6 +80,15 @@ export class NetConnection {
     return this.state;
   }
 
+  /**
+   * Attach or replace handlers after construction. The lobby owns the socket
+   * before a match exists, so the session takes over the message handler once
+   * it does, without reconnecting.
+   */
+  setHandlers(next: Partial<NetHandlers>): void {
+    this.handlers = { ...this.handlers, ...next };
+  }
+
   /** Half the round trip, in simulation ticks — the age of an arriving message. */
   get latencyTicks(): number {
     if (this.rttMs === null) return 0;
