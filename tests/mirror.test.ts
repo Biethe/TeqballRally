@@ -8,7 +8,6 @@ import {
   mirror,
   reframe,
   type MoveMessage,
-  type StrikeMessage,
 } from "../src/net/protocol";
 
 const move = (x: number, z: number): MoveMessage => ({
@@ -75,7 +74,7 @@ describe("reframe", () => {
 
   it("reflects a strike's velocity as well as its position", () => {
     const s = makeStrike(0, { pos: new Vector3(-2, 1.2, 0.4), vel: new Vector3(6, 2, -1) }, "RightFootKick");
-    const wire = reframe(s, "guest") as StrikeMessage;
+    const wire = reframe(s, "guest");
 
     expect(wire.pos).toEqual({ x: 2, y: 1.2, z: -0.4 });
     expect(wire.vel).toEqual({ x: -6, y: 2, z: 1 });
@@ -86,7 +85,7 @@ describe("reframe", () => {
 
   it("carries the clip and spin through untouched", () => {
     const s = makeStrike(0, { pos: new Vector3(-2, 1, 0), vel: new Vector3(1, 1, 1) }, "BackflipLeftFoot", 1.4);
-    const wire = reframe(s, "guest") as StrikeMessage;
+    const wire = reframe(s, "guest");
     expect(wire.clip).toBe("BackflipLeftFoot");
     expect(wire.spin).toBe(1.4);
     expect(wire.tick).toBe(s.tick);
@@ -121,7 +120,7 @@ describe("a guest's strike as the host sees it", () => {
     expect(guestBall.pos.x).toBeLessThan(0); // guest's own half
     expect(guestBall.vel.x).toBeGreaterThan(0); // heading away from the guest
 
-    const wire = reframe(makeStrike(0, guestBall, "RightFootKick"), "guest") as StrikeMessage;
+    const wire = reframe(makeStrike(0, guestBall, "RightFootKick"), "guest");
 
     // In the host's frame the same ball is on the far half heading at the host.
     expect(wire.pos.x).toBeGreaterThan(0);
@@ -133,7 +132,7 @@ describe("a guest's strike as the host sees it", () => {
     const target = new Vector3(1.1, GROUND_Y + TABLE.hCenter, -0.3);
 
     const guestBall: BallState = { pos: from.clone(), vel: solveLaunchClearingNet(from, target, 0.5) };
-    const wire = reframe(makeStrike(0, guestBall, "RightFootKick"), "guest") as StrikeMessage;
+    const wire = reframe(makeStrike(0, guestBall, "RightFootKick"), "guest");
 
     // Host applies it in its own frame and simulates.
     const hostBall: BallState = {
