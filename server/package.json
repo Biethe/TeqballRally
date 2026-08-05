@@ -1,0 +1,17 @@
+{
+  "name": "teqopen-relay",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Match relay for TeqOpen online play",
+  "main": "relay.mjs",
+  "scripts": {
+    "start": "node relay.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.21.2"
+  }
+}

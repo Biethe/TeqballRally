@@ -130,6 +130,51 @@ two peers can never disagree about a point.
 npm run relay        # PORT=8787, health check on /healthz
 ```
 
+### Where the relay runs
+
+A Firebase project is also a Google Cloud project, so the relay belongs on
+**Cloud Run** in the same project as Hosting — one console, one bill, and
+WebSockets over TLS with no certificate work.
+
+Two things not to try:
+
+- **Firebase Hosting cannot proxy WebSockets.** A `rewrite` to Cloud Run works
+  for ordinary requests but not for the upgrade, so the game connects straight
+  to the Cloud Run URL rather than through `yourapp.web.app`.
+- **Realtime Database is the wrong transport for match data.** It is a fine
+  lobby, but 20 Hz of position updates per player is not what it is priced or
+  tuned for, and it adds a hop the relay does not.
+
+```bash
+gcloud run deploy teqopen-relay \
+  --source server \
+  --region europe-west1 \
+  --allow-unauthenticated \
+  --max-instances 1 \
+  --min-instances 1 \
+  --timeout 3600
+```
+
+`--max-instances 1` is **required, not tuning**: rooms live in the relay's
+memory, so two players routed to different instances would sit in separate
+rooms with the same code and never see each other. Sharing room state (Redis,
+or Realtime Database) is what would lift that cap.
+
+`--min-instances 1` avoids a cold start on the first connection, and
+`--timeout 3600` stops Cloud Run cutting a long WebSocket at its default.
+
+Then point the game at the deployed URL — builds cannot discover it, because a
+packaged app's own origin is `https://localhost`:
+
+```bash
+VITE_RELAY_URL=wss://teqopen-relay-xxxxx.europe-west1.run.app npm run build
+```
+
+`src/net/endpoint.ts` falls back to the page's own host on port 8787, which is
+correct for `npm run dev:lan` and deliberately wrong for a packaged build that
+forgot the variable — `looksReachable` detects that case so online play can be
+shown as unavailable instead of failing at the end of a lobby flow.
+
 `server/relay.mjs` knows only about rooms and seats and forwards every other
 frame verbatim — no game state lives there, so it cannot disagree with the
 clients and can be restarted mid-match. A WebSocket relay rather than WebRTC

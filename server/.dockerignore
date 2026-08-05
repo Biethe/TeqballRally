@@ -1,0 +1,5 @@
+# The image installs its own dependencies; a host node_modules would bloat the
+# build context and can contain platform-specific binaries.
+node_modules
+npm-debug.log
+package-lock.json
