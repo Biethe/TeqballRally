@@ -47,6 +47,8 @@ export interface NetHandlers {
   onStateChange?: (state: NetState, detail?: string) => void;
   /** The other player arrived (true) or left (false). */
   onPeer?: (present: boolean) => void;
+  /** Quick match only: still waiting, with this many players ahead. */
+  onQueued?: (ahead: number) => void;
   /** Fatal: the room was refused, or the socket died. */
   onError?: (reason: string) => void;
 }
@@ -55,6 +57,12 @@ export interface NetHandlers {
 const PING_INTERVAL_MS = 2000;
 const CONNECT_TIMEOUT_MS = 10_000;
 const JOIN_TIMEOUT_MS = 10_000;
+/**
+ * Waiting for a stranger is not the same as waiting for a server. Quick match
+ * gets a long deadline because an empty queue is a normal state, not a fault —
+ * `onQueued` keeps the UI honest about it in the meantime.
+ */
+const JOIN_TIMEOUT_MS_QUEUE = 180_000;
 
 export class NetConnection {
   private socket: WebSocket | null = null;
@@ -108,10 +116,34 @@ export class NetConnection {
   }
 
   /**
-   * Open the socket and claim a seat. Resolves once seated — which is not the
-   * same as being ready to play; a host resolves while still alone in the room.
+   * Open the socket and claim a seat in a named room. Resolves once seated —
+   * which is not the same as being ready to play; a host resolves while still
+   * alone in the room.
    */
-  async join(room: string): Promise<{ role: PeerRole; ready: boolean }> {
+  join(room: string): Promise<{ role: PeerRole; ready: boolean }> {
+    return this.handshake({ t: "join", v: PROTOCOL_VERSION, room });
+  }
+
+  /**
+   * Ask to be paired with whoever else is waiting. Resolves only once an
+   * opponent has been found, which may be a long wait — `onQueued` reports the
+   * position meanwhile so the UI can say something truthful.
+   */
+  quickMatch(): Promise<{ role: PeerRole; ready: boolean }> {
+    return this.handshake({ t: "queue", v: PROTOCOL_VERSION }, JOIN_TIMEOUT_MS_QUEUE);
+  }
+
+  /** Stop waiting for a pairing, keeping the socket for another attempt. */
+  cancelQueue(): void {
+    this.rawSend({ t: "cancel" });
+    this.pendingJoin?.reject(new Error("cancelled"));
+    this.pendingJoin = null;
+  }
+
+  private async handshake(
+    opening: NetMessage,
+    timeoutMs = JOIN_TIMEOUT_MS
+  ): Promise<{ role: PeerRole; ready: boolean }> {
     if (this.socket) throw new Error("already connected");
     this.setState("connecting");
 
@@ -149,7 +181,7 @@ export class NetConnection {
 
     this.setState("joining");
     const seated = new Promise<{ role: PeerRole; ready: boolean }>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("join timed out")), JOIN_TIMEOUT_MS);
+      const timer = setTimeout(() => reject(new Error("timed out finding a game")), timeoutMs);
       this.pendingJoin = {
         resolve: (v) => {
           clearTimeout(timer);
@@ -162,9 +194,8 @@ export class NetConnection {
       };
     });
 
-    socket.send(encode({ t: "join", v: PROTOCOL_VERSION, room }));
+    socket.send(encode(opening));
     const result = await seated;
-    this.room = room;
     this.role = result.role;
     this.setState(result.ready ? "ready" : "waiting");
     this.startPinging();
@@ -182,8 +213,16 @@ export class NetConnection {
 
     switch (msg.t) {
       case "joined":
+        this.room = msg.room;
         this.pendingJoin?.resolve({ role: msg.role, ready: msg.ready });
         this.pendingJoin = null;
+        return;
+
+      // Still waiting for an opponent. Not a resolution: the promise settles
+      // only when a pairing actually happens.
+      case "queued":
+        this.setState("waiting", `queued, ${msg.ahead} ahead`);
+        this.handlers.onQueued?.(msg.ahead);
         return;
 
       case "error": {
