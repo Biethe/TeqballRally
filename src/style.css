@@ -1599,3 +1599,54 @@ button.pad-focus {
     padding: 13px 16px;
   }
 }
+
+/* ---- online lobby ---- */
+
+/* The room code a player reads out to a friend: wide tracking and a
+   fixed-width face so 0/O and 1/I cannot be confused when spoken or typed. */
+.lobby-code {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: clamp(34px, 9vw, 64px);
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  color: var(--teq);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  /* Tracking is applied to the right of every glyph, including the last, so
+     the extra left padding keeps the block optically centred. */
+  padding: 12px 24px 12px calc(24px + 0.22em);
+  margin-top: 8px;
+  user-select: all;
+}
+
+.code-input {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: clamp(28px, 7vw, 44px);
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  text-align: center;
+  text-transform: uppercase;
+  width: min(360px, 80vw);
+  padding: 12px 16px;
+  color: #fff;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  outline: none;
+}
+
+.code-input:focus {
+  border-color: var(--teq);
+}
+
+.big-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.big-btn:disabled:hover {
+  transform: none;
+  filter: none;
+}

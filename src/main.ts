@@ -27,6 +27,11 @@ import {
 } from "./input";
 import { UI } from "./ui";
 import { AudioManager } from "./audio";
+import { NetConnection } from "./net/connection";
+import { OnlineSession } from "./net/session";
+import { looksReachable, relayUrl } from "./net/endpoint";
+import { Capacitor } from "@capacitor/core";
+import { makeRoomCode, normalizeRoomCode, isValidRoomCode, type PeerRole } from "./net/protocol";
 import { ModelViewer } from "./viewer";
 import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
 import { BALLS, CAMERA, CHARACTERS, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
@@ -40,6 +45,8 @@ interface MatchOpts {
   difficulty: DifficultyLevel;
   /** Second human drives the opponent (split screen); device assignment for both. */
   versus: VersusAssign | null;
+  /** Online: the opponent is a remote human on the far end of this connection. */
+  online?: { conn: NetConnection; role: PeerRole };
   labels: [string, string];
   practice?: boolean;
   onEnd: (winner: Side, sets: [number, number]) => void;
@@ -66,6 +73,10 @@ async function boot(): Promise<void> {
   // The tier decides the engine's MSAA, which cannot be changed on a live
   // context, so it has to be resolved before the scene exists.
   const qualityTier = resolveTier(location.search, readSignals());
+  // A packaged build with no relay configured would point the game at the
+  // phone itself, so online is offered as unavailable rather than failing at
+  // the end of a lobby flow.
+  const onlineAvailable = looksReachable(relayUrl(), Capacitor.isNativePlatform());
   const gs: GameScene = await createGameScene(canvas, settingsFor(qualityTier));
   const viewer = new ModelViewer(gs.engine, canvas);
   (window as unknown as Record<string, unknown>).__viewer = viewer;
@@ -78,6 +89,10 @@ async function boot(): Promise<void> {
   let aiCtl: AIController | null = null;
   let practiceCoach: PracticeCoach | null = null;
   let chars: Character[] = [];
+  /** Live online match, if any: owns the wire, the opponent and the forfeit clock. */
+  let session: OnlineSession | null = null;
+  /** Held separately from the session so the lobby can own it before a match exists. */
+  let netConn: NetConnection | null = null;
 
   // Dev knob: ?ts=8 speeds up game time for headless testing.
   const timeScale = Number(new URLSearchParams(location.search).get("ts") ?? 1) || 1;
@@ -286,6 +301,10 @@ async function boot(): Promise<void> {
   let shutdownInProgress = false;
   const canShutdownLocalServer = import.meta.env.DEV;
   const leaveMatch = () => {
+    session?.dispose();
+    session = null;
+    netConn?.close();
+    netConn = null;
     practiceCoach?.dispose();
     practiceCoach = null;
     for (const c of chars) c.dispose();
@@ -496,6 +515,9 @@ async function boot(): Promise<void> {
         if (versusCam) match.versusInput = consumeInput(latchedP2);
         match.update(SIM_DT, freecam ? idleInput : stepInput, (d) => aiCtl?.update(d));
         practiceCoach?.update(SIM_DT, stepInput);
+        // Stepped with the simulation, not the frame, so the tick stamped on
+        // outgoing messages is the same clock the receiver counts against.
+        session?.step(SIM_DT);
         simAccumulator -= SIM_DT;
         steps++;
       }
@@ -556,6 +578,7 @@ async function boot(): Promise<void> {
           primary: true,
         },
         { id: "btn-mode-competition", label: "COMPETITION", sub: "Play a cup or league campaign", tag: "TOURNAMENT" },
+        { id: "btn-mode-online", label: "PLAY ONLINE", sub: "Take on another player over the net", tag: "ONLINE" },
         { id: "btn-mode-versus", label: "2 PLAYERS", sub: "Share the court in split screen", tag: "LOCAL" },
         {
           id: "btn-mode-settings",
@@ -568,6 +591,7 @@ async function boot(): Promise<void> {
         if (id === "btn-mode-practice") showPractice();
         else if (id === "btn-mode-friendly") showDifficulty();
         else if (id === "btn-mode-competition") showFormats();
+        else if (id === "btn-mode-online") showOnline();
         else if (id === "btn-mode-settings") showSettings();
         else showVersusSelect();
       },
@@ -605,6 +629,171 @@ async function boot(): Promise<void> {
         location.reload();
       },
       "Lower settings mean a smoother game on older phones.",
+      showModes
+    );
+  };
+
+  // ------------------------------------------------------------ online play
+
+  /**
+   * Start an online match once a seat is secured. Both players pick their own
+   * character; the ball is the host's choice, since the two must agree.
+   */
+  const startOnlineMatch = (conn: NetConnection, role: PeerRole) => {
+    showSelect("CHOOSE YOUR PLAYER", (charId, ballId) => {
+      const me = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+      // The opponent's character is not known until they pick; until the
+      // protocol carries it, both sides show a fixed stand-in.
+      const them = CHARACTERS.find((c) => c.id !== me.id) ?? CHARACTERS[1];
+      void startMatch(me, ballId, {
+        opponent: them,
+        difficulty: "normal",
+        versus: null,
+        online: { conn, role },
+        labels: ["YOU", "RIVAL"],
+        onEnd: (winner) => {
+          ui.showEnd(winner, () => leaveMatch(), () => leaveMatch());
+        },
+      });
+    }, showOnline);
+  };
+
+  /** Abandon whatever the lobby was doing and return to the mode menu. */
+  const abandonLobby = () => {
+    netConn?.close();
+    netConn = null;
+    showModes();
+  };
+
+  const quickMatch = () => {
+    if (!onlineAvailable) return;
+    const conn = new NetConnection(relayUrl(), {
+      onQueued: (ahead) =>
+        ui.setLobbyDetail(
+          ahead === 0 ? "Waiting for an opponent…" : `Waiting — ${ahead} ahead of you`
+        ),
+    });
+    netConn = conn;
+    ui.showLobbyStatus("QUICK MATCH", "Connecting…", null, abandonLobby);
+    conn
+      .quickMatch()
+      .then(({ role }) => startOnlineMatch(conn, role))
+      .catch((e: unknown) => {
+        if (netConn !== conn) return; // the player already cancelled
+        ui.showLobbyStatus(
+          "NO GAME FOUND",
+          e instanceof Error ? e.message : "Could not find an opponent",
+          null,
+          abandonLobby
+        );
+      });
+  };
+
+  const hostPrivateGame = () => {
+    if (!onlineAvailable) return;
+    const code = makeRoomCode();
+    const conn = new NetConnection(relayUrl(), {
+      onPeer: (present) => {
+        if (present) ui.setLobbyDetail("Opponent joined — starting…");
+      },
+    });
+    netConn = conn;
+    ui.showLobbyStatus("PLAY A FRIEND", "Connecting…", code, abandonLobby);
+    conn
+      .join(code)
+      .then(({ ready }) => {
+        if (ready) return { role: "host" as PeerRole };
+        ui.setLobbyDetail("Give this code to your friend");
+        // join resolves on being seated; wait for the opponent to fill the
+        // second seat before there is a match to start.
+        return new Promise<{ role: PeerRole }>((resolve) => {
+          conn.setHandlers({
+            onPeer: (present) => {
+              if (present) resolve({ role: "host" });
+            },
+          });
+        });
+      })
+      .then(({ role }) => startOnlineMatch(conn, role))
+      .catch((e: unknown) => {
+        if (netConn !== conn) return;
+        ui.showLobbyStatus(
+          "COULD NOT HOST",
+          e instanceof Error ? e.message : "Something went wrong",
+          null,
+          abandonLobby
+        );
+      });
+  };
+
+  const joinPrivateGame = () => {
+    if (!onlineAvailable) return;
+    ui.showCodeEntry(
+      "ENTER THE CODE",
+      "ABC12",
+      (typed) => {
+        const code = normalizeRoomCode(typed);
+        if (!isValidRoomCode(code)) {
+          ui.showLobbyStatus("BAD CODE", "That is not a valid room code", null, showOnline);
+          return;
+        }
+        const conn = new NetConnection(relayUrl());
+        netConn = conn;
+        ui.showLobbyStatus("JOINING", "Connecting…", code, abandonLobby);
+        conn
+          .join(code)
+          .then(({ role, ready }) => {
+            if (!ready) {
+              // Seated, but alone: the host left between hosting and joining.
+              ui.setLobbyDetail("Waiting for the host…");
+              conn.setHandlers({ onPeer: (p) => p && startOnlineMatch(conn, role) });
+              return;
+            }
+            startOnlineMatch(conn, role);
+          })
+          .catch((e: unknown) => {
+            if (netConn !== conn) return;
+            ui.showLobbyStatus(
+              "COULD NOT JOIN",
+              e instanceof Error ? e.message : "That game is not available",
+              null,
+              showOnline
+            );
+          });
+      },
+      showOnline
+    );
+  };
+
+  const showOnline = () => {
+    if (!onlineAvailable) {
+      ui.showLobbyStatus(
+        "ONLINE UNAVAILABLE",
+        "This build has no match server configured",
+        null,
+        showModes
+      );
+      return;
+    }
+    ui.showMenu(
+      "PLAY ONLINE",
+      [
+        {
+          id: "btn-online-quick",
+          label: "QUICK MATCH",
+          sub: "Get paired with another player",
+          tag: "FASTEST",
+          primary: true,
+        },
+        { id: "btn-online-host", label: "PLAY A FRIEND", sub: "Create a game and share the code", tag: "PRIVATE" },
+        { id: "btn-online-join", label: "ENTER A CODE", sub: "Join a friend's game", tag: "PRIVATE" },
+      ],
+      (id) => {
+        if (id === "btn-online-quick") quickMatch();
+        else if (id === "btn-online-host") hostPrivateGame();
+        else joinPrivateGame();
+      },
+      "Play someone else, wherever they are.",
       showModes
     );
   };
@@ -999,9 +1188,23 @@ async function boot(): Promise<void> {
     controller.versus = opts.versus !== null;
     controller.practice = opts.practice === true;
     match = controller;
-    aiCtl = opts.versus
-      ? null
-      : new AIController(controller, opts.practice ? PRACTICE_DIFFICULTY : DIFFICULTIES[opts.difficulty]);
+    // Online play is a two-human match whose second seat is a socket, so it
+    // needs no AI and no split screen: each player has their own device.
+    aiCtl =
+      opts.versus || opts.online
+        ? null
+        : new AIController(controller, opts.practice ? PRACTICE_DIFFICULTY : DIFFICULTIES[opts.difficulty]);
+    if (opts.online) {
+      session = new OnlineSession(opts.online.conn, controller, opts.online.role, {
+        onOpponentAbsent: (left) =>
+          ui.banner("OPPONENT DISCONNECTED", `Awarding the match in ${Math.ceil(left)}s`),
+        onOpponentReturned: () => ui.banner("OPPONENT RECONNECTED"),
+        onOpponentForfeit: () => {
+          ui.banner("OPPONENT LEFT", "Match awarded to you");
+          ui.showEnd("player", () => leaveMatch(), () => leaveMatch());
+        },
+      });
+    }
     cameraMode = "court";
     ui.setCameraMode(cameraMode);
     if (opts.versus) enableSplit(opts.versus);
