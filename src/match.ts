@@ -55,6 +55,7 @@ import {
 } from "./config";
 import type { InputState } from "./input";
 import type { AudioManager } from "./audio";
+import { reconcile } from "./net/reconcile";
 
 export type MatchState = "serve_move" | "serve_ready" | "serve_anim" | "rally" | "point" | "over";
 export type ReplayControl = "toggle" | "skip" | "back" | "forward" | "zoom-in" | "zoom-out";
@@ -570,12 +571,32 @@ export class MatchController {
    * eased toward their reported positions rather than snapped, so a 20 Hz feed
    * still reads as running.
    */
-  private updateAsFollower(dt: number): void {
+  private updateAsFollower(dt: number, input: InputState): void {
     this.matchClock += dt;
     this.ball.update(dt);
     for (const side of ["player", "ai"] as Side[]) {
       const target = this.followerPose[side];
       const c = this.chars[side];
+
+      // Prediction, for this peer's own character only. Waiting for the host
+      // to answer put a full round trip between pressing a direction and the
+      // player leaning that way, which is the one delay a player feels
+      // directly. Moving locally and correcting afterwards removes it.
+      //
+      // Only during a rally: between points the host walks players to serve
+      // and receive spots, and predicting from a stick that is not driving
+      // that would fight it the whole way.
+      if (side === "player" && !c.busy && this.followerPhase === "rally") {
+        c.move(input.moveX, input.moveZ, c.def.speed, dt);
+        if (target) {
+          const fixed = reconcile({ x: c.position.x, z: c.position.z }, target, dt);
+          c.position.x = fixed.x;
+          c.position.z = fixed.z;
+        }
+        c.update(dt);
+        continue;
+      }
+
       if (target && !c.busy) {
         const dx = target.x - c.position.x;
         const dz = target.z - c.position.z;
@@ -608,6 +629,8 @@ export class MatchController {
     ai: { x: 0, z: 0 },
   };
   private followerClip: Record<Side, string | null> = { player: null, ai: null };
+  /** Host's match phase; prediction only runs during a rally. */
+  private followerPhase = "";
 
   /**
    * Take one side of a snapshot.
@@ -653,7 +676,9 @@ export class MatchController {
     score: [number, number];
     sets: [number, number];
     serveOwner: Side;
+    phase: string;
   }): void {
+    this.followerPhase = snap.phase;
     this.ball.state.pos.set(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z);
     this.ball.state.vel.set(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z);
     this.ball.held = snap.ballHeld;
@@ -1799,7 +1824,7 @@ export class MatchController {
     // Online guest: the host owns the rules, so running them here too would
     // produce a second, disagreeing match. Only presentation advances.
     if (this.netFollower) {
-      this.updateAsFollower(dt);
+      this.updateAsFollower(dt, input);
       return;
     }
     if (this.replay) {

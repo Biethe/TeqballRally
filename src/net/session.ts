@@ -156,6 +156,7 @@ export class OnlineSession {
           score: msg.score,
           sets: msg.sets,
           serveOwner: msg.serveOwner,
+          phase: msg.phase,
         });
         this.handlers.onScore?.({
           player: msg.score[0],
