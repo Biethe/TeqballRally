@@ -152,11 +152,27 @@ for (const dev of DEVICES) {
   await page.waitForTimeout(400);
   await shot("code-entry");
 
+  // Code entry -> online menu -> mode menu. The second step is easy to miss:
+  // without it the settings screens below are never reached and every check on
+  // them passes for the wrong reason.
   await page.locator("#btn-code-back").click();
   await page.waitForTimeout(300);
-  await page.locator("#btn-mode-settings").click().catch(() => {});
+  await page.locator("#btn-menu-back").click();
+  await page.waitForTimeout(300);
+  await page.locator("#btn-mode-settings").click();
   await page.waitForTimeout(300);
   await shot("settings");
+
+  // Both settings sub-screens: the venue list is the longest menu in the game.
+  await page.locator("#btn-settings-venue").click();
+  await page.waitForTimeout(300);
+  await shot("venue");
+  // "gym" is the venue already in use, so this returns rather than reloading.
+  await page.locator("#btn-venue-gym").click();
+  await page.waitForTimeout(300);
+  await page.locator("#btn-settings-graphics").click();
+  await page.waitForTimeout(300);
+  await shot("graphics");
 
   await page.goto(`http://localhost:${PORT}/?q=low`, { waitUntil: "load" });
   await page.waitForTimeout(3000);

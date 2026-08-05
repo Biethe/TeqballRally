@@ -22,6 +22,7 @@ import {
   tossFraction,
   windupStartFraction,
 } from "../src/config";
+import { VENUE_IDS, venueFor } from "../src/venue";
 
 describe("tableSurfaceY", () => {
   it("matches the rulebook heights at the net and the table ends", () => {
@@ -230,11 +231,24 @@ describe("kick tuning tables", () => {
 });
 
 describe("court and match rules", () => {
-  it("keeps players behind the table and inside the floor", () => {
+  it("keeps players behind the table", () => {
     expect(COURT.minX).toBeGreaterThan(TABLE.halfLen);
     expect(COURT.maxX).toBeGreaterThan(COURT.minX);
-    expect(COURT.maxX).toBeLessThan(COURT.floorHalfLen);
-    expect(COURT.maxZ).toBeLessThan(COURT.floorHalfWid);
+  });
+
+  // Movement bounds are shared by every venue, so a venue whose floor is
+  // smaller than them would let players run off the edge of its court.
+  it("gives every venue a floor the players cannot run off", () => {
+    for (const id of VENUE_IDS) {
+      const { court } = venueFor(id);
+      expect(court.halfLen, `${id} floor length`).toBeGreaterThan(COURT.maxX);
+      expect(court.halfWid, `${id} floor width`).toBeGreaterThan(COURT.maxZ);
+    }
+  });
+
+  it("names a distinct arena file for each venue that has one", () => {
+    const files = VENUE_IDS.map((id) => venueFor(id).arena?.file).filter((f) => f !== undefined);
+    expect(new Set(files).size).toBe(files.length);
   });
 
   it("puts the serve spot inside the movement bounds", () => {

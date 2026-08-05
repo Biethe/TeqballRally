@@ -13,10 +13,12 @@ result -- this is a lossy, visual change.
     python3 scripts/shrink_textures.py assets/models/characters/*.glb
     python3 scripts/shrink_textures.py --max 512 --dry-run some.glb
 
-Layout assumption, verified per file: every image lives in buffer 0 and the
-whole EXT_meshopt_compression region sits after the last image. That lets the
-compressed geometry move as one block with a single offset delta, so nothing
-has to understand meshopt's internals.
+The buffer is rebuilt by walking every referenced span in its existing order,
+so no assumption is made about where images sit relative to geometry. An
+earlier version assumed images came first, which was true of the character
+models and false of the arenas, and it silently dropped every mesh of the
+files where it was false. The byte-count check at the end of `process` is what
+makes that failure impossible to repeat quietly.
 """
 
 from __future__ import annotations
@@ -83,13 +85,25 @@ def resize_webp(raw: bytes, max_side: int, quality: int) -> bytes | None:
     return buf.getvalue()
 
 
-def meshopt_regions(gltf: dict) -> list[dict]:
-    out = []
-    for bv in gltf.get("bufferViews", []):
+def buffer_chunks(gltf: dict) -> list[dict]:
+    """
+    Every span of buffer 0 that something points at.
+
+    A bufferView normally addresses its own bytes. Under
+    EXT_meshopt_compression it instead describes the *decompressed* result and
+    its extension points at the compressed source, with the view itself
+    referring to a data-less fallback buffer. Both forms are collected here so
+    a rebuild can relocate either without understanding meshopt itself.
+    """
+    chunks = []
+    for index, bv in enumerate(gltf.get("bufferViews", [])):
         ext = bv.get("extensions", {}).get("EXT_meshopt_compression")
         if ext is not None:
-            out.append(ext)
-    return out
+            if ext.get("buffer", 0) == 0:
+                chunks.append({"holder": ext, "view": index, "image": False})
+        elif bv.get("buffer", 0) == 0:
+            chunks.append({"holder": bv, "view": index, "image": False})
+    return chunks
 
 
 def process(path: Path, max_side: int, quality: int, dry_run: bool) -> None:
@@ -101,62 +115,68 @@ def process(path: Path, max_side: int, quality: int, dry_run: bool) -> None:
         return
 
     image_views = {im["bufferView"] for im in images}
-    for i in image_views:
-        if views[i].get("buffer", 0) != 0:
-            raise ValueError(f"{path}: image bufferView {i} is not in buffer 0")
-
-    # Everything meshopt-compressed must start after the last image byte, so the
-    # compressed span can be relocated wholesale.
-    last_image_end = max(views[i].get("byteOffset", 0) + views[i]["byteLength"] for i in image_views)
-    regions = meshopt_regions(gltf)
-    compressed_start = min((r["byteOffset"] for r in regions), default=last_image_end)
-    if regions and compressed_start < last_image_end:
-        raise ValueError(f"{path}: meshopt data is interleaved with images, cannot relocate safely")
-    for r in regions:
-        if r.get("buffer", 0) != 0:
-            raise ValueError(f"{path}: meshopt region is not in buffer 0")
+    chunks = buffer_chunks(gltf)
+    for c in chunks:
+        c["image"] = c["view"] in image_views
 
     # Re-encode, keeping the original bytes for anything already small enough.
-    new_bytes: dict[int, bytes] = {}
+    replacement: dict[int, bytes] = {}
     saved = 0
     for im in images:
         bv = views[im["bufferView"]]
         start = bv.get("byteOffset", 0)
         raw = binary[start : start + bv["byteLength"]]
         try:
-            replacement = resize_webp(raw, max_side, quality)
-        except Exception as e:  # a texture format Pillow cannot read stays untouched
+            smaller = resize_webp(raw, max_side, quality)
+        except Exception as e:  # a format Pillow cannot read stays untouched
             print(f"  ! {path.name} image bv{im['bufferView']}: {e}, left as is")
-            replacement = None
-        if replacement is None or len(replacement) >= len(raw):
-            new_bytes[im["bufferView"]] = raw
+            smaller = None
+        if smaller is None or len(smaller) >= len(raw):
+            replacement[im["bufferView"]] = raw
         else:
-            new_bytes[im["bufferView"]] = replacement
-            saved += len(raw) - len(replacement)
+            replacement[im["bufferView"]] = smaller
+            saved += len(raw) - len(smaller)
 
     if dry_run:
         print(f"{path.name}: would save {saved / 1e6:.2f} MB on disk")
         return
 
-    # Rebuild buffer 0: images first (in their original order), then the
-    # untouched compressed block shifted by a single delta.
+    # Rebuild the buffer by walking every chunk in its existing order, so a
+    # layout this script has not seen cannot silently lose data. An earlier
+    # version assumed images came first and dropped the geometry of any file
+    # where they did not.
+    kept_before = sum(
+        c["holder"]["byteLength"] for c in chunks if not c["image"]
+    )
+    chunks.sort(key=lambda c: c["holder"].get("byteOffset", 0))
+
     out = bytearray()
-    for i in sorted(image_views):
+    kept_after = 0
+    for c in chunks:
+        holder = c["holder"]
+        old_offset = holder.get("byteOffset", 0)
+        old_length = holder["byteLength"]
+        data = replacement[c["view"]] if c["image"] else binary[old_offset : old_offset + old_length]
+        if not c["image"]:
+            if len(data) != old_length:
+                raise ValueError(f"{path}: chunk {c['view']} truncated by the read")
+            kept_after += len(data)
         out += b"\x00" * (-len(out) % 4)
-        views[i]["byteOffset"] = len(out)
-        views[i]["byteLength"] = len(new_bytes[i])
-        out += new_bytes[i]
-    out += b"\x00" * (-len(out) % 4)
-    delta = len(out) - compressed_start
-    out += binary[compressed_start:]
-    for r in regions:
-        r["byteOffset"] += delta
+        holder["byteOffset"] = len(out)
+        holder["byteLength"] = len(data)
+        out += data
+
+    # Every non-image byte that went in must come out. This is the check the
+    # first version lacked, and it would have caught the whole failure.
+    if kept_after != kept_before:
+        raise ValueError(
+            f"{path}: {kept_before - kept_after} bytes of geometry lost; refusing to write"
+        )
 
     gltf["buffers"][0]["byteLength"] = len(out)
     before = path.stat().st_size
     write_glb(path, gltf, bytes(out))
-    after = path.stat().st_size
-    print(f"{path.name}: {before / 1e6:.2f} MB -> {after / 1e6:.2f} MB")
+    print(f"{path.name}: {before / 1e6:.2f} MB -> {path.stat().st_size / 1e6:.2f} MB")
 
 
 def main() -> None:
