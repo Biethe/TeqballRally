@@ -8,6 +8,8 @@ import {
   ABSENT_AFTER_SECONDS,
   DISCONNECT_GRACE_SECONDS,
   OnlineSession,
+  PAUSE_REQUEST_TIMEOUT_SECONDS,
+  type PauseState,
   type SessionHandlers,
 } from "../src/net/session";
 import type { GameMessage, SnapshotMessage } from "../src/net/protocol";
@@ -335,5 +337,181 @@ describe("guest applies the authoritative frame", () => {
     g.deliver({ ...snapshot({}), ballPos: { x: NaN, y: 0, z: 0 } });
 
     expect(g.applySnapshot).not.toHaveBeenCalled();
+  });
+});
+
+/** A session that may ask for a pause, plus a log of the states it passed through. */
+function pausable(role: "host" | "guest" = "host") {
+  const states: PauseState[] = [];
+  const details: (string | undefined)[] = [];
+  const ctx = session({ onPauseState: (st, d) => { states.push(st); details.push(d); } }, role);
+  ctx.s.pauseAllowed = true;
+  return { ...ctx, states, details };
+}
+
+describe("pausing an online match", () => {
+  it("is refused outright in a quick match", () => {
+    // The opponent is a stranger there, and a pause becomes a way to stall.
+    const { s, sent } = session({}, "host");
+    s.requestPause();
+
+    expect(sent.filter((m) => m.t === "pause")).toHaveLength(0);
+    expect(s.pauseState).toBe("none");
+    expect(s.isPaused).toBe(false);
+  });
+
+  it("asks rather than pausing unilaterally", () => {
+    const { s, sent, states } = pausable();
+    s.requestPause();
+
+    expect(sent.filter((m) => m.t === "pause")).toMatchObject([{ action: "request" }]);
+    expect(states).toEqual(["asking"]);
+    // Nothing is frozen until the opponent agrees.
+    expect(s.isPaused).toBe(false);
+  });
+
+  it("pauses both peers once the opponent accepts", () => {
+    const { s, deliver } = pausable();
+    s.requestPause();
+    deliver({ t: "pause", tick: 1, action: "accept" });
+
+    expect(s.pauseState).toBe("paused");
+    expect(s.isPaused).toBe(true);
+  });
+
+  it("carries on, with an explanation, when declined", () => {
+    const { s, deliver, states, details } = pausable();
+    s.requestPause();
+    deliver({ t: "pause", tick: 1, action: "decline" });
+
+    expect(s.isPaused).toBe(false);
+    expect(states).toEqual(["asking", "none"]);
+    expect(details[1]).toMatch(/declined/i);
+  });
+
+  it("offers the choice to whoever is asked", () => {
+    const { s, deliver, states } = pausable();
+    deliver({ t: "pause", tick: 1, action: "request" });
+
+    expect(states).toEqual(["asked"]);
+    expect(s.isPaused).toBe(false);
+  });
+
+  it("only the asked peer may answer", () => {
+    // Answering your own request would pause a game the other player never
+    // agreed to stop.
+    const { s, sent } = pausable();
+    s.requestPause();
+    sent.length = 0;
+    s.respondToPause(true);
+
+    expect(sent).toHaveLength(0);
+    expect(s.isPaused).toBe(false);
+  });
+
+  it("lets either player resume, so neither can hold the other hostage", () => {
+    for (const answerer of [true, false]) {
+      const { s, deliver, sent } = pausable();
+      if (answerer) {
+        s.requestPause();
+        deliver({ t: "pause", tick: 1, action: "accept" });
+      } else {
+        deliver({ t: "pause", tick: 1, action: "request" });
+        s.respondToPause(true);
+      }
+      expect(s.isPaused).toBe(true);
+
+      sent.length = 0;
+      s.resume();
+      expect(s.isPaused).toBe(false);
+      expect(sent.filter((m) => m.t === "pause")).toMatchObject([{ action: "resume" }]);
+    }
+  });
+
+  it("resumes when told to by the opponent", () => {
+    const { s, deliver } = pausable();
+    deliver({ t: "pause", tick: 1, action: "request" });
+    s.respondToPause(true);
+    deliver({ t: "pause", tick: 2, action: "resume" });
+
+    expect(s.isPaused).toBe(false);
+  });
+
+  it("gives up on a request nobody answers", () => {
+    // An opponent who put the phone down should not leave the asker stuck in
+    // a dialog for the rest of the match.
+    const { s, states, details } = pausable();
+    s.requestPause();
+
+    run(s, PAUSE_REQUEST_TIMEOUT_SECONDS - 1);
+    expect(s.pauseState).toBe("asking");
+
+    run(s, 2);
+    expect(s.pauseState).toBe("none");
+    expect(details[details.length - 1]).toMatch(/no answer/i);
+    expect(states).toEqual(["asking", "none"]);
+  });
+
+  it("agrees when both ask at once", () => {
+    // Two requests crossing on the wire must not deadlock or double-pause.
+    const { s, deliver, sent } = pausable();
+    s.requestPause();
+    deliver({ t: "pause", tick: 1, action: "request" });
+
+    // Our own request stands; the crossing one does not overwrite it.
+    expect(s.pauseState).toBe("asking");
+    deliver({ t: "pause", tick: 2, action: "accept" });
+    expect(s.isPaused).toBe(true);
+    expect(sent.filter((m) => m.t === "pause")).toMatchObject([{ action: "request" }]);
+  });
+
+  it("accepts a request that arrives after it already paused", () => {
+    const { s, deliver, sent } = pausable();
+    deliver({ t: "pause", tick: 1, action: "request" });
+    s.respondToPause(true);
+    sent.length = 0;
+
+    // The opponent asked again — a retry, or a message that overtook ours.
+    deliver({ t: "pause", tick: 2, action: "request" });
+
+    expect(s.isPaused).toBe(true);
+    expect(sent.filter((m) => m.t === "pause")).toMatchObject([{ action: "accept" }]);
+  });
+
+  it("ignores a malformed pause frame", () => {
+    const { s, deliver } = pausable();
+    deliver({ t: "pause", tick: 1, action: "nap" } as unknown as GameMessage);
+    expect(s.pauseState).toBe("none");
+  });
+
+  it("keeps talking while paused, so a pause is never read as a walkout", () => {
+    // Freezing the traffic too would start the forfeit countdown and hand the
+    // match away during the pause it was meant to allow.
+    const onOpponentForfeit = vi.fn();
+    const states: PauseState[] = [];
+    const ctx = session({ onOpponentForfeit, onPauseState: (st) => states.push(st) }, "host");
+    ctx.s.pauseAllowed = true;
+    ctx.deliver({ t: "pause", tick: 1, action: "request" });
+    ctx.s.respondToPause(true);
+
+    for (let i = 0; i < Math.round((DISCONNECT_GRACE_SECONDS + 5) / SIM_DT); i++) {
+      ctx.deliver({ t: "input", tick: i, moveX: 0, moveZ: 0, strike: false, pop: false, confirm: false });
+      ctx.s.step(SIM_DT);
+    }
+
+    expect(ctx.s.isPaused).toBe(true);
+    expect(onOpponentForfeit).not.toHaveBeenCalled();
+  });
+
+  it("still forfeits if the opponent vanishes during a pause", () => {
+    const onOpponentForfeit = vi.fn();
+    const ctx = session({ onOpponentForfeit }, "host");
+    ctx.s.pauseAllowed = true;
+    ctx.deliver({ t: "pause", tick: 1, action: "request" });
+    ctx.s.respondToPause(true);
+
+    run(ctx.s, ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 2);
+
+    expect(onOpponentForfeit).toHaveBeenCalledTimes(1);
   });
 });

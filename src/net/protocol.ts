@@ -140,6 +140,20 @@ export interface SetupMessage {
   ball: string;
 }
 
+/**
+ * A pause negotiated between the players.
+ *
+ * A request rather than a unilateral freeze: stopping someone else's game
+ * without asking is the kind of thing a stranger would abuse, so the opponent
+ * decides. Offered only in private games, where the two people already know
+ * each other.
+ */
+export interface PauseMessage {
+  t: "pause";
+  tick: number;
+  action: "request" | "accept" | "decline" | "resume";
+}
+
 /** Host-only: the authoritative score and phase. */
 export interface StateMessage {
   t: "state";
@@ -174,6 +188,7 @@ export interface PongMessage {
 }
 
 export type GameMessage =
+  | PauseMessage
   | SetupMessage
   | InputMessage
   | SnapshotMessage
@@ -362,6 +377,14 @@ export function isValidStrike(msg: unknown): msg is StrikeMessage {
     typeof m.clip === "string" &&
     Number.isFinite(m.spin)
   );
+}
+
+export const PAUSE_ACTIONS = ["request", "accept", "decline", "resume"] as const;
+
+export function isValidPause(msg: unknown): msg is PauseMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<PauseMessage>;
+  return m.t === "pause" && (PAUSE_ACTIONS as readonly string[]).includes(m.action ?? "");
 }
 
 export function isValidSetup(msg: unknown): msg is SetupMessage {

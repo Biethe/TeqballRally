@@ -19,6 +19,7 @@ import type { Side } from "../ball";
 import type { NetConnection } from "./connection";
 import {
   isValidInput,
+  isValidPause,
   isValidSnapshot,
   reframe,
   vec,
@@ -47,6 +48,22 @@ export const ABSENT_AFTER_SECONDS = 2;
  */
 export const DISCONNECT_GRACE_SECONDS = 10;
 
+/**
+ * How long a pause request waits for an answer before giving up.
+ *
+ * An opponent who has put the phone down should not leave the asker staring at
+ * a dialog, so silence becomes a decline rather than an open question.
+ */
+export const PAUSE_REQUEST_TIMEOUT_SECONDS = 15;
+
+/**
+ * Where a pause negotiation stands.
+ *
+ * "asking" and "asked" are the two sides of the same moment, kept apart
+ * because only one of them may answer and only the other may withdraw.
+ */
+export type PauseState = "none" | "asking" | "asked" | "paused";
+
 export interface SessionHandlers {
   /**
    * The opponent is missing; `secondsLeft` counts down to a forfeit. Called
@@ -59,6 +76,8 @@ export interface SessionHandlers {
   onOpponentForfeit?: () => void;
   /** Authoritative score from the host, for a guest to display. */
   onScore?: (score: { player: number; ai: number; sets: [number, number]; serveOwner: Side }) => void;
+  /** The pause negotiation moved. `state` is what to show now. */
+  onPauseState?: (state: PauseState, detail?: string) => void;
 }
 
 export class OnlineSession {
@@ -78,6 +97,13 @@ export class OnlineSession {
   private absentFor = 0;
   /** A forfeit is announced once; the match cannot be won twice. */
   private forfeited = false;
+  /**
+   * Whether a pause may be asked for at all. Private games only: in a quick
+   * match the opponent is a stranger, and a pause is then a way to stall.
+   */
+  pauseAllowed = false;
+  private pause: PauseState = "none";
+  private pauseWait = 0;
   /** Guest presses awaiting a simulation step on the host. */
   private pendingGuest = { strike: false, pop: false, confirm: false };
   /** Guest: this frame's controls, latched until sent. */
@@ -108,6 +134,64 @@ export class OnlineSession {
 
   get isHost(): boolean {
     return this.role === "host";
+  }
+
+  /** True while the match should not advance on either peer. */
+  get isPaused(): boolean {
+    return this.pause === "paused";
+  }
+
+  get pauseState(): PauseState {
+    return this.pause;
+  }
+
+  private setPause(next: PauseState, detail?: string): void {
+    if (this.pause === next) return;
+    this.pause = next;
+    this.pauseWait = 0;
+    this.handlers.onPauseState?.(next, detail);
+  }
+
+  /** Ask the opponent to pause. Ignored if a negotiation is already running. */
+  requestPause(): void {
+    if (!this.pauseAllowed || this.disposed || this.pause !== "none") return;
+    this.conn.send({ t: "pause", action: "request" });
+    this.setPause("asking");
+  }
+
+  /** Answer an opponent's request. */
+  respondToPause(accept: boolean): void {
+    if (this.pause !== "asked") return;
+    this.conn.send({ t: "pause", action: accept ? "accept" : "decline" });
+    this.setPause(accept ? "paused" : "none");
+  }
+
+  /** End a pause. Either player may, so neither can hold the other hostage. */
+  resume(): void {
+    if (this.pause !== "paused") return;
+    this.conn.send({ t: "pause", action: "resume" });
+    this.setPause("none");
+  }
+
+  private onPauseMessage(action: "request" | "accept" | "decline" | "resume"): void {
+    switch (action) {
+      case "request":
+        // A request arriving mid-negotiation is answered by the state it finds:
+        // already paused means yes, anything else means the two crossed and the
+        // asker's own request stands.
+        if (this.pause === "paused") this.conn.send({ t: "pause", action: "accept" });
+        else if (this.pause === "none") this.setPause("asked");
+        return;
+      case "accept":
+        if (this.pause === "asking") this.setPause("paused");
+        return;
+      case "decline":
+        if (this.pause === "asking") this.setPause("none", "Your opponent declined");
+        return;
+      case "resume":
+        if (this.pause === "paused") this.setPause("none");
+        return;
+    }
   }
 
   /** Inbound. Everything is validated before it can touch the simulation. */
@@ -167,6 +251,10 @@ export class OnlineSession {
         return;
       }
 
+      case "pause":
+        if (isValidPause(msg)) this.onPauseMessage(msg.action);
+        return;
+
       default:
         return;
     }
@@ -194,6 +282,15 @@ export class OnlineSession {
       this.pendingGuest = { strike: false, pop: false, confirm: false };
     } else {
       this.sendInput();
+    }
+
+    // Traffic keeps flowing while paused, so a pause is never mistaken for a
+    // disconnect and an opponent who really does vanish is still noticed.
+    if (this.pause === "asking") {
+      this.pauseWait += dt;
+      if (this.pauseWait > PAUSE_REQUEST_TIMEOUT_SECONDS) {
+        this.setPause("none", "No answer from your opponent");
+      }
     }
 
     this.trackPresence(dt);
