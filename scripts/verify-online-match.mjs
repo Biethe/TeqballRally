@@ -129,6 +129,45 @@ console.log("guest locomotion:", JSON.stringify(guestSample.locos));
 console.log("host  action clips:", JSON.stringify(hostSample.clips));
 console.log("guest action clips:", JSON.stringify(guestSample.clips));
 
+// Input latency: how long between pressing a direction and this peer's own
+// character actually moving.
+//
+// Measured against the host rather than against a fixed millisecond budget.
+// Under software rendering a frame here takes hundreds of milliseconds, which
+// swamps any network delay, so an absolute threshold would measure the test
+// machine's GPU. The host has no network in its loop at all, so it is the
+// floor: a guest close to it is predicting, and a guest a round trip behind is
+// not.
+async function inputLatency(page) {
+  await page.evaluate(() => {
+    const m = window.__teq.match;
+    window.__lat = { start: m.chars.player.position.z, t0: performance.now(), moved: null };
+  });
+  await page.keyboard.down("KeyA");
+  const moved = await page
+    .waitForFunction(
+      () => {
+        const m = window.__teq.match;
+        if (Math.abs(m.chars.player.position.z - window.__lat.start) > 0.03) {
+          window.__lat.moved = performance.now() - window.__lat.t0;
+          return true;
+        }
+        return false;
+      },
+      null,
+      { timeout: 3000 }
+    )
+    .then(() => page.evaluate(() => window.__lat.moved))
+    .catch(() => null);
+  await page.keyboard.up("KeyA");
+  return moved;
+}
+
+const guestLatency = await inputLatency(guest);
+const hostLatency = await inputLatency(host);
+console.log("host  input latency:", hostLatency, "ms");
+console.log("guest input latency:", guestLatency, "ms");
+
 await guest.screenshot({ path: "/tmp/online-guest.png" });
 await browser.close();
 
@@ -145,6 +184,13 @@ const checks = [
   // animating, and a guest that runs no rules never starts a clip by itself.
   ["guest animates a run, not a slide", guestSample.locos.some((l) => l !== "player:Idle" && l !== "ai:Idle")],
   ["guest plays action clips", guestSample.clips.length > 0],
+  // Prediction means the guest's own character answers its controls locally,
+  // so it should respond about as fast as the host does rather than lagging it.
+  ["guest input measured", guestLatency !== null && hostLatency !== null],
+  [
+    "guest input is not a round trip behind the host",
+    guestLatency !== null && hostLatency !== null && guestLatency < hostLatency * 1.5 + 60,
+  ],
   ["no page errors", errors.length === 0],
 ];
 for (const [name, ok] of checks) console.log(`${ok ? "ok  " : "FAIL"} ${name}`);
