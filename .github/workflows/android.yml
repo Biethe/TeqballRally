@@ -10,6 +10,11 @@ name: Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      relay_url:
+        description: "Match relay, e.g. wss://teqopen-relay.onrender.com (blank = repo variable)"
+        required: false
+        type: string
   push:
     branches: ["claude/**"]
     paths-ignore:
@@ -44,8 +49,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # A packaged app cannot discover the relay: its own origin is
+      # https://localhost, so a same-origin guess would point at the phone.
+      # The address is baked in here, from the dispatch input if one was typed
+      # and otherwise from the repository variable, so a build can be produced
+      # entirely from the GitHub UI with no machine involved.
       - name: Build web assets and sync into the native project
-        run: npm run android:sync
+        env:
+          VITE_RELAY_URL: ${{ inputs.relay_url || vars.VITE_RELAY_URL }}
+        run: |
+          if [ -z "$VITE_RELAY_URL" ]; then
+            echo "::warning::No relay configured — online play will show as unavailable."
+          else
+            echo "Relay: $VITE_RELAY_URL"
+          fi
+          npm run android:sync
 
       - name: Assemble debug APK
         working-directory: android
@@ -58,6 +76,9 @@ jobs:
           echo "### APK built" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "\`$(du -h "$apk" | cut -f1)\` — commit \`${GITHUB_SHA:0:7}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          relay="${{ inputs.relay_url || vars.VITE_RELAY_URL }}"
+          echo "Relay: \`${relay:-none — online play disabled}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

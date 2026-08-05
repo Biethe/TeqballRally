@@ -130,6 +130,24 @@ two peers can never disagree about a point.
 npm run relay        # PORT=8787, health check on /healthz
 ```
 
+### Deploying with only a phone
+
+Everything below can be done from a mobile browser.
+
+1. **Host the relay.** Sign in to a container host with GitHub, create a service
+   from this repository, and let `render.yaml` configure it. Wait for the
+   `wss://…` URL, and confirm `https://…/healthz` answers `{"ok":true}`.
+2. **Tell the app where it is.** GitHub → Settings → Secrets and variables →
+   Actions → Variables → new repository variable `VITE_RELAY_URL`, set to the
+   `wss://` URL. Or skip this and type the URL each time in step 3.
+3. **Build.** GitHub → Actions → *Android APK* → **Run workflow**, optionally
+   pasting the relay URL. The run summary prints which relay was baked in.
+4. **Install.** Download the `teqopen-debug-apk` artifact from the finished
+   run, unzip, open the APK. Repeat on the second phone.
+
+A build with no relay configured still installs and plays; online is shown as
+unavailable rather than failing partway through a lobby.
+
 ### Where the relay runs
 
 A Firebase project is also a Google Cloud project, so the relay belongs on

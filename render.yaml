@@ -1,0 +1,27 @@
+# Blueprint for hosting the match relay without a command line.
+#
+# Cloud Run is the better long-term home — it sits in the same Google project
+# as Firebase Hosting — but deploying there needs the gcloud CLI or a service
+# account key, neither of which is reachable from a phone. This gets a wss://
+# endpoint from a browser: sign in with GitHub, point the service at this
+# repository, and the blueprint supplies everything else.
+#
+# Check the provider's current free-tier terms before relying on it. Free
+# instances typically sleep when idle, so the first connection after a quiet
+# period can take the better part of a minute to wake — a slow lobby, not a
+# broken one.
+services:
+  - type: web
+    name: teqopen-relay
+    runtime: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    plan: free
+    healthCheckPath: /healthz
+    # Rooms live in the relay's memory, so a second instance would seat two
+    # players in separate rooms under the same code and they would never find
+    # each other. Sharing room state is what would lift this.
+    numInstances: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
