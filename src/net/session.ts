@@ -30,9 +30,34 @@ import {
 /** Pose updates per second. Well below the simulation rate; smoothing covers the gap. */
 const MOVE_HZ = 20;
 
+/**
+ * Silence long enough to call the opponent absent.
+ *
+ * Poses arrive every 50 ms unconditionally, so a second of nothing is already
+ * abnormal; two gives a hiccup room to recover without the player seeing a
+ * warning for a blip that fixed itself.
+ */
+export const ABSENT_AFTER_SECONDS = 2;
+
+/**
+ * How long an absent opponent has to come back before forfeiting.
+ *
+ * Counted from the moment absence is detected, so a walkout costs the waiting
+ * player about twelve seconds in the worst case rather than stranding them in
+ * a match that can never end.
+ */
+export const DISCONNECT_GRACE_SECONDS = 10;
+
 export interface SessionHandlers {
-  /** The opponent has been quiet this long (seconds); the UI may warn. */
-  onStale?: (seconds: number) => void;
+  /**
+   * The opponent is missing; `secondsLeft` counts down to a forfeit. Called
+   * every step while absent, so the UI can show a live countdown.
+   */
+  onOpponentAbsent?: (secondsLeft: number) => void;
+  /** The opponent came back before the grace ran out. */
+  onOpponentReturned?: () => void;
+  /** The grace expired. The local player wins by default; fired once. */
+  onOpponentForfeit?: () => void;
   /** Authoritative score from the host, for a guest to display. */
   onScore?: (score: { player: number; ai: number; sets: [number, number]; serveOwner: Side }) => void;
 }
@@ -43,6 +68,19 @@ export class OnlineSession {
   private sinceMove = 0;
   private unsubscribe: (() => void) | null = null;
   private disposed = false;
+  private peerPresent = true;
+  /**
+   * Seconds since any traffic arrived from the opponent.
+   *
+   * Owned here rather than read off RemotePlayer, whose clock only advances
+   * while the match is in a rally — an opponent who walks out between points
+   * would otherwise never be noticed at all.
+   */
+  private sinceMessage = 0;
+  /** Seconds the opponent has been absent, or 0 while they are present. */
+  private absentFor = 0;
+  /** A forfeit is announced once; the match cannot be won twice. */
+  private forfeited = false;
 
   constructor(
     private conn: NetConnection,
@@ -53,7 +91,14 @@ export class OnlineSession {
     match.versus = true;
     match.remote = this.remote;
     this.unsubscribe = match.subscribe((e) => this.onMatchEvent(e));
-    conn.setHandlers({ onMessage: (msg) => this.onNetMessage(msg) });
+    conn.setHandlers({
+      onMessage: (msg) => this.onNetMessage(msg),
+      // A clean disconnect is reported by the relay; silence is noticed by the
+      // step loop. Either starts the same countdown.
+      onPeer: (present) => {
+        this.peerPresent = present;
+      },
+    });
   }
 
   get isHost(): boolean {
@@ -101,6 +146,8 @@ export class OnlineSession {
   /** Inbound. Everything is validated before it can touch the simulation. */
   private onNetMessage(raw: GameMessage): void {
     if (this.disposed) return;
+    // Any frame at all proves the opponent is still there.
+    this.sinceMessage = 0;
     const msg = reframe(raw, this.role);
 
     switch (msg.t) {
@@ -145,8 +192,34 @@ export class OnlineSession {
       this.sendPose();
     }
 
-    const silent = this.remote.silentFor();
-    if (silent > 1) this.handlers.onStale?.(silent);
+    this.trackPresence(dt);
+  }
+
+  /**
+   * Watch for an opponent who has stopped playing, and forfeit the match to
+   * the local player once the grace period runs out. Without this a walkout
+   * leaves the other player in a match that can never end.
+   */
+  private trackPresence(dt: number): void {
+    if (this.forfeited) return;
+    this.sinceMessage += dt;
+    const absent = !this.peerPresent || this.sinceMessage > ABSENT_AFTER_SECONDS;
+
+    if (!absent) {
+      if (this.absentFor > 0) {
+        this.absentFor = 0;
+        this.handlers.onOpponentReturned?.();
+      }
+      return;
+    }
+
+    this.absentFor += dt;
+    const left = Math.max(0, DISCONNECT_GRACE_SECONDS - this.absentFor);
+    this.handlers.onOpponentAbsent?.(left);
+    if (left <= 0) {
+      this.forfeited = true;
+      this.handlers.onOpponentForfeit?.();
+    }
   }
 
   private sendPose(): void {

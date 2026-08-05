@@ -431,6 +431,74 @@ export class UI {
     this.standingsEl.classList.remove("hidden");
   }
 
+  /**
+   * Online waiting room: a status line, an optional room code to read out, and
+   * a way back. Used for every waiting state — searching for an opponent,
+   * holding a private room open, and connecting — because they differ only in
+   * what they say.
+   */
+  showLobbyStatus(title: string, detail: string, code: string | null, onCancel: () => void): void {
+    this.hideAll();
+    this.standingsEl.innerHTML = `
+      <div class="logo small">${title}</div>
+      ${code ? `<div class="lobby-code" aria-label="Room code">${code}</div>` : ""}
+      <div class="standings-rows"><div class="standings-row" id="lobby-detail"></div></div>
+      <button class="big-btn" id="btn-lobby-cancel" data-menu-back>CANCEL</button>`;
+    // textContent, not innerHTML: this carries countdowns and server messages.
+    this.standingsEl.querySelector<HTMLDivElement>("#lobby-detail")!.textContent = detail;
+    this.standingsEl.querySelector<HTMLButtonElement>("#btn-lobby-cancel")!.onclick = () => onCancel();
+    this.standingsEl.classList.remove("hidden");
+  }
+
+  /** Update the waiting room's status line without rebuilding the screen. */
+  setLobbyDetail(detail: string): void {
+    const el = this.standingsEl.querySelector<HTMLDivElement>("#lobby-detail");
+    if (el) el.textContent = detail;
+  }
+
+  /**
+   * Room-code entry. The input is upper-cased and filtered as it is typed, so
+   * a player reading a code off a friend's screen cannot enter something the
+   * server will reject.
+   */
+  showCodeEntry(
+    title: string,
+    placeholder: string,
+    onSubmit: (code: string) => void,
+    onBack: () => void
+  ): void {
+    this.hideAll();
+    this.standingsEl.innerHTML = `
+      <div class="logo small">${title}</div>
+      <div class="standings-rows">
+        <input class="code-input" id="lobby-code-input" inputmode="latin"
+               autocapitalize="characters" autocomplete="off" spellcheck="false"
+               maxlength="5" placeholder="${placeholder}" aria-label="Room code" />
+      </div>
+      <button class="big-btn" id="btn-code-go">JOIN</button>
+      <button class="big-btn alt" id="btn-code-back" data-menu-back>BACK</button>`;
+
+    const input = this.standingsEl.querySelector<HTMLInputElement>("#lobby-code-input")!;
+    const go = this.standingsEl.querySelector<HTMLButtonElement>("#btn-code-go")!;
+    const submit = () => {
+      const code = input.value.trim();
+      if (code.length > 0) onSubmit(code);
+    };
+    input.oninput = () => {
+      input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      go.disabled = input.value.length < 5;
+    };
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") submit();
+    };
+    go.disabled = true;
+    go.onclick = submit;
+    this.standingsEl.querySelector<HTMLButtonElement>("#btn-code-back")!.onclick = () => onBack();
+    this.standingsEl.classList.remove("hidden");
+    // Phones only raise the keyboard for a focus inside the tap that caused it.
+    setTimeout(() => input.focus(), 50);
+  }
+
   /** Names shown in the score line and end screen ("YOU"/"CPU", "P1"/"P2", …). */
   setLabels(left: string, right: string): void {
     this.labels = [left, right];
