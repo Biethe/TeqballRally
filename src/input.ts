@@ -17,6 +17,48 @@ export interface InputState {
   confirmPressed: boolean;
 }
 
+/**
+ * An InputState whose edge flags persist until a simulation step reads them.
+ *
+ * The display and the simulation run at different rates: a frame above the
+ * simulation rate may step the match zero times, and one below it may step
+ * several. Sampling `poll()` straight into a step would drop presses in the
+ * first case and replay one press twice in the second, so presses are latched
+ * here and consumed exactly once.
+ */
+export interface LatchedInput {
+  moveX: number;
+  moveZ: number;
+  strikePressed: boolean;
+  popPressed: boolean;
+  confirmPressed: boolean;
+}
+
+export function newLatch(): LatchedInput {
+  return { moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false };
+}
+
+/**
+ * Fold a freshly polled frame into the latch. Axes track the newest sample —
+ * a stick's current position is what matters — while presses accumulate.
+ */
+export function latchInput(latched: LatchedInput, sampled: InputState): void {
+  latched.moveX = sampled.moveX;
+  latched.moveZ = sampled.moveZ;
+  latched.strikePressed ||= sampled.strikePressed;
+  latched.popPressed ||= sampled.popPressed;
+  latched.confirmPressed ||= sampled.confirmPressed;
+}
+
+/** Take the latched state for one simulation step, clearing the edges it consumes. */
+export function consumeInput(latched: LatchedInput): InputState {
+  const state: InputState = { ...latched };
+  latched.strikePressed = false;
+  latched.popPressed = false;
+  latched.confirmPressed = false;
+  return state;
+}
+
 /** Edge-triggered controls available only while a highlight replay is visible. */
 export interface ReplayControls {
   /** Toggle the presentation between playing and paused. */

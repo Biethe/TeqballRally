@@ -62,7 +62,52 @@ npm run preview -- --port 5199 --strictPort
 node scripts/verify-build.mjs
 ```
 
-`?light=1` enables cheaper shadows and `?ts=8` speeds up simulation time.
+`?ts=8` speeds up simulation time. `?q=low|medium|high` forces a graphics tier
+for the session (`?light=1` still maps to `low`), overriding both the remembered
+choice and auto-detection.
+
+## Graphics quality
+
+`src/quality.ts` defines three tiers, picked automatically on first launch from
+`navigator.deviceMemory`, core count and whether the device is touch, then
+overridable from the in-game SETTINGS menu and remembered in `localStorage`.
+Applying a tier reloads the page — the engine's MSAA is fixed when the WebGL
+context is created.
+
+| | Pixel ratio cap | MSAA | Shadow map | Gym backdrop |
+| --- | --- | --- | --- | --- |
+| LOW | 1.0 | off | 512 | skipped |
+| MEDIUM | 1.5 | off | 1024 | loaded |
+| HIGH | 2.0 | on | 1024 | loaded |
+
+Skipping the gym on LOW avoids a 4.8 MB download and ~88 meshes; the
+procedural court is fully playable on its own.
+
+The match simulates at a fixed 60 Hz regardless of display rate (`SIM_DT` in
+`src/main.ts`), so a 30fps phone and a 120fps phone play the same game. Presses
+are latched between simulation steps — see `latchInput` in `src/input.ts`.
+
+## Texture budget
+
+Character textures are capped at 1024x1024. This matters more than file size:
+a 2048x2048 texture is about 1 MB as WebP but ~16 MB of RGBA once decoded (~21 MB
+with mipmaps), and each character carries eleven of them. The cap took each
+character from ~185 MB of decoded texture memory to ~46 MB.
+
+`scripts/shrink_textures.py` applies the cap (needs `pip install Pillow`):
+
+```bash
+python3 scripts/shrink_textures.py --dry-run assets/models/characters/*.glb
+python3 scripts/shrink_textures.py --max 1024 assets/models/characters/*.glb
+```
+
+It rewrites the GLB in place, moving the EXT_meshopt_compression block as one
+piece so the compressed geometry is never reinterpreted. Re-run
+`scripts/verify-build.mjs` afterwards — it loads the models in a real browser,
+which is the only thing that proves a rewritten GLB still works.
+
+Music must be MP3: a 30-second 24-bit stereo WAV is 7.9 MB against 0.5 MB at
+128 kbps.
 
 ## Deploy
 
