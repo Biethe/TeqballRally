@@ -66,6 +66,29 @@ node scripts/verify-build.mjs
 for the session (`?light=1` still maps to `low`), overriding both the remembered
 choice and auto-detection.
 
+## Phone layout
+
+`scripts/ui-shots.mjs` captures every screen at the dimensions of the devices
+this is played on and reports layout defects, which is how the landscape menus
+were found to be unusable — the back button sat above the viewport and the last
+two options below it.
+
+```bash
+npm run build && npm run preview -- --port 5199 --strictPort
+node scripts/ui-shots.mjs     # screenshots in /tmp/ui, problems on stdout
+```
+
+It checks four things a screenshot alone will not tell you: controls outside
+the viewport, tap targets under 44px, controls covered by something drawn over
+them, panels overlapping each other, and text clipped mid-line. The last two
+matter because a `pointer-events: none` overlay passes a hit test while still
+visually burying the control underneath.
+
+Landscape phones are the tight case — roughly 360px of height for what was
+laid out expecting 430. `@media (max-height: 500px)` in `src/style.css`
+compresses the vertical rhythm rather than scaling everything down, since
+proportional shrinking keeps the same overflow at a smaller size.
+
 ## Graphics quality
 
 `src/quality.ts` defines three tiers, picked automatically on first launch from
