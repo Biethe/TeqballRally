@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Release posture: TLS only. The relay must be reached over wss:// in a
+  shipped build. The debug source set overrides this file to allow cleartext
+  so a device can talk to a dev server or a relay on the local network.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
