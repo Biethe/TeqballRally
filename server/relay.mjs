@@ -31,6 +31,80 @@ const IDLE_TIMEOUT_MS = 45_000;
 /** @type {Map<string, { seats: (import("ws").WebSocket|null)[], emptyAt: number|null }>} */
 const rooms = new Map();
 
+/**
+ * Players waiting to be paired with anyone, longest wait first.
+ *
+ * Private rooms only connect people who already know each other, so without
+ * this a new player with nobody to invite never gets a game.
+ */
+/** @type {import("ws").WebSocket[]} */
+const queue = [];
+
+/** Crockford base32, matching the client's alphabet (no I, L, O or U). */
+const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+function mintRoomCode() {
+  // Retry rather than trusting randomness: a collision would drop a waiting
+  // pair into somebody else's match.
+  for (let attempt = 0; attempt < 50; attempt++) {
+    let code = "";
+    for (let i = 0; i < 5; i++) {
+      code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+    }
+    if (!rooms.has(code)) return code;
+  }
+  return null;
+}
+
+function dequeue(socket) {
+  const i = queue.indexOf(socket);
+  if (i >= 0) queue.splice(i, 1);
+}
+
+/** Seat two waiting players in a freshly minted room. */
+function pair(host, guest) {
+  const code = mintRoomCode();
+  if (!code) {
+    send(host, { t: "error", reason: "server busy, try again" });
+    send(guest, { t: "error", reason: "server busy, try again" });
+    return;
+  }
+  const room = roomFor(code);
+  room.seats[0] = host;
+  room.seats[1] = guest;
+  host.teq = { room, code, role: "host" };
+  guest.teq = { room, code, role: "guest" };
+  for (const [socket, role] of [
+    [host, "host"],
+    [guest, "guest"],
+  ]) {
+    send(socket, { t: "joined", room: code, role, ready: true });
+    send(socket, { t: "peer", joined: true });
+  }
+  console.log(`[relay] paired two players into ${code} (${rooms.size} rooms)`);
+}
+
+function handleQueue(socket, msg) {
+  if (socket.teq) return send(socket, { t: "error", reason: "already in a room" });
+  if (msg.v !== PROTOCOL_VERSION) {
+    return send(socket, { t: "error", reason: "version mismatch — update the app" });
+  }
+  if (queue.includes(socket)) return send(socket, { t: "queued", ahead: queue.indexOf(socket) });
+
+  // Take the longest-waiting player, skipping any that went away without the
+  // close handler having run yet.
+  while (queue.length > 0) {
+    const peer = queue.shift();
+    if (!peer || peer.readyState !== peer.OPEN || peer.teq) continue;
+    pair(peer, socket);
+    return;
+  }
+  queue.push(socket);
+  socket.isAlive = true;
+  send(socket, { t: "queued", ahead: 0 });
+  console.log(`[relay] queued a player (${queue.length} waiting)`);
+}
+
 const send = (socket, msg) => {
   if (socket && socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
 };
@@ -50,6 +124,8 @@ function peerOf(room, socket) {
 }
 
 function releaseSeat(socket) {
+  // A player who leaves while still waiting was never seated.
+  dequeue(socket);
   const { room, code } = socket.teq ?? {};
   if (!room) return;
   const i = room.seats.indexOf(socket);
@@ -90,7 +166,7 @@ function handleJoin(socket, msg) {
 const httpServer = createServer((req, res) => {
   if (req.url === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, rooms: rooms.size }));
+    res.end(JSON.stringify({ ok: true, rooms: rooms.size, waiting: queue.length }));
     return;
   }
   res.writeHead(404).end();
@@ -119,14 +195,16 @@ wss.on("connection", (socket) => {
     }
     socket.isAlive = true;
 
-    if (type === "join") {
+    if (type === "join" || type === "queue" || type === "cancel") {
       let msg;
       try {
         msg = JSON.parse(text);
       } catch {
         return;
       }
-      handleJoin(socket, msg);
+      if (type === "join") handleJoin(socket, msg);
+      else if (type === "queue") handleQueue(socket, msg);
+      else dequeue(socket);
       return;
     }
 

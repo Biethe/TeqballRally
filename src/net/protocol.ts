@@ -118,6 +118,30 @@ export interface JoinMessage {
   room: string;
 }
 
+/**
+ * Ask to be paired with whoever else is waiting.
+ *
+ * Private rooms only work between people who already know each other, which
+ * for a new game means nobody plays. The queue is the path for a player with
+ * no one to invite: the relay mints a room and seats the two longest-waiting
+ * players in it.
+ */
+export interface QueueMessage {
+  t: "queue";
+  v: number;
+}
+
+/** Relay -> client: waiting for an opponent. `ahead` is the queue position. */
+export interface QueuedMessage {
+  t: "queued";
+  ahead: number;
+}
+
+/** Leave the queue without closing the socket. */
+export interface CancelMessage {
+  t: "cancel";
+}
+
 /** Relay -> client, once the room is known. */
 export interface JoinedMessage {
   t: "joined";
@@ -137,7 +161,14 @@ export interface ErrorMessage {
   reason: string;
 }
 
-export type SignalMessage = JoinMessage | JoinedMessage | PeerMessage | ErrorMessage;
+export type SignalMessage =
+  | JoinMessage
+  | JoinedMessage
+  | PeerMessage
+  | ErrorMessage
+  | QueueMessage
+  | QueuedMessage
+  | CancelMessage;
 export type NetMessage = GameMessage | SignalMessage;
 
 // ------------------------------------------------------------------- helpers
