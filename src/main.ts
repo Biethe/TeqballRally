@@ -14,6 +14,7 @@ import {
   storeTier,
 } from "./quality";
 import { VENUE_IDS, resolveVenue, storeVenue, venueFor } from "./venue";
+import { INTRO_SECONDS, introPose } from "./intro";
 import { Ball, type Side } from "./ball";
 import { Character } from "./character";
 import { MatchController } from "./match";
@@ -136,6 +137,13 @@ async function boot(): Promise<void> {
   // ---- split screen (versus mode) ----
   let versusCam: TargetCamera | null = null;
   let cameraMode: CameraMode = "court";
+  /**
+   * Seconds left of the establishing shot, or null when a match is being
+   * played normally. The simulation is held while it runs: the CPU is
+   * perfectly willing to serve during a camera move, and an intro that ends
+   * with the score already 1-0 is worse than no intro.
+   */
+  let introLeft: number | null = null;
   const enableSplit = (assign: VersusAssign) => {
     input.versusAssign = assign;
     gs.camera.viewport = new Viewport(0, 0, 0.5, 1);
@@ -516,6 +524,37 @@ async function boot(): Promise<void> {
       else cycleCameraMode();
     }
     const inp = input.poll(cameraMode);
+    if (introLeft !== null) {
+      // Any deliberate press skips the shot. The press is spent doing that
+      // rather than falling through to a serve, which is why this returns.
+      const skip = inp.confirmPressed || inp.strikePressed || inp.popPressed || cameraCycle;
+      // Wall-clock, not `dt`: `dt` is capped at MAX_FRAME_DT so a stalled
+      // frame cannot inject a huge simulation step, and the intro plays right
+      // after a load, which is exactly when frames stall. Counting it in
+      // capped steps would stretch a 3.6 s shot to whatever the framerate
+      // felt like.
+      introLeft = skip ? 0 : introLeft - Math.min(0.25, gs.engine.getDeltaTime() / 1000);
+      if (introLeft <= 0) {
+        introLeft = null;
+        ui.hideIntro();
+      } else if (match) {
+        // The play camera first, so the shot has a live pose to arrive at.
+        match.updateCamera(gs.camera, cameraMode);
+        const end = {
+          x: gs.camera.position.x,
+          y: gs.camera.position.y,
+          z: gs.camera.position.z,
+          tx: gs.camera.getTarget().x,
+          ty: gs.camera.getTarget().y,
+          tz: gs.camera.getTarget().z,
+        };
+        const shot = introPose(1 - introLeft / INTRO_SECONDS, end, venueFor(venueId).sweep);
+        gs.camera.position.set(shot.x, shot.y, shot.z);
+        gs.camera.setTarget(new Vector3(shot.tx, shot.ty, shot.tz));
+        gs.scene.render();
+        return;
+      }
+    }
     if (match) {
       latchInput(latchedP1, inp);
       if (versusCam) {
@@ -1356,6 +1395,17 @@ async function boot(): Promise<void> {
     else disableSplit();
     match.reset();
     ui.showHUD();
+    // No establishing shot online: it holds the local simulation, and the
+    // other peer has no idea that is happening. Three seconds of one side
+    // admiring the venue while the other plays is a forfeited point.
+    if (opts.online) {
+      introLeft = null;
+      ui.hideIntro();
+    } else {
+      introLeft = INTRO_SECONDS;
+      simAccumulator = 0;
+      ui.showIntro(venueFor(venueId).label, opts.labels[0], opts.labels[1]);
+    }
     practiceCoach = opts.practice
       ? new PracticeCoach(controller, ui, () => input.hasGamepad(), () => input.isTouch)
       : null;

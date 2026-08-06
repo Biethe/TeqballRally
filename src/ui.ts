@@ -69,6 +69,7 @@ export class UI {
   private scoreEl: HTMLDivElement;
   private bannerEl: HTMLDivElement;
   private hintEl: HTMLDivElement;
+  private introEl: HTMLDivElement;
   private endEl: HTMLDivElement;
   private endTitle: HTMLDivElement;
   private pauseEl: HTMLDivElement;
@@ -172,6 +173,12 @@ export class UI {
     this.hintEl = document.createElement("div");
     this.hintEl.id = "hint";
     this.hintEl.classList.add("hidden");
+    // Broadcast-style card over the establishing shot: which venue, who is
+    // playing. It sits in the HUD rather than being its own screen so the
+    // camera move is never covered by a full-screen panel.
+    this.introEl = document.createElement("div");
+    this.introEl.id = "intro-card";
+    this.introEl.classList.add("hidden");
     this.replayEl = document.createElement("div");
     this.replayEl.id = "replay-indicator";
     this.replayEl.classList.add("hidden");
@@ -291,6 +298,7 @@ export class UI {
       this.scoreEl,
       this.bannerEl,
       this.hintEl,
+      this.introEl,
       this.replayEl,
       this.replayControlsEl,
       this.meterEl,
@@ -807,6 +815,24 @@ export class UI {
     this.bannerEl.classList.remove("hidden");
     if (this.bannerTimer !== null) window.clearTimeout(this.bannerTimer);
     this.bannerTimer = window.setTimeout(() => this.bannerEl.classList.add("hidden"), 2000);
+  }
+
+  /** Venue and line-up card, shown over the pre-match establishing shot. */
+  showIntro(venue: string, home: string, away: string): void {
+    this.introEl.innerHTML = `
+      <div class="intro-venue"></div>
+      <div class="intro-vs"><span></span><em>VS</em><span></span></div>
+      <div class="intro-skip">TAP TO SKIP</div>`;
+    const [venueEl] = this.introEl.getElementsByClassName("intro-venue");
+    venueEl.textContent = venue;
+    const names = this.introEl.querySelectorAll(".intro-vs span");
+    names[0].textContent = home;
+    names[1].textContent = away;
+    this.introEl.classList.remove("hidden");
+  }
+
+  hideIntro(): void {
+    this.introEl.classList.add("hidden");
   }
 
   hint(text: string | null): void {

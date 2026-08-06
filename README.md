@@ -89,6 +89,14 @@ laid out expecting 430. `@media (max-height: 500px)` in `src/style.css`
 compresses the vertical rhythm rather than scaling everything down, since
 proportional shrinking keeps the same overflow at a smaller size.
 
+The look is a lit arena rather than a dark utility screen: floodlit blue,
+teqball's vermilion for anything that starts a match, and chunky bordered
+panels. Every raised control sits on a flat colour lip (`--lip`) and drops
+onto it when pressed, which is what reads as a button on a phone — a
+one-pixel border and a hover state say nothing to a finger. One rule carries
+the whole palette: warm means "do this", everything else is cool, so the
+action on a screen is never ambiguous.
+
 ## Graphics quality
 
 `src/quality.ts` defines three tiers, picked automatically on first launch from
@@ -128,6 +136,49 @@ drawn over it. That is what makes them look like three places rather than one
 court with three wallpapers — and when the tier skips the backdrop, the court
 falls back to painting its own floor in the venue's colour, so LOW still gets
 green grass or blue hard court for no download at all.
+
+### Set dressing
+
+The venue models are empty sports grounds. What makes one look like a match is
+built in `src/environment.ts` from a palette in the venue preset — a ring of
+lit boards around the court, the crowd standing behind it, corner flags —
+because a real teqball court sits inside exactly that, and none of it needs to
+be downloaded.
+
+The cost is draw calls, so both parts are built to collapse into a handful:
+
+- Ribbon panels are merged into one mesh per colour. A 72-panel ring around
+  the sports hall's ellipse is three calls.
+- Spectators are thin instances, one mesh per shirt colour, so a crowd of any
+  size is six calls. That is why everyone is the same body and head: a thin
+  instance costs a matrix, and only the source mesh costs a draw.
+
+The whole lot rides with the backdrop and is skipped on the tier that skips it.
+Two things it learned the hard way: the crowd stands on the ground rather than
+on tiered decks, because a grandstand around a schoolyard-sized court looks
+like a mistake and the decks buried the benches the models already have; and
+spectators are sized against the players rather than against life, since
+`CHARACTER_SCALE` puts a character at about 1.45 m in an otherwise 1:1 world.
+
+### The establishing shot
+
+An offline match opens on the venue rather than on the table: `src/intro.ts`
+swings the camera in from wide and high over about three and a half seconds,
+under a broadcast card naming the venue and the two players. Any press skips
+it. The simulation is held while it runs, because the CPU is perfectly happy
+to serve during a camera move.
+
+Online matches do not get one. Holding the local simulation while the other
+peer keeps playing is a forfeited point, and there is no reason for the two
+phones to agree about a camera.
+
+The shot is plain numbers rather than Babylon vectors so `tests/intro.test.ts`
+can assert the parts that fail silently: that it ends exactly on the live play
+camera, that it never dips below the floor, and that a bounded sweep stays
+inside its bounds. Each venue can name its own `sweep`, and the sports hall
+needs one — it is enclosed, so pulling back leaves the bowl and lifting hits
+the roof trusses. Its shot stays at the play camera's own height, which is the
+one line through the hall the game already proves is clear.
 
 ### Preparing a backdrop model
 
