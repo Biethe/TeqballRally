@@ -29,6 +29,7 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { GROUND_Y } from "./config";
+import { Crowd } from "./crowd";
 import type { Dressing, Rgb, Venue } from "./venue";
 
 /** A point on the court's perimeter, with the outward direction it faces. */
@@ -165,13 +166,36 @@ function buildRibbon(
  * material belongs to — and paired with a per-figure palette that turns out to
  * be enough at the size a spectator is on screen.
  */
-async function loadCrowdLibrary(scene: Scene): Promise<Mesh[]> {
+export interface CrowdLibrary {
+  /** Figures posed standing and cheering. */
+  standing: Mesh[];
+  /** Figures posed sitting — for benches and bleachers, useless on flat ground. */
+  seated: Mesh[];
+}
+
+async function loadCrowdLibrary(scene: Scene): Promise<CrowdLibrary> {
   const res = await SceneLoader.ImportMeshAsync("", "/models/Crowd/", "Crowd.glb", scene);
+
+  /**
+   * The figure a part belongs to, by walking up to the node the exporter
+   * named.
+   *
+   * Not simply `m.parent`: the compression pass nests a generated `node0`
+   * between the named node and its meshes, so the parent is anonymous and the
+   * pose tag — the only record of whether a figure is standing or sitting —
+   * lives one level further up.
+   */
+  const figureOf = (m: Mesh): string => {
+    for (let node = m.parent; node; node = node.parent) {
+      if (node.name.startsWith("stand_") || node.name.startsWith("sit_")) return node.name;
+    }
+    return m.parent?.name ?? m.name;
+  };
+
   const people = new Map<string, Mesh[]>();
   for (const m of res.meshes) {
     if (!(m instanceof Mesh) || m.getTotalVertices() === 0) continue;
-    // Every part of one figure hangs off that figure's node.
-    const who = m.parent?.name ?? m.name;
+    const who = figureOf(m);
     const group = people.get(who);
     if (group) group.push(m);
     else people.set(who, [m]);
@@ -248,7 +272,9 @@ async function loadCrowdLibrary(scene: Scene): Promise<Mesh[]> {
     );
     person.bakeCurrentTransformIntoVertices();
   }
-  return library;
+  const standing = library.filter((m) => m.name.includes("stand_"));
+  const seated = library.filter((m) => m.name.includes("sit_"));
+  return { standing, seated };
 }
 
 /** How tall a spectator stands, in metres, against ~1.45 m players. */
@@ -273,10 +299,10 @@ function placeCrowd(
   spec: NonNullable<Dressing["crowd"]>,
   library: Mesh[],
   L: number,
-  W: number
-): Mesh[] {
-  if (library.length === 0) return [];
-  const perFigure: Matrix[][] = library.map(() => []);
+  W: number,
+  into: Placement
+): void {
+  if (library.length === 0) return;
 
   // A cheap deterministic hash: same spot, same person, every time.
   const noise = (a: number, b: number): number => {
@@ -307,25 +333,147 @@ function placeCrowd(
           ),
           new Vector3(x, GROUND_Y, z + (seed - 0.5) * spec.spacing * 0.4)
         );
-        perFigure[Math.floor(seed * library.length) % library.length].push(matrix);
+        placeAt(into, library[Math.floor(seed * library.length) % library.length], matrix);
       }
     }
   }
+}
 
+/**
+ * Where each figure is asked to appear, accumulated across every placement
+ * pass before any buffer is written.
+ *
+ * Accumulating rather than appending to a live mesh is deliberate: one figure
+ * can be wanted by the touchline rows *and* by a bench, and reading the
+ * existing instances back out of Babylon to extend them does not work — the
+ * world-matrix array it would read is not built until the buffer has been
+ * uploaded, so the first pass throws and takes the whole crowd with it.
+ */
+type Placement = Map<Mesh, Matrix[]>;
+
+function placeAt(into: Placement, person: Mesh, matrix: Matrix): void {
+  const list = into.get(person);
+  if (list) list.push(matrix);
+  else into.set(person, [matrix]);
+}
+
+/**
+ * Upload every accumulated placement, once.
+ *
+ * Returns the meshes and the exact arrays that were uploaded, because the
+ * animator has to own those arrays: it rewrites them in place and tells
+ * Babylon the buffer changed, which is far cheaper than rebuilding matrices.
+ */
+function applyPlacement(into: Placement): { placed: Mesh[]; buffers: [Mesh, Float32Array][] } {
   const placed: Mesh[] = [];
-  library.forEach((person, i) => {
-    const matrices = perFigure[i];
-    if (matrices.length === 0) {
-      person.dispose();
-      return;
-    }
+  const buffers: [Mesh, Float32Array][] = [];
+  for (const [person, matrices] of into) {
+    if (matrices.length === 0) continue;
     const buffer = new Float32Array(matrices.length * 16);
-    matrices.forEach((m, k) => m.copyToArray(buffer, k * 16));
-    person.thinInstanceSetBuffer("matrix", buffer, 16, true);
+    matrices.forEach((m, i) => m.copyToArray(buffer, i * 16));
+    // Not a static buffer: the crowd animator rewrites it every frame.
+    person.thinInstanceSetBuffer("matrix", buffer, 16, false);
     person.setEnabled(true);
     placed.push(person);
+    buffers.push([person, buffer]);
+  }
+  return { placed, buffers };
+}
+
+/**
+ * Seat people on the benches the venue models already contain.
+ *
+ * The three outdoor grounds share a scene template with eight benches, and
+ * their positions are measured from the model rather than guessed — see the
+ * README. Everyone here uses a seated pose, which is why those figures are
+ * kept at all: on flat ground they look like they have fallen over, and on a
+ * bench they are the only ones that work.
+ */
+function placeOnBenches(
+  spec: NonNullable<Dressing["benches"]>,
+  seated: Mesh[],
+  into: Placement
+): void {
+  if (seated.length === 0) return;
+  const noise = (a: number, b: number): number => {
+    const n = Math.sin(a * 91.7 + b * 47.3) * 33417.19;
+    return n - Math.floor(n);
+  };
+  spec.seats.forEach(([x, z], i) => {
+    for (let k = 0; k < spec.perBench; k++) {
+      const seed = noise(i * 5 + k, i);
+      if (seed > spec.density) continue;
+      const along = (k + 0.5 - spec.perBench / 2) * spec.spacing;
+      placeAt(
+        into,
+        seated[Math.floor(seed * seated.length) % seated.length],
+        Matrix.Compose(
+          new Vector3(1, 1, 1),
+          // Facing the court: the near-side benches have to turn around.
+          Quaternion.RotationYawPitchRoll(
+            (z > 0 ? Math.PI : 0) + (seed - 0.5) * 0.4,
+            0,
+            0
+          ),
+          new Vector3(x + along, GROUND_Y + spec.height, z)
+        )
+      );
+    }
   });
-  return placed;
+}
+
+/**
+ * Fill a bowl of bleachers: concentric elliptical rows, rising as they go back.
+ *
+ * The indoor hall is one seating bowl and its rows are modelled as full rings,
+ * so there is no per-seat geometry to read positions off — the rake is given
+ * here as a start radius and a rise per row, and checked by looking. Mostly
+ * seated, with a scattering standing, because a stand where everybody is doing
+ * the same thing reads as wallpaper.
+ */
+function placeOnTiers(
+  spec: NonNullable<Dressing["tiers"]>,
+  seated: Mesh[],
+  standing: Mesh[],
+  into: Placement
+): void {
+  if (seated.length === 0 && standing.length === 0) return;
+  const noise = (a: number, b: number): number => {
+    const n = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+    return n - Math.floor(n);
+  };
+
+  for (let row = 0; row < spec.rows; row++) {
+    const rx = spec.radiusX + row * spec.step;
+    const rz = spec.radiusZ + row * spec.step;
+    const y = GROUND_Y + spec.lift + row * spec.rise;
+    // Keep the spacing along the row roughly constant as the ring grows.
+    const circumference = Math.PI * (3 * (rx + rz) - Math.sqrt((3 * rx + rz) * (rx + 3 * rz)));
+    const count = Math.max(8, Math.round(circumference / spec.spacing));
+    for (let i = 0; i < count; i++) {
+      const seed = noise(i * 3 + row * 29, row);
+      if (seed > spec.density) continue;
+      const a = (i / count) * Math.PI * 2;
+      const x = Math.cos(a) * rx;
+      const z = Math.sin(a) * rz;
+      // Everyone faces the middle. The figures are modelled facing +z, so the
+      // yaw is measured from that.
+      const yaw = Math.atan2(-x, -z) + (seed - 0.5) * 0.3;
+      // A tenth of the bowl is on its feet.
+      const standingHere = seed > spec.density * 0.9;
+      const pool = standingHere && standing.length > 0 ? standing : seated;
+      if (pool.length === 0) continue;
+      placeAt(
+        into,
+        pool[Math.floor(seed * 977) % pool.length],
+        Matrix.Compose(
+          new Vector3(1, 1, 1),
+          Quaternion.RotationYawPitchRoll(yaw, 0, 0),
+          new Vector3(x, y, z)
+        )
+      );
+    }
+  }
 }
 
 /** Corner flags, for the outdoor grounds where a stand would be too much. */
@@ -357,22 +505,44 @@ function buildFlags(scene: Scene, colors: Rgb[], L: number, W: number): Mesh[] {
  * Returns the meshes so the caller can decide about shadows; they are frozen
  * here because none of them ever moves.
  */
-export async function buildEnvironment(scene: Scene, venue: Venue): Promise<Mesh[]> {
+export async function buildEnvironment(scene: Scene, venue: Venue, crowd?: Crowd): Promise<Mesh[]> {
   const { court, dressing } = venue;
   const built: Mesh[] = [];
+  let crowdBuffers: [Mesh, Float32Array][] = [];
   if (dressing.ribbon) {
     built.push(...buildRibbon(scene, dressing.ribbon, court.shape, court.halfLen, court.halfWid));
   }
-  if (dressing.crowd) {
+  if (dressing.crowd || dressing.benches || dressing.tiers) {
     // A crowd that fails to download is not worth losing the venue over.
     const library = await loadCrowdLibrary(scene).catch((e) => {
       console.warn("Crowd failed to load:", e);
-      return [] as Mesh[];
+      return { standing: [], seated: [] };
     });
-    built.push(...placeCrowd(dressing.crowd, library, court.halfLen, court.halfWid));
+    const placement: Placement = new Map();
+    if (dressing.crowd) {
+      placeCrowd(dressing.crowd, library.standing, court.halfLen, court.halfWid, placement);
+    }
+    if (dressing.benches) placeOnBenches(dressing.benches, library.seated, placement);
+    if (dressing.tiers) placeOnTiers(dressing.tiers, library.seated, library.standing, placement);
+    const applied = applyPlacement(placement);
+    built.push(...applied.placed);
+    crowdBuffers = applied.buffers;
+    // Anything left unplaced is still a mesh in the scene, drawn once at the
+    // origin — through the middle of the court, in full view.
+    for (const m of [...library.standing, ...library.seated]) {
+      if (!placement.has(m)) m.dispose();
+    }
   }
   if (dressing.flags) {
     built.push(...buildFlags(scene, dressing.flags, court.halfLen, court.halfWid));
+  }
+  // Hand the crowd's instance buffers to the animator before freezing: it
+  // rewrites them in place every frame, and a frozen world matrix does not
+  // stop that — the matrices are a separate buffer.
+  if (crowd) {
+    for (const [person, data] of crowdBuffers) {
+      crowd.add(data, () => person.thinInstanceBufferUpdated("matrix"));
+    }
   }
   for (const m of built) {
     m.isPickable = false;
