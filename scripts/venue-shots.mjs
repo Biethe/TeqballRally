@@ -19,6 +19,10 @@ const MERGE = !process.argv.includes("--no-merge");
 // venue that plays on its backdrop's surface: it has to fall back to painting
 // its own floor rather than leaving the players on nothing.
 const QUALITY = process.env.QUALITY ?? "high";
+// TOP=1 looks straight down from above the net. Perspective from the play
+// camera cannot tell you whether a venue's painted centre line sits on the
+// teqball court's centre line; this can.
+const TOP = process.env.TOP === "1";
 const VENUES = process.env.VENUES?.split(",") ?? ["gym", "basketball", "football", "tennis"];
 mkdirSync(OUT, { recursive: true });
 
@@ -118,11 +122,27 @@ for (const venue of VENUES) {
   await page.locator("#btn-start").click();
   // Both characters, the ball and the backdrop have to arrive before counting.
   await page.waitForFunction(() => window.__teq !== undefined, null, { timeout: 120000 });
+  // Mid-establishing-shot, before it hands over to the play camera.
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: `${OUT}/${venue}-intro.png` });
   await page.waitForTimeout(12000);
 
   const m = await measure(page);
   const calls = await drawCalls(page);
-  const tag = `${QUALITY === "high" ? "" : QUALITY + "-"}${MERGE ? "merged" : "raw"}`;
+  if (TOP) {
+    await page.evaluate(() => {
+      const scene = window.__teq.engine.scenes[0];
+      // A clone, because the match drives the play camera every frame and
+      // would put anything set here straight back.
+      const top = scene.activeCamera.clone("top-down");
+      top.position.set(0, 26, 0);
+      top.setTarget(new scene.activeCamera.position.constructor(0, 0, 0.001));
+      top.fov = 1.0;
+      scene.activeCamera = top;
+    });
+    await page.waitForTimeout(1500);
+  }
+  const tag = `${TOP ? "top-" : ""}${QUALITY === "high" ? "" : QUALITY + "-"}${MERGE ? "merged" : "raw"}`;
   await page.screenshot({ path: `${OUT}/${venue}-${tag}.png` });
   rows.push({ venue, calls, ...m, errors: errors.slice(0, 3) });
   console.log(venue, JSON.stringify({ calls, ...m }));

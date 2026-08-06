@@ -23,6 +23,7 @@ import "@babylonjs/loaders/glTF/2.0";
 import { BALL_RADIUS, CAMERA, GROUND_Y, SERVE_X, SPAWN, TABLE, TABLE_VISUAL } from "./config";
 import type { QualitySettings } from "./quality";
 import { VENUES, type ArenaModel, type CourtStyle, type Rgb, type Venue } from "./venue";
+import { buildEnvironment } from "./environment";
 
 // Meshopt-compressed GLBs are decoded locally so hosted builds do not depend
 // on a third-party CDN just to display a character or the arena.
@@ -88,9 +89,16 @@ export async function createGameScene(
   }
 
   // A venue that plays on its backdrop's surface still needs a floor painted
-  // when that backdrop is never going to arrive.
+  // when that backdrop is never going to arrive — and with no backdrop there
+  // is no venue centre line either, so it has to draw its own.
   const backdrop = quality.arena && venue.arena !== null;
-  buildCourt(scene, venue.court, venue.court.surface === "own" || !backdrop);
+  buildCourt(
+    scene,
+    backdrop ? venue.court : { ...venue.court, centreLine: "own" },
+    venue.court.surface === "own" || !backdrop
+  );
+  // Dressing rides with the backdrop: the tier that skips one skips both.
+  if (backdrop) buildEnvironment(scene, venue);
 
   // The table is small and required for the first playable frame.  The gym
   // backdrop is a 21+ MB GLB, so waiting for it here makes the hosted title
@@ -210,7 +218,9 @@ function buildLines(scene: Scene, style: CourtStyle, rgb: (c: Rgb) => Color3, W:
     return l;
   };
   // Halfway line across the court under the net, and the two service lines.
-  mkLine("half", 0.05, W * 2, 0, 0);
+  // A venue whose own court is already marked at x = 0 draws the halfway line
+  // for us — painting a second one only makes a brighter stripe on theirs.
+  if (style.centreLine === "own") mkLine("half", 0.05, W * 2, 0, 0);
   mkLine("svc-l", 0.05, 4.2, -(SERVE_X - 0.4), 0);
   mkLine("svc-r", 0.05, 4.2, SERVE_X - 0.4, 0);
 }

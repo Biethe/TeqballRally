@@ -13,6 +13,8 @@
  * stadium and still agree on every position.
  */
 
+import type { IntroSweep } from "./intro";
+
 export type VenueId = "gym" | "basketball" | "football" | "tennis";
 
 export const VENUE_IDS: VenueId[] = ["gym", "basketball", "football", "tennis"];
@@ -60,8 +62,18 @@ export interface CourtStyle {
   surface: "own" | "venue";
   /** "oval" fits a gymnasium's rounded side band; "rect" is the classic court. */
   shape: "oval" | "rect";
-  /** Low perimeter boards. Off where the venue already borders the play space. */
+  /** Low perimeter boards. Off where the ribbon of lit boards replaces them. */
   boards: boolean;
+  /**
+   * Who draws the line the table stands on.
+   *
+   * "own" paints it. "venue" leaves it to the backdrop's own centre line —
+   * basketball and football courts already have one, painted right where the
+   * teqball net goes, and a second line on top of it is just a brighter stripe
+   * in the middle of theirs. The two coincide to within a centimetre, so this
+   * is only ever about which one you can see.
+   */
+  centreLine: "own" | "venue";
   /** Floor half-extent along the table axis, in metres. */
   halfLen: number;
   /** Floor half-extent across, in metres. */
@@ -71,6 +83,41 @@ export interface CourtStyle {
   board: Rgb;
 }
 
+/**
+ * Procedural set dressing, built in `environment.ts` rather than downloaded.
+ *
+ * This is what turns an empty sports ground into a match: the ring of lit
+ * boards a teqball court actually sits inside, and a crowd close enough to be
+ * part of the picture. Every field is optional per venue, and the whole lot is
+ * skipped on the tier that skips the backdrop.
+ */
+export interface Dressing {
+  /** Ring of lit sponsor boards around the court. */
+  ribbon: {
+    /** Cycled panel by panel around the ring. */
+    colors: Rgb[];
+    /** How many panels make up the ring. */
+    panels: number;
+    height: number;
+    /** Distance beyond the court's edge. */
+    inset: number;
+  } | null;
+  /** Rows of onlookers standing behind the ring, along both long sides. */
+  crowd: {
+    rows: number;
+    /** Shirt colours, picked per person. */
+    colors: Rgb[];
+    /** Gap between the court edge and the first row. */
+    gap: number;
+    /** Distance between neighbours, and between rows. */
+    spacing: number;
+    /** 0..1 — how much of each row is occupied. Gaps stop it reading as a fence. */
+    density: number;
+  } | null;
+  /** Corner banner flags. */
+  flags: Rgb[] | null;
+}
+
 export interface Venue {
   id: VenueId;
   label: string;
@@ -78,6 +125,12 @@ export interface Venue {
   /** null renders the court alone — also what every tier without `arena` gets. */
   arena: ArenaModel | null;
   court: CourtStyle;
+  dressing: Dressing;
+  /**
+   * How wide the pre-match establishing shot opens. Omitted means the open-air
+   * default; a venue with a roof has to name one that stays under it.
+   */
+  sweep?: IntroSweep;
   /**
    * What fills the frame behind everything. The outdoor models have no sky of
    * their own, and against the indoor near-black they read as a court floating
@@ -105,6 +158,21 @@ const OUTDOOR = { span: 28.8, offsetX: 0, offsetY: -0.6, offsetZ: 0, rotationY: 
  */
 const OUTDOOR_COURT = { shape: "rect", halfLen: 8, halfWid: 5.2 } as const;
 
+/** Teqball's own competition colours, for the board ring every venue carries. */
+const TEQ_ORANGE: Rgb = [0.96, 0.35, 0.05];
+const TEQ_RED: Rgb = [0.78, 0.11, 0.13];
+const TEQ_WHITE: Rgb = [0.93, 0.93, 0.95];
+
+/** A crowd is a crowd: mixed shirts read better than a themed block. */
+const CROWD: Rgb[] = [
+  [0.62, 0.24, 0.22],
+  [0.2, 0.3, 0.5],
+  [0.68, 0.6, 0.3],
+  [0.72, 0.72, 0.74],
+  [0.26, 0.42, 0.32],
+  [0.3, 0.24, 0.36],
+];
+
 export const VENUES: Record<VenueId, Venue> = {
   gym: {
     id: "gym",
@@ -121,13 +189,28 @@ export const VENUES: Record<VenueId, Venue> = {
     court: {
       surface: "own",
       shape: "oval",
-      boards: true,
+      boards: false, // the ribbon is the boards here
+      centreLine: "own",
       halfLen: 9,
       halfWid: 6.7,
       floor: [0.13, 0.22, 0.38],
       line: [0.92, 0.93, 0.95],
       board: [0.93, 0.42, 0.08],
     },
+    // The gym already has its own seating bowl, so no stands: only the board
+    // ring the model does not have, following the court's ellipse.
+    dressing: {
+      ribbon: { colors: [TEQ_ORANGE, TEQ_RED, TEQ_WHITE], panels: 72, height: 0.62, inset: 0.2 },
+      crowd: null,
+      flags: null,
+    },
+    // A level swing around the court, and nothing else. Everything about this
+    // venue is enclosed: pulling back leaves the bowl, and lifting runs into
+    // the roof trusses — two earlier attempts opened on the outside of the
+    // dome and inside a wall respectively. Staying at the play camera's own
+    // height is the one line through the hall known to be clear, because the
+    // game is played looking along it.
+    sweep: { radius: 2, height: 0, swing: 1.35, boundX: 13, boundZ: 5.6 },
     sky: [0.045, 0.05, 0.09],
   },
   basketball: {
@@ -138,10 +221,16 @@ export const VENUES: Record<VenueId, Venue> = {
     court: {
       surface: "venue",
       ...OUTDOOR_COURT,
-      boards: true,
+      boards: false,
+      centreLine: "venue", // the halfway line under the hoops is already there
       floor: [0.38, 0.2, 0.14], // the court's own varnished boards, if it is skipped
       line: [0.96, 0.95, 0.92],
       board: [0.24, 0.27, 0.33],
+    },
+    dressing: {
+      ribbon: { colors: [TEQ_ORANGE, [0.1, 0.12, 0.16], TEQ_WHITE], panels: 44, height: 0.6, inset: 0.25 },
+      crowd: { rows: 2, colors: CROWD, gap: 1.35, spacing: 0.72, density: 0.72 },
+      flags: null,
     },
     sky: [0.42, 0.55, 0.72],
   },
@@ -156,9 +245,17 @@ export const VENUES: Record<VenueId, Venue> = {
       surface: "venue",
       ...OUTDOOR_COURT,
       boards: false,
+      centreLine: "venue", // the pitch's halfway line runs through the table
       floor: [0.16, 0.34, 0.16],
       line: [0.95, 0.97, 0.95],
       board: [0.9, 0.9, 0.92],
+    },
+    // Flags rather than stands: a touchline is somewhere you stand and watch,
+    // and the goals already fill both ends of the frame.
+    dressing: {
+      ribbon: { colors: [TEQ_RED, TEQ_WHITE, [0.12, 0.35, 0.18]], panels: 44, height: 0.55, inset: 0.3 },
+      crowd: { rows: 2, colors: CROWD, gap: 1.6, spacing: 0.78, density: 0.6 },
+      flags: [TEQ_ORANGE, TEQ_WHITE],
     },
     sky: [0.5, 0.62, 0.78],
   },
@@ -173,10 +270,18 @@ export const VENUES: Record<VenueId, Venue> = {
     court: {
       surface: "venue",
       ...OUTDOOR_COURT,
-      boards: true,
+      boards: false,
+      // A tennis court's cross line is the net, and the net is gone, so this
+      // one draws its own.
+      centreLine: "own",
       floor: [0.24, 0.45, 0.62],
       line: [0.97, 0.97, 0.97],
       board: [0.1, 0.3, 0.22],
+    },
+    dressing: {
+      ribbon: { colors: [[0.06, 0.3, 0.2], TEQ_WHITE, [0.1, 0.4, 0.28]], panels: 44, height: 0.58, inset: 0.28 },
+      crowd: { rows: 2, colors: CROWD, gap: 1.45, spacing: 0.75, density: 0.68 },
+      flags: null,
     },
     sky: [0.46, 0.58, 0.75],
   },
