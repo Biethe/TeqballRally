@@ -26,6 +26,8 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { GROUND_Y } from "./config";
 import type { Dressing, Rgb, Venue } from "./venue";
 
@@ -149,28 +151,108 @@ function buildRibbon(
 }
 
 /**
- * One spectator: a body and a head, merged so the pair still costs a single
- * draw call however many are standing there.
+ * Load the crowd library and reduce each person to one drawable mesh.
  *
- * A plain box at this distance reads as a coloured domino rather than a
- * person, which is what the first version of the crowd looked like. The head
- * is what makes the silhouette legible, and it is four segments because
- * nothing beyond that survives being 20 metres away and 30 pixels tall.
+ * The pack ships each figure split into five materials — hair, head,
+ * eyes/mouth, skin, clothes — which is five draw calls per person and useless
+ * for instancing. The colours are baked into vertex colours and the five parts
+ * merged, so a person becomes one mesh with one material that can be thin
+ * instanced.
  *
- * Sized against the players, not against life. `CHARACTER_SCALE` puts a
- * character at about 1.45 m in a world that is otherwise 1:1 metres, so a
- * real-world 1.75 m spectator would stand a head taller than everyone on
- * court.
+ * The colours themselves come from the material *names*. The pack's own .mtl
+ * is 0.8 grey everywhere, with texture paths pointing at a drive that does not
+ * exist, so the only usable colour information in it is which body part each
+ * material belongs to — and paired with a per-figure palette that turns out to
+ * be enough at the size a spectator is on screen.
  */
-function personMesh(scene: Scene, name: string): Mesh {
-  const body = MeshBuilder.CreateBox(`${name}-body`, { width: 0.3, height: 0.78, depth: 0.22 }, scene);
-  body.position.y = 0.39;
-  const head = MeshBuilder.CreateSphere(`${name}-head`, { diameter: 0.19, segments: 4 }, scene);
-  head.position.y = 0.87;
-  const person = Mesh.MergeMeshes([body, head], true, true);
-  // MergeMeshes only returns null for inputs this never produces.
-  return person ?? body;
+async function loadCrowdLibrary(scene: Scene): Promise<Mesh[]> {
+  const res = await SceneLoader.ImportMeshAsync("", "/models/Crowd/", "Crowd.glb", scene);
+  const people = new Map<string, Mesh[]>();
+  for (const m of res.meshes) {
+    if (!(m instanceof Mesh) || m.getTotalVertices() === 0) continue;
+    // Every part of one figure hangs off that figure's node.
+    const who = m.parent?.name ?? m.name;
+    const group = people.get(who);
+    if (group) group.push(m);
+    else people.set(who, [m]);
+  }
+
+  const shared = new StandardMaterial("crowd-skin", scene);
+  shared.diffuseColor = new Color3(1, 1, 1);
+  shared.specularColor = new Color3(0.03, 0.03, 0.03);
+  // Slight self-illumination so a spectator facing away from the sun is not a
+  // silhouette; the crowd is scenery, not something to be read.
+  shared.emissiveColor = new Color3(0.1, 0.1, 0.1);
+
+  const library: Mesh[] = [];
+  for (const [who, parts] of people) {
+    for (const part of parts) {
+      const material = part.material;
+      const colour =
+        material && "albedoColor" in material
+          ? (material as unknown as { albedoColor: Color3 }).albedoColor
+          : material && "diffuseColor" in material
+            ? (material as unknown as { diffuseColor: Color3 }).diffuseColor
+            : new Color3(0.7, 0.7, 0.7);
+      const count = part.getTotalVertices();
+      const colours = new Float32Array(count * 4);
+      for (let i = 0; i < count; i++) {
+        colours[i * 4] = colour.r;
+        colours[i * 4 + 1] = colour.g;
+        colours[i * 4 + 2] = colour.b;
+        colours[i * 4 + 3] = 1;
+      }
+      part.setVerticesData(VertexBuffer.ColorKind, colours);
+    }
+    const merged = parts.length === 1 ? parts[0] : Mesh.MergeMeshes(parts, true, true);
+    if (!merged) continue;
+    merged.name = `crowd-${who}`;
+    merged.material = shared;
+    // Vertex colours are a mesh flag rather than a material one, and default
+    // to on — set it explicitly so the single shared material cannot be read
+    // as the thing that gives everyone the same shirt.
+    merged.useVertexColors = true;
+    merged.setEnabled(false);
+    library.push(merged);
+  }
+
+  // One scale for everyone, from the median figure, rather than normalising
+  // each to the same height. These are cheering poses: several have their arms
+  // straight up, so their bounding box is a head taller than they are, and
+  // per-figure normalisation shrinks exactly the people who are celebrating
+  // hardest. Grounding stays per figure so nobody floats.
+  const heights = library
+    .map((m) => {
+      const box = m.getBoundingInfo().boundingBox;
+      return box.maximum.y - box.minimum.y;
+    })
+    .sort((a, b) => a - b);
+  const median = heights[Math.floor(heights.length / 2)] || 1;
+  const scale = SPECTATOR_HEIGHT / median;
+  for (const person of library) {
+    person.scaling.setAll(scale);
+    person.bakeCurrentTransformIntoVertices();
+    // Recentre on the figure's own footprint, not just the floor.
+    //
+    // The pack is one grandstand, and each figure was exported at the seat it
+    // occupies in it. `MergeMeshes` bakes world matrices into vertices, so
+    // that seat position survives as an offset inside the geometry — and a
+    // thin instance placed at the touchline then lands at
+    // touchline-plus-seat, which scattered a third of the crowd across the
+    // pitch. Only the vertical was being corrected before.
+    const box = person.getBoundingInfo().boundingBox;
+    person.position.set(
+      -(box.minimum.x + box.maximum.x) / 2,
+      -box.minimum.y,
+      -(box.minimum.z + box.maximum.z) / 2
+    );
+    person.bakeCurrentTransformIntoVertices();
+  }
+  return library;
 }
+
+/** How tall a spectator stands, in metres, against ~1.45 m players. */
+const SPECTATOR_HEIGHT = 1.42;
 
 /**
  * People watching, in rows behind the board ring along both long sides.
@@ -181,21 +263,20 @@ function personMesh(scene: Scene, name: string): Mesh {
  * already have. One dense row of onlookers reads as a crowd at a street game,
  * which is what these venues are.
  *
- * Everyone is a thin instance of one mesh per shirt colour, so the whole
- * crowd is a handful of draw calls whatever its size. The jitter is
- * deterministic — a hash of the seat's position rather than Math.random — so
- * the crowd is identical on both peers of an online match and identical
- * between runs when comparing screenshots.
+ * Each distinct figure is thin instanced, so the crowd costs one draw call per
+ * figure used rather than one per person. The jitter is deterministic — a hash
+ * of the position rather than Math.random — so the crowd is identical on both
+ * peers of an online match and identical between runs when comparing
+ * screenshots.
  */
-function buildCrowd(
-  scene: Scene,
+function placeCrowd(
   spec: NonNullable<Dressing["crowd"]>,
+  library: Mesh[],
   L: number,
   W: number
 ): Mesh[] {
-  const out: Mesh[] = [];
-  const mats = spec.colors.map((c, i) => flat(scene, `crowd-${i}`, c, 0.18));
-  const perColour: Matrix[][] = spec.colors.map(() => []);
+  if (library.length === 0) return [];
+  const perFigure: Matrix[][] = library.map(() => []);
 
   // A cheap deterministic hash: same spot, same person, every time.
   const noise = (a: number, b: number): number => {
@@ -215,28 +296,36 @@ function buildCrowd(
         const jitter = noise(i, row * 5 + side * 11);
         const x = (i + 0.5 - count / 2) * spec.spacing + (jitter - 0.5) * spec.spacing * 0.5;
         const matrix = Matrix.Compose(
-          new Vector3(1, 0.9 + jitter * 0.22, 1),
+          new Vector3(1, 0.94 + jitter * 0.13, 1),
           // Everyone faces the court, with enough spread that the row does not
-          // read as a comb.
-          Quaternion.RotationYawPitchRoll((jitter - 0.5) * 0.7, 0, 0),
+          // read as a comb. The figures are modelled facing +z, so the far side
+          // has to turn around.
+          Quaternion.RotationYawPitchRoll(
+            (side > 0 ? Math.PI : 0) + (jitter - 0.5) * 0.7,
+            0,
+            0
+          ),
           new Vector3(x, GROUND_Y, z + (seed - 0.5) * spec.spacing * 0.4)
         );
-        perColour[Math.floor(seed * mats.length) % mats.length].push(matrix);
+        perFigure[Math.floor(seed * library.length) % library.length].push(matrix);
       }
     }
   }
 
-  mats.forEach((material, i) => {
-    const matrices = perColour[i];
-    if (matrices.length === 0) return;
-    const person = personMesh(scene, `crowd-source-${i}`);
-    person.material = material;
+  const placed: Mesh[] = [];
+  library.forEach((person, i) => {
+    const matrices = perFigure[i];
+    if (matrices.length === 0) {
+      person.dispose();
+      return;
+    }
     const buffer = new Float32Array(matrices.length * 16);
     matrices.forEach((m, k) => m.copyToArray(buffer, k * 16));
     person.thinInstanceSetBuffer("matrix", buffer, 16, true);
-    out.push(person);
+    person.setEnabled(true);
+    placed.push(person);
   });
-  return out;
+  return placed;
 }
 
 /** Corner flags, for the outdoor grounds where a stand would be too much. */
@@ -268,14 +357,19 @@ function buildFlags(scene: Scene, colors: Rgb[], L: number, W: number): Mesh[] {
  * Returns the meshes so the caller can decide about shadows; they are frozen
  * here because none of them ever moves.
  */
-export function buildEnvironment(scene: Scene, venue: Venue): Mesh[] {
+export async function buildEnvironment(scene: Scene, venue: Venue): Promise<Mesh[]> {
   const { court, dressing } = venue;
   const built: Mesh[] = [];
   if (dressing.ribbon) {
     built.push(...buildRibbon(scene, dressing.ribbon, court.shape, court.halfLen, court.halfWid));
   }
   if (dressing.crowd) {
-    built.push(...buildCrowd(scene, dressing.crowd, court.halfLen, court.halfWid));
+    // A crowd that fails to download is not worth losing the venue over.
+    const library = await loadCrowdLibrary(scene).catch((e) => {
+      console.warn("Crowd failed to load:", e);
+      return [] as Mesh[];
+    });
+    built.push(...placeCrowd(dressing.crowd, library, court.halfLen, court.halfWid));
   }
   if (dressing.flags) {
     built.push(...buildFlags(scene, dressing.flags, court.halfLen, court.halfWid));

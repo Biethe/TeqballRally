@@ -141,24 +141,73 @@ green grass or blue hard court for no download at all.
 
 The venue models are empty sports grounds. What makes one look like a match is
 built in `src/environment.ts` from a palette in the venue preset — a ring of
-lit boards around the court, the crowd standing behind it, corner flags —
-because a real teqball court sits inside exactly that, and none of it needs to
-be downloaded.
+lit sponsor boards around the court, a crowd standing behind it, corner flags —
+because a real teqball court sits inside exactly that.
 
-The cost is draw calls, so both parts are built to collapse into a handful:
+The board ring is procedural and costs nothing to ship: panels are merged into
+one mesh per colour, so a 72-panel ring around the sports hall's ellipse is
+three draw calls.
 
-- Ribbon panels are merged into one mesh per colour. A 72-panel ring around
-  the sports hall's ellipse is three calls.
-- Spectators are thin instances, one mesh per shirt colour, so a crowd of any
-  size is six calls. That is why everyone is the same body and head: a thin
-  instance costs a matrix, and only the source mesh costs a draw.
+The crowd is `assets/models/Crowd/Crowd.glb` — 19 standing figures, 1,389
+triangles each, 0.19 MB. Every figure is thin instanced, so a crowd is one draw
+call per distinct figure rather than one per person: 65 people on the
+basketball court cost 14 calls and 89k triangles.
+
+Three things that pass a build and fail on screen, all found by looking:
+
+- **Spectators are sized against the players, not against life.**
+  `CHARACTER_SCALE` puts a character at about 1.45 m in an otherwise 1:1 world,
+  so a realistic 1.75 m spectator stands a head taller than everyone on court.
+- **One scale for the whole crowd, from the median figure.** Normalising each
+  figure to the same bounding-box height shrinks exactly the people with their
+  arms up — which, in a cheering pack, is most of them.
+- **Recentre each figure on its own footprint, not just the floor.** The source
+  pack is one grandstand and every figure carries the seat it was exported at.
+  `MergeMeshes` bakes world matrices into vertices, so that offset survives
+  inside the geometry, and a thin instance placed at the touchline lands at
+  touchline-plus-seat. It scattered a third of the crowd across the pitch, and
+  it is invisible from the play camera — `TOP=1 node scripts/venue-shots.mjs`
+  is what showed it.
 
 The whole lot rides with the backdrop and is skipped on the tier that skips it.
-Two things it learned the hard way: the crowd stands on the ground rather than
-on tiered decks, because a grandstand around a schoolyard-sized court looks
-like a mistake and the decks buried the benches the models already have; and
-spectators are sized against the players rather than against life, since
-`CHARACTER_SCALE` puts a character at about 1.45 m in an otherwise 1:1 world.
+
+#### Where the crowd came from
+
+A purchased pack (3DExport, Basic Licence). Preparing it was four steps, none
+of which are in the repository because the sources are 20x the size of the
+result:
+
+1. One placement extracted per distinct figure — the pack is 187 seats drawn
+   from 29 people.
+2. The 10 figures posed *sitting* dropped. They are seated on stadium seats
+   that are not in the export, so on flat ground they look like they have
+   fallen over. Height and the fraction of the body below mid-height separate
+   them cleanly: seated figures are 127-139 cm and bottom-heavy, standing ones
+   are 156-210 cm and top-heavy.
+3. Colours assigned from the material *names*. The pack's own `.mtl` is 0.8
+   grey everywhere with texture paths to a drive that does not exist, so which
+   body part a material belongs to — hair, head, eyes, skin, clothes — is the
+   only usable colour information in it. At the size a spectator is on screen,
+   that plus a per-figure palette is enough.
+4. `gltfpack -si 0.10 -cc -km -kn`: 9,222 triangles per figure down to 1,389,
+   6.97 MB down to 0.19 MB.
+
+At load, each figure's five materials are baked to vertex colours and merged,
+so a person is one mesh with one material and can be instanced.
+
+**The licence constrains how this ships, not whether.** It permits commercial
+use in one product, royalty-free, up to 250,000 downloads. It also forbids
+distributing the model "in a file format that is usable by any 3D
+application" — and a `.glb` in an APK, or served from a web host, is exactly
+that. Two consequences worth keeping in mind:
+
+- **Do not make this repository public while `Crowd.glb` is in it.** A
+  Shipaton submission asking for a repo link is the obvious way that happens by
+  accident.
+- Baking the crowd into the venue backdrop as merged static geometry is the
+  stronger position for a shipped build, since it leaves no separable figure to
+  extract. It costs the instancing — 65 people become 65 copies of the
+  geometry — so it is a trade to make deliberately, not a default.
 
 ### The establishing shot
 

@@ -90,6 +90,18 @@ async function measure(page) {
     }
     const mats = new Set();
     for (const m of scene.meshes) if (inArena.has(m.uniqueId) && m.material) mats.add(m.material.uniqueId);
+    // The crowd is thin instanced, so its real cost is figures x instances,
+    // which no mesh count shows.
+    let crowdFigures = 0;
+    let crowdPeople = 0;
+    let crowdTris = 0;
+    for (const m of scene.meshes) {
+      if (!m.name.startsWith("crowd-")) continue;
+      const copies = m.thinInstanceCount || 1;
+      crowdFigures++;
+      crowdPeople += copies;
+      crowdTris += (m.getTotalIndices() / 3) * copies;
+    }
     return {
       arenaMeshes,
       arenaSubmeshes: arenaCalls,
@@ -97,6 +109,9 @@ async function measure(page) {
       arenaMaterials: mats.size,
       otherMeshes,
       otherSubmeshes: otherCalls,
+      crowdFigures,
+      crowdPeople,
+      crowdTris: Math.round(crowdTris),
     };
   });
 }
@@ -152,7 +167,7 @@ for (const venue of VENUES) {
 await browser.close();
 
 console.log(`\n${MERGE ? "merged" : "unmerged"} — screenshots in ${OUT}`);
-console.log("venue        draws/frame  arena meshes  submeshes  materials  triangles");
+console.log("venue        draws/frame  arena meshes  submeshes  materials  triangles   crowd");
 for (const r of rows) {
   if (r.error) {
     console.log(`${r.venue.padEnd(12)} ${r.error}`);
@@ -161,7 +176,8 @@ for (const r of rows) {
   console.log(
     `${r.venue.padEnd(12)} ${String(r.calls).padStart(11)} ${String(r.arenaMeshes).padStart(13)}` +
       ` ${String(r.arenaSubmeshes).padStart(10)} ${String(r.arenaMaterials).padStart(10)}` +
-      ` ${String(r.arenaTris).padStart(10)}`
+      ` ${String(r.arenaTris).padStart(10)}` +
+      `   ${r.crowdPeople} people / ${r.crowdFigures} figures / ${r.crowdTris.toLocaleString()} tris`
   );
   for (const e of r.errors) console.log(`   ! ${e}`);
 }

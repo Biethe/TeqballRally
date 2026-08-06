@@ -97,8 +97,6 @@ export async function createGameScene(
     backdrop ? venue.court : { ...venue.court, centreLine: "own" },
     venue.court.surface === "own" || !backdrop
   );
-  // Dressing rides with the backdrop: the tier that skips one skips both.
-  if (backdrop) buildEnvironment(scene, venue);
 
   // The table is small and required for the first playable frame.  The gym
   // backdrop is a 21+ MB GLB, so waiting for it here makes the hosted title
@@ -113,11 +111,19 @@ export async function createGameScene(
     if (!quality.arena || !venue.arena) return Promise.resolve();
     const model = venue.arena;
     if (!arenaPromise) {
-      arenaPromise = loadArena(scene, model).catch((e) => {
-        // The procedural court remains playable if an offline session or a
-        // restrictive host cannot fetch the decorative gym model.
-        console.warn("Arena failed to load:", e);
-      });
+      // Dressing rides with the backdrop — the tier that skips one skips both
+      // — and loads alongside it rather than before, so the board ring and the
+      // crowd arrive with the venue instead of holding up the title screen.
+      arenaPromise = Promise.all([
+        loadArena(scene, model).catch((e) => {
+          // The procedural court remains playable if an offline session or a
+          // restrictive host cannot fetch the decorative gym model.
+          console.warn("Arena failed to load:", e);
+        }),
+        buildEnvironment(scene, venue).catch((e) => {
+          console.warn("Venue dressing failed to load:", e);
+        }),
+      ]).then(() => undefined);
     }
     return arenaPromise;
   };
