@@ -240,6 +240,35 @@ that. Two consequences worth keeping in mind:
   extract. It costs the instancing — 65 people become 65 copies of the
   geometry — so it is a trade to make deliberately, not a default.
 
+### Surroundings
+
+The arena models are a fenced site with sky beyond the fence, which reads as a
+diorama however good the court is. `src/surroundings.ts` builds the world each
+one stands in — a city block, parkland, a beach — procedurally, so it costs no
+download.
+
+Realism at this budget is not detail, which a phone cannot afford and nobody
+can see past a fence anyway. It comes from three things:
+
+- **Silhouette and depth** — buildings at varying heights and distances, trees
+  at varying scales, a horizon that recedes.
+- **Haze** — exponential fog toward the horizon colour. This is most of what
+  makes distance read as distance, and it hides the edge of the built world.
+- **A sky with a gradient in it.** A flat clear colour is the most
+  diorama-like thing in a scene; a graded dome is one unlit mesh.
+
+Two things it got wrong first, both worth keeping in mind for anything else
+placed in the world:
+
+- The world ground has to sit below everything the *venue* owns, not just
+  below its court. The arena models stand on a foundation slab whose base is
+  0.6 m under the playing surface, so a ground plane tucked 6 cm under the
+  court drew straight over the top of it and turned every venue into the same
+  sheet of grey.
+- A vertex colour multiplies a StandardMaterial's **diffuse**, not its
+  emissive. An unlit dome with white emissive comes out flat, and with black
+  emissive comes out black; the gradient has to ride on diffuse.
+
 ### The establishing shot
 
 An offline match opens on the venue rather than on the table: `src/intro.ts`

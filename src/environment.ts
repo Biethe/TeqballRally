@@ -331,7 +331,9 @@ function placeCrowd(
             0,
             0
           ),
-          new Vector3(x, GROUND_Y, z + (seed - 0.5) * spec.spacing * 0.4)
+          // Push each person off their row by up to half a spacing. Rows that
+          // stay perfectly parallel read as a fence however far apart they are.
+          new Vector3(x, GROUND_Y, z + (seed - 0.5) * spec.spacing * 1.1)
         );
         placeAt(into, library[Math.floor(seed * library.length) % library.length], matrix);
       }

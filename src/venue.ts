@@ -157,6 +157,32 @@ export interface Dressing {
 }
 
 /**
+ * What surrounds the venue, built procedurally in `surroundings.ts`.
+ *
+ * The arena models are a fenced site with sky beyond the fence, which reads as
+ * a diorama however good the court is. This is the world it stands in.
+ */
+export interface Surrounds {
+  kind: "city" | "park" | "beach";
+  /** Ground beyond the venue's own site. */
+  ground: Rgb;
+  /** Horizon colour: the sky's low band and the fog both take it. */
+  horizon: Rgb;
+  /** Exponential fog density. Distance is mostly this. */
+  haze: number;
+  /** How many buildings, trees or palms. */
+  count: number;
+  /** Main tones — wall colours, or trunk and leaf. */
+  palette: Rgb[];
+  /** Secondary: roofs, hedges, sea. */
+  accent: Rgb;
+  /** The bright one: lit windows, foam. */
+  lit: Rgb;
+  /** City only: fraction of windows with a light on. */
+  litFraction: number;
+}
+
+/**
  * The eight benches in the outdoor template, measured from the model: four a
  * side, at z = -6.68 and z = +6.75, with their seat surface 0.31 m up.
  */
@@ -191,11 +217,12 @@ export interface Venue {
    */
   sweep?: IntroSweep;
   /**
-   * What fills the frame behind everything. The outdoor models have no sky of
-   * their own, and against the indoor near-black they read as a court floating
-   * in space; a clear colour is the whole fix and costs nothing.
+   * What fills the frame behind everything. With `surrounds` this is the
+   * zenith of the sky dome; without it, a flat clear colour.
    */
   sky: Rgb;
+  /** The world outside the fence. null leaves the venue on its own. */
+  surrounds: Surrounds | null;
 }
 
 /**
@@ -266,7 +293,7 @@ export const VENUES: Record<VenueId, Venue> = {
       // a wall or out on the grass. `tiers` exists and works — it needs the
       // bowl's real first-row radius and rise, which is a measurement, not a
       // guess.
-      crowd: { rows: 2, colors: CROWD, gap: 1.0, spacing: 0.8, density: 0.7 },
+      crowd: { rows: 2, colors: CROWD, gap: 0.9, spacing: 1.05, density: 0.66 },
       benches: null,
       tiers: null,
       flags: null,
@@ -279,6 +306,9 @@ export const VENUES: Record<VenueId, Venue> = {
     // game is played looking along it.
     sweep: { radius: 2, height: 0, swing: 1.35, boundX: 13, boundZ: 5.6 },
     sky: [0.045, 0.05, 0.09],
+    // Indoors: there is no outside to build, and the hall's own shell is what
+    // you see in every direction.
+    surrounds: null,
   },
   basketball: {
     id: "basketball",
@@ -296,12 +326,30 @@ export const VENUES: Record<VenueId, Venue> = {
     },
     dressing: {
       ribbon: { colors: [TEQ_ORANGE, [0.1, 0.12, 0.16], TEQ_WHITE], panels: 44, height: 0.6, inset: 0.25 },
-      crowd: { rows: 2, colors: CROWD, gap: 1.35, spacing: 0.72, density: 0.72 },
+      crowd: { rows: 3, colors: CROWD, gap: 1.5, spacing: 1.15, density: 0.62 },
       benches: OUTDOOR_BENCHES,
       tiers: null,
       flags: null,
     },
-    sky: [0.42, 0.55, 0.72],
+    sky: [0.24, 0.42, 0.74],
+    // A city block at dusk: the lit windows are what sell it, and they cost
+    // one merged mesh.
+    surrounds: {
+      kind: "city",
+      ground: [0.24, 0.24, 0.26],
+      horizon: [0.62, 0.6, 0.66],
+      haze: 0.0045,
+      count: 34,
+      palette: [
+        [0.62, 0.56, 0.5],
+        [0.52, 0.48, 0.47],
+        [0.68, 0.6, 0.52],
+        [0.46, 0.46, 0.5],
+      ],
+      accent: [0.22, 0.22, 0.24],
+      lit: [1, 0.88, 0.62],
+      litFraction: 0.42,
+    },
   },
   football: {
     id: "football",
@@ -323,12 +371,27 @@ export const VENUES: Record<VenueId, Venue> = {
     // and the goals already fill both ends of the frame.
     dressing: {
       ribbon: { colors: [TEQ_RED, TEQ_WHITE, [0.12, 0.35, 0.18]], panels: 44, height: 0.55, inset: 0.3 },
-      crowd: { rows: 2, colors: CROWD, gap: 1.6, spacing: 0.78, density: 0.6 },
+      crowd: { rows: 3, colors: CROWD, gap: 1.7, spacing: 1.2, density: 0.55 },
       benches: OUTDOOR_BENCHES,
       tiers: null,
       flags: [TEQ_ORANGE, TEQ_WHITE],
     },
-    sky: [0.5, 0.62, 0.78],
+    sky: [0.3, 0.5, 0.82],
+    // Parkland: trees and a hedge line, so the pitch sits in something.
+    surrounds: {
+      kind: "park",
+      ground: [0.29, 0.42, 0.22],
+      horizon: [0.72, 0.79, 0.82],
+      haze: 0.0035,
+      count: 46,
+      palette: [
+        [0.31, 0.23, 0.16],
+        [0.22, 0.38, 0.18],
+      ],
+      accent: [0.19, 0.33, 0.17],
+      lit: [0.85, 0.9, 0.8],
+      litFraction: 0,
+    },
   },
   tennis: {
     id: "tennis",
@@ -351,12 +414,27 @@ export const VENUES: Record<VenueId, Venue> = {
     },
     dressing: {
       ribbon: { colors: [[0.06, 0.3, 0.2], TEQ_WHITE, [0.1, 0.4, 0.28]], panels: 44, height: 0.58, inset: 0.28 },
-      crowd: { rows: 2, colors: CROWD, gap: 1.45, spacing: 0.75, density: 0.68 },
+      crowd: { rows: 3, colors: CROWD, gap: 1.55, spacing: 1.15, density: 0.6 },
       benches: OUTDOOR_BENCHES,
       tiers: null,
       flags: null,
     },
-    sky: [0.46, 0.58, 0.75],
+    sky: [0.22, 0.48, 0.8],
+    // A coast: sand, a shoreline to the north and palms around the court.
+    surrounds: {
+      kind: "beach",
+      ground: [0.82, 0.74, 0.56],
+      horizon: [0.78, 0.85, 0.88],
+      haze: 0.003,
+      count: 26,
+      palette: [
+        [0.42, 0.32, 0.2],
+        [0.2, 0.42, 0.24],
+      ],
+      accent: [0.08, 0.4, 0.5],
+      lit: [0.95, 0.97, 0.96],
+      litFraction: 0,
+    },
   },
 };
 
