@@ -169,6 +169,32 @@ Three things that pass a build and fail on screen, all found by looking:
   it is invisible from the play camera — `TOP=1 node scripts/venue-shots.mjs`
   is what showed it.
 
+The crowd moves. `src/crowd.ts` rocks everyone on the spot during a rally and
+jumps the whole stand when a point lands, listening to the match's own
+`point-awarded` and `serve-committed` events rather than being told by every
+caller that starts a match.
+
+The animation is in the instance transforms, because a thin instance cannot be
+skinned — it is a matrix sharing one skeleton-less mesh with every other copy.
+That suits the material: the figures are already posed mid-cheer with their
+arms up, so a vertical hop reads as celebration without a single new pose. A
+matrix keeps its translation at indices 12, 13 and 14 of its sixteen floats,
+so a person costs three writes a frame and the whole crowd is a rounding error.
+It runs on wall-clock time outside the simulation — it is scenery, it must not
+consume simulation steps, and it should keep moving under a menu.
+
+Seated figures fill the benches the outdoor models already contain. Their
+positions are measured out of the model rather than guessed: eight benches,
+four a side, seat surface 0.31 m up. Those are the ten figures the standing
+crowd throws away, so they cost nothing extra.
+
+`tiers` builds a bowl of bleachers and is written and working, but no venue
+uses it. The indoor hall's seating is modelled as concentric rings with no
+per-seat geometry, so there is nothing to read a rake off, and every guess at
+one put people through a wall or out on the grass. It needs the bowl's real
+first-row radius and rise — a measurement, not another guess. Until then the
+hall gets a courtside row inside the ring like the outdoor grounds.
+
 The whole lot rides with the backdrop and is skipped on the tier that skips it.
 
 #### Where the crowd came from
@@ -190,7 +216,12 @@ result:
    only usable colour information in it. At the size a spectator is on screen,
    that plus a per-figure palette is enough.
 4. `gltfpack -si 0.10 -cc -km -kn`: 9,222 triangles per figure down to 1,389,
-   6.97 MB down to 0.19 MB.
+   6.97 MB down to 0.28 MB for all 29.
+
+The pose is recorded in the node name (`stand_`/`sit_`) because nothing else in
+the file records it, and the loader finds it by walking *up* the parent chain:
+the compression pass nests a generated `node0` between the named node and its
+meshes, so a figure's immediate parent is anonymous.
 
 At load, each figure's five materials are baked to vertex colours and merged,
 so a person is one mesh with one material and can be instanced.

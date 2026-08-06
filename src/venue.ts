@@ -114,9 +114,68 @@ export interface Dressing {
     /** 0..1 — how much of each row is occupied. Gaps stop it reading as a fence. */
     density: number;
   } | null;
+  /**
+   * Seated figures on benches the venue model already contains.
+   *
+   * Positions are measured out of the model rather than guessed: the three
+   * outdoor grounds share a template with eight benches, and the numbers below
+   * are their centres in metres.
+   */
+  benches: {
+    /** Bench centres, [x, z] in metres. */
+    seats: [number, number][];
+    /** How many people a full bench holds. */
+    perBench: number;
+    /** Distance between neighbours along a bench. */
+    spacing: number;
+    /** Seat surface height above the ground. */
+    height: number;
+    /** 0..1 — how full the benches are. */
+    density: number;
+  } | null;
+  /**
+   * A bowl of bleachers: concentric elliptical rows rising as they go back.
+   * For a venue whose own seating is modelled as bare rings with nobody in it.
+   */
+  tiers: {
+    rows: number;
+    /** First row's radii, in metres. */
+    radiusX: number;
+    radiusZ: number;
+    /** How much further back and higher each row sits. */
+    step: number;
+    rise: number;
+    /** Height of the first row above the ground. */
+    lift: number;
+    /** Distance between neighbours along a row. */
+    spacing: number;
+    /** 0..1 — how full the bowl is. */
+    density: number;
+  } | null;
   /** Corner banner flags. */
   flags: Rgb[] | null;
 }
+
+/**
+ * The eight benches in the outdoor template, measured from the model: four a
+ * side, at z = -6.68 and z = +6.75, with their seat surface 0.31 m up.
+ */
+const OUTDOOR_BENCHES = {
+  seats: [
+    [-4.53, -6.68],
+    [-2.74, -6.68],
+    [2.79, -6.68],
+    [4.58, -6.68],
+    [-4.53, 6.75],
+    [-2.74, 6.75],
+    [2.79, 6.75],
+    [4.58, 6.75],
+  ] as [number, number][],
+  perBench: 3,
+  spacing: 0.5,
+  height: 0.31,
+  density: 0.75,
+};
 
 export interface Venue {
   id: VenueId;
@@ -201,7 +260,15 @@ export const VENUES: Record<VenueId, Venue> = {
     // ring the model does not have, following the court's ellipse.
     dressing: {
       ribbon: { colors: [TEQ_ORANGE, TEQ_RED, TEQ_WHITE], panels: 72, height: 0.62, inset: 0.2 },
-      crowd: null,
+      // A courtside row inside the bowl, not up in it. The hall's own seating
+      // is modelled as concentric rings with no per-seat geometry, so there is
+      // nothing to read a rake off and every guess at one put people through
+      // a wall or out on the grass. `tiers` exists and works — it needs the
+      // bowl's real first-row radius and rise, which is a measurement, not a
+      // guess.
+      crowd: { rows: 2, colors: CROWD, gap: 1.0, spacing: 0.8, density: 0.7 },
+      benches: null,
+      tiers: null,
       flags: null,
     },
     // A level swing around the court, and nothing else. Everything about this
@@ -230,6 +297,8 @@ export const VENUES: Record<VenueId, Venue> = {
     dressing: {
       ribbon: { colors: [TEQ_ORANGE, [0.1, 0.12, 0.16], TEQ_WHITE], panels: 44, height: 0.6, inset: 0.25 },
       crowd: { rows: 2, colors: CROWD, gap: 1.35, spacing: 0.72, density: 0.72 },
+      benches: OUTDOOR_BENCHES,
+      tiers: null,
       flags: null,
     },
     sky: [0.42, 0.55, 0.72],
@@ -255,6 +324,8 @@ export const VENUES: Record<VenueId, Venue> = {
     dressing: {
       ribbon: { colors: [TEQ_RED, TEQ_WHITE, [0.12, 0.35, 0.18]], panels: 44, height: 0.55, inset: 0.3 },
       crowd: { rows: 2, colors: CROWD, gap: 1.6, spacing: 0.78, density: 0.6 },
+      benches: OUTDOOR_BENCHES,
+      tiers: null,
       flags: [TEQ_ORANGE, TEQ_WHITE],
     },
     sky: [0.5, 0.62, 0.78],
@@ -281,6 +352,8 @@ export const VENUES: Record<VenueId, Venue> = {
     dressing: {
       ribbon: { colors: [[0.06, 0.3, 0.2], TEQ_WHITE, [0.1, 0.4, 0.28]], panels: 44, height: 0.58, inset: 0.28 },
       crowd: { rows: 2, colors: CROWD, gap: 1.45, spacing: 0.75, density: 0.68 },
+      benches: OUTDOOR_BENCHES,
+      tiers: null,
       flags: null,
     },
     sky: [0.46, 0.58, 0.75],
