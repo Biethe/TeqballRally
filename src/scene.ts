@@ -24,6 +24,7 @@ import { BALL_RADIUS, CAMERA, GROUND_Y, SERVE_X, SPAWN, TABLE, TABLE_VISUAL } fr
 import type { QualitySettings } from "./quality";
 import { VENUES, type ArenaModel, type CourtStyle, type Rgb, type Venue } from "./venue";
 import { buildEnvironment } from "./environment";
+import { buildSurroundings } from "./surroundings";
 import { Crowd } from "./crowd";
 
 // Meshopt-compressed GLBs are decoded locally so hosted builds do not depend
@@ -131,6 +132,10 @@ export async function createGameScene(
         buildEnvironment(scene, venue, crowd).catch((e) => {
           console.warn("Venue dressing failed to load:", e);
         }),
+        // The world outside the fence. Cheap, procedural and synchronous, but
+        // it belongs with the backdrop: without the venue there is nothing for
+        // it to stand around.
+        Promise.resolve().then(() => buildSurroundings(scene, venue)),
       ]).then(() => undefined);
     }
     return arenaPromise;
