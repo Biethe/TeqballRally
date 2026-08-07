@@ -10,7 +10,7 @@
 import { chromium } from "playwright-core";
 
 const PORT = Number(process.env.PORT ?? 5199);
-const base = `http://localhost:${PORT}/?q=low`;
+const base = `http://localhost:${PORT}/?q=low&intro=0`;
 
 const browser = await chromium.launch({
   ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),

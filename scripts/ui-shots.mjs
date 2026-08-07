@@ -131,7 +131,7 @@ for (const dev of DEVICES) {
     isMobile: true,
   });
   const page = await ctx.newPage();
-  await page.goto(`http://localhost:${PORT}/?q=low`, { waitUntil: "load" });
+  await page.goto(`http://localhost:${PORT}/?q=low&intro=0`, { waitUntil: "load" });
   await page.waitForTimeout(3500);
 
   const shot = async (name) => {
@@ -174,7 +174,7 @@ for (const dev of DEVICES) {
   await page.waitForTimeout(300);
   await shot("graphics");
 
-  await page.goto(`http://localhost:${PORT}/?q=low`, { waitUntil: "load" });
+  await page.goto(`http://localhost:${PORT}/?q=low&intro=0`, { waitUntil: "load" });
   await page.waitForTimeout(3000);
   await page.locator("#btn-play").click();
   await page.locator("#btn-mode-friendly").click();

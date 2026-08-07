@@ -37,7 +37,7 @@ page.on("requestfailed", (r) => {
 // reports about its device. The default exercises everything the build has to
 // be able to load; QUALITY=low checks the tier that skips the gym backdrop.
 const QUALITY = process.env.QUALITY ?? "high";
-await page.goto(`http://localhost:${PORT}/?ts=10&q=${QUALITY}`, { waitUntil: "load" });
+await page.goto(`http://localhost:${PORT}/?ts=10&q=${QUALITY}&intro=0`, { waitUntil: "load" });
 await page.waitForTimeout(4000);
 
 // Title -> friendly match at normal difficulty -> select screen.
