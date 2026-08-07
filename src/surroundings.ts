@@ -31,10 +31,32 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { GROUND_Y } from "./config";
+import { loadProps, type PropKind, type PropLibrary } from "./props";
 import type { Rgb, Surrounds, Tile, Venue } from "./venue";
+
+/**
+ * Which prop families each kind of surroundings uses. Anything not listed is
+ * disposed as soon as the shared file has been read, so a beach never pays for
+ * twenty houses it will not place.
+ */
+const PROPS_FOR: Record<Surrounds["kind"], PropKind[]> = {
+  city: ["house", "tree", "car"],
+  park: ["tree", "bush"],
+  beach: ["palm", "bush"],
+};
 
 /** Where the venue site ends and this takes over, in metres from the table. */
 const SITE_RADIUS = 15.5;
+/**
+ * The height everything outside the venue stands on.
+ *
+ * Not `GROUND_Y`, which is the court surface: the arena models sit on a
+ * foundation slab whose base is 0.6 m below it, and the world ground goes
+ * under that. Anything placed at court height instead floats a metre in the
+ * air once it is past the fence — which is exactly what the first pass of
+ * parked cars did.
+ */
+const WORLD_Y = GROUND_Y - 1.05;
 /** How far out the world is built. Beyond this, fog. */
 const WORLD_RADIUS = 150;
 
@@ -149,7 +171,7 @@ function buildGround(scene: Scene, c: Rgb, tile: Tile | undefined): Mesh {
   // straight over the top of it — the wood grain vanished and every venue
   // became the same sheet of grey. There is a fence around the site, so the
   // step down is not visible from anywhere the game is played from.
-  ground.position.y = GROUND_Y - 1.05;
+  ground.position.y = WORLD_Y;
   ground.material = tiled(
     scene,
     surface(scene, "world-ground-mat", c, 0.1),
@@ -168,17 +190,41 @@ function buildGround(scene: Scene, c: Rgb, tile: Tile | undefined): Mesh {
  * quads — cheaper than a texture and it is what reads as "building" at
  * distance, especially against a dusk sky.
  */
-function buildCity(scene: Scene, spec: Surrounds, out: Mesh[]): void {
+function buildCity(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[]): void {
+  const houses = props.get("house") ?? [];
+  if (houses.length > 0) {
+    // Real buildings in the near ring, where the eye can resolve them, with
+    // the procedural blocks pushed out behind to carry the skyline. A street
+    // of parked cars and some planting is what makes the near ring read as a
+    // street rather than a row of models.
+    out.push(
+      ...scatterProps(houses, { count: 26, inner: 25, outer: 47, facing: "inward", vary: 0.12, seed: 31, models: 6 })
+    );
+    out.push(
+      ...scatterProps(props.get("car") ?? [], {
+        count: 12, inner: 19.5, outer: 21.5, facing: "along", vary: 0.04, seed: 57, models: 4,
+      })
+    );
+    out.push(
+      ...scatterProps(props.get("tree") ?? [], {
+        count: 24, inner: 18.5, outer: 46, facing: "any", vary: 0.22, seed: 73, models: 5,
+      })
+    );
+  }
+
   const walls: Mesh[] = [];
   const roofs: Mesh[] = [];
   const windows: Mesh[] = [];
   const wallTones = spec.palette;
 
+  // Behind the houses when there are houses, and taking the near ring itself
+  // when the prop file did not load.
+  const nearest = houses.length > 0 ? 38 : 14;
   for (let i = 0; i < spec.count; i++) {
     const seed = noise(i, 3);
     const seed2 = noise(i * 7 + 1, 11);
     const angle = (i / spec.count) * Math.PI * 2 + (seed - 0.5) * 0.12;
-    const radius = SITE_RADIUS + 14 + seed2 * 54;
+    const radius = SITE_RADIUS + nearest + seed2 * 54;
     const w = 7 + seed * 9;
     const d = 7 + seed2 * 9;
     // Taller nearer the middle distance, so the skyline is not a wall.
@@ -187,12 +233,12 @@ function buildCity(scene: Scene, spec: Surrounds, out: Mesh[]): void {
     const z = Math.sin(angle) * radius;
 
     const body = MeshBuilder.CreateBox(`bldg-${i}`, { width: w, height: h, depth: d }, scene);
-    body.position.set(x, GROUND_Y + h / 2, z);
+    body.position.set(x, WORLD_Y + h / 2, z);
     body.rotation.y = angle;
     walls.push(body);
 
     const cap = MeshBuilder.CreateBox(`roof-${i}`, { width: w * 1.04, height: 0.5, depth: d * 1.04 }, scene);
-    cap.position.set(x, GROUND_Y + h + 0.25, z);
+    cap.position.set(x, WORLD_Y + h + 0.25, z);
     cap.rotation.y = angle;
     roofs.push(cap);
 
@@ -206,7 +252,7 @@ function buildCity(scene: Scene, spec: Surrounds, out: Mesh[]): void {
         const bx = (b + 0.5 - bays / 2) * (w / bays);
         pane.position.set(
           x + Math.cos(angle) * bx - Math.sin(angle) * (d / 2 + 0.06),
-          GROUND_Y + 2.2 + f * 3.2,
+          WORLD_Y + 2.2 + f * 3.2,
           z + Math.sin(angle) * bx + Math.cos(angle) * (d / 2 + 0.06)
         );
         pane.rotation.y = angle + Math.PI;
@@ -290,35 +336,102 @@ function palmMesh(scene: Scene, name: string, trunk: Rgb, leaf: Rgb): Mesh {
   return Mesh.MergeMeshes(parts, true, true) ?? stem;
 }
 
-/** Scatter a prop around the site on a ring, as thin instances. */
-function scatter(source: Mesh, count: number, inner: number, outer: number, seedBase: number): Mesh {
-  const matrices: Matrix[] = [];
-  for (let i = 0; i < count; i++) {
-    const s = noise(i + seedBase, seedBase * 3);
-    const s2 = noise(i * 5 + seedBase, seedBase + 7);
-    const angle = (i / count) * Math.PI * 2 + (s - 0.5) * 0.5;
-    const radius = inner + s2 * (outer - inner);
-    const scale = 0.75 + s * 0.7;
-    matrices.push(
+/** How a scattered prop is turned to face. */
+type Facing =
+  /** Any which way — trees, bushes, anything with no front. */
+  | "any"
+  /** Front toward the court: houses look at what they surround. */
+  | "inward"
+  /** Along the ring, like traffic on a road that curves around the site. */
+  | "along";
+
+interface Scatter {
+  count: number;
+  /** Ring the props are spread between, in metres from the table. */
+  inner: number;
+  outer: number;
+  facing: Facing;
+  /** Multiplies the prop's own size; the spread is 1 +/- this. */
+  vary: number;
+  /** Changes the layout without changing anything else about it. */
+  seed: number;
+  /**
+   * How many distinct models to draw from.
+   *
+   * This is a draw-call budget, not a variety knob. Every model used is one
+   * more draw call however many copies it has, so twenty houses placed from
+   * twenty models cost twenty calls and buy nothing a phone can see — six
+   * models at varied scale and rotation read the same at forty metres for a
+   * third of the cost. The rest are disposed.
+   */
+  models: number;
+}
+
+/**
+ * Spread a set of props around the site as thin instances.
+ *
+ * Props are dealt round-robin from the set so a run of houses is not the same
+ * house repeated, and each one collects the instances that fall to it — so a
+ * street of forty buildings costs one draw call per distinct model, not forty.
+ *
+ * Everything is derived from `noise`, never `Math.random`: the same world has
+ * to appear on both peers of an online match and in every screenshot run.
+ */
+function scatterProps(available: Mesh[], spec: Scatter): Mesh[] {
+  // Spread the choice across the set rather than taking the first few, so a
+  // budget of six houses is six different-looking houses.
+  const stride = Math.max(1, Math.floor(available.length / spec.models));
+  const props = available.filter((_, i) => i % stride === 0).slice(0, spec.models);
+  for (const unused of available) {
+    if (!props.includes(unused)) unused.dispose();
+  }
+  if (props.length === 0) return [];
+  const slots: Matrix[][] = props.map(() => []);
+  for (let i = 0; i < spec.count; i++) {
+    const s = noise(i + spec.seed, spec.seed * 3 + 1);
+    const s2 = noise(i * 5 + spec.seed, spec.seed + 7);
+    const s3 = noise(i * 13 + spec.seed, spec.seed * 2 + 3);
+    const angle = (i / spec.count) * Math.PI * 2 + (s - 0.5) * (Math.PI / spec.count);
+    const radius = spec.inner + s2 * (spec.outer - spec.inner);
+    const scale = 1 + (s3 - 0.5) * 2 * spec.vary;
+    // A house's front is its -z face, so pointing +z outward faces it inward.
+    const yaw =
+      spec.facing === "any"
+        ? s * Math.PI * 2
+        : spec.facing === "inward"
+          ? Math.PI / 2 - angle + (s3 - 0.5) * 0.25
+          : -angle + (s3 < 0.5 ? 0 : Math.PI);
+    slots[i % props.length].push(
       Matrix.Compose(
         new Vector3(scale, scale, scale),
-        Quaternion.RotationYawPitchRoll(s * Math.PI * 2, 0, 0),
-        new Vector3(Math.cos(angle) * radius, GROUND_Y, Math.sin(angle) * radius)
+        Quaternion.RotationYawPitchRoll(yaw, 0, 0),
+        new Vector3(Math.cos(angle) * radius, WORLD_Y, Math.sin(angle) * radius)
       )
     );
   }
-  const buffer = new Float32Array(matrices.length * 16);
-  matrices.forEach((m, i) => m.copyToArray(buffer, i * 16));
-  source.thinInstanceSetBuffer("matrix", buffer, 16, true);
-  return source;
+  const used: Mesh[] = [];
+  props.forEach((prop, i) => {
+    const matrices = slots[i];
+    if (matrices.length === 0) {
+      // A prop nothing was dealt to would otherwise still be drawn, once, at
+      // the origin — which is the middle of the court.
+      prop.dispose();
+      return;
+    }
+    const buffer = new Float32Array(matrices.length * 16);
+    matrices.forEach((m, k) => m.copyToArray(buffer, k * 16));
+    prop.thinInstanceSetBuffer("matrix", buffer, 16, true);
+    used.push(prop);
+  });
+  return used;
 }
 
 /** Sea, sand and palms. */
-function buildBeach(scene: Scene, spec: Surrounds, out: Mesh[]): void {
+function buildBeach(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[]): void {
   // The sea starts beyond the site and runs to the horizon on one side, so
   // there is a shoreline to read rather than a ring of water.
   const sea = MeshBuilder.CreateGround("sea", { width: WORLD_RADIUS * 2, height: WORLD_RADIUS * 1.4 }, scene);
-  sea.position.set(0, GROUND_Y - 0.04, -(WORLD_RADIUS * 0.7 + 34));
+  sea.position.set(0, WORLD_Y + 0.02, -(WORLD_RADIUS * 0.7 + 34));
   const seaMat = tiled(scene, surface(scene, "sea", spec.accent, 0.16), spec.accentTile, WORLD_RADIUS);
   seaMat.specularColor = new Color3(0.35, 0.4, 0.45);
   seaMat.specularPower = 64;
@@ -328,26 +441,65 @@ function buildBeach(scene: Scene, spec: Surrounds, out: Mesh[]): void {
 
   // A line of foam where they meet.
   const foam = MeshBuilder.CreateGround("foam", { width: WORLD_RADIUS * 2, height: 2.2 }, scene);
-  foam.position.set(0, GROUND_Y - 0.02, -34);
+  foam.position.set(0, WORLD_Y + 0.04, -34);
   foam.material = surface(scene, "foam", spec.lit, 0.4);
   foam.isPickable = false;
   out.push(foam);
 
+  const palms = props.get("palm") ?? [];
+  if (palms.length > 0) {
+    // Kept inside the shoreline at z = -34: the ring is a radius, so the far
+    // side of a wider one stands in the sea.
+    out.push(...scatterProps(palms, { count: spec.count, inner: SITE_RADIUS + 3, outer: 30, facing: "any", vary: 0.2, seed: 12, models: 4 }));
+    out.push(
+      ...scatterProps(props.get("bush") ?? [], {
+        count: 24, inner: SITE_RADIUS + 2, outer: 31, facing: "any", vary: 0.3, seed: 44, models: 2,
+      })
+    );
+    return;
+  }
+
   const palm = palmMesh(scene, "palm", spec.palette[0], spec.palette[1] ?? spec.palette[0]);
   palm.material = surface(scene, "palm-mat", [1, 1, 1], 0.05);
   palm.useVertexColors = true;
-  out.push(scatter(palm, spec.count, SITE_RADIUS + 3, SITE_RADIUS + 26, 4));
+  out.push(
+    ...scatterProps([palm], { count: spec.count, inner: SITE_RADIUS + 3, outer: 30, facing: "any", vary: 0.3, seed: 4, models: 1 })
+  );
 }
 
 /** Grass, hedges and trees. */
-function buildPark(scene: Scene, spec: Surrounds, out: Mesh[]): void {
-  const tree = treeMesh(scene, "tree", spec.palette[0], spec.palette[1] ?? spec.palette[0]);
-  tree.material = surface(scene, "tree-mat", [1, 1, 1], 0.05);
-  tree.useVertexColors = true;
-  out.push(scatter(tree, spec.count, SITE_RADIUS + 4, SITE_RADIUS + 42, 9));
+function buildPark(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[]): void {
+  const trees = props.get("tree") ?? [];
+  if (trees.length > 0) {
+    out.push(
+      ...scatterProps(trees, {
+        count: spec.count, inner: SITE_RADIUS + 4, outer: SITE_RADIUS + 42, facing: "any", vary: 0.28, seed: 9, models: 6,
+      })
+    );
+    // Undergrowth close in, doing the job the hedge ring below was built for:
+    // giving the middle distance something to sit against so the trees do not
+    // float on flat green. Real planting beats the box hedge it replaces, so
+    // the hedge is now only the fallback's companion.
+    out.push(
+      ...scatterProps(props.get("bush") ?? [], {
+        count: 30, inner: SITE_RADIUS + 2, outer: SITE_RADIUS + 26, facing: "any", vary: 0.35, seed: 63, models: 2,
+      })
+    );
+    return;
+  }
+  {
+    const tree = treeMesh(scene, "tree", spec.palette[0], spec.palette[1] ?? spec.palette[0]);
+    tree.material = surface(scene, "tree-mat", [1, 1, 1], 0.05);
+    tree.useVertexColors = true;
+    out.push(
+      ...scatterProps([tree], {
+        count: spec.count, inner: SITE_RADIUS + 4, outer: SITE_RADIUS + 42, facing: "any", vary: 0.35, seed: 9, models: 1,
+      })
+    );
+  }
 
-  // A hedge line just outside the fence gives the middle distance something
-  // to sit against; without it the trees float on flat green.
+  // A hedge line just outside the fence, for the case where the prop file did
+  // not load and the trees are spheres on sticks.
   const hedges: Mesh[] = [];
   const segments = 44;
   for (let i = 0; i < segments; i++) {
@@ -355,7 +507,7 @@ function buildPark(scene: Scene, spec: Surrounds, out: Mesh[]): void {
     const a = (i / segments) * Math.PI * 2;
     const r = SITE_RADIUS + 2.6;
     const hedge = MeshBuilder.CreateBox(`hedge-${i}`, { width: 3.2, height: 1.5, depth: 1.1 }, scene);
-    hedge.position.set(Math.cos(a) * r, GROUND_Y + 0.75, Math.sin(a) * r);
+    hedge.position.set(Math.cos(a) * r, WORLD_Y + 0.75, Math.sin(a) * r);
     hedge.rotation.y = -a;
     hedges.push(hedge);
   }
@@ -367,7 +519,7 @@ function buildPark(scene: Scene, spec: Surrounds, out: Mesh[]): void {
  * Build everything outside the venue, and set the scene's fog and sky to
  * match. Returns the meshes so the caller can freeze them.
  */
-export function buildSurroundings(scene: Scene, venue: Venue): Mesh[] {
+export async function buildSurroundings(scene: Scene, venue: Venue): Promise<Mesh[]> {
   const spec = venue.surrounds;
   if (!spec) return [];
   const out: Mesh[] = [];
@@ -375,9 +527,16 @@ export function buildSurroundings(scene: Scene, venue: Venue): Mesh[] {
   out.push(buildSky(scene, spec.horizon, venue.sky));
   out.push(buildGround(scene, spec.ground, spec.groundTile));
 
-  if (spec.kind === "city") buildCity(scene, spec, out);
-  else if (spec.kind === "beach") buildBeach(scene, spec, out);
-  else buildPark(scene, spec, out);
+  // The modelled props. A venue that cannot fetch them still gets its world,
+  // built out of the primitives this module started with.
+  const props = await loadProps(scene, PROPS_FOR[spec.kind]).catch((e) => {
+    console.warn("Scenery props failed to load:", e);
+    return new Map() as PropLibrary;
+  });
+
+  if (spec.kind === "city") buildCity(scene, spec, props, out);
+  else if (spec.kind === "beach") buildBeach(scene, spec, props, out);
+  else buildPark(scene, spec, props, out);
 
   // Linear fog toward the horizon colour. This is what turns a ring of props
   // into distance, and it hides the edge of the built world entirely.

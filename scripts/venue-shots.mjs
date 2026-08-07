@@ -102,6 +102,18 @@ async function measure(page) {
       crowdPeople += copies;
       crowdTris += (m.getTotalIndices() / 3) * copies;
     }
+    // Same story for the scenery props: fifty models, one draw call each, and
+    // a triangle count that only their instance count reveals.
+    let propModels = 0;
+    let propCopies = 0;
+    let propTris = 0;
+    for (const m of scene.meshes) {
+      if (!/^(house|tree|car|palm|bush)_\d+$/.test(m.name)) continue;
+      const copies = m.thinInstanceCount || 1;
+      propModels++;
+      propCopies += copies;
+      propTris += (m.getTotalIndices() / 3) * copies;
+    }
     return {
       arenaMeshes,
       arenaSubmeshes: arenaCalls,
@@ -112,6 +124,9 @@ async function measure(page) {
       crowdFigures,
       crowdPeople,
       crowdTris: Math.round(crowdTris),
+      propModels,
+      propCopies,
+      propTris: Math.round(propTris),
     };
   });
 }
@@ -178,6 +193,10 @@ for (const r of rows) {
       ` ${String(r.arenaSubmeshes).padStart(10)} ${String(r.arenaMaterials).padStart(10)}` +
       ` ${String(r.arenaTris).padStart(10)}` +
       `   ${r.crowdPeople} people / ${r.crowdFigures} figures / ${r.crowdTris.toLocaleString()} tris`
+  );
+  console.log(
+    `${" ".repeat(12)} props: ${r.propCopies} placed / ${r.propModels} models` +
+      ` / ${r.propTris.toLocaleString()} tris`
   );
   for (const e of r.errors) console.log(`   ! ${e}`);
 }
