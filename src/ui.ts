@@ -108,7 +108,12 @@ export class UI {
     this.root = root;
 
     this.loadingEl = this.screen("loading-screen");
-    this.loadingEl.innerHTML = `<div class="logo">TeqOpen</div>`;
+    this.loadingEl.innerHTML = `
+      <div class="logo">TeqOpen</div>
+      <div class="teq-loader" aria-hidden="true">
+        <span class="teq-loader-ball"></span>
+        <span class="teq-loader-line"></span>
+      </div>`;
     this.loadingText = document.createElement("div");
     this.loadingText.className = "loading-text";
     this.loadingText.textContent = "Loading…";
@@ -116,6 +121,15 @@ export class UI {
 
     this.titleEl = this.screen("title-screen");
     this.titleEl.innerHTML = `
+      <div class="teq-stage" aria-hidden="true">
+        <div class="teq-table">
+          <span class="teq-half left"></span>
+          <span class="teq-half right"></span>
+          <span class="teq-net"></span>
+        </div>
+        <span class="teq-ball"></span>
+        <span class="teq-shadow"></span>
+      </div>
       <main class="title-content">
         <div class="brand-lockup">
           <span class="brand-orb" aria-hidden="true"></span>
