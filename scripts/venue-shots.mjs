@@ -141,7 +141,7 @@ for (const venue of VENUES) {
     if (m.type() === "error") errors.push(m.text());
   });
 
-  const url = `http://localhost:${PORT}/?q=${QUALITY}&venue=${venue}${MERGE ? "" : "&merge=0"}`;
+  const url = `http://localhost:${PORT}/?q=${QUALITY}&venue=${venue}&intro=0${MERGE ? "" : "&merge=0"}`;
   await page.goto(url, { waitUntil: "load" });
   await page.waitForTimeout(4000);
   await page.locator("#btn-play").click();

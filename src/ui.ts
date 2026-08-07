@@ -63,6 +63,10 @@ export class UI {
   private root: HTMLElement;
   private loadingEl: HTMLDivElement;
   private loadingText: HTMLDivElement;
+  private introClipEl: HTMLDivElement;
+  private introClipVideo: HTMLVideoElement;
+  /** Resolves the pending `playIntroClip()`; null when no clip is running. */
+  private introClipDone: (() => void) | null = null;
   private titleEl: HTMLDivElement;
   private selectEl: HTMLDivElement;
   private hudEl: HTMLDivElement;
@@ -118,6 +122,16 @@ export class UI {
     this.loadingText.className = "loading-text";
     this.loadingText.textContent = "Loading…";
     this.loadingEl.appendChild(this.loadingText);
+
+    // Sits over the loading screen rather than replacing it, so a device that
+    // cannot decode the clip is left looking at the loading screen instead of
+    // at black.
+    this.introClipEl = this.screen("intro-clip");
+    this.introClipEl.classList.add("hidden");
+    this.introClipEl.innerHTML = `
+      <video id="intro-clip-video" playsinline preload="auto" disablepictureinpicture></video>
+      <button id="btn-skip-intro" class="skip-intro" type="button">Skip</button>`;
+    this.introClipVideo = this.introClipEl.querySelector<HTMLVideoElement>("#intro-clip-video")!;
 
     this.titleEl = this.screen("title-screen");
     this.titleEl.innerHTML = `
@@ -380,6 +394,7 @@ export class UI {
   }
 
   private hideAll(): void {
+    this.hideIntroClip();
     for (const el of [
       this.loadingEl,
       this.titleEl,
@@ -665,6 +680,85 @@ export class UI {
 
   setLoadingText(text: string): void {
     this.loadingText.textContent = text;
+  }
+
+  /**
+   * Plays the opening clip over the loading screen, resolving when it ends, is
+   * skipped, or turns out to be unplayable.
+   *
+   * The overlay is only revealed once frames are actually arriving, so a device
+   * that cannot decode the file never shows a black rectangle — it simply keeps
+   * loading. On a clean finish the last frame is left up (the clip ends on the
+   * logo) until `hideIntroClip()`, which turns a slow load into a held title
+   * card rather than a cut back to the spinner.
+   */
+  playIntroClip(src = "/video/intro.mp4"): Promise<void> {
+    this.hideIntroClip();
+    // An opening cinematic is exactly what this preference is about.
+    if (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return Promise.resolve();
+    }
+
+    const video = this.introClipVideo;
+    const skipBtn = this.introClipEl.querySelector<HTMLButtonElement>("#btn-skip-intro")!;
+
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      // A decoder that stalls without ever erroring would otherwise hold the
+      // player on the loading screen indefinitely.
+      const watchdog = window.setTimeout(() => finish(), 15000);
+
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(watchdog);
+        video.onplaying = null;
+        video.onended = null;
+        video.onerror = null;
+        skipBtn.onclick = null;
+        this.introClipEl.onpointerdown = null;
+        window.removeEventListener("keydown", onKey);
+        this.introClipDone = null;
+        resolve();
+      };
+      const skip = (): void => {
+        this.hideIntroClip();
+        finish();
+      };
+      const onKey = (e: KeyboardEvent): void => {
+        if (["Escape", "Enter", " ", "Spacebar"].includes(e.key)) skip();
+      };
+
+      this.introClipDone = finish;
+      video.onplaying = () => this.introClipEl.classList.remove("hidden");
+      video.onended = () => finish();
+      video.onerror = () => finish();
+      skipBtn.onclick = skip;
+      this.introClipEl.onpointerdown = skip;
+      window.addEventListener("keydown", onKey);
+
+      video.src = src;
+      // Try it with its own sound first: a native WebView is allowed to start
+      // unmuted, a browser tab is not, and muted playback is the fallback that
+      // always starts.
+      video.muted = false;
+      void video.play().catch(() => {
+        video.muted = true;
+        void video.play().catch(() => finish());
+      });
+    });
+  }
+
+  /** Clears the opening clip and releases its decoder. */
+  hideIntroClip(): void {
+    this.introClipEl.classList.add("hidden");
+    const video = this.introClipVideo;
+    video.pause();
+    if (video.getAttribute("src")) {
+      video.removeAttribute("src");
+      video.load();
+    }
+    this.introClipDone?.();
   }
 
   showTitle(onPlay: () => void): void {

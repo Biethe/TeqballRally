@@ -78,6 +78,13 @@ async function boot(): Promise<void> {
   window.addEventListener("keydown", unlock);
 
   ui.showLoading("Building the court…");
+  // The opening clip runs over the loading screen rather than in front of it,
+  // so the scene builds during it and the wait costs nothing. `?intro=0` skips
+  // it, which is what the headless verification scripts use.
+  const introClip =
+    new URLSearchParams(location.search).get("intro") === "0"
+      ? Promise.resolve()
+      : ui.playIntroClip();
   // The tier decides the engine's MSAA, which cannot be changed on a live
   // context, so it has to be resolved before the scene exists.
   const qualityTier = resolveTier(location.search, readSignals());
@@ -1426,6 +1433,12 @@ async function boot(): Promise<void> {
     practiceCoach?.start();
     (window as unknown as Record<string, unknown>).__teq = { match, ball, engine: gs.engine };
   };
+
+  // Everything above is ready; the only thing still owed is the clip's own
+  // running time. It ends on the logo, so a load that outlasts it holds on that
+  // frame instead of flicking back to the spinner.
+  await introClip;
+  ui.hideIntroClip();
 
   showTitle();
 }

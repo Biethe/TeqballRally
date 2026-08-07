@@ -13,7 +13,7 @@ page.on("console", (m) => {
 });
 page.on("pageerror", (e) => console.log("[pageerror]", e.message));
 
-await page.goto("http://localhost:5199/", { waitUntil: "load" });
+await page.goto("http://localhost:5199/?intro=0", { waitUntil: "load" });
 await page.waitForTimeout(4000);
 await page.screenshot({ path: "/tmp/shot-title.png" });
 

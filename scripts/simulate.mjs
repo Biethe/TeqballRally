@@ -12,7 +12,7 @@ const page = await browser.newPage({ viewport: { width: 640, height: 360 } });
 page.on("pageerror", (e) => console.log("[pageerror]", e.message));
 page.on("console", (m) => { if (m.type() === "error") console.log("[console]", m.text()); });
 
-await page.goto("http://localhost:5199/?ts=10&light=1", { waitUntil: "load" });
+await page.goto("http://localhost:5199/?ts=10&light=1&intro=0", { waitUntil: "load" });
 await page.waitForTimeout(3000);
 await page.locator("#btn-play").click();
 // Mode flow: friendly match at normal difficulty.
