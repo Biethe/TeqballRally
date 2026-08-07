@@ -232,9 +232,11 @@ distributing the model "in a file format that is usable by any 3D
 application" — and a `.glb` in an APK, or served from a web host, is exactly
 that. Two consequences worth keeping in mind:
 
-- **Do not make this repository public while `Crowd.glb` is in it.** A
-  Shipaton submission asking for a repo link is the obvious way that happens by
-  accident.
+- **Do not make this repository public while `Crowd.glb` or `Props.glb` is in
+  it.** A Shipaton submission asking for a repo link is the obvious way that
+  happens by accident. The scenery props are purchased packs under the same
+  kind of terms; their source files are deliberately kept out of the repo, and
+  `scripts/props/` holds the recipe rather than the ingredients.
 - Baking the crowd into the venue backdrop as merged static geometry is the
   stronger position for a shipped build, since it leaves no separable figure to
   extract. It costs the instancing — 65 people become 65 copies of the
@@ -283,10 +285,59 @@ placed in the world:
   below its court. The arena models stand on a foundation slab whose base is
   0.6 m under the playing surface, so a ground plane tucked 6 cm under the
   court drew straight over the top of it and turned every venue into the same
-  sheet of grey.
+  sheet of grey. `WORLD_Y` is that height, and **everything outside the fence
+  has to be placed on it** — the first row of parked cars was placed at court
+  height and hovered a metre off the road.
 - A vertex colour multiplies a StandardMaterial's **diffuse**, not its
   emissive. An unlit dome with white emissive comes out flat, and with black
   emissive comes out black; the gradient has to ride on diffuse.
+
+### Scenery props
+
+The boxes and sphere-trees above read as a world at a hundred metres and as a
+diorama at thirty. `assets/models/Props/Props.glb` is 50 modelled props —
+20 houses, 14 trees, 8 cars, 6 palms, 2 shrubs — in 0.45 MB, one material and
+no textures at all. `src/props.ts` loads them; `src/surroundings.ts` places
+them. A streetball court now stands in a neighbourhood, a pitch in a wood, a
+hard court under palms.
+
+They are cheap for three reasons, and the third is the one that is easy to get
+wrong:
+
+- **The colour is baked into the vertices.** All four packs colour themselves
+  from one atlas of flat palette swatches — every window, wheel and door in
+  them is geometry, not texture detail — so the atlas is sampled per vertex at
+  build time and thrown away. That also killed a rainbow-striping artefact:
+  aggressive simplification drags UVs across neighbouring swatches, and with
+  no UVs there is nothing to drag.
+- **They are decimated at build time.** Houses arrive at 3-8k triangles and
+  ship at ~1k. `gltfpack -si` alone reduces these models by 5%: they are
+  faceted, so every edge is an attribute seam, and only `-sa` will collapse
+  one.
+- **A draw call is per model, not per copy.** `Scatter.models` is a draw-call
+  budget: twenty houses placed from twenty models cost twenty calls and buy
+  nothing visible at forty metres, where six models at varied scale and
+  rotation read the same. The first pass placed 56 props from 42 models and
+  paid 42 calls for it.
+
+Three that cost real time:
+
+- **Quantized positions do not survive `bakeCurrentTransformIntoVertices`.**
+  `getVerticesData` hands back the raw integers, the bake transforms *those*,
+  and the props came out as 1 cm slabs. The file is packed `-vpf` for that
+  reason.
+- **Baking does not refresh the bounding box.** It stays as the loader built
+  it from the file's accessor bounds, so a height read straight after a bake
+  is the height from before it, and every prop gets scaled by the wrong
+  number.
+- **A PBR material can hide bad vertex colours**, which makes it a bad
+  baseline. Half an hour went into chasing "broken normals" that were the
+  pack's own near-black roofs, invisible under the glTF material that was not
+  showing the vertex colours at all.
+
+Rebuilding the file needs the source packs, which are not in the repo: see
+`scripts/props/pack-props.sh`, which documents the whole pipeline and the
+reason for every flag in it.
 
 ### The establishing shot
 
