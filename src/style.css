@@ -2012,3 +2012,235 @@ button.pad-focus {
     display: none;
   }
 }
+
+/* ------- animated teqball furniture ------- */
+/*
+   The one object this game is about is a curved table with a ball bouncing
+   over it, so that is what the title screen shows: a table in perspective and
+   a ball playing a rally across the net, in CSS rather than a second WebGL
+   scene. It costs nothing, it runs before any asset has downloaded, and it is
+   the only thing on the loading screen that tells you what you are waiting for.
+
+   Everything here is `pointer-events: none` and `aria-hidden`: it is
+   decoration over the top of a menu, and it must never take a tap or be read
+   aloud.
+*/
+.teq-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* Behind the menu content, in front of the screen's gradient. */
+  z-index: 0;
+  perspective: 620px;
+}
+
+/* The table: two halves angled up from the net, which is what makes a teqball
+   table read as itself rather than as a ping-pong table. */
+.teq-table {
+  position: absolute;
+  left: 50%;
+  bottom: 6%;
+  width: min(78vw, 560px);
+  height: min(30vh, 190px);
+  transform: translateX(-50%) rotateX(58deg);
+  transform-style: preserve-3d;
+  opacity: 0.5;
+}
+
+.teq-half {
+  position: absolute;
+  top: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(180deg, #2a2f36 0%, #171b21 100%);
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
+}
+
+.teq-half.left {
+  left: 0;
+  border-radius: 10px 0 0 10px;
+  transform-origin: right center;
+  transform: rotateY(7deg);
+}
+
+.teq-half.right {
+  right: 0;
+  border-radius: 0 10px 10px 0;
+  transform-origin: left center;
+  transform: rotateY(-7deg);
+}
+
+.teq-net {
+  position: absolute;
+  left: 50%;
+  top: -6%;
+  width: 4px;
+  height: 112%;
+  transform: translateX(-50%);
+  background: linear-gradient(180deg, transparent, var(--teq) 22%, var(--teq) 78%, transparent);
+  box-shadow: 0 0 18px rgba(255, 106, 19, 0.75);
+}
+
+/* A rally: across in x, bouncing in y, with the two independent so the ball
+   never lands in the same place twice in a row. */
+.teq-ball {
+  position: absolute;
+  left: 50%;
+  bottom: 20%;
+  width: clamp(20px, 3.4vw, 34px);
+  height: clamp(20px, 3.4vw, 34px);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 92% 46%, var(--teq) 0 32%, transparent 33%),
+    radial-gradient(circle at 34% 100%, var(--teq) 0 24%, transparent 25%),
+    radial-gradient(circle at 32% 26%, #ffffff 0 14%, #eef1f3 46%, #cfd5d9 80%, #a7aeb4 100%);
+  box-shadow: inset -5px -6px 12px rgba(0, 0, 0, 0.25), 0 8px 20px rgba(0, 0, 0, 0.45);
+  animation:
+    teq-rally 3.6s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate,
+    teq-bounce 0.9s cubic-bezier(0.3, 0, 0.7, 1) infinite,
+    teq-spin 1.8s linear infinite;
+}
+
+/* The shadow sells the bounce: it tracks the ball across but shrinks and
+   fades as the ball rises, which is the cue the eye actually reads. */
+.teq-shadow {
+  position: absolute;
+  bottom: 17%;
+  left: 50%;
+  width: clamp(20px, 3.4vw, 34px);
+  height: clamp(6px, 1vw, 10px);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.4);
+  filter: blur(3px);
+  animation:
+    teq-rally 3.6s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate,
+    teq-shadow 0.9s cubic-bezier(0.3, 0, 0.7, 1) infinite;
+}
+
+@keyframes teq-rally {
+  from { margin-left: min(-30vw, -210px); }
+  to { margin-left: min(30vw, 210px); }
+}
+
+@keyframes teq-bounce {
+  0% { translate: -50% 0; }
+  50% { translate: -50% min(-16vh, -110px); }
+  100% { translate: -50% 0; }
+}
+
+@keyframes teq-shadow {
+  0% { transform: translateX(-50%) scale(1); opacity: 0.42; }
+  50% { transform: translateX(-50%) scale(0.55); opacity: 0.14; }
+  100% { transform: translateX(-50%) scale(1); opacity: 0.42; }
+}
+
+@keyframes teq-spin {
+  from { rotate: 0deg; }
+  to { rotate: 360deg; }
+}
+
+/* The title's own ball spins slowly rather than sitting still. */
+.brand-orb {
+  animation: teq-spin 9s linear infinite;
+}
+
+/* Menu cards arrive rather than appear. The delay is per position so the list
+   deals itself out; six is enough for the longest menu in the game. */
+.menu-option {
+  animation: teq-deal 0.34s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+
+.menu-option:nth-child(1) { animation-delay: 0.02s; }
+.menu-option:nth-child(2) { animation-delay: 0.06s; }
+.menu-option:nth-child(3) { animation-delay: 0.1s; }
+.menu-option:nth-child(4) { animation-delay: 0.14s; }
+.menu-option:nth-child(5) { animation-delay: 0.18s; }
+.menu-option:nth-child(6) { animation-delay: 0.22s; }
+
+@keyframes teq-deal {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+/* The primary action breathes, so on a screen of options the eye is told
+   where to go without another colour being added. */
+.big-btn[data-menu-primary="true"],
+#btn-play {
+  animation: teq-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes teq-pulse {
+  0%, 100% { box-shadow: var(--lip); }
+  50% { box-shadow: var(--lip), 0 0 26px rgba(255, 140, 24, 0.55); }
+}
+
+/* Loading: a ball bouncing on a line, so the wait shows the game's own object
+   rather than a spinner. */
+.teq-loader {
+  position: relative;
+  width: 132px;
+  height: 54px;
+  margin-top: 6px;
+}
+
+.teq-loader-ball {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  width: 22px;
+  height: 22px;
+  margin-left: -11px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 90% 45%, var(--teq) 0 32%, transparent 33%),
+    radial-gradient(circle at 32% 26%, #ffffff 0 16%, #e9edef 50%, #b9c0c5 100%);
+  animation: teq-loader-hop 1s cubic-bezier(0.3, 0, 0.7, 1) infinite;
+}
+
+.teq-loader-line {
+  position: absolute;
+  left: 0;
+  bottom: 8px;
+  width: 100%;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--teq), transparent);
+  opacity: 0.7;
+}
+
+@keyframes teq-loader-hop {
+  0%, 100% { transform: translateY(0) scaleY(0.86) scaleX(1.08); }
+  18% { transform: translateY(-6px) scale(1); }
+  50% { transform: translateY(-34px) scale(1); }
+  82% { transform: translateY(-6px) scale(1); }
+}
+
+/* Anything that moves on its own has to stop when the player has asked the
+   system for that. This is the whole accessibility contract for decoration. */
+@media (prefers-reduced-motion: reduce) {
+  .teq-ball,
+  .teq-shadow,
+  .brand-orb,
+  .menu-option,
+  .teq-loader-ball,
+  .big-btn[data-menu-primary="true"],
+  #btn-play {
+    animation: none;
+  }
+}
+
+/* Landscape phones have no vertical room to spare: the table would sit under
+   the menu rather than behind it. */
+@media (max-height: 500px) {
+  .teq-table {
+    height: 26vh;
+    bottom: 2%;
+    opacity: 0.34;
+  }
+
+  .teq-loader {
+    display: none;
+  }
+}

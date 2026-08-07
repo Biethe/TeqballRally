@@ -434,12 +434,58 @@ function placeOnBenches(
  * the same thing reads as wallpaper.
  */
 function placeOnTiers(
+  scene: Scene,
   spec: NonNullable<Dressing["tiers"]>,
   seated: Mesh[],
   standing: Mesh[],
-  into: Placement
+  into: Placement,
+  out: Mesh[]
 ): void {
   if (seated.length === 0 && standing.length === 0) return;
+
+  // Build the stand as well as fill it.
+  //
+  // The first attempt tried to seat people on the hall's own bowl, whose rows
+  // are modelled as bare concentric rings with no per-seat geometry — there is
+  // no rake to read, and every guess at one put people through a wall or out
+  // on the grass. Constructing the deck removes the guess: we know where the
+  // seats are because we put them there, and the venue's own bowl becomes the
+  // backdrop behind it.
+  const deckMat = flat(scene, "tier-deck", spec.deck, 0.05);
+  const risers: Mesh[] = [];
+  for (let row = 0; row < spec.rows; row++) {
+    const rx = spec.radiusX + row * spec.step;
+    const rz = spec.radiusZ + row * spec.step;
+    const y = GROUND_Y + spec.lift + row * spec.rise;
+    const steps = 56;
+    for (let i = 0; i < steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      const next = ((i + 1) / steps) * Math.PI * 2;
+      const x = Math.cos(a) * rx;
+      const z = Math.sin(a) * rz;
+      const span = Math.hypot(Math.cos(next) * rx - x, Math.sin(next) * rz - z);
+      const slab = MeshBuilder.CreateBox(
+        `tier-${row}-${i}`,
+        // Deep enough to stand a row on, tall enough to reach the deck below.
+        { width: span * 1.06, height: spec.rise + spec.lift, depth: spec.step * 1.5 },
+        scene
+      );
+      const mid = (a + next) / 2;
+      slab.position.set(
+        Math.cos(mid) * rx,
+        y - (spec.rise + spec.lift) / 2 + spec.rise,
+        Math.sin(mid) * rz
+      );
+      slab.rotation.y = Math.atan2(Math.cos(mid) * rx, -Math.sin(mid) * rz);
+      risers.push(slab);
+    }
+  }
+  const deck = risers.length > 1 ? Mesh.MergeMeshes(risers, true, true) : risers[0];
+  if (deck) {
+    deck.material = deckMat;
+    out.push(deck);
+  }
+
   const noise = (a: number, b: number): number => {
     const n = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
     return n - Math.floor(n);
@@ -525,7 +571,9 @@ export async function buildEnvironment(scene: Scene, venue: Venue, crowd?: Crowd
       placeCrowd(dressing.crowd, library.standing, court.halfLen, court.halfWid, placement);
     }
     if (dressing.benches) placeOnBenches(dressing.benches, library.seated, placement);
-    if (dressing.tiers) placeOnTiers(dressing.tiers, library.seated, library.standing, placement);
+    if (dressing.tiers) {
+      placeOnTiers(scene, dressing.tiers, library.seated, library.standing, placement, built);
+    }
     const applied = applyPlacement(placement);
     built.push(...applied.placed);
     crowdBuffers = applied.buffers;

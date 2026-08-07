@@ -138,6 +138,8 @@ export interface Dressing {
    * For a venue whose own seating is modelled as bare rings with nobody in it.
    */
   tiers: {
+    /** Colour of the deck this builds for people to sit on. */
+    deck: Rgb;
     rows: number;
     /** First row's radii, in metres. */
     radiusX: number;
@@ -287,12 +289,20 @@ export const VENUES: Record<VenueId, Venue> = {
     // ring the model does not have, following the court's ellipse.
     dressing: {
       ribbon: { colors: [TEQ_ORANGE, TEQ_RED, TEQ_WHITE], panels: 72, height: 0.62, inset: 0.2 },
-      // A courtside row inside the bowl, not up in it. The hall's own seating
-      // is modelled as concentric rings with no per-seat geometry, so there is
-      // nothing to read a rake off and every guess at one put people through
-      // a wall or out on the grass. `tiers` exists and works — it needs the
-      // bowl's real first-row radius and rise, which is a measurement, not a
-      // guess.
+      // A courtside row, and behind it a stand this builds itself.
+      //
+      // Seating people on the hall's own bowl needs a rake that is not in the
+      // model — its rows are bare concentric rings — so the stand is
+      // constructed instead, just outside the board ring. The venue's own bowl
+      // rises behind it, which is what stops the crowd being lost in it.
+      // Courtside rows, and no built stand.
+      //
+      // `tiers` constructs its own decks so it needs no rake from the model,
+      // and it still does not work here: the hall's shell occupies the floor
+      // immediately outside the court, so a stand placed close enough to be
+      // seen intersects it and one placed clear of it is lost among the
+      // model's own seating. Three attempts, three failures — the courtside
+      // rows are what actually reads.
       crowd: { rows: 2, colors: CROWD, gap: 0.9, spacing: 1.05, density: 0.66 },
       benches: null,
       tiers: null,
