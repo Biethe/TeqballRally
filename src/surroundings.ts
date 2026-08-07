@@ -29,8 +29,9 @@ import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { GROUND_Y } from "./config";
-import type { Rgb, Surrounds, Venue } from "./venue";
+import type { Rgb, Surrounds, Tile, Venue } from "./venue";
 
 /** Where the venue site ends and this takes over, in metres from the table. */
 const SITE_RADIUS = 15.5;
@@ -49,6 +50,34 @@ function surface(scene: Scene, name: string, c: Rgb, emissive = 0.06): StandardM
   m.emissiveColor = new Color3(c[0] * emissive, c[1] * emissive, c[2] * emissive);
   m.specularColor = new Color3(0.02, 0.02, 0.02);
   return m;
+}
+
+/**
+ * Put a tiling texture on a material, repeated to match a real-world size.
+ *
+ * The diffuse *colour* stays white once a texture is on: `diffuseColor`
+ * multiplies the texture, so leaving the flat fallback colour in place would
+ * tint every photo toward it. The flat colour remains the fallback for a
+ * venue with no tile, and for a tile that fails to load.
+ *
+ * `uScale` is the count of repeats across the mesh, which is the surface's own
+ * size divided by how much world one tile covers.
+ */
+function tiled(
+  scene: Scene,
+  material: StandardMaterial,
+  tile: Tile | undefined,
+  surfaceMetres: number
+): StandardMaterial {
+  if (!tile) return material;
+  const texture = new Texture(`/textures/${tile.name}.webp`, scene);
+  const repeats = Math.max(1, surfaceMetres / tile.metres);
+  texture.uScale = repeats;
+  texture.vScale = repeats;
+  material.diffuseTexture = texture;
+  material.diffuseColor = new Color3(1, 1, 1);
+  material.emissiveColor = new Color3(0.05, 0.05, 0.05);
+  return material;
 }
 
 /** Merge a pile of boxes into one mesh and give it a colour. */
@@ -107,7 +136,7 @@ function buildSky(scene: Scene, horizon: Rgb, zenith: Rgb): Mesh {
 }
 
 /** The ground the venue sits on, out to the horizon. */
-function buildGround(scene: Scene, c: Rgb): Mesh {
+function buildGround(scene: Scene, c: Rgb, tile: Tile | undefined): Mesh {
   const ground = MeshBuilder.CreateGround(
     "world-ground",
     { width: WORLD_RADIUS * 2, height: WORLD_RADIUS * 2, subdivisions: 1 },
@@ -121,7 +150,12 @@ function buildGround(scene: Scene, c: Rgb): Mesh {
   // became the same sheet of grey. There is a fence around the site, so the
   // step down is not visible from anywhere the game is played from.
   ground.position.y = GROUND_Y - 1.05;
-  ground.material = surface(scene, "world-ground-mat", c, 0.1);
+  ground.material = tiled(
+    scene,
+    surface(scene, "world-ground-mat", c, 0.1),
+    tile,
+    WORLD_RADIUS * 2
+  );
   ground.isPickable = false;
   return ground;
 }
@@ -183,7 +217,13 @@ function buildCity(scene: Scene, spec: Surrounds, out: Mesh[]): void {
 
   wallTones.forEach((tone, k) => {
     const mine = walls.filter((_, i) => i % wallTones.length === k);
-    const mesh = weld(mine, surface(scene, `city-wall-${k}`, tone, 0.05));
+    // One tile size for every building: they are merged into a single mesh per
+    // tone, so the UVs are whatever each box was born with and the repeat has
+    // to suit a typical facade rather than any one of them.
+    const mesh = weld(
+      mine,
+      tiled(scene, surface(scene, `city-wall-${k}`, tone, 0.05), spec.wallTile, 24)
+    );
     if (mesh) out.push(mesh);
   });
   const roof = weld(roofs, surface(scene, "city-roof", spec.accent, 0.04));
@@ -279,7 +319,7 @@ function buildBeach(scene: Scene, spec: Surrounds, out: Mesh[]): void {
   // there is a shoreline to read rather than a ring of water.
   const sea = MeshBuilder.CreateGround("sea", { width: WORLD_RADIUS * 2, height: WORLD_RADIUS * 1.4 }, scene);
   sea.position.set(0, GROUND_Y - 0.04, -(WORLD_RADIUS * 0.7 + 34));
-  const seaMat = surface(scene, "sea", spec.accent, 0.16);
+  const seaMat = tiled(scene, surface(scene, "sea", spec.accent, 0.16), spec.accentTile, WORLD_RADIUS);
   seaMat.specularColor = new Color3(0.35, 0.4, 0.45);
   seaMat.specularPower = 64;
   sea.material = seaMat;
@@ -333,7 +373,7 @@ export function buildSurroundings(scene: Scene, venue: Venue): Mesh[] {
   const out: Mesh[] = [];
 
   out.push(buildSky(scene, spec.horizon, venue.sky));
-  out.push(buildGround(scene, spec.ground));
+  out.push(buildGround(scene, spec.ground, spec.groundTile));
 
   if (spec.kind === "city") buildCity(scene, spec, out);
   else if (spec.kind === "beach") buildBeach(scene, spec, out);

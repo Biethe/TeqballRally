@@ -257,6 +257,25 @@ can see past a fence anyway. It comes from three things:
 - **A sky with a gradient in it.** A flat clear colour is the most
   diorama-like thing in a scene; a graded dome is one unlit mesh.
 
+Surfaces are tiled photographs rather than flat colours: `assets/textures/` —
+eight 512x512 WebP tiles, 576 KB for the set. `Tile` in `src/venue.ts` gives
+each one a name and **how much world one repeat covers**, and that number
+matters as much as the image. Too large and the ground smears; too small and
+it shimmers into noise at distance. The first pass put brick at 8 m a repeat
+and the bricks came out a metre tall.
+
+A texture also has to take the diffuse *colour* to white when it is applied —
+`diffuseColor` multiplies the texture, so leaving the flat fallback colour in
+place tints every photograph toward it. The flat colours stay as the fallback
+for a venue with no tile.
+
+Three of the eight arrived with measurable edge discontinuities and only one
+of those — the water — had a seam you could actually see when tiled 2x2.
+Brick, concrete and marble measured worse and looked fine. Measure, then look:
+the metric flags contrast at the edge, which is not the same thing as a seam.
+The water is mirrored in one axis, which wraps by construction and is
+invisible on ripples that have no direction.
+
 Two things it got wrong first, both worth keeping in mind for anything else
 placed in the world:
 

@@ -164,6 +164,21 @@ export interface Dressing {
  * The arena models are a fenced site with sky beyond the fence, which reads as
  * a diorama however good the court is. This is the world it stands in.
  */
+/**
+ * A tiling texture, by name under `assets/textures/`, and how much real
+ * surface one tile covers.
+ *
+ * The metres matter as much as the image: a tile scaled wrong reads as a
+ * pattern rather than a material, and the two failure modes look completely
+ * different — too large and the ground is smeared, too small and it shimmers
+ * into noise at distance.
+ */
+export interface Tile {
+  name: string;
+  /** Metres of world covered by one repeat. */
+  metres: number;
+}
+
 export interface Surrounds {
   kind: "city" | "park" | "beach";
   /** Ground beyond the venue's own site. */
@@ -182,6 +197,12 @@ export interface Surrounds {
   lit: Rgb;
   /** City only: fraction of windows with a light on. */
   litFraction: number;
+  /** Ground beyond the site. Falls back to flat `ground` colour if absent. */
+  groundTile?: Tile;
+  /** Building walls, or nothing for the venues without buildings. */
+  wallTile?: Tile;
+  /** The sea, on the beach. */
+  accentTile?: Tile;
 }
 
 /**
@@ -359,6 +380,10 @@ export const VENUES: Record<VenueId, Venue> = {
       accent: [0.22, 0.22, 0.24],
       lit: [1, 0.88, 0.62],
       litFraction: 0.42,
+      groundTile: { name: "asphalt", metres: 6 },
+      // 2.5 m per repeat puts a brick course at roughly 6 cm on a typical
+      // facade. The first pass used 8 m and the bricks came out a metre tall.
+      wallTile: { name: "brick", metres: 2.5 },
     },
   },
   football: {
@@ -401,6 +426,7 @@ export const VENUES: Record<VenueId, Venue> = {
       accent: [0.19, 0.33, 0.17],
       lit: [0.85, 0.9, 0.8],
       litFraction: 0,
+      groundTile: { name: "grass", metres: 5 },
     },
   },
   tennis: {
@@ -444,6 +470,8 @@ export const VENUES: Record<VenueId, Venue> = {
       accent: [0.08, 0.4, 0.5],
       lit: [0.95, 0.97, 0.96],
       litFraction: 0,
+      groundTile: { name: "sand", metres: 5 },
+      accentTile: { name: "water", metres: 14 },
     },
   },
 };
