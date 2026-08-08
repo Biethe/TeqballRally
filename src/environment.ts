@@ -1,9 +1,3 @@
-import {
-  loadRiggedFigures,
-  animationSettingsBuffer,
-  driveCrowdClocks,
-  type RiggedFigure,
-} from "./crowdrig";
 /**
  * Procedural set dressing: the things that make a court look like an event.
  *
@@ -32,6 +26,8 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { GROUND_Y } from "./config";
 import { Crowd } from "./crowd";
 import type { Dressing, Rgb, Venue } from "./venue";
@@ -175,31 +171,114 @@ export interface CrowdLibrary {
   standing: Mesh[];
   /** Figures posed sitting — for benches and bleachers, useless on flat ground. */
   seated: Mesh[];
-  /** Baked figures by mesh, for the per-instance animation timings. */
-  rigged: Map<Mesh, RiggedFigure>;
 }
 
-/**
- * Skinned spectators, replacing the static figures the crowd used before.
- *
- * Falls back to nothing rather than throwing: the caller already treats an
- * empty library as "venue without a crowd".
- */
-async function loadRiggedCrowdLibrary(scene: Scene): Promise<CrowdLibrary> {
-  const figures = await loadRiggedFigures(scene, RIGGED_FILES);
-  const rigged = new Map<Mesh, RiggedFigure>();
-  for (const f of figures) rigged.set(f.mesh, f);
-  driveCrowdClocks(scene, figures);
-  return {
-    standing: figures.slice(0, 2).map((f) => f.mesh),
-    seated: figures.slice(2).map((f) => f.mesh),
-    rigged,
+async function loadCrowdLibrary(scene: Scene): Promise<CrowdLibrary> {
+  const res = await SceneLoader.ImportMeshAsync("", "/models/Crowd/", "Crowd.glb", scene);
+
+  /**
+   * The figure a part belongs to, by walking up to the node the exporter
+   * named.
+   *
+   * Not simply `m.parent`: the compression pass nests a generated `node0`
+   * between the named node and its meshes, so the parent is anonymous and the
+   * pose tag — the only record of whether a figure is standing or sitting —
+   * lives one level further up.
+   */
+  const figureOf = (m: Mesh): string => {
+    for (let node = m.parent; node; node = node.parent) {
+      if (node.name.startsWith("stand_") || node.name.startsWith("sit_")) return node.name;
+    }
+    return m.parent?.name ?? m.name;
   };
+
+  const people = new Map<string, Mesh[]>();
+  for (const m of res.meshes) {
+    if (!(m instanceof Mesh) || m.getTotalVertices() === 0) continue;
+    const who = figureOf(m);
+    const group = people.get(who);
+    if (group) group.push(m);
+    else people.set(who, [m]);
+  }
+
+  const shared = new StandardMaterial("crowd-skin", scene);
+  shared.diffuseColor = new Color3(1, 1, 1);
+  shared.specularColor = new Color3(0.03, 0.03, 0.03);
+  // Slight self-illumination so a spectator facing away from the sun is not a
+  // silhouette; the crowd is scenery, not something to be read.
+  shared.emissiveColor = new Color3(0.1, 0.1, 0.1);
+
+  const library: Mesh[] = [];
+  for (const [who, parts] of people) {
+    for (const part of parts) {
+      const material = part.material;
+      const colour =
+        material && "albedoColor" in material
+          ? (material as unknown as { albedoColor: Color3 }).albedoColor
+          : material && "diffuseColor" in material
+            ? (material as unknown as { diffuseColor: Color3 }).diffuseColor
+            : new Color3(0.7, 0.7, 0.7);
+      const count = part.getTotalVertices();
+      const colours = new Float32Array(count * 4);
+      for (let i = 0; i < count; i++) {
+        colours[i * 4] = colour.r;
+        colours[i * 4 + 1] = colour.g;
+        colours[i * 4 + 2] = colour.b;
+        colours[i * 4 + 3] = 1;
+      }
+      part.setVerticesData(VertexBuffer.ColorKind, colours);
+    }
+    const merged = parts.length === 1 ? parts[0] : Mesh.MergeMeshes(parts, true, true);
+    if (!merged) continue;
+    merged.name = `crowd-${who}`;
+    merged.material = shared;
+    // Vertex colours are a mesh flag rather than a material one, and default
+    // to on — set it explicitly so the single shared material cannot be read
+    // as the thing that gives everyone the same shirt.
+    merged.useVertexColors = true;
+    merged.setEnabled(false);
+    library.push(merged);
+  }
+
+  // One scale for everyone, from the median figure, rather than normalising
+  // each to the same height. These are cheering poses: several have their arms
+  // straight up, so their bounding box is a head taller than they are, and
+  // per-figure normalisation shrinks exactly the people who are celebrating
+  // hardest. Grounding stays per figure so nobody floats.
+  const heights = library
+    .map((m) => {
+      const box = m.getBoundingInfo().boundingBox;
+      return box.maximum.y - box.minimum.y;
+    })
+    .sort((a, b) => a - b);
+  const median = heights[Math.floor(heights.length / 2)] || 1;
+  const scale = SPECTATOR_HEIGHT / median;
+  for (const person of library) {
+    person.scaling.setAll(scale);
+    person.bakeCurrentTransformIntoVertices();
+    // Recentre on the figure's own footprint, not just the floor.
+    //
+    // The pack is one grandstand, and each figure was exported at the seat it
+    // occupies in it. `MergeMeshes` bakes world matrices into vertices, so
+    // that seat position survives as an offset inside the geometry — and a
+    // thin instance placed at the touchline then lands at
+    // touchline-plus-seat, which scattered a third of the crowd across the
+    // pitch. Only the vertical was being corrected before.
+    const box = person.getBoundingInfo().boundingBox;
+    person.position.set(
+      -(box.minimum.x + box.maximum.x) / 2,
+      -box.minimum.y,
+      -(box.minimum.z + box.maximum.z) / 2
+    );
+    person.bakeCurrentTransformIntoVertices();
+  }
+  const standing = library.filter((m) => m.name.includes("stand_"));
+  const seated = library.filter((m) => m.name.includes("sit_"));
+  return { standing, seated };
 }
 
-/** Two standing figures then two seated, in that order. */
-const RIGGED_FILES = ["f1.glb", "f2.glb", "f3.glb", "f4.glb"];
-
+/** How tall a spectator stands, in metres, against ~1.45 m players. */
+const SPECTATOR_HEIGHT = 1.42;
 
 /**
  * People watching, in rows behind the board ring along both long sides.
@@ -287,10 +366,7 @@ function placeAt(into: Placement, person: Mesh, matrix: Matrix): void {
  * animator has to own those arrays: it rewrites them in place and tells
  * Babylon the buffer changed, which is far cheaper than rebuilding matrices.
  */
-function applyPlacement(
-  into: Placement,
-  rigged: Map<Mesh, RiggedFigure> = new Map()
-): { placed: Mesh[]; buffers: [Mesh, Float32Array][] } {
+function applyPlacement(into: Placement): { placed: Mesh[]; buffers: [Mesh, Float32Array][] } {
   const placed: Mesh[] = [];
   const buffers: [Mesh, Float32Array][] = [];
   for (const [person, matrices] of into) {
@@ -299,21 +375,6 @@ function applyPlacement(
     matrices.forEach((m, i) => m.copyToArray(buffer, i * 16));
     // Not a static buffer: the crowd animator rewrites it every frame.
     person.thinInstanceSetBuffer("matrix", buffer, 16, false);
-    if (rigged.has(person)) {
-      // Every copy starts somewhere else in the same loop, so a stand full of
-      // spectators does not clap in unison.
-      let seed = matrices.length * 2654435761;
-      const random = (): number => {
-        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-        return seed / 0x7fffffff;
-      };
-      person.thinInstanceSetBuffer(
-        "bakedVertexAnimationSettingsInstanced",
-        animationSettingsBuffer(matrices.length, random),
-        4,
-        true
-      );
-    }
     person.setEnabled(true);
     placed.push(person);
     buffers.push([person, buffer]);
@@ -501,9 +562,9 @@ export async function buildEnvironment(scene: Scene, venue: Venue, crowd?: Crowd
   }
   if (dressing.crowd || dressing.benches || dressing.tiers) {
     // A crowd that fails to download is not worth losing the venue over.
-    const library = await loadRiggedCrowdLibrary(scene).catch((e) => {
+    const library = await loadCrowdLibrary(scene).catch((e) => {
       console.warn("Crowd failed to load:", e);
-      return { standing: [], seated: [], rigged: new Map() };
+      return { standing: [], seated: [] };
     });
     const placement: Placement = new Map();
     if (dressing.crowd) {
@@ -513,7 +574,7 @@ export async function buildEnvironment(scene: Scene, venue: Venue, crowd?: Crowd
     if (dressing.tiers) {
       placeOnTiers(scene, dressing.tiers, library.seated, library.standing, placement, built);
     }
-    const applied = applyPlacement(placement, library.rigged);
+    const applied = applyPlacement(placement);
     built.push(...applied.placed);
     crowdBuffers = applied.buffers;
     // Anything left unplaced is still a mesh in the scene, drawn once at the

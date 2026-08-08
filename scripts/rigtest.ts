@@ -8,6 +8,7 @@ import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { Vector3, Color3, Color4, Matrix } from "@babylonjs/core/Maths/math";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import "@babylonjs/loaders/glTF/2.0";
 import { loadRiggedFigures, animationSettingsBuffer } from "../src/crowdrig";
 
@@ -96,6 +97,43 @@ report.instanceWorld = figures.map((fig) => {
   return {
     min: b.minimumWorld.asArray().map((v) => +v.toFixed(2)),
     max: b.maximumWorld.asArray().map((v) => +v.toFixed(2)),
+  };
+});
+// Is the baked-animation path actually compiled into the shader?
+scene.render();
+report.buffers = figures.map((fig) => ({
+  colour: fig.mesh.isVerticesDataPresent(VertexBuffer.ColorKind),
+  boneIdx: fig.mesh.isVerticesDataPresent(VertexBuffer.MatricesIndicesKind),
+  boneW: fig.mesh.isVerticesDataPresent(VertexBuffer.MatricesWeightsKind),
+  useVertexColors: fig.mesh.useVertexColors,
+  numBoneInfluencers: fig.mesh.numBoneInfluencers,
+  thinCount: fig.mesh.thinInstanceCount,
+}));
+report.defines = figures.map((fig) => {
+  const sm = fig.mesh.subMeshes[0] as unknown as { materialDefines?: { toString(): string } };
+  const d = sm?.materialDefines?.toString() ?? "";
+  return {
+    vat: d.includes("#define BAKED_VERTEX_ANIMATION_TEXTURE"),
+    inst: d.includes("#define INSTANCES"),
+    thin: d.includes("#define THIN_INSTANCES"),
+    vcol: d.includes("#define VERTEXCOLOR"),
+    bones: /#define NUM_BONE_INFLUENCERS (\d+)/.exec(d)?.[1] ?? "0",
+    len: d.length,
+  };
+});
+report.shader = figures.map((fig) => {
+  const mat = fig.mesh.material;
+  const effect = mat?.getEffect?.();
+  const defines = (effect as unknown as { defines?: string })?.defines ?? "";
+  return {
+    material: mat?.getClassName?.(),
+    vat: defines.includes("BAKED_VERTEX_ANIMATION_TEXTURE"),
+    instances: defines.includes("#define INSTANCES"),
+    thin: defines.includes("THIN_INSTANCES"),
+    bones: /NUM_BONE_INFLUENCERS (\d+)/.exec(defines)?.[1] ?? "none",
+    vcol: defines.includes("VERTEXCOLOR"),
+    hasSkeleton: !!fig.mesh.skeleton,
+    managerEnabled: fig.manager.isEnabled,
   };
 });
 (window as unknown as { __rig: unknown }).__rig = report;

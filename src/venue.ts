@@ -369,7 +369,7 @@ export const VENUES: Record<VenueId, Venue> = {
       kind: "city",
       ground: [0.24, 0.24, 0.26],
       horizon: [0.62, 0.6, 0.66],
-      haze: 0.0045,
+      haze: 0.0026,
       count: 34,
       palette: [
         [0.62, 0.56, 0.5],
@@ -417,7 +417,7 @@ export const VENUES: Record<VenueId, Venue> = {
       kind: "park",
       ground: [0.29, 0.42, 0.22],
       horizon: [0.72, 0.79, 0.82],
-      haze: 0.0035,
+      haze: 0.0021,
       count: 46,
       palette: [
         [0.31, 0.23, 0.16],
@@ -461,7 +461,7 @@ export const VENUES: Record<VenueId, Venue> = {
       kind: "beach",
       ground: [0.82, 0.74, 0.56],
       horizon: [0.78, 0.85, 0.88],
-      haze: 0.003,
+      haze: 0.0018,
       count: 26,
       palette: [
         [0.42, 0.32, 0.2],

@@ -4,7 +4,6 @@ import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
 import type { Bone } from "@babylonjs/core/Bones/bone";
 import type { Skeleton } from "@babylonjs/core/Bones/skeleton";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { Space } from "@babylonjs/core/Maths/math.axis";
 import { VertexAnimationBaker } from "@babylonjs/core/BakedVertexAnimation/vertexAnimationBaker";
 import { BakedVertexAnimationManager } from "@babylonjs/core/BakedVertexAnimation/bakedVertexAnimationManager";
 
@@ -58,32 +57,59 @@ interface Clip {
  * would double the travel.
  */
 const CHEER: Clip[] = [
-  { bone: "LeftArm", axis: ARM_AXIS, amplitude: 0.42, cycles: 2, phase: 0 },
-  { bone: "RightArm", axis: ARM_AXIS, amplitude: 0.42, cycles: 2, phase: 0.5 },
-  { bone: "LeftForeArm", axis: ARM_AXIS, amplitude: 0.22, cycles: 2, phase: 0.12 },
-  { bone: "RightForeArm", axis: ARM_AXIS, amplitude: 0.22, cycles: 2, phase: 0.62 },
-  { bone: "Spine1", axis: SPINE_AXIS, amplitude: 0.07, cycles: 1, phase: 0 },
-  { bone: "Spine3", axis: SPINE_AXIS, amplitude: 0.05, cycles: 1, phase: 0.25 },
-  { bone: "Neck", axis: SPINE_AXIS, amplitude: 0.06, cycles: 2, phase: 0.3 },
+  { bone: "Spine1", axis: SPINE_AXIS, amplitude: 0.08, cycles: 1, phase: 0 },
+  { bone: "Spine3", axis: SPINE_AXIS, amplitude: 0.06, cycles: 1, phase: 0.25 },
+  { bone: "Neck", axis: SPINE_AXIS, amplitude: 0.07, cycles: 2, phase: 0.3 },
+  { bone: "LeftArm", axis: ARM_AXIS, amplitude: 0.38, cycles: 2, phase: 0 },
+  { bone: "RightArm", axis: ARM_AXIS, amplitude: 0.38, cycles: 2, phase: 0.5 },
+  { bone: "LeftForeArm", axis: ARM_AXIS, amplitude: 0.20, cycles: 2, phase: 0.12 },
+  { bone: "RightForeArm", axis: ARM_AXIS, amplitude: 0.20, cycles: 2, phase: 0.62 },
 ];
 
 function boneNamed(skeleton: Skeleton, suffix: string): Bone | undefined {
   return skeleton.bones.find((b) => b.name.endsWith(`_skeleton_${suffix}`));
 }
 
+interface PosedBone {
+  bone: Bone;
+  /** The bone's rest local matrix, split so the swing only touches rotation. */
+  restScale: Vector3;
+  restRotation: Quaternion;
+  restPosition: Vector3;
+  clip: Clip;
+}
+
 /**
  * Pose every animated bone for one frame of the loop.
  *
- * `t` runs 0..1 over the loop, so the sine closes on itself and the last
- * frame meets the first.
+ * `t` runs 0..1 over the loop, so the sine closes on itself and the last frame
+ * meets the first.
+ *
+ * The pose is written as a local matrix rather than through
+ * `setRotationQuaternion`: on these bones that setter left
+ * `bone.rotationQuaternion` unchanged, so every baked frame came out identical
+ * and the crowd rendered frozen in its bind pose.
+ *
+ * The rest transform is recomposed from its parts rather than multiplied
+ * through. These bones carry scale — the pack's x100 bind — and multiplying a
+ * rotation onto a matrix holding scale shears it, which stretched every arm
+ * into a spike.
  */
-function poseAt(posed: { bone: Bone; rest: Quaternion; clip: Clip }[], t: number): void {
-  for (const { bone, rest, clip } of posed) {
+function poseAt(posed: PosedBone[], t: number): void {
+  const local = new Matrix();
+  for (const { bone, restScale, restRotation, restPosition, clip } of posed) {
     const swing = Math.sin((t * clip.cycles + clip.phase) * Math.PI * 2);
-    bone.setRotationQuaternion(
-      rest.multiply(Quaternion.RotationAxis(clip.axis, swing * clip.amplitude)),
-      Space.LOCAL
+    const turned = restRotation.multiply(
+      Quaternion.RotationAxis(clip.axis, swing * clip.amplitude)
     );
+    Matrix.ComposeToRef(restScale, turned, restPosition, local);
+    // Local matrix only — the difference-matrix flag rewrites this bone's
+    // bind matrices from the pose being set, which corrupts every child down
+    // the chain and shears the limbs into spikes. The explicit dirty mark is
+    // what makes `prepare()` recompute the matrices the bake reads; without
+    // it the pose never lands and every frame bakes identical.
+    bone.updateMatrix(local.clone(), false, true);
+    bone.markAsDirty();
   }
 }
 
@@ -97,17 +123,16 @@ function poseAt(posed: { bone: Bone; rest: Quaternion; clip: Clip }[], t: number
  * evaluated in a tight synchronous loop instead and the matrices read straight
  * out of the skeleton.
  */
-function bakeLoop(
-  mesh: Mesh,
-  skeleton: Skeleton,
-  posed: { bone: Bone; rest: Quaternion; clip: Clip }[]
-): Float32Array {
-  skeleton.prepare();
+function bakeLoop(mesh: Mesh, skeleton: Skeleton, posed: PosedBone[]): Float32Array {
+  // `prepare()` skips its work when the scene's render id has not moved, which
+  // it never does inside a loop like this one — so it has to be forced, or
+  // every frame bakes the first pose and the crowd comes out frozen.
+  skeleton.prepare(true);
   const perFrame = skeleton.getTransformMatrices(mesh).length;
   const data = new Float32Array(perFrame * CROWD_FRAMES);
   for (let frame = 0; frame < CROWD_FRAMES; frame++) {
     poseAt(posed, frame / CROWD_FRAMES);
-    skeleton.prepare();
+    skeleton.prepare(true);
     data.set(skeleton.getTransformMatrices(mesh), frame * perFrame);
   }
   return data;
@@ -167,16 +192,43 @@ async function bakeFigure(scene: Scene, file: string): Promise<RiggedFigure | nu
   mesh.scaling.setAll(1);
   mesh.computeWorldMatrix(true);
 
-  const posed = CHEER.flatMap((clip) => {
+  const posed: PosedBone[] = CHEER.flatMap((clip) => {
     const bone = boneNamed(skeleton, clip.bone);
-    return bone ? [{ bone, rest: bone.rotationQuaternion.clone(), clip }] : [];
+    if (!bone) return [];
+    const restScale = new Vector3();
+    const restRotation = new Quaternion();
+    const restPosition = new Vector3();
+    bone.getLocalMatrix().decompose(restScale, restRotation, restPosition);
+    return [{ bone, restScale, restRotation, restPosition, clip }];
   });
+  // Parents before children. Posing a bone recomputes its transform against
+  // its parent's current one, so touching an arm before the spine it hangs
+  // off leaves the arm resolved against a stale torso — which sheared every
+  // arm into a spike.
+  const depthOf = (bone: Bone): number => {
+    let depth = 0;
+    for (let node = bone.getParent(); node; node = node.getParent()) depth++;
+    return depth;
+  };
+  posed.sort((a, b) => depthOf(a.bone) - depthOf(b.bone));
 
   const data = bakeLoop(mesh, skeleton, posed);
   const expected = (skeleton.bones.length + 1) * 16 * CROWD_FRAMES;
   if (data.length !== expected) {
     console.warn(`Crowd bake size ${data.length}, expected ${expected}`);
   }
+  // A bake whose frames are all identical looks exactly like "the animation
+  // is not playing", and is the failure this went through twice, so it is
+  // checked rather than assumed.
+  const stride = data.length / CROWD_FRAMES;
+  let spread = 0;
+  for (let i = 0; i < stride; i++) {
+    spread = Math.max(spread, Math.abs(data[i] - data[i + stride * (CROWD_FRAMES >> 1)]));
+  }
+  if (spread < 1e-4) {
+    console.warn(`Crowd figure ${file} baked ${CROWD_FRAMES} identical frames.`);
+  }
+
   const texture = new VertexAnimationBaker(scene, mesh).textureFromBakedVertexData(data);
 
   const manager = new BakedVertexAnimationManager(scene);
@@ -187,7 +239,7 @@ async function bakeFigure(scene: Scene, file: string): Promise<RiggedFigure | nu
   // The baked matrices are the only pose source from here on, so put the
   // skeleton back where it started and leave it alone.
   poseAt(posed, 0);
-  skeleton.prepare();
+  skeleton.prepare(true);
 
   mesh.setEnabled(false);
   mesh.alwaysSelectAsActiveMesh = true;
