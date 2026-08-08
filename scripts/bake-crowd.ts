@@ -35,6 +35,10 @@
 // read as nothing recognisable, because the axis measurement they came from
 // was taken while the skeleton was not responding to posing at all.
 //
+// Also ruled out: limiting the retarget to the four arm bones, in case the
+// error was compounding down the thirty-bone finger chains. The arms shred
+// identically, so the transfer itself is wrong rather than accumulating.
+//
 // What has not been checked, and is where to start: whether Babylon's
 // Quaternion.multiply composes in the same order as its matrices do. Babylon
 // uses row-vector matrices, so a world matrix is local x parent; if its
@@ -79,6 +83,16 @@ function toBase64(bytes: Uint8Array): string {
 // Control for the bake itself: with no pose applied, every frame must be the
 // bind pose and must render exactly as the unanimated figure does.
 const BIND_ONLY = new URLSearchParams(location.search).get("bind") === "1";
+
+/**
+ * Which bones take the retargeted motion.
+ *
+ * Only the arms. A whole-skeleton retarget shreds the figures, and the hands
+ * alone are thirty of the fifty-three bones — long chains where a small error
+ * in the transfer compounds all the way to the fingertips. The arms are four
+ * bones deep and carry nearly all of what a cheering crowd reads as.
+ */
+const RETARGET = new Set(["LeftArm", "RightArm", "LeftForeArm", "RightForeArm"]);
 
 const results: Record<string, { width: number; height: number; data: string }> = {};
 
@@ -137,7 +151,7 @@ for (const figure of CROWD_FIGURES) {
       const parent = bone.getParent();
       const parentWorld = parent ? world.get(parent) : undefined;
       const short = bone.name.split("_skeleton_")[1];
-      const track = short ? clip.deltas[short] : undefined;
+      const track = short && RETARGET.has(short) ? clip.deltas[short] : undefined;
 
       let newWorld: Quaternion;
       if (track && !BIND_ONLY) {
