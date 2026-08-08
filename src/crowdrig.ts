@@ -6,7 +6,7 @@ import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { BakedVertexAnimationManager } from "@babylonjs/core/BakedVertexAnimation/bakedVertexAnimationManager";
-import { CROWD_FILES, CROWD_FPS, CROWD_FRAMES } from "./crowdclips";
+import { CROWD_FIGURES, CROWD_FPS, CROWD_FRAMES, type CrowdFigure } from "./crowdclips";
 
 /**
  * Skinned spectators that cost one draw call each, however many are on screen.
@@ -32,6 +32,8 @@ const SAMPLING = Texture.NEAREST_NEAREST;
 
 export interface RiggedFigure {
   mesh: Mesh;
+  /** Which figure and clip this is, so placement can split by posture. */
+  spec: CrowdFigure;
   manager: BakedVertexAnimationManager;
   /** Pre-multiply into each instance matrix: centres the figure and grounds it. */
   grounding: Matrix;
@@ -78,10 +80,10 @@ async function loadBakedTexture(scene: Scene, file: string): Promise<RawTexture>
   );
 }
 
-async function loadFigure(scene: Scene, file: string): Promise<RiggedFigure | null> {
+async function loadFigure(scene: Scene, spec: CrowdFigure): Promise<RiggedFigure | null> {
   const [res, texture] = await Promise.all([
-    SceneLoader.ImportMeshAsync("", "/models/Crowd/", file, scene),
-    loadBakedTexture(scene, file),
+    SceneLoader.ImportMeshAsync("", "/models/Crowd/", spec.file, scene),
+    loadBakedTexture(scene, spec.file),
   ]);
   const mesh = res.meshes.find((m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0);
   if (!mesh) {
@@ -116,7 +118,7 @@ async function loadFigure(scene: Scene, file: string): Promise<RiggedFigure | nu
   for (const node of res.meshes) {
     if (node !== mesh && node.getTotalVertices() === 0) node.dispose();
   }
-  return { mesh, manager, grounding };
+  return { mesh, manager, grounding, spec };
 }
 
 /**
@@ -127,9 +129,9 @@ async function loadFigure(scene: Scene, file: string): Promise<RiggedFigure | nu
  */
 export async function loadRiggedFigures(scene: Scene): Promise<RiggedFigure[]> {
   const loaded = await Promise.all(
-    CROWD_FILES.map((file) =>
-      loadFigure(scene, file).catch((e) => {
-        console.warn(`Crowd figure ${file} failed:`, e);
+    CROWD_FIGURES.map((spec) =>
+      loadFigure(scene, spec).catch((e: unknown) => {
+        console.warn(`Crowd figure ${spec.file} failed:`, e);
         return null;
       })
     )

@@ -1,62 +1,84 @@
 // Offline bake: turns each rigged crowd figure into a texture of bone
-// matrices, which the game then loads as a file instead of computing at
-// startup.
+// matrices, which the game loads as a file instead of computing at startup.
 //
 // Driven by scripts/bake-crowd.mjs; not a build entry, so it never ships.
 //
-// UNFINISHED. This runs end to end and writes files, but every frame comes
-// out identical — the spread check below reports 0.0000 for all four figures,
-// with the clips confirmed to match real bone names.
+// The bake itself is fixed and produces real motion — see the two notes below
+// — but the figures still shred when rendered. The remaining fault is in the
+// rig, not here: these skins bind with a x100 bind-shape matrix that lives in
+// the bone chain. At the bind pose it cancels out, which is why a static bake
+// rendered correctly; the moment a bone rotates, every offset below it is
+// multiplied by a hundred and the limbs fly hundreds of metres.
 //
-// The common thread across every attempt is that this skeleton ignores any
-// write to a bone's *local* matrix: setRotationQuaternion leaves
-// rotationQuaternion unchanged, updateMatrix with its difference-matrix flag
-// off never reaches the baked matrices, an explicit markAsDirty does not
-// bridge it, and now an Animation on the "_matrix" channel driven by Babylon's
-// own baker changes nothing either. The only call that ever altered the output
-// was updateMatrix with that flag ON — which writes the bind matrices, and
-// corrupts the chain by redefining the rest pose each frame.
+// The fix belongs in scripts/extract-crowd-figure.py: fold that x100 into the
+// geometry and the joint translations so the bind-shape matrix comes out as
+// identity, then re-extract, re-pack and re-bake. Retargeting is already
+// correct in principle here — both quaternion composition orders were tried
+// and both explode identically, which is what a scale fault looks like and a
+// rotation fault does not.
 //
-// The control experiment has now been run, and it clears the rig entirely.
-// Baking BrazilianPlayer.glb — rigged and animated by its own author, 52
-// bones, 34 animation groups — through this same path also gives a spread of
-// 0. So identical frames are not a property of the reconstructed crowd rig;
-// they are what this bake produces for anything.
+// Two things here were hard won and are the reason the bake works at all.
 //
-// That moves the suspicion to how the baker is driven.
-// VertexAnimationBaker calls scene.beginAnimation(skeleton, frame, frame) —
-// from equal to to — and the value may never be applied for a zero-length
-// animation. It is also worth checking whether bone.animations is even the
-// channel being read: Babylon puts glTF animations into AnimationGroups
-// rather than onto bones, which would leave beginAnimation(skeleton, ...)
-// with nothing to play in the control's case.
+// The pose goes on each bone's *linked transform node*, not on the bone.
+// Babylon's glTF loader links every bone to a TransformNode, and
+// Skeleton.prepare() copies position/rotation/scaling from that node onto the
+// bone before computing anything. Writing to the bone therefore appeared to
+// work and was silently reverted on the next prepare — which is why
+// setRotationQuaternion, updateMatrix and hand-written matrices all produced a
+// skeleton that never moved.
+//
+// The matrices are read after an explicit prepare(true) rather than after a
+// rendered frame. prepare() skips its work when the scene's render id has not
+// moved, which inside a bake loop it never does; forcing it makes the whole
+// bake synchronous. Babylon's own VertexAnimationBaker is deliberately not
+// used: it drives scene.beginAnimation(skeleton), which plays bone.animations,
+// and a glTF import has none — it faithfully bakes a skeleton that nothing is
+// animating, which is what produced 48 identical frames.
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
-import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
-import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
-import { Animation } from "@babylonjs/core/Animations/animation";
-import type { AnimationRange } from "@babylonjs/core/Animations/animationRange";
-import { VertexAnimationBaker } from "@babylonjs/core/BakedVertexAnimation/vertexAnimationBaker";
-import "@babylonjs/core/Animations/animatable";
 import "@babylonjs/loaders/glTF/2.0";
-import { CHEER, CROWD_FILES, CROWD_FPS, CROWD_FRAMES } from "../src/crowdclips";
+import { CROWD_FIGURES, CROWD_FRAMES } from "../src/crowdclips";
 
 const canvas = document.getElementById("c") as HTMLCanvasElement;
 const engine = new Engine(canvas, true);
 const scene = new Scene(engine);
-new HemisphericLight("h", new Vector3(0, 1, 0), scene);
 new FreeCamera("c", new Vector3(0, 1, -4), scene);
-engine.runRenderLoop(() => scene.render());
 
-/**
- * Base64 in chunks.
- *
- * `String.fromCharCode(...bytes)` spreads every byte as an argument, which
- * overflows the call stack on a buffer this size — each figure's matrices run
- * to about 166 KB.
- */
+interface Track {
+  times: number[];
+  values: number[][];
+  /** The bone's rotation in Mixamo's own rest pose. */
+  rest: number[];
+}
+interface Clip {
+  duration: number;
+  tracks: Record<string, Track>;
+}
+
+const clips: Record<string, Clip> = await (await fetch("/clips.json")).json();
+
+/** The rotation a track holds at time `t`, interpolated between its keys. */
+function sample(track: Track, t: number, out: Quaternion): void {
+  const { times, values } = track;
+  let i = 1;
+  while (i < times.length && times[i] < t) i++;
+  const previous = values[i - 1];
+  const next = values[Math.min(i, values.length - 1)];
+  const span = times[Math.min(i, times.length - 1)] - times[i - 1];
+  const k = span > 1e-6 ? (t - times[i - 1]) / span : 0;
+  Quaternion.SlerpToRef(
+    new Quaternion(previous[0], previous[1], previous[2], previous[3]),
+    new Quaternion(next[0], next[1], next[2], next[3]),
+    Math.min(1, Math.max(0, k)),
+    out
+  );
+}
+
+/** Base64 in chunks: spreading a 166 KB buffer as arguments blows the stack. */
 function toBase64(bytes: Uint8Array): string {
   let binary = "";
   const chunk = 0x8000;
@@ -68,62 +90,79 @@ function toBase64(bytes: Uint8Array): string {
 
 const results: Record<string, { width: number; height: number; data: string }> = {};
 
-for (const file of CROWD_FILES) {
-  const res = await SceneLoader.ImportMeshAsync("", "/models/Crowd/", file, scene);
+for (const figure of CROWD_FIGURES) {
+  const res = await SceneLoader.ImportMeshAsync("", "/models/Crowd/", figure.file, scene);
   const mesh = res.meshes.find((m) => m.getTotalVertices() > 0)!;
   const skeleton = res.skeletons[0];
+  const clip = clips[figure.clip];
+  if (!clip) throw new Error(`no clip named ${figure.clip}`);
 
+  // Strip the mesh's node transform exactly as crowdrig.ts does at runtime.
+  // The pack binds its skins with a x100 bind-shape matrix that the importer
+  // parks on this node, and the baked matrices are only valid for the mesh
+  // they were computed against — bake with the node and play back without it
+  // and the figures shred into shards.
+  mesh.parent = null;
+  mesh.position.setAll(0);
+  mesh.rotationQuaternion = null;
+  mesh.rotation.setAll(0);
+  mesh.scaling.setAll(1);
+  mesh.computeWorldMatrix(true);
+
+  // Mixamo names a joint `mixamorig:LeftArm`; this rig names it
+  // `<figure>_skeleton_LeftArm`. Both are the same standard biped, so the
+  // suffix lines them up, and a joint in one rig but not the other is simply
+  // left in its rest pose.
+  const posed: { node: TransformNode; track: Track; rest: Quaternion; source: Quaternion }[] = [];
   for (const bone of skeleton.bones) {
-    const clip = CHEER.find((c) => bone.name.endsWith(`_skeleton_${c.bone}`));
-    if (!clip) continue;
-
-    const scale = new Vector3();
-    const rotation = new Quaternion();
-    const position = new Vector3();
-    bone.getLocalMatrix().decompose(scale, rotation, position);
-
-    const keys = [];
-    for (let frame = 0; frame <= CROWD_FRAMES; frame++) {
-      const t = frame / CROWD_FRAMES;
-      const swing = Math.sin((t * clip.cycles + clip.phase) * Math.PI * 2);
-      const value = new Matrix();
-      Matrix.ComposeToRef(
-        scale,
-        rotation.multiply(Quaternion.RotationAxis(clip.axis, swing * clip.amplitude)),
-        position,
-        value
-      );
-      keys.push({ frame, value });
-    }
-    const animation = new Animation(
-      `${bone.name}-cheer`,
-      "_matrix",
-      CROWD_FPS,
-      Animation.ANIMATIONTYPE_MATRIX,
-      Animation.ANIMATIONLOOPMODE_CYCLE
-    );
-    animation.setKeys(keys);
-    bone.animations = [animation];
+    const short = bone.name.split("_skeleton_")[1];
+    const track = short ? clip.tracks[short] : undefined;
+    const node = bone.getTransformNode();
+    if (!track || !node) continue;
+    node.rotationQuaternion ??= node.rotation.toQuaternion();
+    const r = track.rest;
+    posed.push({
+      node,
+      track,
+      rest: node.rotationQuaternion.clone(),
+      source: new Quaternion(r[0], r[1], r[2], r[3]).invert(),
+    });
   }
 
-  const range: AnimationRange = { name: "cheer", from: 0, to: CROWD_FRAMES - 1 } as AnimationRange;
-  const baker = new VertexAnimationBaker(scene, mesh as never);
-  const data = await baker.bakeVertexData([range]);
+  const perFrame = (skeleton.bones.length + 1) * 16;
+  const data = new Float32Array(perFrame * CROWD_FRAMES);
+  const sampled = new Quaternion();
+  for (let frame = 0; frame < CROWD_FRAMES; frame++) {
+    // Walk the clip's own length across our fixed frame count, so a 6.5 s
+    // sitting clap and a 1.2 s clap both loop cleanly in the same many rows.
+    const t = (frame / CROWD_FRAMES) * clip.duration;
+    for (const { node, track, rest, source } of posed) {
+      sample(track, t, sampled);
+      // Retarget: take how far this bone has turned from Mixamo's rest, and
+      // apply that same turn to where this rig rests. Copying the absolute
+      // rotation instead assumes both rigs share a rest pose, and these do
+      // not — Mixamo rests in a T-pose, these figures rest mid-cheer — which
+      // tore every figure into shards.
+      source.multiply(sampled).multiplyToRef(rest, node.rotationQuaternion!);
+    }
+    skeleton.prepare(true);
+    data.set(skeleton.getTransformMatrices(mesh), frame * perFrame);
+  }
 
-  const boneCount = skeleton.bones.length;
-  results[file] = {
-    width: (boneCount + 1) * 4,
+  let spread = 0;
+  for (let i = 0; i < perFrame; i++) {
+    spread = Math.max(spread, Math.abs(data[i] - data[i + perFrame * (CROWD_FRAMES >> 1)]));
+  }
+  console.log(
+    `baked ${figure.file} as ${figure.clip}: ` +
+      `${posed.length}/${skeleton.bones.length} bones retargeted, spread ${spread.toFixed(4)}`
+  );
+
+  results[figure.file] = {
+    width: (skeleton.bones.length + 1) * 4,
     height: CROWD_FRAMES,
     data: toBase64(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)),
   };
-
-  // A bake whose frames match is the failure that looks like "no animation".
-  const stride = data.length / CROWD_FRAMES;
-  let spread = 0;
-  for (let i = 0; i < stride; i++) {
-    spread = Math.max(spread, Math.abs(data[i] - data[i + stride * (CROWD_FRAMES >> 1)]));
-  }
-  console.log(`baked ${file}: ${boneCount} bones, spread ${spread.toFixed(4)}`);
 
   for (const m of res.meshes) m.dispose();
   skeleton.dispose();
