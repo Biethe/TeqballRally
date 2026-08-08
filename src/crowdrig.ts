@@ -92,11 +92,9 @@ async function loadFigure(scene: Scene, spec: CrowdFigure): Promise<RiggedFigure
     return null;
   }
 
-  // The pack binds its skins with a x100 bind-shape matrix, which the importer
-  // parks on the mesh's node. Thin instance matrices compose with that node's
-  // world matrix, so leaving it there multiplies every spectator's position by
-  // a hundred and throws the crowd out of the venue. The skinned result is
-  // already life-sized in metres without it.
+  // Render the mesh with no node transform of its own, matching the bake:
+  // baked matrices are only valid for the mesh they were taken from. The
+  // geometry is already life-sized — 1.74 m top to toe — so nothing is lost.
   mesh.parent = null;
   mesh.position.setAll(0);
   mesh.rotationQuaternion = null;
