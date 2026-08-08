@@ -236,3 +236,17 @@ export function animationSettingsBuffer(count: number, random: () => number): Fl
   }
   return buffer;
 }
+
+/**
+ * Advance every baked figure's clock once per frame.
+ *
+ * One observer for the whole crowd: the clock is per figure type, not per
+ * spectator, and each copy's phase comes from its own instance data.
+ */
+export function driveCrowdClocks(scene: Scene, figures: RiggedFigure[]): void {
+  if (figures.length === 0) return;
+  scene.onBeforeRenderObservable.add(() => {
+    const dt = scene.getEngine().getDeltaTime() / 1000;
+    for (const figure of figures) figure.manager.time += dt;
+  });
+}
