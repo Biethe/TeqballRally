@@ -93,13 +93,16 @@ body {
   display: none;
 }
 
-/* Opening clip: sits above the loading screen it plays over, on black so a
-   frame that does not match the display's aspect ratio letterboxes cleanly. */
+/* Opening clip: sits above the loading screen it plays over. The clip is shot
+   portrait and the game is played in landscape, so it letterboxes on a
+   turned phone; the bars carry a 36x64 blurred still of the clip itself,
+   stretched, which reads as a deliberate frame rather than dead black and
+   costs 324 bytes instead of a second video decode. */
 #intro-clip {
   z-index: 11;
   gap: 0;
   padding: 0;
-  background: #000;
+  background: #06101c url("/video/intro-backdrop.webp") center / cover no-repeat;
   animation: intro-clip-in 260ms ease-out both;
 }
 
