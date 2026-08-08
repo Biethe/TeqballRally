@@ -66,74 +66,105 @@ const CHEER: Clip[] = [
   { bone: "RightForeArm", axis: ARM_AXIS, amplitude: 0.20, cycles: 2, phase: 0.62 },
 ];
 
-function boneNamed(skeleton: Skeleton, suffix: string): Bone | undefined {
-  return skeleton.bones.find((b) => b.name.endsWith(`_skeleton_${suffix}`));
-}
-
-interface PosedBone {
-  bone: Bone;
-  /** The bone's rest local matrix, split so the swing only touches rotation. */
-  restScale: Vector3;
-  restRotation: Quaternion;
-  restPosition: Vector3;
-  clip: Clip;
-}
-
 /**
- * Pose every animated bone for one frame of the loop.
+ * Bake the loop by computing the bone matrices directly.
  *
- * `t` runs 0..1 over the loop, so the sine closes on itself and the last frame
- * meets the first.
+ * UNFINISHED — this reconstruction is wrong and this module is not wired into
+ * any venue. Baking with every clip removed, which must reproduce the bind
+ * pose exactly, still shears the arms into spikes, so the error is in the
+ * matrix chain rather than in the animation. Babylon's own
+ * `getTransformMatrices` produced correct matrices throughout, so the route
+ * back is its `VertexAnimationBaker.bakeVertexData`, whose only real cost is a
+ * rendered frame per baked frame.
  *
- * The pose is written as a local matrix rather than through
- * `setRotationQuaternion`: on these bones that setter left
- * `bone.rotationQuaternion` unchanged, so every baked frame came out identical
- * and the crowd rendered frozen in its bind pose.
+ * Babylon's bone API fought this at every turn: posing through
+ * `setRotationQuaternion` left the bone unchanged, `updateMatrix` with its
+ * difference-matrix flag on rewrote the bone's own bind matrices so each frame
+ * redefined the rest pose it was moving away from and sheared the limbs into
+ * spikes, and with the flag off the pose never reached the matrices the bake
+ * reads, so all frames came out identical. Marking bones and skeleton dirty by
+ * hand did not bridge it.
  *
- * The rest transform is recomposed from its parts rather than multiplied
- * through. These bones carry scale — the pack's x100 bind — and multiplying a
- * rotation onto a matrix holding scale shears it, which stretched every arm
- * into a spike.
+ * None of that is needed. What the texture wants per bone is exactly
+ * `inverseAbsoluteBind * absolute`, and both the hierarchy and the bind
+ * matrices can be read once, up front, while the skeleton is still untouched.
+ * Everything after that is plain matrix arithmetic on our own copies, so the
+ * skeleton is never mutated and none of its caching applies.
  */
-function poseAt(posed: PosedBone[], t: number): void {
-  const local = new Matrix();
-  for (const { bone, restScale, restRotation, restPosition, clip } of posed) {
-    const swing = Math.sin((t * clip.cycles + clip.phase) * Math.PI * 2);
-    const turned = restRotation.multiply(
-      Quaternion.RotationAxis(clip.axis, swing * clip.amplitude)
-    );
-    Matrix.ComposeToRef(restScale, turned, restPosition, local);
-    // Local matrix only — the difference-matrix flag rewrites this bone's
-    // bind matrices from the pose being set, which corrupts every child down
-    // the chain and shears the limbs into spikes. The explicit dirty mark is
-    // what makes `prepare()` recompute the matrices the bake reads; without
-    // it the pose never lands and every frame bakes identical.
-    bone.updateMatrix(local.clone(), false, true);
-    bone.markAsDirty();
+function bakeLoop(skeleton: Skeleton): Float32Array {
+  const bones = skeleton.bones;
+
+  // Every bone the hierarchy passes through, not just the ones the skin binds.
+  // The skin lists 53 joints while the rig has 68: Hips and the finger tips are
+  // absent, so walking only the bound joints drops the transforms in between
+  // and leaves the arms shooting off into spikes — visible even with the
+  // animation switched off, which is what localised this.
+  const all: Bone[] = [];
+  const seen = new Set<Bone>();
+  for (const bone of bones) {
+    for (let node: Bone | null = bone; node && !seen.has(node); node = node.getParent()) {
+      seen.add(node);
+      all.push(node);
+    }
   }
-}
 
-/**
- * Bake the loop by stepping the skeleton directly.
- *
- * Babylon's own baker drives `scene.beginAnimation` one frame at a time and
- * waits for each to finish, which costs a rendered frame per baked frame —
- * seconds of load time for a handful of figures, and worst on the slow phones
- * this is all for. The clip is plain trigonometry here, so the poses can be
- * evaluated in a tight synchronous loop instead and the matrices read straight
- * out of the skeleton.
- */
-function bakeLoop(mesh: Mesh, skeleton: Skeleton, posed: PosedBone[]): Float32Array {
-  // `prepare()` skips its work when the scene's render id has not moved, which
-  // it never does inside a loop like this one — so it has to be forced, or
-  // every frame bakes the first pose and the crowd comes out frozen.
-  skeleton.prepare(true);
-  const perFrame = skeleton.getTransformMatrices(mesh).length;
+  const depthOf = (bone: Bone): number => {
+    let d = 0;
+    for (let node = bone.getParent(); node; node = node.getParent()) d++;
+    return d;
+  };
+  all.sort((a, b) => depthOf(a) - depthOf(b));
+
+  const rest = new Map<Bone, { scale: Vector3; rotation: Quaternion; position: Vector3 }>();
+  const clips = new Map<Bone, Clip>();
+  for (const bone of all) {
+    const scale = new Vector3();
+    const rotation = new Quaternion();
+    const position = new Vector3();
+    bone.getLocalMatrix().decompose(scale, rotation, position);
+    rest.set(bone, { scale, rotation, position });
+    const clip = CHEER.find((c) => bone.name.endsWith(`_skeleton_${c.bone}`));
+    if (clip) clips.set(bone, clip);
+  }
+
+  // Babylon sizes its matrix array one bone longer than the skeleton, and the
+  // texture is built from that length, so the padding has to be there.
+  const perFrame = (bones.length + 1) * 16;
   const data = new Float32Array(perFrame * CROWD_FRAMES);
+  const absolute = new Map<Bone, Matrix>(all.map((b) => [b, new Matrix()]));
+  const local = new Matrix();
+
   for (let frame = 0; frame < CROWD_FRAMES; frame++) {
-    poseAt(posed, frame / CROWD_FRAMES);
-    skeleton.prepare(true);
-    data.set(skeleton.getTransformMatrices(mesh), frame * perFrame);
+    const t = frame / CROWD_FRAMES;
+    const base = frame * perFrame;
+    for (const bone of all) {
+      const clip = clips.get(bone);
+      if (clip) {
+        const { scale, rotation, position } = rest.get(bone)!;
+        const swing = Math.sin((t * clip.cycles + clip.phase) * Math.PI * 2);
+        Matrix.ComposeToRef(
+          scale,
+          rotation.multiply(Quaternion.RotationAxis(clip.axis, swing * clip.amplitude)),
+          position,
+          local
+        );
+      } else {
+        local.copyFrom(bone.getLocalMatrix());
+      }
+      const world = absolute.get(bone)!;
+      const parent = bone.getParent();
+      const parentWorld = parent ? absolute.get(parent) : undefined;
+      if (parentWorld) local.multiplyToRef(parentWorld, world);
+      else world.copyFrom(local);
+    }
+    for (let i = 0; i < bones.length; i++) {
+      bones[i]
+        .getAbsoluteInverseBindMatrix()
+        .multiplyToArray(absolute.get(bones[i])!, data, base + i * 16);
+    }
+    // The padding slot stays identity rather than zero, so anything reading it
+    // gets a harmless transform instead of a collapsed one.
+    Matrix.IdentityReadOnly.copyToArray(data, base + bones.length * 16);
   }
   return data;
 }
@@ -192,33 +223,9 @@ async function bakeFigure(scene: Scene, file: string): Promise<RiggedFigure | nu
   mesh.scaling.setAll(1);
   mesh.computeWorldMatrix(true);
 
-  const posed: PosedBone[] = CHEER.flatMap((clip) => {
-    const bone = boneNamed(skeleton, clip.bone);
-    if (!bone) return [];
-    const restScale = new Vector3();
-    const restRotation = new Quaternion();
-    const restPosition = new Vector3();
-    bone.getLocalMatrix().decompose(restScale, restRotation, restPosition);
-    return [{ bone, restScale, restRotation, restPosition, clip }];
-  });
-  // Parents before children. Posing a bone recomputes its transform against
-  // its parent's current one, so touching an arm before the spine it hangs
-  // off leaves the arm resolved against a stale torso — which sheared every
-  // arm into a spike.
-  const depthOf = (bone: Bone): number => {
-    let depth = 0;
-    for (let node = bone.getParent(); node; node = node.getParent()) depth++;
-    return depth;
-  };
-  posed.sort((a, b) => depthOf(a.bone) - depthOf(b.bone));
-
-  const data = bakeLoop(mesh, skeleton, posed);
-  const expected = (skeleton.bones.length + 1) * 16 * CROWD_FRAMES;
-  if (data.length !== expected) {
-    console.warn(`Crowd bake size ${data.length}, expected ${expected}`);
-  }
-  // A bake whose frames are all identical looks exactly like "the animation
-  // is not playing", and is the failure this went through twice, so it is
+  const data = bakeLoop(skeleton);
+  // A bake whose frames are all identical looks exactly like "the animation is
+  // not playing", which is the failure this went through twice, so it is
   // checked rather than assumed.
   const stride = data.length / CROWD_FRAMES;
   let spread = 0;
@@ -238,9 +245,6 @@ async function bakeFigure(scene: Scene, file: string): Promise<RiggedFigure | nu
 
   // The baked matrices are the only pose source from here on, so put the
   // skeleton back where it started and leave it alone.
-  poseAt(posed, 0);
-  skeleton.prepare(true);
-
   mesh.setEnabled(false);
   mesh.alwaysSelectAsActiveMesh = true;
   // The loader's transform nodes are empty now that the mesh has left them.
