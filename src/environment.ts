@@ -288,6 +288,12 @@ function applyPlacement(
   rigged: Map<Mesh, RiggedFigure> = new Map()
 ): Mesh[] {
   const placed: Mesh[] = [];
+  // Deterministic, so both peers of an online match see the same crowd.
+  let tintSeed = 0x9e3779b9;
+  const tintRandom = (): number => {
+    tintSeed = (tintSeed * 1103515245 + 12345) & 0x7fffffff;
+    return tintSeed / 0x7fffffff;
+  };
   for (const [person, matrices] of into) {
     if (matrices.length === 0) continue;
     const buffer = new Float32Array(matrices.length * 16);
@@ -299,6 +305,21 @@ function applyPlacement(
     );
     // Not a static buffer: the crowd animator rewrites it every frame.
     person.thinInstanceSetBuffer("matrix", buffer, 16, false);
+    if (rigged.has(person)) {
+      // Four figure models means four colour schemes across seventy-odd
+      // spectators, which reads as a grey uniform. A per-instance tint costs
+      // nothing — it rides the same instanced draw — and breaks that up. The
+      // range is deliberately narrow: it multiplies the whole figure, skin
+      // included, so a strong tint would turn faces green.
+      const tint = new Float32Array(matrices.length * 4);
+      for (let i = 0; i < matrices.length; i++) {
+        tint[i * 4] = 0.78 + tintRandom() * 0.42;
+        tint[i * 4 + 1] = 0.78 + tintRandom() * 0.42;
+        tint[i * 4 + 2] = 0.78 + tintRandom() * 0.42;
+        tint[i * 4 + 3] = 1;
+      }
+      person.thinInstanceSetBuffer("instanceColor", tint, 4, true);
+    }
     if (rigged.has(person)) {
       // Deterministic, so both peers of an online match and successive runs
       // get an identical crowd.
