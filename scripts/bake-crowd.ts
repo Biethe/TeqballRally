@@ -17,12 +17,19 @@
 // was updateMatrix with that flag ON — which writes the bind matrices, and
 // corrupts the chain by redefining the rest pose each frame.
 //
-// So the next thing to test is the skinning path itself rather than another
-// way of posing: whether this mesh skins from the skeleton's difference
-// matrices while prepare() never recomputes them from local ones. The likely
-// culprits are needInitialSkinMatrix and the _isDirty early-out in
-// Skeleton.prepare. Worth checking against a stock rigged glTF first, to
-// establish whether the fault is in this rig or in how it is being driven.
+// The control experiment has now been run, and it clears the rig entirely.
+// Baking BrazilianPlayer.glb — rigged and animated by its own author, 52
+// bones, 34 animation groups — through this same path also gives a spread of
+// 0. So identical frames are not a property of the reconstructed crowd rig;
+// they are what this bake produces for anything.
+//
+// That moves the suspicion to how the baker is driven.
+// VertexAnimationBaker calls scene.beginAnimation(skeleton, frame, frame) —
+// from equal to to — and the value may never be applied for a zero-length
+// animation. It is also worth checking whether bone.animations is even the
+// channel being read: Babylon puts glTF animations into AnimationGroups
+// rather than onto bones, which would leave beginAnimation(skeleton, ...)
+// with nothing to play in the control's case.
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
