@@ -33,7 +33,6 @@ import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { GROUND_Y } from "./config";
-import { Crowd } from "./crowd";
 import type { Dressing, Rgb, Venue } from "./venue";
 
 /** A point on the court's perimeter, with the outward direction it faces. */
@@ -287,9 +286,8 @@ function placeAt(into: Placement, person: Mesh, matrix: Matrix): void {
 function applyPlacement(
   into: Placement,
   rigged: Map<Mesh, RiggedFigure> = new Map()
-): { placed: Mesh[]; buffers: [Mesh, Float32Array][] } {
+): Mesh[] {
   const placed: Mesh[] = [];
-  const buffers: [Mesh, Float32Array][] = [];
   for (const [person, matrices] of into) {
     if (matrices.length === 0) continue;
     const buffer = new Float32Array(matrices.length * 16);
@@ -318,9 +316,8 @@ function applyPlacement(
     }
     person.setEnabled(true);
     placed.push(person);
-    buffers.push([person, buffer]);
   }
-  return { placed, buffers };
+  return placed;
 }
 
 /**
@@ -494,10 +491,9 @@ function buildFlags(scene: Scene, colors: Rgb[], L: number, W: number): Mesh[] {
  * Returns the meshes so the caller can decide about shadows; they are frozen
  * here because none of them ever moves.
  */
-export async function buildEnvironment(scene: Scene, venue: Venue, crowd?: Crowd): Promise<Mesh[]> {
+export async function buildEnvironment(scene: Scene, venue: Venue): Promise<Mesh[]> {
   const { court, dressing } = venue;
   const built: Mesh[] = [];
-  let crowdBuffers: [Mesh, Float32Array][] = [];
   if (dressing.ribbon) {
     built.push(...buildRibbon(scene, dressing.ribbon, court.shape, court.halfLen, court.halfWid));
   }
@@ -515,9 +511,8 @@ export async function buildEnvironment(scene: Scene, venue: Venue, crowd?: Crowd
     if (dressing.tiers) {
       placeOnTiers(scene, dressing.tiers, library.seated, library.standing, placement, built);
     }
-    const applied = applyPlacement(placement, library.rigged);
-    built.push(...applied.placed);
-    crowdBuffers = applied.buffers;
+    const placed = applyPlacement(placement, library.rigged);
+    built.push(...placed);
     // Anything left unplaced is still a mesh in the scene, drawn once at the
     // origin — through the middle of the court, in full view.
     for (const m of [...library.standing, ...library.seated]) {
@@ -526,14 +521,6 @@ export async function buildEnvironment(scene: Scene, venue: Venue, crowd?: Crowd
   }
   if (dressing.flags) {
     built.push(...buildFlags(scene, dressing.flags, court.halfLen, court.halfWid));
-  }
-  // Hand the crowd's instance buffers to the animator before freezing: it
-  // rewrites them in place every frame, and a frozen world matrix does not
-  // stop that — the matrices are a separate buffer.
-  if (crowd) {
-    for (const [person, data] of crowdBuffers) {
-      crowd.add(data, () => person.thinInstanceBufferUpdated("matrix"));
-    }
   }
   for (const m of built) {
     m.isPickable = false;
