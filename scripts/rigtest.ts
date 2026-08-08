@@ -1,74 +1,102 @@
-// Throwaway page: works out this rig's bone axis convention by measurement.
-//
-// Bone local axes differ per rig and guessing them wastes iterations, so this
-// rotates each bone of interest about all three local axes in both directions
-// and reports which one moves the hand where it is wanted. Neither this nor
-// rigtest.html is a build entry, so neither ships.
+// Throwaway page: bakes the crowd figures' cheer loop and instances them, so
+// the baked animation can be watched before it is wired into a venue.
+// Not a build entry, so it does not ship.
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
 import { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
-import { Vector3, Quaternion } from "@babylonjs/core/Maths/math";
-import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
+import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
+import { Vector3, Color3, Color4, Matrix } from "@babylonjs/core/Maths/math";
+import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import "@babylonjs/loaders/glTF/2.0";
+import { loadRiggedFigures, animationSettingsBuffer } from "../src/crowdrig";
 
 const canvas = document.getElementById("c") as HTMLCanvasElement;
 const engine = new Engine(canvas, true);
 const scene = new Scene(engine);
-new HemisphericLight("h", new Vector3(0, 1, 0), scene);
-new ArcRotateCamera("c", -Math.PI / 2, 1.2, 4, Vector3.Zero(), scene);
+scene.clearColor = new Color4(0.11, 0.14, 0.2, 1);
+new HemisphericLight("h", new Vector3(0, 1, 0), scene).intensity = 0.8;
+const sun = new DirectionalLight("s", new Vector3(-0.4, -1, 0.35), scene);
+sun.intensity = 1.1;
 
-const file = new URLSearchParams(location.search).get("f") ?? "f1";
-const res = await SceneLoader.ImportMeshAsync("", "/models/Crowd/", `${file}.glb`, scene);
-const skeleton = res.skeletons[0];
-const bone = (suffix: string) => skeleton.bones.find((b) => b.name.endsWith(suffix));
+const camera = new ArcRotateCamera("c", -Math.PI / 2, 1.15, 14, new Vector3(0, 0.9, 0), scene);
+camera.attachControl(canvas, true);
 
-const AXES: [string, Vector3][] = [
-  ["x+", new Vector3(1, 0, 0)], ["x-", new Vector3(-1, 0, 0)],
-  ["y+", new Vector3(0, 1, 0)], ["y-", new Vector3(0, -1, 0)],
-  ["z+", new Vector3(0, 0, 1)], ["z-", new Vector3(0, 0, -1)],
-];
+const figures = await loadRiggedFigures(scene, ["f1.glb", "f2.glb", "f3.glb", "f4.glb"]);
 
-/** World position of a bone, with the skeleton's current pose applied. */
-function tip(name: string): Vector3 {
-  skeleton.computeAbsoluteMatrices(true);
-  const b = bone(name);
-  return b ? b.getAbsoluteMatrix().getTranslation() : Vector3.Zero();
-}
-
-const out: Record<string, unknown> = { file, bones: skeleton.bones.length,
-  names: skeleton.bones.map((b) => b.name.replace(/^.*_skeleton_/, "")) };
-
-for (const [label, target] of [
-  ["LeftArm", "_skeleton_LeftHand"],
-  ["RightArm", "_skeleton_RightHand"],
-  ["Spine1", "_skeleton_Head"],
-] as const) {
-  const b = bone(`_skeleton_${label}`);
-  if (!b) {
-    out[label] = "missing";
-    continue;
-  }
-  const rest = b.rotationQuaternion.clone();
-  const before = tip(target);
-  const scores: Record<string, string> = {};
-  for (const [name, axis] of AXES) {
-    b.setRotationQuaternion(rest.multiply(Quaternion.RotationAxis(axis, 1.2)), 0);
-    const after = tip(target);
-    scores[name] = `dy ${(after.y - before.y).toFixed(3)} dz ${(after.z - before.z).toFixed(3)}`;
-    b.setRotationQuaternion(rest.clone(), 0);
-  }
-  out[label] = scores;
-}
-
-// Rest geometry, so the animation can be written in real proportions.
-skeleton.computeAbsoluteMatrices(true);
-out.rest = {
-  hips: tip("_skeleton_Hips").asArray().map((v) => +v.toFixed(3)),
-  head: tip("_skeleton_Head").asArray().map((v) => +v.toFixed(3)),
-  leftHand: tip("_skeleton_LeftHand").asArray().map((v) => +v.toFixed(3)),
-  leftFoot: tip("_skeleton_LeftFoot").asArray().map((v) => +v.toFixed(3)),
+const report: Record<string, unknown> = { figures: figures.length };
+let seed = 7;
+const random = (): number => {
+  seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+  return seed / 0x7fffffff;
 };
 
-(window as unknown as { __rig: unknown }).__rig = out;
+figures.forEach((fig, f) => {
+  fig.mesh.refreshBoundingInfo({ applySkeleton: true });
+  const material = new StandardMaterial(`m${f}`, scene);
+  material.specularColor = new Color3(0.05, 0.05, 0.05);
+  fig.mesh.material = material;
+
+  const count = 6;
+  const matrices = new Float32Array(count * 16);
+  for (let i = 0; i < count; i++) {
+    fig.grounding
+      .multiply(Matrix.Translation((i - (count - 1) / 2) * 1.1, 0, f * 1.4 - 2.1))
+      .copyToArray(matrices, i * 16);
+  }
+  fig.mesh.thinInstanceSetBuffer("matrix", matrices, 16, true);
+  fig.mesh.thinInstanceSetBuffer(
+    "bakedVertexAnimationSettingsInstanced",
+    animationSettingsBuffer(count, random),
+    4,
+    true
+  );
+  fig.mesh.setEnabled(true);
+
+  fig.mesh.refreshBoundingInfo({ applySkeleton: true });
+  const box = fig.mesh.getBoundingInfo().boundingBox;
+  report[`figure${f}`] = {
+    tris: fig.mesh.getTotalIndices() / 3,
+    posedHeight: +(box.maximum.y - box.minimum.y).toFixed(3),
+    footY: +box.minimum.y.toFixed(3),
+    texture: fig.manager.texture
+      ? `${fig.manager.texture.getSize().width}x${fig.manager.texture.getSize().height}`
+      : "missing",
+    instances: fig.mesh.thinInstanceCount,
+    enabled: fig.mesh.isEnabled(),
+    grounding: [+fig.grounding.m[12].toFixed(2), +fig.grounding.m[13].toFixed(2), +fig.grounding.m[14].toFixed(2)],
+  };
+});
+
+scene.registerBeforeRender(() => {
+  const dt = engine.getDeltaTime() / 1000;
+  for (const fig of figures) fig.manager.time += dt;
+});
+
+scene.render();
+report.activeMeshes = scene.getActiveMeshes().length;
+// Frame whatever was actually produced, rather than where it was meant to be.
+{
+  let lo = new Vector3(1e9, 1e9, 1e9);
+  let hi = new Vector3(-1e9, -1e9, -1e9);
+  for (const fig of figures) {
+    fig.mesh.thinInstanceRefreshBoundingInfo(true);
+    const b = fig.mesh.getBoundingInfo().boundingBox;
+    lo = Vector3.Minimize(lo, b.minimumWorld);
+    hi = Vector3.Maximize(hi, b.maximumWorld);
+  }
+  camera.setTarget(lo.add(hi).scale(0.5));
+  camera.radius = hi.subtract(lo).length() * 1.1;
+  report.framed = { target: camera.getTarget().asArray().map((v) => +v.toFixed(2)), radius: +camera.radius.toFixed(1) };
+}
+// Where did instance 0 of each figure actually end up?
+report.instanceWorld = figures.map((fig) => {
+  fig.mesh.thinInstanceRefreshBoundingInfo(true);
+  const b = fig.mesh.getBoundingInfo().boundingBox;
+  return {
+    min: b.minimumWorld.asArray().map((v) => +v.toFixed(2)),
+    max: b.maximumWorld.asArray().map((v) => +v.toFixed(2)),
+  };
+});
+(window as unknown as { __rig: unknown }).__rig = report;
 engine.runRenderLoop(() => scene.render());
