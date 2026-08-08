@@ -1,94 +1,74 @@
-// Throwaway page: loads one extracted crowd figure and poses its arm bones,
-// to prove the skin binds and deforms before any animation work is built on
-// it. Neither this nor rigtest.html ships in a build.
+// Throwaway page: works out this rig's bone axis convention by measurement.
+//
+// Bone local axes differ per rig and guessing them wastes iterations, so this
+// rotates each bone of interest about all three local axes in both directions
+// and reports which one moves the hand where it is wanted. Neither this nor
+// rigtest.html is a build entry, so neither ships.
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
 import { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
-import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
-import { Vector3, Color3, Color4, Quaternion } from "@babylonjs/core/Maths/math";
+import { Vector3, Quaternion } from "@babylonjs/core/Maths/math";
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
-import type { Skeleton } from "@babylonjs/core/Bones/skeleton";
 import "@babylonjs/loaders/glTF/2.0";
 
 const canvas = document.getElementById("c") as HTMLCanvasElement;
 const engine = new Engine(canvas, true);
 const scene = new Scene(engine);
-scene.clearColor = new Color4(0.1, 0.13, 0.19, 1);
-new HemisphericLight("h", new Vector3(0, 1, 0), scene).intensity = 0.75;
-const sun = new DirectionalLight("s", new Vector3(-0.4, -1, 0.4), scene);
-sun.intensity = 1.2;
-sun.diffuse = new Color3(1, 0.97, 0.92);
+new HemisphericLight("h", new Vector3(0, 1, 0), scene);
+new ArcRotateCamera("c", -Math.PI / 2, 1.2, 4, Vector3.Zero(), scene);
 
-const camera = new ArcRotateCamera("c", -Math.PI / 2, 1.25, 3.4, new Vector3(0, 0.95, 0), scene);
-camera.attachControl(canvas, true);
+const file = new URLSearchParams(location.search).get("f") ?? "f1";
+const res = await SceneLoader.ImportMeshAsync("", "/models/Crowd/", `${file}.glb`, scene);
+const skeleton = res.skeletons[0];
+const bone = (suffix: string) => skeleton.bones.find((b) => b.name.endsWith(suffix));
 
-const res = await SceneLoader.ImportMeshAsync("", "/models/Crowd/", "_rigtest.glb", scene);
-const skeleton: Skeleton | undefined = res.skeletons[0];
+const AXES: [string, Vector3][] = [
+  ["x+", new Vector3(1, 0, 0)], ["x-", new Vector3(-1, 0, 0)],
+  ["y+", new Vector3(0, 1, 0)], ["y-", new Vector3(0, -1, 0)],
+  ["z+", new Vector3(0, 0, 1)], ["z-", new Vector3(0, 0, -1)],
+];
 
-const report: Record<string, unknown> = {
-  meshes: res.meshes.filter((m) => m.getTotalVertices() > 0).length,
-  skeletons: res.skeletons.length,
-  bones: skeleton?.bones.length ?? 0,
+/** World position of a bone, with the skeleton's current pose applied. */
+function tip(name: string): Vector3 {
+  skeleton.computeAbsoluteMatrices(true);
+  const b = bone(name);
+  return b ? b.getAbsoluteMatrix().getTranslation() : Vector3.Zero();
+}
+
+const out: Record<string, unknown> = { file, bones: skeleton.bones.length,
+  names: skeleton.bones.map((b) => b.name.replace(/^.*_skeleton_/, "")) };
+
+for (const [label, target] of [
+  ["LeftArm", "_skeleton_LeftHand"],
+  ["RightArm", "_skeleton_RightHand"],
+  ["Spine1", "_skeleton_Head"],
+] as const) {
+  const b = bone(`_skeleton_${label}`);
+  if (!b) {
+    out[label] = "missing";
+    continue;
+  }
+  const rest = b.rotationQuaternion.clone();
+  const before = tip(target);
+  const scores: Record<string, string> = {};
+  for (const [name, axis] of AXES) {
+    b.setRotationQuaternion(rest.multiply(Quaternion.RotationAxis(axis, 1.2)), 0);
+    const after = tip(target);
+    scores[name] = `dy ${(after.y - before.y).toFixed(3)} dz ${(after.z - before.z).toFixed(3)}`;
+    b.setRotationQuaternion(rest.clone(), 0);
+  }
+  out[label] = scores;
+}
+
+// Rest geometry, so the animation can be written in real proportions.
+skeleton.computeAbsoluteMatrices(true);
+out.rest = {
+  hips: tip("_skeleton_Hips").asArray().map((v) => +v.toFixed(3)),
+  head: tip("_skeleton_Head").asArray().map((v) => +v.toFixed(3)),
+  leftHand: tip("_skeleton_LeftHand").asArray().map((v) => +v.toFixed(3)),
+  leftFoot: tip("_skeleton_LeftFoot").asArray().map((v) => +v.toFixed(3)),
 };
 
-if (skeleton) {
-  const named = (want: string) =>
-    skeleton.bones.find((b) => b.name.endsWith(want));
-  report.sampleBones = skeleton.bones.slice(0, 4).map((b) => b.name);
-
-  // Raise both arms: the pose that proves skinning, since a rigid mesh would
-  // simply not change shape. The rotation is composed onto the bone's rest
-  // rotation in local space — replacing it outright would discard the rest
-  // pose and collapse the figure.
-  const rest = new Map<string, Quaternion>();
-  for (const bone of skeleton.bones) {
-    rest.set(bone.name, bone.rotationQuaternion.clone());
-  }
-  const pose = (suffix: string, axis: Vector3, angle: number): void => {
-    const bone = named(suffix);
-    if (!bone) {
-      report[`missing${suffix}`] = true;
-      return;
-    }
-    const base = rest.get(bone.name)!;
-    bone.setRotationQuaternion(base.multiply(Quaternion.RotationAxis(axis, angle)), 0);
-  };
-  for (const [suffix, angle] of [
-    ["_skeleton_LeftArm", 1.9],
-    ["_skeleton_RightArm", 1.9],
-    ["_skeleton_LeftForeArm", 0.7],
-    ["_skeleton_RightForeArm", 0.7],
-  ] as const) {
-    pose(suffix, Vector3.Right(), angle);
-  }
-  skeleton.computeAbsoluteMatrices(true);
-  scene.render();
-}
-
-// The figure still carries the seat offset it had in the tribune, so frame the
-// camera on where it actually is rather than on the origin.
-{
-  const m = res.meshes.find((x) => x.getTotalVertices() > 0);
-  if (m) {
-    m.refreshBoundingInfo({ applySkeleton: true });
-    const b = m.getBoundingInfo().boundingBox;
-    const centre = b.minimumWorld.add(b.maximumWorld).scale(0.5);
-    camera.setTarget(centre);
-    camera.radius = b.maximumWorld.subtract(b.minimumWorld).length() * 1.35;
-  }
-}
-
-const skinned = res.meshes.find((m) => m.getTotalVertices() > 0);
-report.boundsAfterPose = skinned
-  ? (() => {
-      const b = skinned.getBoundingInfo().boundingBox;
-      return {
-        min: [+b.minimum.x.toFixed(2), +b.minimum.y.toFixed(2), +b.minimum.z.toFixed(2)],
-        max: [+b.maximum.x.toFixed(2), +b.maximum.y.toFixed(2), +b.maximum.z.toFixed(2)],
-      };
-    })()
-  : null;
-
-(window as unknown as { __rig: unknown }).__rig = report;
+(window as unknown as { __rig: unknown }).__rig = out;
 engine.runRenderLoop(() => scene.render());

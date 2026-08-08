@@ -58,6 +58,87 @@ def mat_inverse(m):
     return [x for r in range(4) for x in a[r][4:]]
 
 
+def colour_for(material, rng):
+    """A colour per body part, keyed off the pack's material names.
+
+    The pack ships one material per part (Hair, Head, Eyes_Mouth, Skin,
+    Cloths_Stuff) with textures this project does not use. Baking a flat
+    colour per part into the vertices keeps every figure a single draw call
+    while still reading as a person rather than a grey blob.
+    """
+    name = material.lower()
+    if "hair" in name:
+        return rng.choice([(0.12, 0.09, 0.07), (0.28, 0.18, 0.10),
+                           (0.45, 0.33, 0.18), (0.55, 0.52, 0.50)])
+    if "eyes" in name or "mouth" in name:
+        return (0.16, 0.13, 0.12)
+    if "head" in name or "skin" in name:
+        return rng.choice([(0.85, 0.66, 0.52), (0.72, 0.52, 0.38),
+                           (0.52, 0.36, 0.25), (0.36, 0.24, 0.17)])
+    # Everything else is clothing: the crowd's colour comes from here.
+    return rng.choice([(0.83, 0.24, 0.21), (0.18, 0.36, 0.72), (0.93, 0.71, 0.16),
+                       (0.20, 0.55, 0.34), (0.88, 0.88, 0.90), (0.35, 0.33, 0.40),
+                       (0.90, 0.45, 0.15), (0.55, 0.25, 0.60)])
+
+
+def add_vertex_colours(geometry, prefix):
+    """Fold the per-material split into a COLOR input on the shared vertices.
+
+    Emitting the colour per position (rather than keeping five materials)
+    means the importer produces one primitive, which is what lets the whole
+    crowd draw as thin instances of a single mesh.
+    """
+    import random
+
+    text = "".join(geometry)
+    m = re.search(r'<float_array id="[^"]*-POSITION-array"[^>]*count="(\d+)"', text)
+    if not m:
+        return geometry
+    n_pos = int(m.group(1)) // 3
+    rng = random.Random(prefix)
+
+    colours = [(0.6, 0.6, 0.6)] * n_pos
+
+    def rewrite(block):
+        """Give one <triangles> group a COLOR input indexed like its vertices."""
+        whole, material, body = block.group(0), block.group(1), block.group(2)
+        stride = max((int(o) for o in re.findall(r'offset="(\d+)"', body)), default=0) + 1
+        p = re.search(r"<p>(.*?)</p>", body, re.S)
+        if not p:
+            return whole
+        rgb = colour_for(material, rng)
+        idx = p.group(1).split()
+        out = []
+        for i in range(0, len(idx) - stride + 1, stride):
+            v = int(idx[i])
+            if v < n_pos:
+                colours[v] = rgb
+            # Colour is per vertex, so it reuses the vertex index.
+            out.extend(idx[i:i + stride])
+            out.append(idx[i])
+        body = body.replace(p.group(0), "<p>" + " ".join(out) + "</p>")
+        body = body.replace(
+            "<p>",
+            f'<input semantic="COLOR" offset="{stride}" set="0" '
+            f'source="#{prefix}_meshNode-COLOR"/>\n<p>', 1)
+        return whole[:whole.index(">") + 1] + body + "</triangles>"
+
+    text = re.sub(r'<triangles[^>]*material="([^"]+)"[^>]*>(.*?)</triangles>',
+                  rewrite, text, flags=re.S)
+
+    flat = " ".join(f"{c:.4f}" for rgb in colours for c in rgb)
+    source = (f'<source id="{prefix}_meshNode-COLOR">\n'
+              f'<float_array id="{prefix}_meshNode-COLOR-array" '
+              f'count="{n_pos * 3}">{flat}</float_array>\n'
+              f'<technique_common><accessor '
+              f'source="#{prefix}_meshNode-COLOR-array" count="{n_pos}" stride="3">'
+              f'<param name="R" type="float"/><param name="G" type="float"/>'
+              f'<param name="B" type="float"/></accessor></technique_common>\n'
+              f"</source>\n")
+    text = text.replace("<vertices ", source + "<vertices ", 1)
+    return [text]
+
+
 def collect(prefix):
     """One streaming pass gathering every element this figure needs."""
     geom_id = f"{prefix}_meshNode-lib"
@@ -123,6 +204,7 @@ def main():
     out_path = sys.argv[2] if len(sys.argv) > 2 else "figure.dae"
 
     geometry, controller, skeleton = collect(prefix)
+    geometry = add_vertex_colours(geometry, prefix)
     print(f"geometry lines {len(geometry)}, skin lines {len(controller)}, "
           f"skeleton lines {len(skeleton)}")
     if not (geometry and controller and skeleton):
