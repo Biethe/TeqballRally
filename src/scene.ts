@@ -26,7 +26,6 @@ import type { QualitySettings } from "./quality";
 import { VENUES, type ArenaModel, type CourtStyle, type Rgb, type Venue } from "./venue";
 import { buildEnvironment } from "./environment";
 import { buildSurroundings } from "./surroundings";
-import { Crowd } from "./crowd";
 
 // Meshopt-compressed GLBs are decoded locally so hosted builds do not depend
 // on a third-party CDN just to display a character or the arena.
@@ -47,12 +46,6 @@ export interface GameScene {
    * immediately, without downloading anything, on tiers that skip the arena.
    */
   ensureArena: () => Promise<void>;
-  /**
-   * The crowd, once a backdrop has loaded. Empty until then, and empty for
-   * good on tiers that skip the backdrop — `update` on it is a no-op either
-   * way, so the caller never has to check.
-   */
-  crowd: Crowd;
   /** Glowing ring showing where the player's strike will land. */
   aimMarker: Mesh;
   /** Glowing X showing where the airborne ball will first come down. */
@@ -127,7 +120,6 @@ export async function createGameScene(
   // A venue that plays on its backdrop's surface still needs a floor painted
   // when that backdrop is never going to arrive — and with no backdrop there
   // is no venue centre line either, so it has to draw its own.
-  const crowd = new Crowd();
   const backdrop = quality.arena && venue.arena !== null;
   buildCourt(
     scene,
@@ -157,7 +149,7 @@ export async function createGameScene(
           // restrictive host cannot fetch the decorative gym model.
           console.warn("Arena failed to load:", e);
         }),
-        buildEnvironment(scene, venue, crowd).catch((e) => {
+        buildEnvironment(scene, venue).catch((e) => {
           console.warn("Venue dressing failed to load:", e);
         }),
         // The world outside the fence. Cheap, procedural and synchronous, but
@@ -209,7 +201,7 @@ export async function createGameScene(
   });
   camera.fov = engine.getRenderWidth() < engine.getRenderHeight() ? 1.1 : 0.85;
 
-  return { engine, scene, camera, shadows, quality, ensureArena, crowd, aimMarker, landingMarker };
+  return { engine, scene, camera, shadows, quality, ensureArena, aimMarker, landingMarker };
 }
 
 /**

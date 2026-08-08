@@ -151,8 +151,6 @@ async function boot(): Promise<void> {
    * with the score already 1-0 is worse than no intro.
    */
   let introLeft: number | null = null;
-  /** Unsubscribe for the current match's crowd reactions. */
-  let matchEvents: (() => void) | null = null;
   const enableSplit = (assign: VersusAssign) => {
     input.versusAssign = assign;
     gs.camera.viewport = new Viewport(0, 0, 0.5, 1);
@@ -624,7 +622,6 @@ async function boot(): Promise<void> {
     // The crowd runs on wall-clock time and outside the simulation: it is
     // scenery, it must not consume simulation steps, and it keeps moving
     // through a replay or a menu sitting over the court.
-    gs.crowd.update(Math.min(0.25, gs.engine.getDeltaTime() / 1000));
     gs.scene.render();
   });
 
@@ -1406,14 +1403,6 @@ async function boot(): Promise<void> {
     ui.setCameraMode(cameraMode);
     if (opts.versus) enableSplit(opts.versus);
     else disableSplit();
-    // A point is the moment a stadium reacts, so the crowd listens for it
-    // directly rather than being told by every caller that starts a match.
-    matchEvents?.();
-    matchEvents = match.subscribe((event) => {
-      if (event.type === "point-awarded") gs.crowd.celebrate();
-      else if (event.type === "serve-committed") gs.crowd.setEngaged(true);
-      else if (event.type === "serve-ready") gs.crowd.setEngaged(false);
-    });
     match.reset();
     ui.showHUD();
     // No establishing shot online: it holds the local simulation, and the
