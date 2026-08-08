@@ -93,29 +93,29 @@ export async function createGameScene(
   // GPU.
   const grade = scene.imageProcessingConfiguration;
   grade.applyByPostProcess = false;
-  grade.contrast = 1.35;
-  grade.exposure = 1.15;
+  grade.contrast = 1.12;
+  grade.exposure = 1.04;
   grade.colorCurvesEnabled = true;
   const curves = new ColorCurves();
   // Saturation does the heavy lifting; the warm mid-tone lift keeps skin and
   // wood from going grey under a blue sky.
-  curves.globalSaturation = 55;
+  curves.globalSaturation = 20;
   curves.globalHue = 0;
-  curves.midtonesSaturation = 35;
-  curves.midtonesHue = 8;
-  curves.highlightsSaturation = 25;
-  curves.shadowsSaturation = 20;
+  curves.midtonesSaturation = 14;
+  curves.midtonesHue = 5;
+  curves.highlightsSaturation = 10;
+  curves.shadowsSaturation = 8;
   grade.colorCurves = curves;
 
   const hemi = new HemisphericLight("hemi", new Vector3(0.2, 1, 0.1), scene);
-  hemi.intensity = 0.85;
+  hemi.intensity = 0.8;
   // A blue-tinted bounce off the ground rather than a grey one: neutral fill
   // is what drains colour out of everything facing away from the sun.
   hemi.groundColor = new Color3(0.16, 0.19, 0.3);
 
   const sun = new DirectionalLight("sun", new Vector3(-0.35, -1, 0.25), scene);
   sun.position = new Vector3(3, 9, -3);
-  sun.intensity = 1.25;
+  sun.intensity = 1.15;
   sun.diffuse = new Color3(1, 0.96, 0.86);
   let shadows: ShadowGenerator | null = null;
   if (quality.shadowMapSize !== null) {
