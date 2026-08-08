@@ -1,5 +1,6 @@
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
+import { ColorCurves } from "@babylonjs/core/Materials/colorCurves";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
@@ -82,13 +83,40 @@ export async function createGameScene(
   camera.setTarget(new Vector3(0, GROUND_Y + CAMERA.lookY, 0));
   camera.minZ = 0.1;
 
+  // Colour grade.
+  //
+  // Everything in the scene is flat vertex colour under two lights, which on
+  // its own renders honest but drab — the venues came out looking washed out
+  // on a phone screen. The grade is applied through the materials rather than
+  // as a post-process, so it costs shader instructions instead of a
+  // full-screen pass, which is the right trade on a fill-rate-bound mobile
+  // GPU.
+  const grade = scene.imageProcessingConfiguration;
+  grade.applyByPostProcess = false;
+  grade.contrast = 1.35;
+  grade.exposure = 1.15;
+  grade.colorCurvesEnabled = true;
+  const curves = new ColorCurves();
+  // Saturation does the heavy lifting; the warm mid-tone lift keeps skin and
+  // wood from going grey under a blue sky.
+  curves.globalSaturation = 55;
+  curves.globalHue = 0;
+  curves.midtonesSaturation = 35;
+  curves.midtonesHue = 8;
+  curves.highlightsSaturation = 25;
+  curves.shadowsSaturation = 20;
+  grade.colorCurves = curves;
+
   const hemi = new HemisphericLight("hemi", new Vector3(0.2, 1, 0.1), scene);
-  hemi.intensity = 0.75;
-  hemi.groundColor = new Color3(0.18, 0.18, 0.22);
+  hemi.intensity = 0.85;
+  // A blue-tinted bounce off the ground rather than a grey one: neutral fill
+  // is what drains colour out of everything facing away from the sun.
+  hemi.groundColor = new Color3(0.16, 0.19, 0.3);
 
   const sun = new DirectionalLight("sun", new Vector3(-0.35, -1, 0.25), scene);
   sun.position = new Vector3(3, 9, -3);
-  sun.intensity = 1.1;
+  sun.intensity = 1.25;
+  sun.diffuse = new Color3(1, 0.96, 0.86);
   let shadows: ShadowGenerator | null = null;
   if (quality.shadowMapSize !== null) {
     shadows = new ShadowGenerator(quality.shadowMapSize, sun);
