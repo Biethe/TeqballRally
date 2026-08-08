@@ -4,15 +4,25 @@
 //
 // Driven by scripts/bake-crowd.mjs; not a build entry, so it never ships.
 //
-// This uses Babylon's own VertexAnimationBaker deliberately. Baking the
-// matrices by hand did not reproduce even the bind pose — with every clip
-// removed the arms sheared into spikes — so the chain is left to the engine.
-// Its one cost is that it drives scene.beginAnimation a frame at a time and
-// waits for each, which is exactly why this runs here rather than on a phone.
+// UNFINISHED. This runs end to end and writes files, but every frame comes
+// out identical — the spread check below reports 0.0000 for all four figures,
+// with the clips confirmed to match real bone names.
 //
-// The clips animate each bone's "_matrix", the channel Babylon's own imported
-// skeleton animations use. The quaternion setters do not take on this rig:
-// setRotationQuaternion left bone.rotationQuaternion unchanged.
+// The common thread across every attempt is that this skeleton ignores any
+// write to a bone's *local* matrix: setRotationQuaternion leaves
+// rotationQuaternion unchanged, updateMatrix with its difference-matrix flag
+// off never reaches the baked matrices, an explicit markAsDirty does not
+// bridge it, and now an Animation on the "_matrix" channel driven by Babylon's
+// own baker changes nothing either. The only call that ever altered the output
+// was updateMatrix with that flag ON — which writes the bind matrices, and
+// corrupts the chain by redefining the rest pose each frame.
+//
+// So the next thing to test is the skinning path itself rather than another
+// way of posing: whether this mesh skins from the skeleton's difference
+// matrices while prepare() never recomputes them from local ones. The likely
+// culprits are needInitialSkinMatrix and the _isDirty early-out in
+// Skeleton.prepare. Worth checking against a stock rigged glTF first, to
+// establish whether the fault is in this rig or in how it is being driven.
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
