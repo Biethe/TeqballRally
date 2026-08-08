@@ -14,7 +14,7 @@ const browser = await chromium.launch({
 const page = await browser.newPage();
 page.on("console", (m) => console.log(" ", m.text()));
 page.on("pageerror", (e) => console.log("[error]", e.message));
-await page.goto(`http://localhost:${PORT}/bake-crowd.html`, { waitUntil: "load" });
+await page.goto(`http://localhost:${PORT}/bake-crowd.html?bind=${process.env.BIND ?? ""}`, { waitUntil: "load" });
 // Baking drives one rendered frame per baked frame, which is slow under
 // software rendering; it is a one-off, so simply wait it out.
 await page.waitForFunction(() => window.__bake, null, { timeout: 900000 });
