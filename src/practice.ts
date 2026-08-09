@@ -51,7 +51,9 @@ export class PracticeCoach {
     private match: MatchController,
     private ui: PracticeUI,
     private hasGamepad: () => boolean,
-    private isTouch: () => boolean
+    private isTouch: () => boolean,
+    /** Portrait play is gestures, not buttons, so its prompts differ again. */
+    private isPortrait: () => boolean = () => false
   ) {
     this.unsubscribe = this.match.subscribe((event) => this.onMatchEvent(event));
   }
@@ -175,23 +177,26 @@ export class PracticeCoach {
   }
 
   private servePrompt(): TrainingPauseState {
-    return this.prompt("serve", this.control("WASD + SPACE", "LEFT STICK + A", "JOYSTICK + STRIKE"));
+    return this.prompt(
+      "serve",
+      this.control("WASD + SPACE", "LEFT STICK + A", "JOYSTICK + STRIKE", "SWIPE TO SERVE")
+    );
   }
 
   private positionPrompt(): TrainingPauseState {
-    return this.prompt("position", this.control("WASD", "LEFT STICK", "JOYSTICK"));
+    return this.prompt("position", this.control("WASD", "LEFT STICK", "JOYSTICK", "TAP THE COURT"));
   }
 
   private returnPrompt(): TrainingPauseState {
-    return this.prompt("return", this.control("SPACE", "A", "STRIKE"));
+    return this.prompt("return", this.control("SPACE", "A", "STRIKE", "SWIPE"));
   }
 
   private popPrompt(): TrainingPauseState {
-    return this.prompt("pop", this.control("K", "B", "RECEPTION"));
+    return this.prompt("pop", this.control("K", "B", "RECEPTION", "TAP AND HOLD"));
   }
 
   private finishPrompt(): TrainingPauseState {
-    return this.prompt("finish", this.control("SPACE", "A", "STRIKE"));
+    return this.prompt("finish", this.control("SPACE", "A", "STRIKE", "SWIPE"));
   }
 
   private prompt(step: Exclude<DrillStep, "free">, control: string): TrainingPauseState {
@@ -205,8 +210,9 @@ export class PracticeCoach {
     };
   }
 
-  private control(keyboard: string, gamepad: string, touch: string): string {
+  private control(keyboard: string, gamepad: string, touch: string, portrait = touch): string {
     if (this.hasGamepad()) return gamepad;
+    if (this.isPortrait()) return portrait;
     if (this.isTouch()) return touch;
     return keyboard;
   }

@@ -3,6 +3,7 @@ import { Scene } from "@babylonjs/core/scene";
 import { ColorCurves } from "@babylonjs/core/Materials/colorCurves";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
+import { Camera } from "@babylonjs/core/Cameras/camera";
 import { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
@@ -253,11 +254,21 @@ export async function createGameScene(
   landingMarker.isPickable = false;
   landingMarker.setEnabled(false);
 
+  // A portrait viewport is narrow, and Babylon's default lens is fixed
+  // vertically: keeping the same vertical angle on a tall screen crops the
+  // court's width down to a sliver. Portrait therefore pins the field of view
+  // horizontally instead — the table and both players stay framed, and the
+  // extra height is spent on the arena above and the floor below.
+  const frameLens = (): void => {
+    const portrait = engine.getRenderWidth() < engine.getRenderHeight();
+    camera.fovMode = portrait ? Camera.FOVMODE_HORIZONTAL_FIXED : Camera.FOVMODE_VERTICAL_FIXED;
+    camera.fov = portrait ? CAMERA.portrait.fov : 0.85;
+  };
   window.addEventListener("resize", () => {
     engine.resize();
-    camera.fov = engine.getRenderWidth() < engine.getRenderHeight() ? 1.1 : 0.85;
+    frameLens();
   });
-  camera.fov = engine.getRenderWidth() < engine.getRenderHeight() ? 1.1 : 0.85;
+  frameLens();
 
   // The first venue is built the same way every later one is, so there is only
   // one path to get wrong.

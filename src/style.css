@@ -745,6 +745,20 @@ button.pad-focus {
   font-size: 0.8em;
 }
 
+/* A phone-width HUD. Centred, the board runs under the camera and pause
+   buttons and loses the end of the opponent's name; anchored left of them it
+   keeps both readable without shrinking the score itself into illegibility. */
+@media (max-width: 520px) {
+  #score {
+    left: max(10px, env(safe-area-inset-left));
+    transform: none;
+    padding: 5px 13px;
+    border-width: 2px;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+  }
+}
+
 #replay-indicator {
   position: absolute;
   top: max(12px, env(safe-area-inset-top));
@@ -997,7 +1011,10 @@ button.pad-focus {
 }
 
 #banner.hidden,
-#hint.hidden {
+#hint.hidden,
+/* The card is display:flex, so hiding it needs a rule of its own — without
+   one the line-up stayed on screen for the whole match. */
+#intro-card.hidden {
   display: none;
 }
 
@@ -1006,6 +1023,10 @@ button.pad-focus {
   bottom: 18%;
   left: 50%;
   transform: translateX(-50%);
+  /* Long hints wrap on a phone; centred, a second line still reads as one
+     caption instead of drifting off to the left. */
+  max-width: min(90vw, 640px);
+  text-align: center;
   font-size: clamp(14px, 2.6vw, 20px);
   letter-spacing: 0.1em;
   color: #eef1f3;
@@ -1531,54 +1552,40 @@ button.pad-focus {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.42);
 }
 
-/* The notice belongs to the play-only touch layer. It consumes court touches,
-   but pause and camera controls live in the HUD above this layer. */
-#touch-rotate-notice {
+/* Portrait's control legend. Every pixel of the layer under it is a control,
+   so it must never take a pointer event of its own. */
+#touch-portrait-hints {
   display: none;
   position: absolute;
-  inset: 0;
-  align-items: center;
+  left: 0;
+  right: 0;
+  bottom: max(18px, env(safe-area-inset-bottom));
   justify-content: center;
-  flex-direction: column;
-  gap: 9px;
-  padding: 28px;
-  color: var(--text);
-  text-align: center;
-  background: rgba(23, 25, 28, 0.78);
-  pointer-events: auto;
+  gap: 8px;
+  padding: 0 12px;
+  pointer-events: none;
   z-index: 3;
 }
 
-#touch-rotate-notice strong {
-  font-size: 20px;
-  font-weight: 900;
-  letter-spacing: 0.04em;
+#touch-portrait-hints span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(18, 20, 23, 0.52);
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
-#touch-rotate-notice > span:last-child {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.rotate-device-icon {
-  position: relative;
-  width: 42px;
-  height: 62px;
-  border: 3px solid var(--teq);
-  border-radius: 8px;
-  transform: rotate(90deg);
-}
-
-.rotate-device-icon::after {
-  content: "";
-  position: absolute;
-  right: 7px;
-  bottom: 5px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--teq);
+#touch-portrait-hints b {
+  color: var(--teq);
+  font-size: 10px;
+  font-weight: 950;
 }
 
 @media (pointer: coarse) {
@@ -1641,21 +1648,18 @@ button.pad-focus {
   }
 }
 
-@media (orientation: portrait) {
-  /* Input's layer exists only on touch-capable devices and main.ts shows it
-     * only for play. The visible notice consumes court touches until there is
-     * useful room, while the higher HUD pause/camera buttons remain tappable. */
+/* Portrait play. The class is set by Input, not by a media query: the layout
+   and the gesture scheme have to switch on the same condition, and a rule that
+   could disagree with the code would leave a stick on screen that no longer
+   does anything. */
+#touch-layer.portrait .joy-base,
+#touch-layer.portrait #strike-btn,
+#touch-layer.portrait #pop-btn {
+  display: none;
+}
 
-  #touch-layer .joy-base,
-  #touch-layer #strike-btn,
-  #touch-layer #pop-btn {
-    visibility: hidden;
-  }
-
-  #touch-rotate-notice {
-    display: flex;
-    pointer-events: auto;
-  }
+#touch-layer.portrait #touch-portrait-hints {
+  display: flex;
 }
 
 @media (max-width: 680px) {
