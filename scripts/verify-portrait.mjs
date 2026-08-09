@@ -66,6 +66,9 @@ const readMatch = (page) =>
       player: { x: m.chars.player.position.x, z: m.chars.player.position.z },
       touchCount: m.touchCount,
       strikeable: m.strikeableSide,
+      charging: m.charging.player,
+      aim: { x: m.aimSpot.player.x, z: m.aimSpot.player.z },
+      markerOn: window.__teq.match.aimMarker?.isEnabled() ?? null,
       portraitClass: layer?.classList.contains("portrait") ?? null,
       joyShown: joy ? getComputedStyle(joy).display !== "none" : null,
       hintsShown: (() => {
@@ -185,7 +188,7 @@ console.log("\nportrait: the screen is the controller");
       }
       return false;
     },
-    60000
+    90000
   );
   check(auto, "the first reception is taken automatically");
 
@@ -227,7 +230,49 @@ console.log("\nlandscape: the stick and buttons are back");
   check(state.joyShown === true, "the move stick is shown");
   check(state.hintsShown === false, "the gesture legend is hidden");
   check(state.tapSteering === false, "the stick steers, not taps");
+
+  // Holding the kick control charges it and hands the stick to the marker.
+  // Only while the ball is actually this player's to hit, so the control is
+  // held down across the exchange and the charge is expected to start by
+  // itself the moment possession arrives.
+  await page.evaluate(() => {
+    const m = window.__teq.match;
+    for (let i = 0; i < 60 && m.serveOwner !== "player"; i++) m.reset();
+  });
+  await settles(page, () => window.__teq.match.state === "serve_ready", 90000);
+  await page.keyboard.press("Space"); // serve
+  check(await settles(page, () => window.__teq.match.state === "rally", 40000), "a keyboard serve starts the rally");
+
+  const before = await readMatch(page);
+  await page.keyboard.down("Space");
+  await page.keyboard.down("KeyD"); // push the aim sideways while charging
+  const charged = await settles(page, () => window.__teq.match.charging.player > 0.2, 90000);
+  const held = await readMatch(page);
+  await page.keyboard.up("KeyD");
+  await page.keyboard.up("Space");
+  check(charged, `holding the kick control charges it (${held.charging?.toFixed?.(2)} s)`);
+  check(
+    Math.abs(held.aim.z - before.aim.z) > 0.2 || Math.abs(held.aim.x - before.aim.x) > 0.2,
+    `the stick moves the aim while it is held (${JSON.stringify(held.aim)})`
+  );
+  check(held.markerOn === true, "landscape shows the aim marker while aiming");
+  // Not read straight back: a release is spent by the next simulation step,
+  // and a software-rendered frame here can be a second long.
+  const spent = await settles(page, () => window.__teq.match.charging.player === 0, 20000);
+  check(spent, "letting go spends the charge");
   await page.close();
+}
+
+console.log("\nthe aim marker belongs to landscape only");
+{
+  // Portrait aims with the swipe that fires the kick, so there is nothing to
+  // show before the gesture; landscape aims with a marker the stick moves.
+  // The spread that decides whether a kick misses is unit-tested — four
+  // hundred points is not something this browser can play.
+  const portrait = await intoMatch({ width: 420, height: 860 });
+  await settles(portrait, () => window.__teq.match.state === "serve_move", 120000);
+  check((await readMatch(portrait)).markerOn === false, "portrait shows no aim marker");
+  await portrait.close();
 }
 
 await browser.close();

@@ -83,7 +83,7 @@ describe("portrait gestures", () => {
   it("reads a directional drag as a swipe, with its direction", () => {
     const s = scheme();
     s.begin(1, 200, 600, 0);
-    s.move(1, 200, 480); // 120 px up = 0.3 of the short side
+    s.move(1, 200, 480, 0.05); // 120 px up = 0.3 of the short side
     s.end(1, 0.14);
 
     const [g] = s.take();
@@ -97,7 +97,7 @@ describe("portrait gestures", () => {
   it("scales strength with how far the finger travelled", () => {
     const s = scheme();
     s.begin(1, 200, 600, 0);
-    s.move(1, 260, 600); // 60 px = 0.15 of the short side, half of swipeFull
+    s.move(1, 260, 600, 0.05); // 60 px = 0.15 of the short side, half of swipeFull
     s.end(1, 0.1);
 
     const [g] = s.take();
@@ -110,7 +110,7 @@ describe("portrait gestures", () => {
     // A thumb that lands, waits, then flicks is one gesture, not a dead press.
     const s = scheme();
     s.begin(1, 200, 600, 0);
-    s.move(1, 200, 470);
+    s.move(1, 200, 470, 0.05);
     s.end(1, 1.2);
 
     expect(s.take().map((g) => g.kind)).toEqual(["swipe"]);
@@ -124,7 +124,7 @@ describe("portrait gestures", () => {
 
     const smudge = scheme();
     smudge.begin(1, 200, 600, 0);
-    smudge.move(1, 224, 600); // 24 px: past the slop, short of a swipe
+    smudge.move(1, 224, 600, 0.05); // 24 px: past the slop, short of a swipe
     smudge.end(1, 0.1);
     smudge.tick(3);
     expect(smudge.take()).toEqual([]);
@@ -137,7 +137,7 @@ describe("portrait gestures", () => {
     wide.setViewport(800, 400);
     for (const s of [tall, wide]) {
       s.begin(1, 100, 100, 0);
-      s.move(1, 160, 100); // 60 px: 0.15 of 400 in both
+      s.move(1, 160, 100, 0.05); // 60 px: 0.15 of 400 in both
       s.end(1, 0.1);
     }
 

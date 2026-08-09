@@ -45,7 +45,7 @@ function fakeMatch() {
     sets: { player: 0, ai: 0 },
     serveOwner: "player",
     state: "rally",
-    versusInput: { moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false },
+    versusInput: { moveX: 0, moveZ: 0, strikePressed: false, strikeHeld: false, strikePower: 0, popPressed: false, confirmPressed: false },
     ball: { state: { pos: new Vector3(0, 1, 0), vel: new Vector3(0, 0, 0) }, held: false },
     chars: {
       player: { position: new Vector3(-3, 0.4, 0), velocity: new Vector3(0, 0, 0) },
@@ -207,7 +207,15 @@ describe("opponent presence", () => {
 describe("host and guest exchange", () => {
   it("has the guest send its controls, not its position", () => {
     const g = session({}, "guest");
-    g.s.setLocalInput({ moveX: 1, moveZ: -0.5, strikePressed: true, popPressed: false, confirmPressed: false });
+    g.s.setLocalInput({
+      moveX: 1,
+      moveZ: -0.5,
+      strikePressed: true,
+      strikeHeld: false,
+      strikePower: 0.8,
+      popPressed: false,
+      confirmPressed: false,
+    });
     g.s.step(SIM_DT);
 
     const inputs = g.sent.filter((m) => m.t === "input");
@@ -221,7 +229,7 @@ describe("host and guest exchange", () => {
 
   it("sends a guest press once, not on every step until released", () => {
     const g = session({}, "guest");
-    g.s.setLocalInput({ moveX: 0, moveZ: 0, strikePressed: true, popPressed: false, confirmPressed: false });
+    g.s.setLocalInput({ moveX: 0, moveZ: 0, strikePressed: true, strikeHeld: false, strikePower: 0, popPressed: false, confirmPressed: false });
     g.s.step(SIM_DT);
     g.s.step(SIM_DT);
 
@@ -232,8 +240,8 @@ describe("host and guest exchange", () => {
   it("keeps a press that arrived between sends", () => {
     // The render loop can hand over two frames before a step consumes them.
     const g = session({}, "guest");
-    g.s.setLocalInput({ moveX: 0, moveZ: 0, strikePressed: true, popPressed: false, confirmPressed: false });
-    g.s.setLocalInput({ moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false });
+    g.s.setLocalInput({ moveX: 0, moveZ: 0, strikePressed: true, strikeHeld: false, strikePower: 0, popPressed: false, confirmPressed: false });
+    g.s.setLocalInput({ moveX: 0, moveZ: 0, strikePressed: false, strikeHeld: false, strikePower: 0, popPressed: false, confirmPressed: false });
     g.s.step(SIM_DT);
 
     expect(g.sent.filter((m) => m.t === "input" && m.strike)).toHaveLength(1);

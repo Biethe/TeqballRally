@@ -16,8 +16,20 @@ export interface InputState {
   /** Movement in court space: x toward the net, z lateral. Range [-1, 1]. */
   moveX: number;
   moveZ: number;
-  /** True only on the frame the strike control was pressed. */
+  /**
+   * True only on the frame the strike control was *released*. A kick is
+   * committed by letting go, because how long it was held is what decides how
+   * hard it is struck.
+   */
   strikePressed: boolean;
+  /** True while the strike control is down: the kick is being charged. */
+  strikeHeld: boolean;
+  /**
+   * Power the input scheme decided for itself, 0..1, valid on the frame of a
+   * press. Portrait sets it from the speed of the swipe; landscape leaves it
+   * at 0 and the match charges the kick from how long the button was held.
+   */
+  strikePower: number;
   /** True only on the frame the reception (control-touch) control was pressed. */
   popPressed: boolean;
   /** True only on the frame any "confirm" control was pressed (strike, enter, tap). */
@@ -37,12 +49,22 @@ export interface LatchedInput {
   moveX: number;
   moveZ: number;
   strikePressed: boolean;
+  strikeHeld: boolean;
+  strikePower: number;
   popPressed: boolean;
   confirmPressed: boolean;
 }
 
 export function newLatch(): LatchedInput {
-  return { moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false };
+  return {
+    moveX: 0,
+    moveZ: 0,
+    strikePressed: false,
+    strikeHeld: false,
+    strikePower: 0,
+    popPressed: false,
+    confirmPressed: false,
+  };
 }
 
 /**
@@ -52,6 +74,11 @@ export function newLatch(): LatchedInput {
 export function latchInput(latched: LatchedInput, sampled: InputState): void {
   latched.moveX = sampled.moveX;
   latched.moveZ = sampled.moveZ;
+  // Held is a level, like the axes: what matters is whether it is down now.
+  latched.strikeHeld = sampled.strikeHeld;
+  // A power belongs to the press it arrived with, so it is kept only when
+  // there is a press waiting to carry it.
+  if (sampled.strikePressed) latched.strikePower = sampled.strikePower;
   latched.strikePressed ||= sampled.strikePressed;
   latched.popPressed ||= sampled.popPressed;
   latched.confirmPressed ||= sampled.confirmPressed;
@@ -61,6 +88,7 @@ export function latchInput(latched: LatchedInput, sampled: InputState): void {
 export function consumeInput(latched: LatchedInput): InputState {
   const state: InputState = { ...latched };
   latched.strikePressed = false;
+  latched.strikePower = 0;
   latched.popPressed = false;
   latched.confirmPressed = false;
   return state;
@@ -104,7 +132,17 @@ export class Input {
   private prevCameraCycle = false;
   private pauseQueued = false;
   private prevPauseGamepad = false;
-  private prevGamepadStrike = false;
+  /**
+   * Whether each seat's strike control is down (0 = P1, 1 = P2).
+   *
+   * A kick is committed on release rather than on press: how long the control
+   * was held is what decides how hard the ball is struck, and that is not
+   * known until it comes back up.
+   */
+  private strikeDown: [boolean, boolean] = [false, false];
+  /** Pad levels, so a pad release is only reported once. */
+  private padStrikeWasDown = false;
+  private pad2StrikeWasDown = false;
   private prevGamepadPop = false;
   /** Neutral axis-9 values for non-standard HID hat switches, by pad index. */
   private hatIdleByPad = new Map<number, number>();
@@ -115,7 +153,6 @@ export class Input {
   versusAssign: VersusAssign | null = null;
   private p2StrikeQueued = false;
   private p2PopQueued = false;
-  private prevPad2Strike = false;
   private prevPad2Pop = false;
   /** Keyboard cancel is queued because a quick Escape tap can occur between render frames. */
   private menuBackQueued = false;
@@ -151,6 +188,8 @@ export class Input {
    */
   private gestureAim: { sx: number; sy: number; until: number } | null = null;
   private tapQueued: { x: number; y: number } | null = null;
+  /** Power a swipe asked for, waiting to travel with its queued press. */
+  private gesturePower = 0;
   /** Seconds a gesture keeps aiming after the finger has gone. */
   private static readonly AIM_HOLD = 0.5;
 
@@ -183,8 +222,7 @@ export class Input {
       if (!a) {
         // Single human: every strike/reception key belongs to them.
         if (e.code === "Space" || e.code === "Enter" || e.code === "KeyJ") {
-          this.strikeQueued = true;
-          this.confirmQueued = true;
+          this.setStrikeDown(0, true);
           e.preventDefault();
         }
         if (e.code === "KeyK") {
@@ -195,8 +233,7 @@ export class Input {
       }
       // Versus: route each key to whichever player's device owns it.
       if (kbOwns(a.p1, e.code, "strike")) {
-        this.strikeQueued = true;
-        this.confirmQueued = true;
+        this.setStrikeDown(0, true);
         e.preventDefault();
       }
       if (kbOwns(a.p1, e.code, "pop")) {
@@ -204,7 +241,7 @@ export class Input {
         e.preventDefault();
       }
       if (kbOwns(a.p2, e.code, "strike")) {
-        this.p2StrikeQueued = true;
+        this.setStrikeDown(1, true);
         e.preventDefault();
       }
       if (kbOwns(a.p2, e.code, "pop")) {
@@ -212,9 +249,19 @@ export class Input {
         e.preventDefault();
       }
     });
-    window.addEventListener("keyup", (e) => this.keys.delete(e.code));
+    window.addEventListener("keyup", (e) => {
+      this.keys.delete(e.code);
+      const a = this.versusAssign;
+      if (!a) {
+        if (e.code === "Space" || e.code === "Enter" || e.code === "KeyJ") this.setStrikeDown(0, false);
+        return;
+      }
+      if (kbOwns(a.p1, e.code, "strike")) this.setStrikeDown(0, false);
+      if (kbOwns(a.p2, e.code, "strike")) this.setStrikeDown(1, false);
+    });
     window.addEventListener("blur", () => {
       this.keys.clear();
+      this.clearStrikeHold();
       this.resetTouchState();
     });
 
@@ -255,6 +302,27 @@ export class Input {
     this.touchLayer?.classList.toggle("portrait", portrait);
   }
 
+  /**
+   * Track a strike control's level for one seat, queueing the kick when it is
+   * let go. Confirm still fires on the way down, so menus and the serve toss
+   * answer a press immediately.
+   */
+  private setStrikeDown(seat: 0 | 1, down: boolean): void {
+    if (down === this.strikeDown[seat]) return;
+    this.strikeDown[seat] = down;
+    if (down) {
+      if (seat === 0) this.confirmQueued = true;
+      return;
+    }
+    if (seat === 0) this.strikeQueued = true;
+    else this.p2StrikeQueued = true;
+  }
+
+  /** Drop a held kick without firing it (focus loss, a hidden touch layer). */
+  private clearStrikeHold(): void {
+    this.strikeDown = [false, false];
+  }
+
   /** Hide the touch layer while a screen needs direct canvas interaction (model viewer). */
   setTouchControlsEnabled(enabled: boolean): void {
     if (!this.touchLayer) return;
@@ -293,20 +361,17 @@ export class Input {
     this.strikeBtn = this.makeTouchAction(
       "strike-btn",
       "STRIKE",
-      "SERVE · KICK",
-      "Strike, serve, or kick the ball",
-      () => {
-        this.strikeQueued = true;
-        this.confirmQueued = true;
-      }
+      "HOLD TO AIM",
+      "Hold to aim and charge the kick, release to strike",
+      (down) => this.setStrikeDown(0, down)
     );
     this.popBtn = this.makeTouchAction(
       "pop-btn",
       "RECEPTION",
       "SET UP",
       "Make a reception or set up the ball",
-      () => {
-        this.popQueued = true;
+      (down) => {
+        if (down) this.popQueued = true;
       }
     );
     zone.append(this.strikeBtn, this.popBtn);
@@ -384,7 +449,7 @@ export class Input {
       moveJoy(e);
     });
     zone.addEventListener("pointermove", (e) => {
-      if (this.portrait) this.gestures.move(e.pointerId, e.clientX, e.clientY);
+      if (this.portrait) this.gestures.move(e.pointerId, e.clientX, e.clientY, at(e));
       else moveJoy(e);
     });
     zone.addEventListener("pointerup", (e) => {
@@ -405,13 +470,18 @@ export class Input {
     uiRoot.appendChild(zone);
   }
 
-  /** Build an action button that safely survives a finger leaving its bounds. */
+  /**
+   * Build an action button that safely survives a finger leaving its bounds.
+   *
+   * `hold` is called with the button's level rather than once per press, which
+   * is what lets STRIKE charge: the kick is committed when the finger lifts.
+   */
   private makeTouchAction(
     id: "strike-btn" | "pop-btn",
     label: string,
     detail: string,
     ariaLabel: string,
-    fire: () => void
+    hold: (down: boolean) => void
   ): HTMLButtonElement {
     const button = document.createElement("button");
     button.type = "button";
@@ -423,7 +493,10 @@ export class Input {
     this.touchActionPointers.set(button, activePointers);
     const release = (e: PointerEvent) => {
       if (!activePointers.delete(e.pointerId)) return;
-      if (activePointers.size === 0) button.classList.remove("pressed");
+      if (activePointers.size === 0) {
+        button.classList.remove("pressed");
+        hold(false);
+      }
     };
     button.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
@@ -436,7 +509,7 @@ export class Input {
       } catch {
         // A press still registers on browsers without Pointer Events capture.
       }
-      fire();
+      hold(true);
     });
     button.addEventListener("pointerup", release);
     button.addEventListener("pointercancel", release);
@@ -465,6 +538,7 @@ export class Input {
   /** Never let a hidden overlay retain movement or a pressed visual state. */
   private resetTouchState(): void {
     this.clearJoystick();
+    this.clearStrikeHold();
     this.gestures.clear();
     this.gestureAim = null;
     this.tapQueued = null;
@@ -525,11 +599,14 @@ export class Input {
         // state: it names a point on the court, so the app resolves it.
         this.tapQueued = { x: g.x, y: g.y };
       } else if (g.kind === "swipe") {
+        // Direction aims the kick; pace decides how hard it is struck. Length
+        // only weights the aim, so a short sharp flick is still a hard shot.
         this.gestureAim = {
           sx: g.dx * g.strength,
           sy: g.dy * g.strength,
           until: t + Input.AIM_HOLD,
         };
+        this.gesturePower = g.speed;
         this.strikeQueued = true;
         this.confirmQueued = true;
       } else {
@@ -603,11 +680,8 @@ export class Input {
         padPop = r.pop;
       }
     }
-    if (padStrike && !this.prevGamepadStrike) {
-      this.strikeQueued = true;
-      this.confirmQueued = true;
-    }
-    this.prevGamepadStrike = padStrike;
+    if (padStrike || this.padStrikeWasDown) this.setStrikeDown(0, padStrike);
+    this.padStrikeWasDown = padStrike;
     if (padPop && !this.prevGamepadPop) this.popQueued = true;
     this.prevGamepadPop = padPop;
 
@@ -620,12 +694,15 @@ export class Input {
       moveX: -sy,
       moveZ: -sx,
       strikePressed: this.strikeQueued,
+      strikeHeld: this.strikeDown[0],
+      strikePower: this.gesturePower,
       popPressed: this.popQueued,
       confirmPressed: this.confirmQueued,
     };
     this.strikeQueued = false;
     this.popQueued = false;
     this.confirmQueued = false;
+    this.gesturePower = 0;
     return state;
   }
 
@@ -780,9 +857,10 @@ export class Input {
         padPop = r.pop;
       }
     }
-    const strikePressed = (padStrike && !this.prevPad2Strike) || this.p2StrikeQueued;
+    if (padStrike || this.pad2StrikeWasDown) this.setStrikeDown(1, padStrike);
+    this.pad2StrikeWasDown = padStrike;
+    const strikePressed = this.p2StrikeQueued;
     const popPressed = (padPop && !this.prevPad2Pop) || this.p2PopQueued;
-    this.prevPad2Strike = padStrike;
     this.prevPad2Pop = padPop;
     this.p2StrikeQueued = false;
     this.p2PopQueued = false;
@@ -790,6 +868,8 @@ export class Input {
       moveX: -Math.max(-1, Math.min(1, sy)),
       moveZ: -Math.max(-1, Math.min(1, sx)),
       strikePressed,
+      strikeHeld: this.strikeDown[1],
+      strikePower: 0,
       popPressed,
       confirmPressed: strikePressed,
     };

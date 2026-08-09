@@ -30,9 +30,9 @@ interface DrillInfo {
 const STEPS: Record<DrillStep, DrillInfo> = {
   serve: { progress: "1 / 5", title: "SERVE", action: "Aim, then STRIKE." },
   position: { progress: "2 / 5", title: "MOVE", action: "Move to the X." },
-  return: { progress: "3 / 5", title: "RETURN", action: "Wait, then STRIKE." },
+  return: { progress: "3 / 5", title: "RETURN", action: "Wait for it, then kick." },
   pop: { progress: "4 / 5", title: "MAKE A RECEPTION", action: "Make a reception, then get ready." },
-  finish: { progress: "5 / 5", title: "FINISH", action: "Strike in the green zone." },
+  finish: { progress: "5 / 5", title: "FINISH", action: "Aim, then kick it in." },
   free: { progress: "FREE", title: "FREE PLAY", action: "Play your way." },
 };
 
@@ -188,7 +188,7 @@ export class PracticeCoach {
   }
 
   private returnPrompt(): TrainingPauseState {
-    return this.prompt("return", this.control("SPACE", "A", "STRIKE", "SWIPE"));
+    return this.prompt("return", this.control("HOLD SPACE", "HOLD A", "HOLD STRIKE", "SWIPE"));
   }
 
   private popPrompt(): TrainingPauseState {
@@ -196,7 +196,7 @@ export class PracticeCoach {
   }
 
   private finishPrompt(): TrainingPauseState {
-    return this.prompt("finish", this.control("SPACE", "A", "STRIKE", "SWIPE"));
+    return this.prompt("finish", this.control("HOLD SPACE", "HOLD A", "HOLD STRIKE", "SWIPE"));
   }
 
   private prompt(step: Exclude<DrillStep, "free">, control: string): TrainingPauseState {

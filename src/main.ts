@@ -262,7 +262,15 @@ async function boot(): Promise<void> {
     if (e.key === "Shift" && freecam) freecam.speed = 0.35;
   });
 
-  const idleInput: InputState = { moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false };
+  const idleInput: InputState = {
+    moveX: 0,
+    moveZ: 0,
+    strikePressed: false,
+    strikeHeld: false,
+    strikePower: 0,
+    popPressed: false,
+    confirmPressed: false,
+  };
 
   /**
    * Where on the court a tap landed, or null if it missed the floor entirely.
@@ -509,11 +517,13 @@ async function boot(): Promise<void> {
       }
     }
     if (match) {
-      // Portrait has no stick: the player is placed by tapping the court, so
-      // the axes are free to carry a gesture's aim instead of steering. Only
-      // on a touch screen — a narrow desktop window has a keyboard, and taking
-      // its movement away would leave the player rooted to the spot.
+      // Portrait has no stick and no aim marker: the player is placed by
+      // tapping the court and the kick is aimed by the swipe that fires it, so
+      // the axes are free to carry that aim instead of steering. Only on a
+      // touch screen — a narrow desktop window has a keyboard, and taking its
+      // movement away would leave the player rooted to the spot.
       match.tapSteering = input.isTouch && input.isPortrait;
+      match.portraitControls = match.tapSteering;
       const placement = input.pollTapPlacement();
       if (placement && !freecam) {
         match.setMoveTarget(courtPointAt(placement.x, placement.y));

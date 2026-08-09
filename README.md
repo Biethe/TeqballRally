@@ -19,8 +19,9 @@ either way up on a phone.
 | Action | Keyboard | Gamepad | Touch (landscape) | Touch (portrait) |
 | --- | --- | --- | --- | --- |
 | Move | WASD or arrows | Left stick | Move stick | Tap where to stand |
-| Aim | WASD or arrows | Left stick | Move stick | Direction of the gesture |
-| Strike / serve | Space or Enter | A / Cross | STRIKE | Swipe |
+| Aim a kick | Hold Space, then WASD | Hold A, then stick | Hold STRIKE, then stick | Direction of the swipe |
+| Kick | Release Space | Release A | Release STRIKE | Swipe |
+| Serve | Space or Enter | A / Cross | STRIKE | Swipe |
 | Make a reception | K | B / Circle | RECEPTION | Double tap |
 | Pause | Escape | Start / Options | Pause button | Pause button |
 
@@ -37,6 +38,30 @@ that is the player's: another reception, or the finish. Chasing a ball down to
 make contact at all was never the interesting decision; what to do with it is
 (`AUTO_RECEPTION_REACH` in `src/match.ts`, `autoFirstReception` to switch it
 off).
+
+## Kicks, and missing with them
+
+A kick aims at a point anywhere on the court and is struck at a power the
+player chooses. Landscape holds the kick control: the stick moves the aim
+marker while the charge builds, and letting go strikes. Portrait swipes: the
+direction aims it and the *speed* of the swipe is the power, so a flick is a
+low fast drive and a slow drag is a floater. The animation follows the power,
+because a lob played with a drilled foot volley reads as a bug.
+
+Where the ball actually lands is that aim plus a spread (`src/aim.ts`):
+
+```
+radius ∝ power × weak-foot wobble × how far the striker had to reach
+         ÷ the striker's precision
+```
+
+Nothing clamps the result back onto the table. That is the point — pace has to
+cost accuracy or there is no reason ever to play a soft kick, and a player who
+aims at the line and hits flat out should sometimes watch it go long. Precision
+is the counterweight and the trait a player will later be able to improve; it
+divides the spread, so an improved striker can hit hard and still keep it in.
+`SAFE_POWER` in `src/match.ts` is where the power bar's marked band ends — past
+it the ball goes harder and lands less reliably.
 
 ## Checks
 

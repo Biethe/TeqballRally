@@ -672,18 +672,26 @@ export function pickStrikeClip(
   ballY: number,
   lateral: number,
   height: number,
-  strongFoot: Foot | "both" = "both"
+  strongFoot: Foot | "both" = "both",
+  /**
+   * How hard the kick is meant to be struck, 0..1. Where the ball is decides
+   * what is reachable; this decides which of those the player is asking for.
+   * Driven at the top of the range, floated at the bottom — the animation has
+   * to agree with the ball that comes off it, or the shot reads as a bug.
+   */
+  power = 0.6
 ): string {
   const rel = ballY / height; // normalised contact height
   const side = pickSide(lateral, strongFoot);
+  const driven = power >= 0.5;
   if (rel > 0.8) {
     if (Math.abs(lateral) > 0.12) return `${side}HeadKick`;
-    return Math.random() < 0.65 ? "CenterHeadKick" : `${side}HeadKick`;
+    return driven ? "CenterHeadKick" : `${side}HeadKick`;
   }
-  if (rel > 0.62) return Math.random() < 0.7 ? "ChestKick" : `${side}HeadKick`;
-  if (rel > 0.45) return Math.random() < 0.65 ? `${side}KneeReception` : "ChestKick";
+  if (rel > 0.62) return driven ? `${side}HeadKick` : "ChestKick";
+  if (rel > 0.45) return driven ? "ChestKick" : `${side}KneeReception`;
   // Low ball: a driven foot volley, or an inner-foot touch played as a slow lob.
-  return Math.random() < 0.65 ? `${side}FootKick` : `Inner${side}FootReception`;
+  return driven ? `${side}FootKick` : `Inner${side}FootReception`;
 }
 
 /** Pick a control-touch (reception/prep) clip from the ball's height and lateral offset. */

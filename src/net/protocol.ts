@@ -82,6 +82,10 @@ export interface InputMessage {
   moveX: number;
   moveZ: number;
   strike: boolean;
+  /** Kick control still down: the guest is charging one. */
+  hold?: boolean;
+  /** Power the guest's own scheme decided (a portrait swipe), 0..1. */
+  power?: number;
   pop: boolean;
   confirm: boolean;
 }
