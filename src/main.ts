@@ -2,7 +2,7 @@ import "./style.css";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Viewport } from "@babylonjs/core/Maths/math.viewport";
 import { createGameScene, loadBall, type GameScene } from "./scene";
 import {
@@ -42,7 +42,7 @@ import {
 } from "./net/protocol";
 import { ModelViewer } from "./viewer";
 import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
-import { BALLS, CAMERA, CHARACTERS, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
+import { BALLS, CAMERA, CHARACTERS, COURT, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
 
 /** Longest real frame the simulation will honour; beyond this, time is dropped. */
 const MAX_FRAME_DT = 1 / 20;
@@ -263,6 +263,38 @@ async function boot(): Promise<void> {
   });
 
   const idleInput: InputState = { moveX: 0, moveZ: 0, strikePressed: false, popPressed: false, confirmPressed: false };
+
+  /**
+   * Where on the court a tap landed, or null if it missed the floor entirely.
+   *
+   * Portrait play places the player by tapping, and a tap is a point on the
+   * screen: only the live camera can say which spot on the ground that is.
+   * The result is clamped into the player's own half, so a tap anywhere —
+   * including the opponent's side or the crowd — still reads as the nearest
+   * legal place to stand rather than being thrown away.
+   */
+  const courtPointAt = (nx: number, ny: number): Vector3 | null => {
+    // Unprojected by hand rather than through scene.createPickingRay: picking
+    // is a side-effect import and a chunk of machinery for casting against
+    // meshes, and this only ever needs the ground plane.
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const view = gs.camera.getViewMatrix();
+    const projection = gs.camera.getProjectionMatrix();
+    const at = (depth: number) =>
+      Vector3.Unproject(new Vector3(nx * w, ny * h, depth), w, h, Matrix.Identity(), view, projection);
+    const origin = at(0);
+    const direction = at(1).subtract(origin).normalize();
+    if (direction.y > -1e-4) return null; // level with or above the horizon
+    const t = (GROUND_Y - origin.y) / direction.y;
+    if (t <= 0) return null;
+    const hit = origin.add(direction.scale(t));
+    return new Vector3(
+      Math.min(-COURT.minX, Math.max(-COURT.maxX, hit.x)),
+      GROUND_Y,
+      Math.max(-COURT.maxZ, Math.min(COURT.maxZ, hit.z))
+    );
+  };
 
   // Fixed-step simulation state. The accumulator only ever grows on frames
   // that actually simulate, so pausing cannot bank time and burst on resume.
@@ -605,6 +637,15 @@ async function boot(): Promise<void> {
       }
     }
     if (match) {
+      // Portrait has no stick: the player is placed by tapping the court, so
+      // the axes are free to carry a gesture's aim instead of steering. Only
+      // on a touch screen — a narrow desktop window has a keyboard, and taking
+      // its movement away would leave the player rooted to the spot.
+      match.tapSteering = input.isTouch && input.isPortrait;
+      const placement = input.pollTapPlacement();
+      if (placement && !freecam && !match.isReplayActive) {
+        match.setMoveTarget(courtPointAt(placement.x, placement.y));
+      }
       latchInput(latchedP1, inp);
       if (versusCam) {
         // Player 2's device, flipped into their court frame (they attack -x).
@@ -1458,7 +1499,13 @@ async function boot(): Promise<void> {
       ui.showIntro(venueFor(venueId).label, opts.labels[0], opts.labels[1]);
     }
     practiceCoach = opts.practice
-      ? new PracticeCoach(controller, ui, () => input.hasGamepad(), () => input.isTouch)
+      ? new PracticeCoach(
+          controller,
+          ui,
+          () => input.hasGamepad(),
+          () => input.isTouch,
+          () => input.isTouch && input.isPortrait
+        )
       : null;
     practiceCoach?.start();
     (window as unknown as Record<string, unknown>).__teq = { match, ball, engine: gs.engine };

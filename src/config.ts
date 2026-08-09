@@ -68,6 +68,26 @@ export const REACH_ASSIST = {
   strength: 0.5, // 0 = off, 1 = full auto-run when pushing straight at the ball
 };
 
+/**
+ * Bullet time on the approach: while a ball is dropping toward the human
+ * player and the touch is still theirs to choose, the whole simulation eases
+ * down so there is real time to read the ball and pick a shot. It is the
+ * difference between a rally that punishes reflexes and one that rewards
+ * decisions — and on a phone, where the controls are a swipe rather than a
+ * stick, that margin is what makes the game playable at all.
+ *
+ * The *whole* step is scaled, never the ball alone: the characters, their
+ * animation and the timing gauge all have to stay in lockstep with it.
+ */
+export const APPROACH_SLOWDOWN = {
+  /** Distance from the receiver at which time starts easing off (m). */
+  start: 4.0,
+  /** Fully slowed by here — just outside PLAYER_REACH, so the decision is due. */
+  full: 1.6,
+  /** Slowest the simulation runs. 1 disables the effect entirely. */
+  scale: 0.5,
+};
+
 export type CameraMode = "court" | "side" | "top";
 
 // Rally camera framing (hand-editable). Cameras are fully static: they never
@@ -79,6 +99,16 @@ export const CAMERA = {
   // Height above the ground the camera looks at (table centre). Lower = the
   // camera tilts further down; the old follow-camera aimed at ~0.9.
   lookY: 0.3,
+  // Portrait is a tall, narrow window on the same court. The lens is pinned
+  // horizontally there (see scene.ts), which makes the vertical angle very
+  // wide — from the landscape distance the players end up specks in a frame
+  // mostly full of roof. So portrait comes in closer and tilts up a little.
+  portrait: {
+    back: 5.6,
+    height: 4.4,
+    lookY: 0.9,
+    fov: 0.95,
+  },
   // P2 cannot use the mirrored P1 position: it lands outside the imported
   // gym. This keeps the view inside, matches P1's player scale, and gives it
   // a slightly steeper tilt.

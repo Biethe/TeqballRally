@@ -13,15 +13,28 @@ npm run dev -- --host      # make the dev build reachable from a phone
 npm run build              # production files in dist/
 ```
 
-The game supports keyboard, touch, and Gamepad API controllers. On a phone,
-use landscape orientation for the full court.
+The game supports keyboard, touch, and Gamepad API controllers, and plays
+either way up on a phone.
 
-| Action | Keyboard | Gamepad |
-| --- | --- | --- |
-| Move / aim | WASD or arrows | Left stick |
-| Strike / serve | Space or Enter | A / Cross |
-| Make a reception | K | B / Circle |
-| Pause | Escape | Start / Options |
+| Action | Keyboard | Gamepad | Touch (landscape) | Touch (portrait) |
+| --- | --- | --- | --- | --- |
+| Move | WASD or arrows | Left stick | Move stick | Tap where to stand |
+| Aim | WASD or arrows | Left stick | Move stick | Direction of the gesture |
+| Strike / serve | Space or Enter | A / Cross | STRIKE | Swipe |
+| Make a reception | K | B / Circle | RECEPTION | Press and hold |
+| Pause | Escape | Start / Options | Pause button | Pause button |
+
+Portrait has no room for a stick and two buttons, so the whole screen becomes
+the controller instead — a tap places the player, a swipe kicks in the
+direction it was drawn, and a press held in place is a reception aimed by which
+side of the screen it was made on. Both layouts feed the same input state, and
+turning the phone switches between them mid-rally.
+
+While a ball is dropping toward you and the touch is still yours to choose,
+time eases down to half speed (`APPROACH_SLOWDOWN` in `src/config.ts`). It is
+the whole simulation that slows, never the ball alone — characters, animation
+and the timing gauge have to stay in step with it — and never in versus, where
+one peer bending time would simply be playing a different match.
 
 ## Checks
 
@@ -60,6 +73,7 @@ broken asset pipeline — the wrong loader import still typechecks and builds):
 npm run build
 npm run preview -- --port 5199 --strictPort
 node scripts/verify-build.mjs
+node scripts/verify-portrait.mjs   # the phone-upright control scheme
 ```
 
 `?ts=8` speeds up simulation time. `?q=low|medium|high` forces a graphics tier

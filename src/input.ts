@@ -1,9 +1,16 @@
 import type { CameraMode } from "./config";
+import { GestureScheme } from "./gestures";
 
 /**
- * Unified input: keyboard (WASD/arrows + space), touch (visible move / aim
- * stick plus action buttons) and gamepad (left stick + cross/A via the
- * Gamepad API, which also covers the PS5 browser / DualSense).
+ * Unified input: keyboard (WASD/arrows + space), touch and gamepad (left stick
+ * + cross/A via the Gamepad API, which also covers the PS5 browser /
+ * DualSense).
+ *
+ * Touch has two layouts, chosen by which way the phone is held. Landscape
+ * keeps the visible move/aim stick and its action buttons. Portrait has no
+ * room for either, so the whole screen becomes the controller instead: tap to
+ * place the player, swipe to kick, hold to receive. Both feed this same
+ * InputState — the match never learns which one is in use.
  */
 export interface InputState {
   /** Movement in court space: x toward the net, z lateral. Range [-1, 1]. */
@@ -163,6 +170,22 @@ export class Input {
   private touchActionPointers = new Map<HTMLButtonElement, Set<number>>();
   private readonly joyRadius = 54;
 
+  // Portrait touch play.
+  private portrait = false;
+  private readonly gestures = new GestureScheme();
+  /**
+   * Aim a gesture left behind, in screen space, and when it goes stale.
+   *
+   * A swipe is one instant, but the press it fires may not be simulated on the
+   * same frame — and once it is, the match retries it for as long as its press
+   * buffer allows. The direction has to outlive the finger for both to aim
+   * where the player pointed.
+   */
+  private gestureAim: { sx: number; sy: number; until: number } | null = null;
+  private tapQueued: { x: number; y: number } | null = null;
+  /** Seconds a swipe or hold keeps aiming after the finger has gone. */
+  private static readonly AIM_HOLD = 0.5;
+
   constructor(uiRoot: HTMLElement) {
     this.isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
 
@@ -267,6 +290,31 @@ export class Input {
     });
 
     if (this.isTouch) this.buildTouchControls(uiRoot);
+    this.refreshLayout();
+    window.addEventListener("resize", () => this.refreshLayout());
+    window.addEventListener("orientationchange", () => this.refreshLayout());
+  }
+
+  /** True while the touch controls are in their portrait, gesture-only layout. */
+  get isPortrait(): boolean {
+    return this.portrait;
+  }
+
+  /**
+   * Re-read the screen shape and switch touch layouts if it changed. Safe to
+   * call at any time; turning the phone mid-rally swaps the scheme without
+   * interrupting the point.
+   */
+  refreshLayout(): void {
+    const portrait = window.innerHeight > window.innerWidth;
+    this.gestures.setViewport(window.innerWidth, window.innerHeight);
+    if (portrait === this.portrait) return;
+    this.portrait = portrait;
+    this.gestures.clear();
+    this.gestureAim = null;
+    this.tapQueued = null;
+    this.clearJoystick();
+    this.touchLayer?.classList.toggle("portrait", portrait);
   }
 
   /** Hide the touch layer while a screen needs direct canvas interaction (model viewer). */
@@ -284,25 +332,15 @@ export class Input {
     zone.style.display = "none";
     this.touchLayer = zone;
 
-    // The court camera and both action clusters are designed for landscape.
-    // The layer itself is disabled outside play, so this notice can never
-    // obscure a menu or the character viewer.
-    const rotateNotice = document.createElement("div");
-    rotateNotice.id = "touch-rotate-notice";
-    rotateNotice.setAttribute("role", "status");
-    rotateNotice.innerHTML =
-      '<span class="rotate-device-icon" aria-hidden="true"></span><strong>Rotate for play</strong><span>TeqRally is best in landscape.</span>';
-    // In portrait the notice covers this layer. Consume its pointer events so
-    // a replay orbit or free camera cannot move invisibly behind the prompt.
-    const consumeRotateNotice = (e: PointerEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    rotateNotice.addEventListener("pointerdown", consumeRotateNotice);
-    rotateNotice.addEventListener("pointermove", consumeRotateNotice);
-    rotateNotice.addEventListener("pointerup", consumeRotateNotice);
-    rotateNotice.addEventListener("pointercancel", consumeRotateNotice);
-    zone.appendChild(rotateNotice);
+    // Portrait has no room for a stick and two buttons, so it plays by
+    // gesture instead. This legend is the only thing on screen that says so —
+    // it never takes pointer events, since every one of them is a control.
+    const portraitHints = document.createElement("div");
+    portraitHints.id = "touch-portrait-hints";
+    portraitHints.setAttribute("role", "status");
+    portraitHints.innerHTML =
+      '<span><b>TAP</b>move</span><span><b>SWIPE</b>kick</span><span><b>HOLD</b>receive</span>';
+    zone.appendChild(portraitHints);
 
     this.joyBase = document.createElement("div");
     this.joyBase.className = "joy-base";
@@ -367,8 +405,23 @@ export class Input {
       this.clearJoystick();
     };
 
+    /** Screen clock in seconds, the unit the gesture scheme is tuned in. */
+    const now = () => performance.now() / 1000;
+
     zone.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0 || this.joyActive) return;
+      if (e.button !== 0) return;
+      if (this.portrait) {
+        e.preventDefault();
+        this.gestures.begin(e.pointerId, e.clientX, e.clientY, now());
+        try {
+          zone.setPointerCapture(e.pointerId);
+        } catch {
+          // Without capture the zone still sees moves while the finger is on
+          // screen, which is where every one of these gestures happens.
+        }
+        return;
+      }
+      if (this.joyActive) return;
       const center = joyCenter();
       if (!center || Math.hypot(e.clientX - center.x, e.clientY - center.y) > center.hitRadius) return;
       e.preventDefault();
@@ -385,10 +438,24 @@ export class Input {
       }
       moveJoy(e);
     });
-    zone.addEventListener("pointermove", moveJoy);
-    zone.addEventListener("pointerup", endJoy);
-    zone.addEventListener("pointercancel", endJoy);
-    zone.addEventListener("lostpointercapture", endJoy);
+    zone.addEventListener("pointermove", (e) => {
+      if (this.portrait) this.gestures.move(e.pointerId, e.clientX, e.clientY);
+      else moveJoy(e);
+    });
+    zone.addEventListener("pointerup", (e) => {
+      if (this.portrait) this.gestures.end(e.pointerId, now());
+      else endJoy(e);
+    });
+    zone.addEventListener("pointercancel", (e) => {
+      if (this.portrait) this.gestures.cancel(e.pointerId);
+      else endJoy(e);
+    });
+    zone.addEventListener("lostpointercapture", (e) => {
+      // A lost capture is not a lift: the finger may still be down. Ending the
+      // track here keeps a swipe that outran its capture from being stranded.
+      if (this.portrait) this.gestures.end(e.pointerId, now());
+      else endJoy(e);
+    });
 
     uiRoot.appendChild(zone);
   }
@@ -453,6 +520,9 @@ export class Input {
   /** Never let a hidden overlay retain movement or a pressed visual state. */
   private resetTouchState(): void {
     this.clearJoystick();
+    this.gestures.clear();
+    this.gestureAim = null;
+    this.tapQueued = null;
     for (const [button, pointers] of this.touchActionPointers) {
       for (const pointerId of pointers) {
         if (button.hasPointerCapture(pointerId)) {
@@ -497,8 +567,63 @@ export class Input {
     return device === "pad2" ? pads[1] : pads[0];
   }
 
+  /**
+   * Turn whatever the gesture scheme recognised into the same queued presses
+   * a button would have produced, plus the aim they carry.
+   */
+  private pumpGestures(): void {
+    const t = performance.now() / 1000;
+    this.gestures.tick(t);
+    for (const g of this.gestures.take()) {
+      if (g.kind === "tap") {
+        // Placement is the one gesture with no analogue in the shared input
+        // state: it names a point on the court, so the app resolves it.
+        this.tapQueued = { x: g.x, y: g.y };
+      } else if (g.kind === "swipe") {
+        this.gestureAim = {
+          sx: g.dx * g.strength,
+          sy: g.dy * g.strength,
+          until: t + Input.AIM_HOLD,
+        };
+        this.strikeQueued = true;
+        this.confirmQueued = true;
+      } else {
+        // A reception is aimed by where on the screen it was made: the side it
+        // happens on decides which way the ball is set up, its height how deep.
+        this.gestureAim = {
+          sx: Math.max(-1, Math.min(1, (g.x - 0.5) * 2.2)),
+          sy: Math.max(-1, Math.min(1, (g.y - 0.5) * 1.1)),
+          until: t + Input.AIM_HOLD,
+        };
+        this.popQueued = true;
+      }
+    }
+  }
+
+  /** The aim a recent gesture left behind, in screen space, or zero. */
+  private aimVector(): { sx: number; sy: number } {
+    const aim = this.gestureAim;
+    if (!aim) return { sx: 0, sy: 0 };
+    if (performance.now() / 1000 > aim.until) {
+      this.gestureAim = null;
+      return { sx: 0, sy: 0 };
+    }
+    return { sx: aim.sx, sy: aim.sy };
+  }
+
+  /**
+   * Consume the latest tap-to-place point, normalised to 0..1 of the viewport.
+   * The app turns it into a court spot — only it knows where the camera is.
+   */
+  pollTapPlacement(): { x: number; y: number } | null {
+    const tap = this.tapQueued;
+    this.tapQueued = null;
+    return tap;
+  }
+
   /** Poll and consume one frame of player 1's input. Screen-space: x right, y down. */
   poll(cameraMode: CameraMode = "court"): InputState {
+    if (this.portrait) this.pumpGestures();
     const a = this.versusAssign;
     // The active view is passed into this concrete poll rather than cached on
     // Input. That keeps both players correct on the exact frame a view cycles.
@@ -510,6 +635,9 @@ export class Input {
     if (!a) {
       // Single human: whole keyboard, touch and every connected pad.
       ({ sx, sy } = this.kbAxes("kb"));
+      const aim = this.aimVector();
+      sx += aim.sx;
+      sy += aim.sy;
       for (const p of Input.connectedPads()) {
         const r = this.readPad(p, rotateDpad);
         sx += r.x;

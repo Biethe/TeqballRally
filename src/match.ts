@@ -1,7 +1,9 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Camera } from "@babylonjs/core/Cameras/camera";
 import type { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import {
+  approachTimeScale,
   Ball,
   predict,
   sampleFlight,
@@ -31,6 +33,7 @@ import {
   tableSurfaceY,
   tossFraction,
   windupStartFraction,
+  APPROACH_SLOWDOWN,
   BALL_RADIUS,
   CAMERA,
   COURT,
@@ -56,6 +59,17 @@ import {
 import type { InputState } from "./input";
 import type { AudioManager } from "./audio";
 import { reconcile } from "./net/reconcile";
+
+/**
+ * True while the game is being played by gesture on a phone held upright.
+ * Hints have to name what the player can actually do, and in portrait there is
+ * no STRIKE button to press.
+ */
+function portraitTouch(): boolean {
+  if (typeof window === "undefined") return false;
+  const touch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+  return touch && window.innerWidth < window.innerHeight;
+}
 
 export type MatchState = "serve_move" | "serve_ready" | "serve_anim" | "rally" | "point" | "over";
 export type ReplayControl = "toggle" | "skip" | "back" | "forward" | "zoom-in" | "zoom-out";
@@ -507,11 +521,53 @@ export class MatchController {
     return [mx, mz];
   }
 
+  /**
+   * Tap-to-place steering: the player runs to chosen spots instead of being
+   * pushed by an axis. Portrait touch play has no stick, so its aim gestures
+   * own the axes and movement is a separate instruction.
+   */
+  tapSteering = false;
+  private moveTarget: Vector3 | null = null;
+
+  /** Send the player to a court spot. null cancels and leaves them standing. */
+  setMoveTarget(spot: Vector3 | null): void {
+    this.moveTarget = spot ? spot.clone() : null;
+  }
+
   private movePlayer(input: InputState, dt: number): void {
     const player = this.chars.player;
+    if (this.moveTarget) {
+      if (player.moveToward(this.moveTarget, player.def.speed, dt) === 0) this.moveTarget = null;
+      return;
+    }
+    if (this.tapSteering) {
+      player.velocity.setAll(0);
+      return;
+    }
     const [mx, mz] = this.bendAssist(player.position, this.interceptSpot, input.moveX, input.moveZ);
     player.move(mx, mz, player.def.speed, dt);
   }
+
+  /**
+   * How fast this step should run. Time eases down while a ball drops toward
+   * the human player and the touch is still theirs to choose, so there is room
+   * to read it and decide — the whole simulation together, never the ball
+   * alone, or the characters would slide out of step with their own animation.
+   *
+   * Never in versus: a peer that dilates time on its own would simply be
+   * playing a different match from the one across the wire.
+   */
+  private approachScale(): number {
+    if (!this.slowApproach || this.versus) return 1;
+    if (this.state !== "rally" || this.strikeableSide !== "player") return 1;
+    if (this.ball.held || this.pendingTouch || this.chars.player.busy) return 1;
+    const c = this.chars.player;
+    const chest = c.position.add(new Vector3(0, c.height * 0.55, 0));
+    return approachTimeScale(this.ball.state, chest, APPROACH_SLOWDOWN);
+  }
+
+  /** Off switch for the approach slow-motion (settings, tests). */
+  slowApproach = true;
 
   private totalPoints = 0;
   private timer = 0;
@@ -1166,6 +1222,7 @@ export class MatchController {
     this.selfSetupSpot2 = null;
     this.contactSync = null;
     this.pendingTouch = null;
+    this.moveTarget = null;
     this.celebration = null;
     this.interceptSpot = null;
     this.repredictIn = 0;
@@ -1666,7 +1723,11 @@ export class MatchController {
           this.emit({ type: "possession-start", side: e.side });
           if ((e.side === "player" || this.versus) && this.possessionHints < 2) {
             this.possessionHints++;
-            this.ui.hint("Hold a direction to aim · STRIKE returns · RECEPTION sets up");
+            this.ui.hint(
+              portraitTouch()
+                ? "Tap to move · Swipe to return · Hold to set up"
+                : "Hold a direction to aim · STRIKE returns · RECEPTION sets up"
+            );
           }
         }
         break;
@@ -1819,18 +1880,21 @@ export class MatchController {
 
   // ---------------------------------------------------------------- update
 
-  update(dt: number, input: InputState, aiUpdate: (dt: number) => void): void {
+  update(rawDt: number, input: InputState, aiUpdate: (dt: number) => void): void {
     if (this.tutorialFrozen) return;
     // Online guest: the host owns the rules, so running them here too would
     // produce a second, disagreeing match. Only presentation advances.
     if (this.netFollower) {
-      this.updateAsFollower(dt, input);
+      this.updateAsFollower(rawDt, input);
       return;
     }
     if (this.replay) {
-      this.updateReplay(dt);
+      this.updateReplay(rawDt);
       return;
     }
+    // Everything below this line runs on match time, which is not always wall
+    // time: an incoming ball the player still has to answer slows it down.
+    const dt = rawDt * this.approachScale();
     this.matchClock += dt;
     const player = this.chars.player;
     const ai = this.chars.ai;
@@ -1895,7 +1959,9 @@ export class MatchController {
           this.state = "serve_ready";
           this.timer = 0;
           if (this.serveOwner === "player" || this.versus)
-            this.ui.hint("Hold a direction to aim · STRIKE serves");
+            this.ui.hint(
+              portraitTouch() ? "Swipe where you want to serve" : "Hold a direction to aim · STRIKE serves"
+            );
           this.emit({ type: "serve-ready", side: this.serveOwner });
         }
         break;
@@ -2184,19 +2250,25 @@ export class MatchController {
   private updateCameraForSide(camera: TargetCamera, side: Side, mode: CameraMode): void {
     const playerOne = side === "player";
     const mirror = playerOne ? -1 : 1;
+    // Portrait pins the lens horizontally (see scene.ts): a vertically-fixed
+    // field of view on a tall screen crops the court's width away.
+    const portrait = window.innerWidth < window.innerHeight;
+    camera.fovMode = portrait ? Camera.FOVMODE_HORIZONTAL_FIXED : Camera.FOVMODE_VERTICAL_FIXED;
 
     if (mode === "court") {
       // Each mode owns its lens settings. This is important after returning
       // from the wide, clipped top view in split screen.
       camera.minZ = 0.1;
       if (playerOne) {
-        const target = new Vector3(0, GROUND_Y + CAMERA.lookY, 0);
-        camera.position.set(-SPAWN.x - CAMERA.back, GROUND_Y + CAMERA.height, 0);
+        // Portrait plays from closer in, so the players read at phone size.
+        const shot = portrait && !this.versus ? CAMERA.portrait : CAMERA;
+        const target = new Vector3(0, GROUND_Y + shot.lookY, 0);
+        camera.position.set(-SPAWN.x - shot.back, GROUND_Y + shot.height, 0);
         camera.setTarget(target);
         // Match the scene's responsive default in solo play, while retaining
         // the deliberately wider half-width lens in local versus. This also
         // restores the correct lens after leaving the wide top view.
-        camera.fov = this.versus ? 1.0 : window.innerWidth < window.innerHeight ? 1.1 : 0.85;
+        camera.fov = this.versus ? 1.0 : portrait ? CAMERA.portrait.fov : 0.85;
         this.applyReplayZoom(camera, target);
       } else {
         // The imported gym is asymmetric. A literal mirror of P1's camera is

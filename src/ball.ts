@@ -135,6 +135,30 @@ export function stepBall(
   }
 }
 
+/**
+ * How fast time should run while `ball` closes on a receiver whose chest is at
+ * `chest` — 1 at full speed, `cfg.scale` at the slowest.
+ *
+ * Only a closing ball slows anything down. A ball on its way up from the
+ * player's own set-up is moving away from the chest, and slowing that would
+ * stretch every pop into a crawl; the ease-in belongs to the descent, when
+ * there is actually a shot to choose.
+ */
+export function approachTimeScale(
+  ball: BallState,
+  chest: Vector3,
+  cfg: { start: number; full: number; scale: number }
+): number {
+  const toChest = chest.subtract(ball.pos);
+  const distance = toChest.length();
+  if (distance >= cfg.start || cfg.start <= cfg.full) return 1;
+  if (Vector3.Dot(ball.vel, toChest) <= 0) return 1;
+  const k = Math.min(1, Math.max(0, (cfg.start - distance) / (cfg.start - cfg.full)));
+  // Smoothstep: the change of pace should read as the rally easing down, not
+  // as the frame rate dropping.
+  return 1 + (cfg.scale - 1) * k * k * (3 - 2 * k);
+}
+
 /** Solve a ballistic launch velocity from `from` to `target` over `flightTime` seconds. */
 export function solveLaunch(from: Vector3, target: Vector3, flightTime: number): Vector3 {
   const t = flightTime;
