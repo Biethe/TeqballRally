@@ -21,14 +21,22 @@ either way up on a phone.
 | Move | WASD or arrows | Left stick | Move stick | Tap where to stand |
 | Aim | WASD or arrows | Left stick | Move stick | Direction of the gesture |
 | Strike / serve | Space or Enter | A / Cross | STRIKE | Swipe |
-| Make a reception | K | B / Circle | RECEPTION | Press and hold |
+| Make a reception | K | B / Circle | RECEPTION | Double tap |
 | Pause | Escape | Start / Options | Pause button | Pause button |
 
 Portrait has no room for a stick and two buttons, so the whole screen becomes
-the controller instead — a tap places the player, a swipe kicks in the
-direction it was drawn, and a press held in place is a reception aimed by which
-side of the screen it was made on. Both layouts feed the same input state, and
-turning the phone switches between them mid-rally.
+the controller instead — a tap places the player, a double tap is a reception
+aimed by where it lands, and a swipe kicks in the direction it was drawn. A
+resting finger deliberately does nothing: on a surface where every pixel is a
+control, an ambiguous gesture is safest doing nothing at all. Both layouts feed
+the same input state, and turning the phone switches between them mid-rally.
+
+The first touch of a possession is automatic. Standing in the vicinity of an
+incoming ball is enough to receive it — no press, no timing. Every touch after
+that is the player's: another reception, or the finish. Chasing a ball down to
+make contact at all was never the interesting decision; what to do with it is
+(`AUTO_RECEPTION_REACH` in `src/match.ts`, `autoFirstReception` to switch it
+off).
 
 ## Checks
 

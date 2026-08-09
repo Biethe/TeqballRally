@@ -9,7 +9,7 @@ import { GestureScheme } from "./gestures";
  * Touch has two layouts, chosen by which way the phone is held. Landscape
  * keeps the visible move/aim stick and its action buttons. Portrait has no
  * room for either, so the whole screen becomes the controller instead: tap to
- * place the player, swipe to kick, hold to receive. Both feed this same
+ * place the player, double tap to receive, swipe to kick. Both feed this same
  * InputState — the match never learns which one is in use.
  */
 export interface InputState {
@@ -151,7 +151,7 @@ export class Input {
    */
   private gestureAim: { sx: number; sy: number; until: number } | null = null;
   private tapQueued: { x: number; y: number } | null = null;
-  /** Seconds a swipe or hold keeps aiming after the finger has gone. */
+  /** Seconds a gesture keeps aiming after the finger has gone. */
   private static readonly AIM_HOLD = 0.5;
 
   constructor(uiRoot: HTMLElement) {
@@ -277,7 +277,7 @@ export class Input {
     portraitHints.id = "touch-portrait-hints";
     portraitHints.setAttribute("role", "status");
     portraitHints.innerHTML =
-      '<span><b>TAP</b>move</span><span><b>SWIPE</b>kick</span><span><b>HOLD</b>receive</span>';
+      '<span><b>TAP</b>move</span><span><b>DOUBLE TAP</b>receive</span><span><b>SWIPE</b>kick</span>';
     zone.appendChild(portraitHints);
 
     this.joyBase = document.createElement("div");
@@ -343,14 +343,21 @@ export class Input {
       this.clearJoystick();
     };
 
-    /** Screen clock in seconds, the unit the gesture scheme is tuned in. */
-    const now = () => performance.now() / 1000;
+    /**
+     * When the browser saw the event, in seconds — not when this handler ran.
+     *
+     * They are the same clock, but not the same instant: a long frame delays
+     * the handler, and on a struggling phone two taps 140 ms apart can reach
+     * their listener half a second apart. Timing a gesture by the second
+     * number makes the scheme unreliable exactly when the device is.
+     */
+    const at = (e: PointerEvent) => e.timeStamp / 1000;
 
     zone.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       if (this.portrait) {
         e.preventDefault();
-        this.gestures.begin(e.pointerId, e.clientX, e.clientY, now());
+        this.gestures.begin(e.pointerId, e.clientX, e.clientY, at(e));
         try {
           zone.setPointerCapture(e.pointerId);
         } catch {
@@ -381,7 +388,7 @@ export class Input {
       else moveJoy(e);
     });
     zone.addEventListener("pointerup", (e) => {
-      if (this.portrait) this.gestures.end(e.pointerId, now());
+      if (this.portrait) this.gestures.end(e.pointerId, at(e));
       else endJoy(e);
     });
     zone.addEventListener("pointercancel", (e) => {
@@ -391,7 +398,7 @@ export class Input {
     zone.addEventListener("lostpointercapture", (e) => {
       // A lost capture is not a lift: the finger may still be down. Ending the
       // track here keeps a swipe that outran its capture from being stranded.
-      if (this.portrait) this.gestures.end(e.pointerId, now());
+      if (this.portrait) this.gestures.end(e.pointerId, at(e));
       else endJoy(e);
     });
 
@@ -526,11 +533,12 @@ export class Input {
         this.strikeQueued = true;
         this.confirmQueued = true;
       } else {
-        // A reception is aimed by where on the screen it was made: the side it
-        // happens on decides which way the ball is set up, its height how deep.
+        // A reception is aimed by where on the screen it was double tapped —
+        // left, right, near or far from the middle of the court in front of
+        // the player, which is where the set-up ball will come down.
         this.gestureAim = {
-          sx: Math.max(-1, Math.min(1, (g.x - 0.5) * 2.2)),
-          sy: Math.max(-1, Math.min(1, (g.y - 0.5) * 1.1)),
+          sx: Math.max(-1, Math.min(1, (g.x - 0.5) * 2.4)),
+          sy: Math.max(-1, Math.min(1, (g.y - 0.5) * 2.4)),
           until: t + Input.AIM_HOLD,
         };
         this.popQueued = true;

@@ -291,7 +291,12 @@ export interface CharacterDef {
   height: number; // metres (before CHARACTER_SCALE)
   /** Dominant foot; "both" = two-footed (no weak-foot penalty, no strong-foot bonus). */
   strongFoot: Foot | "both";
-  /** Court movement speed in m/s (4.5 was the old global for everyone). */
+  /**
+   * Court movement speed in m/s. Raised by about a fifth over the original
+   * 4.1-4.9 spread: shifting position was the part of a rally that felt heavy,
+   * and it is the part a player does before every single touch. The spread
+   * between characters is kept — it is most of what makes them feel different.
+   */
   speed: number;
   /** Multiplier on every kick/serve ball speed (stacks with KICK_POWER and the foot factor). */
   power: number;
@@ -308,10 +313,10 @@ export interface CharacterDef {
 // SPAIN — the technician: two-footed and the most precise, softest ball, strong-foot-rule
 //         flips (two-footed, so either foot qualifies).
 export const CHARACTERS: CharacterDef[] = [
-  { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 4.9, power: 1.0, precision: 1.1, backflips: "both" },
-  { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.1, power: 1.7, precision: 0.9, backflips: "none" },
-  { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 4.5, power: 1.05, precision: 1.0, backflips: "strong" },
-  { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 4.4, power: 0.95, precision: 1.2, backflips: "strong" },
+  { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 5.9, power: 1.0, precision: 1.1, backflips: "both" },
+  { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.9, power: 1.7, precision: 0.9, backflips: "none" },
+  { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5.4, power: 1.05, precision: 1.0, backflips: "strong" },
+  { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 5.3, power: 0.95, precision: 1.2, backflips: "strong" },
 ];
 
 // Strong/weak-foot modifiers, applied to any clip that uses a specific foot

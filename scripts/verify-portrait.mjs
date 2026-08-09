@@ -1,11 +1,15 @@
 // Checks that the game is playable with the phone held upright.
 //
 // Portrait has no room for a stick and two buttons, so it plays by gesture
-// instead: tap to place the player, swipe to kick, hold to receive. None of
-// that can be unit-tested — it only exists once a real browser has laid the
+// instead: tap to place the player, double tap to receive, swipe to kick. None
+// of that can be unit-tested — it only exists once a real browser has laid the
 // controls out, built a camera and put a match behind them — so it is checked
 // here, against the production build, the same way the menus and the opening
 // clip are.
+//
+// The automatic first reception is checked here too. It is not a portrait rule
+// — it applies to every input — but this is the harness that already has a
+// live rally in front of it.
 //
 // Usage:
 //   npm run build
@@ -38,9 +42,13 @@ async function intoMatch(viewport) {
   await page.locator("#btn-play").click();
   await page.locator("#btn-mode-friendly").click();
   await page.locator("#btn-diff-normal").click();
-  // The select screen runs the model viewer, which downloads a character.
+  // The select screen runs the model viewer, which downloads and renders a
+  // character. Starting the match before that settles has been seen to leave
+  // the match never arriving at all, so give it room — this browser has no GPU
+  // and every one of these seconds is a software-rendered frame.
+  await page.waitForTimeout(20000);
   await page.locator("#btn-start").click({ timeout: 120000 });
-  await page.waitForFunction(() => "__teq" in window, null, { timeout: 240000 });
+  await page.waitForFunction(() => "__teq" in window, null, { timeout: 300000 });
   await page.waitForTimeout(4000);
   return page;
 }
@@ -56,6 +64,8 @@ const readMatch = (page) =>
       state: m.state,
       moveTarget: m.moveTarget ? { x: m.moveTarget.x, z: m.moveTarget.z } : null,
       player: { x: m.chars.player.position.x, z: m.chars.player.position.z },
+      touchCount: m.touchCount,
+      strikeable: m.strikeableSide,
       portraitClass: layer?.classList.contains("portrait") ?? null,
       joyShown: joy ? getComputedStyle(joy).display !== "none" : null,
       hintsShown: (() => {
@@ -73,8 +83,15 @@ async function tap(page, x, y) {
   await page.mouse.up();
 }
 
-/** A press long enough to become a reception, held in one place. */
-async function hold(page, x, y, ms = 400) {
+/** Two quick taps in the same place: a controlled, directed reception. */
+async function doubleTap(page, x, y) {
+  await tap(page, x, y);
+  await page.waitForTimeout(80);
+  await tap(page, x, y);
+}
+
+/** A finger resting in one place, which must mean nothing at all. */
+async function rest(page, x, y, ms = 700) {
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.waitForTimeout(ms);
@@ -125,12 +142,12 @@ console.log("\nportrait: the screen is the controller");
   // match walks the players to their own spots.
   check(await settles(page, () => window.__teq.match.state === "rally", 30000), "the rally starts");
 
-  // A held press is a reception, and must never send the player running
-  // somewhere they did not ask to go. Checked first, while there is provably
-  // no destination for it to be confused with.
-  await hold(page, 340, 500);
+  // A resting finger must do nothing at all — above all it must not be read
+  // as a placement, which would send the player somewhere they never asked
+  // to go. Checked first, while there is provably no destination to confuse.
+  await rest(page, 340, 500);
   const strayed = await settles(page, () => window.__teq.match.moveTarget !== null, 4000);
-  check(!strayed, "a held press is not mistaken for a placement tap");
+  check(!strayed, "a resting finger is not mistaken for a placement tap");
 
   // Where the tap lands depends on the camera, so what is asserted is that it
   // becomes a destination and the player runs for it — not which metre.
@@ -149,6 +166,55 @@ console.log("\nportrait: the screen is the controller");
     before.player
   );
   check(walked, "the player runs to it");
+
+  // Standing near an incoming ball is enough for the first touch. Put the
+  // player on the interception point, press nothing, and wait for the touch
+  // count to move. The placement is repeated every poll rather than done once:
+  // a point can end between polls, and the next possession is just as good a
+  // chance to prove the rule.
+  const auto = await settles(
+    page,
+    () => {
+      const m = window.__teq.match;
+      if (m.touchCount > 0) return true;
+      const spot = m.interceptSpot;
+      if (m.state === "rally" && m.strikeableSide === "player" && spot) {
+        m.setMoveTarget(null);
+        m.chars.player.position.x = spot.x;
+        m.chars.player.position.z = spot.z;
+      }
+      return false;
+    },
+    60000
+  );
+  check(auto, "the first reception is taken automatically");
+
+  // A double tap is the controlled reception, and has to be told apart from
+  // the placement tap that shares the same finger.
+  //
+  // Its timing is measured rather than assumed, from the same event clock the
+  // scheme reads. Under software rendering a frame can block the main thread
+  // for longer than the whole double-tap window; if even the browser's own
+  // timestamps land too far apart, this browser cannot deliver a double tap
+  // and says so instead of failing the scheme for it.
+  await page.evaluate(() => {
+    window.__teq.match.setMoveTarget(null);
+    window.__taps = [];
+    document
+      .getElementById("touch-layer")
+      .addEventListener("pointerup", (e) => window.__taps.push(e.timeStamp / 1000), true);
+  });
+  await doubleTap(page, 150, 520);
+  const gap = await page.evaluate(() => {
+    const taps = window.__taps;
+    return taps.length >= 2 ? taps[taps.length - 1] - taps[taps.length - 2] : null;
+  });
+  if (gap === null || gap > 0.28) {
+    check(true, `double tap not exercised: taps arrived ${gap === null ? "unpaired" : gap.toFixed(2) + " s apart"}`);
+  } else {
+    const moved = await settles(page, () => window.__teq.match.moveTarget !== null, 2500);
+    check(!moved, `a double tap is not also read as a placement (${gap.toFixed(2)} s apart)`);
+  }
   await page.close();
 }
 
