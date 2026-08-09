@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   BALLS,
+  CAMERA,
   CHARACTERS,
   CLIPS,
   COURT,
@@ -11,9 +12,12 @@ import {
   KICK_POWER,
   KICK_SPEED_CAP,
   MAX_TOUCHES,
+  PLAYER_REACH,
+  PLAY_BOX,
   SERVE_POWER,
   SERVE_X,
   SETS_TO_WIN,
+  SPAWN,
   TABLE,
   WIN_SCORE,
   contactDelaySeconds,
@@ -254,6 +258,33 @@ describe("court and match rules", () => {
   it("puts the serve spot inside the movement bounds", () => {
     expect(SERVE_X).toBeGreaterThan(COURT.minX);
     expect(SERVE_X).toBeLessThan(COURT.maxX);
+  });
+
+  // The table is drawn oversized on purpose (see TABLE_SCALE), and everything
+  // measured against it has to grow with it. These used to be bare metres, so
+  // enlarging the table quietly walked the players into their own table end.
+  it("scales the standing room with the table", () => {
+    expect(COURT.minX).toBeGreaterThan(TABLE.halfLen);
+    expect(SPAWN.x).toBeGreaterThan(COURT.minX);
+    expect(SERVE_X).toBeGreaterThan(SPAWN.x);
+    // Still an arena, not a corridor: there is court left behind the server.
+    expect(COURT.maxX - SERVE_X).toBeGreaterThan(1);
+  });
+
+  // The portrait lens is pinned horizontally, so its field of view is literally
+  // how wide the shot is — and the shot is narrowest in world units exactly
+  // where the near player stands. Tighten it for a bigger picture of the table
+  // and the player chasing a wide ball leaves their own frame.
+  it("keeps the near player inside the portrait frame at full stretch", () => {
+    const { back, fov } = CAMERA.portrait;
+    // Along-axis distance from the camera to a player standing at the spawn.
+    const toNearPlayer = back;
+    const visibleHalfWidth = toNearPlayer * Math.tan(fov / 2);
+    // Anywhere they can be while playing a ball that landed on the play box's
+    // far sideline, plus the stride that takes them there.
+    const needed = PLAY_BOX.halfWid + PLAYER_REACH * 0.5;
+
+    expect(visibleHalfWidth).toBeGreaterThan(needed);
   });
 
   it("uses the FITEQ best-of-three scoring", () => {

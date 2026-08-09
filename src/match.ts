@@ -50,6 +50,7 @@ import {
   SERVE_X,
   SETS_TO_WIN,
   SPAWN,
+  TABLE_SCALE,
   WIN_SCORE,
   type CameraMode,
 } from "./config";
@@ -145,21 +146,48 @@ const POP_SPEED = 1.25;
 // height, and the character lunges so the limb is there at that moment.
 const CONTACT_WINDOW = { min: 0.1, max: 0.4 };
 // Furthest the character may glide during a wind-up to reach the ball (m).
-const LUNGE_MAX = 1.0;
+const LUNGE_MAX = 1.0 * TABLE_SCALE;
 // Final polish only: nudge the ball at most this far onto the limb at the
 // contact frame (covers prediction drift). Bigger misses stay visible.
-const CONTACT_SNAP = 0.15;
-// Final approach: within this window before the planned contact the ball is
-// gently steered onto the limb, and released by the countdown itself (the
-// animation callback can lag a frame, which let the ball fly past the limb).
-const STEER_WINDOW = 0.15;
+const CONTACT_SNAP = 0.18 * TABLE_SCALE;
+/**
+ * Final approach: inside this window before the planned contact the ball is
+ * steered onto the limb, and released by the countdown itself (the animation
+ * callback can lag a frame, which let the ball fly past the limb).
+ *
+ * It is long enough to be a curve rather than a correction. The gain ramps
+ * from nearly nothing at the start of the window to fully committed at the
+ * contact frame, so the ball bends onto the foot over several frames instead
+ * of jumping onto it in the last two — the difference between a touch that
+ * looks played and one that looks snapped.
+ */
+const STEER_WINDOW = 0.3;
+/** Gain on the steering, per second, at the start and at the end of the window. */
+const STEER_GAIN = { start: 5, end: 26 };
 // Beyond this gap the touch is a genuine miss — no steering, no snap.
-const STEER_MAX_GAP = 0.6;
+const STEER_MAX_GAP = 0.6 * TABLE_SCALE;
 // How near an incoming ball a player has to be for the automatic first
 // reception. Wider than PLAYER_REACH — being close should be enough — but only
 // a little: a reception granted from two paces away stops reading as standing
-// in the right place.
-const AUTO_RECEPTION_REACH = 1.5;
+// in the right place. Scaled with the court, so it stays the same distance in
+// paces however big the table is drawn.
+const AUTO_RECEPTION_REACH = 1.36 * TABLE_SCALE;
+/**
+ * Furthest a set-up touch can place the ball from the player who takes it.
+ *
+ * The old carry was a fixed 1.3 m in whatever direction was asked for, which
+ * from a camera standing behind the player meant a lateral placement read
+ * clearly and a forward or backward one barely read at all — the reception
+ * looked like it only went left and right. A tap now places the ball where it
+ * was tapped, up to this far, so playing the ball deep is a real option.
+ */
+const POP_CARRY = 2.4 * TABLE_SCALE;
+/**
+ * How long a tapped set-up keeps trying. Longer than a button press's buffer:
+ * a tap is aimed at a moment as much as at a place, and the ball it is aimed
+ * at is often still rising out of the player's own previous touch.
+ */
+const TAP_PRESS_BUFFER = 0.9;
 // Holding the kick control this long charges it fully. Long enough that the
 // difference between a tap and a held kick is a decision, short enough to make
 // inside the second or so a ball hangs in the air.
@@ -468,19 +496,24 @@ export class MatchController {
   }
 
   /**
-   * A tap on the court, from portrait play. One gesture, two meanings, chosen
-   * by where the ball is.
+   * A tap on the court, from portrait play. One gesture, one rule: a tap where
+   * the ball is is a touch, a tap where the ball is not is a shift.
    *
-   * With the ball still on its way, a tap is a shift: go and stand there. With
-   * the ball already in the vicinity there is no time to go anywhere and no
-   * point trying — the reception is about to be taken automatically — so the
-   * same tap says which way to set it up instead. Tapping ahead of yourself
-   * pushes the ball forward, tapping to one side puts it out there.
+   * With the ball still on its way there is time to go somewhere, so the tap
+   * sends the player there. With the ball already in the vicinity there is no
+   * time to go anywhere and no point trying, so the same tap plays it — and
+   * plays it *to the tapped spot*, which is what makes a set-up placed deep as
+   * available as one placed wide.
+   *
+   * The first touch of a possession is taken automatically, so there the tap
+   * only leaves its direction behind for the reception to use. Every touch
+   * after it has to be asked for, and the tap is the asking: without this,
+   * portrait had no way at all to play a second touch.
    */
   tapAt(spot: Vector3 | null): void {
     if (!spot) return;
     const c = this.chars.player;
-    if (!this.receptionImminent()) {
+    if (!this.touchImminent()) {
       this.setMoveTarget(spot);
       return;
     }
@@ -488,21 +521,46 @@ export class MatchController {
     const dz = spot.z - c.position.z;
     const len = Math.hypot(dx, dz);
     if (len < 0.05) return;
-    this.receptionAim = { x: dx / len, z: dz / len };
+    // The distance tapped is the distance played, up to the full carry. A
+    // floor keeps a tap right at the player's feet from being a null placement.
+    const carry = Math.min(1, Math.max(0.3, len / POP_CARRY));
+    const aim = { x: (dx / len) * carry, z: (dz / len) * carry };
+    // A tap that meant a touch must never also be remembered as somewhere to
+    // walk. That was the "stored shift": the tap missed its touch, quietly
+    // became a destination, and released the player across the court later.
+    this.moveTarget = null;
+    if (this.touchCount === 0 && this.autoFirstReception) {
+      this.receptionAim = aim;
+      return;
+    }
+    const pending = this.pendingTouch;
+    if (pending && pending.side === "player" && pending.kind === "pop") {
+      // Already committed and waiting for the ball to drop: re-aim it where
+      // the player is now pointing rather than queue a second one behind it.
+      pending.aimX = aim.x;
+      pending.aimZ = aim.z;
+      return;
+    }
+    this.bufferedPress = { kind: "pop", aimX: aim.x, aimZ: aim.z, ttl: TAP_PRESS_BUFFER };
   }
 
-  /** True while the ball is close enough that the next touch is already due. */
-  private receptionImminent(): boolean {
-    return (
-      this.state === "rally" &&
-      this.strikeableSide === "player" &&
-      this.touchCount === 0 &&
-      !this.ball.held &&
-      this.canTouch("player", AUTO_RECEPTION_REACH * 1.6)
-    );
+  /**
+   * True while the ball is close enough that the next touch is already due.
+   *
+   * Deliberately not `canTouch`: this asks where the ball is, not whether a
+   * touch could start this instant. A tap arriving while the previous touch's
+   * animation is still playing is the player asking for the next one, and
+   * treating it as anything else is how a tap turns into an unwanted walk.
+   */
+  private touchImminent(): boolean {
+    if (this.state !== "rally" || this.ball.held) return false;
+    if (this.strikeableSide !== "player") return false;
+    const c = this.chars.player;
+    const chest = c.position.add(new Vector3(0, c.height * 0.55, 0));
+    return Vector3.Distance(chest, this.ball.state.pos) <= AUTO_RECEPTION_REACH * 1.6;
   }
 
-  /** Direction a tap asked the next automatic reception to be set up in. */
+  /** Where a tap asked the next set-up touch to put the ball, as a carry vector. */
   private receptionAim: { x: number; z: number } | null = null;
 
   private movePlayer(input: InputState, dt: number): void {
@@ -512,7 +570,8 @@ export class MatchController {
       return;
     }
     if (this.tapSteering) {
-      player.velocity.setAll(0);
+      // Nothing asked for: ease to a stop rather than freeze mid-stride.
+      player.move(0, 0, 0, dt);
       return;
     }
     const [mx, mz] = this.bendAssist(player.position, this.interceptSpot, input.moveX, input.moveZ);
@@ -1226,26 +1285,32 @@ export class MatchController {
       if (this.state !== "rally") return;
       this.snapBallToLimb(c, clip);
       const pos = this.ball.state.pos;
-      const rise = 1.1 + Math.random() * 0.5;
-      const vy = Math.sqrt(2 * GRAVITY * rise);
-      const t = (2 * vy) / GRAVITY;
       const len = Math.hypot(aimX, aimZ);
       let target: Vector3;
       if (len > 0.2) {
-        const carry = Math.min(1, len) * 1.3; // how far the pop travels at full deflection
+        const carry = Math.min(1, len) * POP_CARRY;
         target = c.position.add(new Vector3((aimX / len) * carry, 0, (aimZ / len) * carry));
       } else {
-        target = c.position.add(c.forward.scale(0.5));
+        target = c.position.add(c.forward.scale(0.5 * TABLE_SCALE));
       }
+      // Further to travel, longer in the air: a set-up played across the court
+      // has to hang long enough for its own player to arrive under it.
+      const rise = (1.0 + 0.55 * Math.min(1, len) + Math.random() * 0.3) * TABLE_SCALE;
+      const vy = Math.sqrt(2 * GRAVITY * rise);
+      const t = (2 * vy) / GRAVITY;
       const own = sign(side); // own half: sign of x
-      target.x = own * Math.min(COURT.maxX - 0.2, Math.max(0.6, own * target.x));
+      // Never onto your own table. Playing the ball onto your own half is a
+      // fault, and a set-up the player asked for must not be the thing that
+      // loses them the point — a forward tap plays deep, not into the table.
+      target.x =
+        own * Math.min(COURT.maxX - 0.2, Math.max(TABLE.halfLen + 0.25, own * target.x));
       target.z = Math.max(-COURT.maxZ + 0.2, Math.min(COURT.maxZ - 0.2, target.z));
       const v = new Vector3((target.x - pos.x) / t, vy, (target.z - pos.z) / t);
       this.ball.launch(v, 0.45); // a set-up pop floats with little spin
       this.audio.playKick();
       this.emitLaunch(side, "pop", clip, 0.45);
       // Auto-run there (slightly behind, so the ball drops in front of the player).
-      const spot = new Vector3(target.x - c.forward.x * 0.35, GROUND_Y, target.z);
+      const spot = new Vector3(target.x - c.forward.x * 0.35 * TABLE_SCALE, GROUND_Y, target.z);
       if (side === "player") this.selfSetupSpot = spot;
       else if (this.versus) this.selfSetupSpot2 = spot;
       this.emit({ type: "touch-committed", side, action: "pop" });
@@ -1359,6 +1424,11 @@ export class MatchController {
     this.bufferedPress = null;
     this.bufferedPress2 = null;
     this.landingSpot = null;
+    // Intent does not survive the point it was formed in. A destination tapped
+    // during the rally must not walk the player off their spot as the next
+    // serve is being set up.
+    this.moveTarget = null;
+    this.receptionAim = null;
     this.tableEventCooldown = 0;
     this.lastTableSide = null;
     this.score[winner]++;
@@ -1483,7 +1553,12 @@ export class MatchController {
         const b = this.ball.state;
         if (limb && Vector3.Distance(limb, b.pos) < STEER_MAX_GAP) {
           const t = cs.timeLeft;
-          const k = Math.min(1, dt * 12);
+          // Ease in: barely a nudge at the far edge of the window, fully
+          // committed at the contact frame. A constant gain applied over three
+          // frames is a visible jerk; this is a curve onto the foot.
+          const closing = 1 - t / STEER_WINDOW;
+          const gain = STEER_GAIN.start + (STEER_GAIN.end - STEER_GAIN.start) * closing * closing;
+          const k = Math.min(1, dt * gain);
           b.vel.x += ((limb.x - b.pos.x) / t - b.vel.x) * k;
           b.vel.y += ((limb.y - b.pos.y) / t + 0.5 * GRAVITY * t - b.vel.y) * k;
           b.vel.z += ((limb.z - b.pos.z) / t - b.vel.z) * k;
@@ -1590,7 +1665,15 @@ export class MatchController {
         // pop would otherwise keep carrying the player past the ball).
         const selfSetup =
           this.strikeableSide === "player" && this.touchCount > 0 && this.selfSetupSpot !== null;
-        if (player.busy || aiming) player.velocity.setAll(0);
+        // The auto-run owns the feet while it lasts, so anywhere the player had
+        // asked to stand is spent, not stored. Left queued, it used to take
+        // over the moment the auto-run finished and walk them away from the
+        // ball they had just set up.
+        if (selfSetup) this.moveTarget = null;
+        // Busy means an action clip owns the root (it may be lunging): the
+        // locomotion velocity has to be gone, not merely decaying.
+        if (player.busy) player.velocity.setAll(0);
+        else if (aiming) player.move(0, 0, 0, dt);
         else if (selfSetup) player.moveToward(this.selfSetupSpot!, player.def.speed, dt);
         else this.movePlayer(input, dt);
         // Presses are buffered briefly and retried, so releasing just before
@@ -1791,7 +1874,7 @@ export class MatchController {
         // Match the scene's responsive default in solo play, while retaining
         // the deliberately wider half-width lens in local versus. This also
         // restores the correct lens after leaving the wide top view.
-        camera.fov = this.versus ? 1.0 : portrait ? CAMERA.portrait.fov : 0.85;
+        camera.fov = this.versus ? 1.0 : portrait ? CAMERA.portrait.fov : CAMERA.fov;
       } else {
         // The imported gym is asymmetric. A literal mirror of P1's camera is
         // outside its far wall, so P2 gets a deliberately interior position.

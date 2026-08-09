@@ -6,7 +6,7 @@
 // the sport is more legible slightly oversized than it is exactly right.
 // Scale the ball and the characters with it — the three only look right in
 // proportion to each other.
-export const TABLE_SCALE = 1.1;
+export const TABLE_SCALE = 1.25;
 export const TABLE = {
   length: 3.0 * TABLE_SCALE,
   width: 1.5 * TABLE_SCALE,
@@ -26,10 +26,14 @@ export const TABLE = {
  * line — not one that ends up in the crowd. Every aim and every landing is
  * clamped to this box, so the spread costs the point without the ball leaving
  * the picture.
+ *
+ * The margin is deliberately narrow: a hand's width of grass around the table,
+ * not a run-off area. A ball that lands there has clearly missed and just as
+ * clearly nearly went in, which is the only kind of miss worth watching.
  */
 export const PLAY_BOX = {
-  halfLen: TABLE.halfLen + 0.72,
-  halfWid: TABLE.halfWid + 0.8,
+  halfLen: TABLE.halfLen + 0.3,
+  halfWid: TABLE.halfWid + 0.32,
 };
 
 export const BALL_RADIUS = 0.08095 * TABLE_SCALE; // size 5 football, oversized with the table
@@ -39,8 +43,10 @@ export const GRAVITY = 9.81;
 // identical in every venue, so two peers looking at different backdrops still
 // run the same simulation. What the court *looks* like — its size, shape,
 // colours and boards — is a venue preset in `venue.ts`.
+// The far limits are the arena's floor, which is a fixed model and does not
+// scale with the table; the near limit is the table end and must.
 export const COURT = {
-  minX: 1.7, // players stay behind the table end
+  minX: TABLE.halfLen + 0.06, // players stay behind the table end
   maxX: 6.8,
   maxZ: 4.6,
 };
@@ -59,7 +65,7 @@ export const GROUND_Y = 0.4;
 
 // Where the characters spawn/idle, per side (mirrored for the AI).
 export const SPAWN = {
-  x: 2.9, // distance from the net along the table axis
+  x: 2.64 * TABLE_SCALE, // distance from the net along the table axis
   z: 0, // lateral offset (+z = controlled player's left)
   lift: 0, // extra y lift if a model's feet still sink into the floor
 };
@@ -93,21 +99,32 @@ export type CameraMode = "court" | "side" | "top";
 // Rally camera framing (hand-editable). Cameras are fully static: they never
 // follow the player or ball. The arena is intentionally asymmetric, so P2's
 // court view uses its own interior position instead of mirroring P1's.
+// The play cameras are deliberately tight. A wide shot of a teqball court is
+// mostly empty floor and stands: the sport happens inside a six-metre box, and
+// everything the player has to read — where the ball is, how high, whose touch
+// it is — is carried by figures that have to be big enough to read them on a
+// phone. Pull back and the game becomes two dots and a table.
 export const CAMERA = {
-  back: 9.6, // distance behind the serve spot along the table axis (m)
-  height: 6.3, // height above the ground (m)
+  back: 7.4, // distance behind the serve spot along the table axis (m)
+  height: 5.1, // height above the ground (m)
   // Height above the ground the camera looks at (table centre). Lower = the
   // camera tilts further down; the old follow-camera aimed at ~0.9.
-  lookY: 0.3,
+  lookY: 0.55,
+  /** Landscape lens, pinned vertically. Shared by the scene's default camera. */
+  fov: 0.72,
   // Portrait is a tall, narrow window on the same court. The lens is pinned
   // horizontally there (see scene.ts), which makes the vertical angle very
   // wide — from the landscape distance the players end up specks in a frame
   // mostly full of roof. So portrait comes in closer and tilts up a little.
+  // Portrait's lens cannot be tightened as far as landscape's looks like it
+  // should allow. Pinned horizontally, the fov *is* the width of what can be
+  // seen, and the narrowest part of the shot is right where the player stands:
+  // squeeze it and a player chasing a wide ball walks out of their own frame.
   portrait: {
-    back: 5.6,
-    height: 4.4,
-    lookY: 0.9,
-    fov: 0.95,
+    back: 5.0,
+    height: 3.9,
+    lookY: 0.95,
+    fov: 0.88,
   },
   // P2 cannot use the mirrored P1 position: it lands outside the imported
   // gym. This keeps the view inside, matches P1's player scale, and gives it
@@ -155,7 +172,7 @@ export const CAMERA = {
 export const SIM_HZ = 60;
 export const SIM_DT = 1 / SIM_HZ;
 
-export const SERVE_X = 4.0; // service line is 3.5 m from table centre
+export const SERVE_X = 3.64 * TABLE_SCALE; // service line, set back from the table end
 export const MAX_TOUCHES = 3; // touches allowed per possession (reception, prep, kick)
 // Reach scales with the players, who scale with the table.
 export const PLAYER_REACH = 1.2 * TABLE_SCALE;

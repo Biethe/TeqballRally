@@ -19,11 +19,11 @@ either way up on a phone.
 | Action | Keyboard | Gamepad | Touch (landscape) | Touch (portrait) |
 | --- | --- | --- | --- | --- |
 | Move | WASD or arrows | Left stick | Move stick | Tap where to stand |
-| Aim a reception | WASD or arrows | Left stick | Move stick | Tap, with the ball already near |
+| Play a set-up | WASD or arrows | Left stick | Move stick | Tap where to put the ball |
 | Aim a kick | Hold Space, then WASD | Hold A, then stick | Hold STRIKE, then stick | Direction of the swipe |
 | Kick | Release Space | Release A | Release STRIKE | Swipe |
 | Serve | Space or Enter | A / Cross | STRIKE | Swipe |
-| Make a reception | K | B / Circle | RECEPTION | Automatic, aimed by a tap |
+| Take a touch | K | B / Circle | RECEPTION | Tap, with the ball already near |
 | Pause | Escape | Start / Options | Pause button | Pause button |
 
 Portrait has no room for a stick and two buttons, so the whole screen becomes
@@ -32,17 +32,24 @@ deliberately does nothing: on a surface where every pixel is a control, an
 ambiguous gesture is safest doing nothing at all. Both layouts feed the same
 input state, and turning the phone switches between them mid-rally.
 
-The single tap carries two meanings, chosen by where the ball is. With the ball
-still on its way it is a shift: go and stand there. With the ball already in
-the vicinity there is nowhere to go in time and the reception is about to be
-taken anyway, so the same tap says which way to set it up instead.
+One rule decides what a tap means: **a tap where the ball is is a touch, a tap
+where the ball is not is a shift.** With the ball still on its way there is
+time to go somewhere, so the tap sends the player there. With the ball already
+in the vicinity there is no time to go anywhere, so the same tap plays it — and
+plays it *to the tapped spot*, which is what makes a set-up placed deep as
+available as one placed wide (`POP_CARRY` in `src/match.ts` is how far a touch
+can carry).
 
 The first touch of a possession is automatic. Standing in the vicinity of an
-incoming ball is enough to receive it — no press, no timing. Every touch after
-that is the player's: another reception, or the finish. Chasing a ball down to
-make contact at all was never the interesting decision; what to do with it is
-(`AUTO_RECEPTION_REACH` in `src/match.ts`, `autoFirstReception` to switch it
-off).
+incoming ball is enough to receive it — no press, no timing; a tap only steers
+where it goes. Every touch after that has to be asked for, and in portrait the
+tap is the asking. Chasing a ball down to make contact at all was never the
+interesting decision; what to do with it is (`AUTO_RECEPTION_REACH` in
+`src/match.ts`, `autoFirstReception` to switch the first touch back to manual).
+
+A set-up never lands on the player's own half: playing the ball onto your own
+table is a fault, and a placement the player asked for must not be the thing
+that loses them the point.
 
 ## Kicks, and missing with them
 
@@ -54,9 +61,10 @@ low fast drive and a slow drag is a floater. The animation follows the power,
 because a lob played with a drilled foot volley reads as a bug.
 
 Every aim, and every landing it scatters to, is clamped to `PLAY_BOX` — the
-table plus a margin. A kick has to be able to miss; it does not have to be able
-to reach the crowd, and a ball that leaves the picture is a worse punishment
-than the point it already cost.
+table plus a hand's width of margin. A kick has to be able to miss; it does not
+have to be able to reach the crowd, and a ball that leaves the picture is a
+worse punishment than the point it already cost. Kept that narrow, every miss
+reads as one that nearly went in, which is the only kind worth watching.
 
 Where the ball actually lands is that aim plus a spread (`src/aim.ts`):
 
@@ -173,11 +181,21 @@ are latched between simulation steps — see `latchInput` in `src/input.ts`.
 
 ## Scale
 
-`TABLE_SCALE` in `src/config.ts` sizes the table, and the ball, the players and
-their reach are multiplied by it too — the four only look right in proportion
-to one another. It sits above the rulebook's true dimensions because the game
-is played on a phone at arm's length, where a correctly sized court reads as a
-set of miniatures in a large arena.
+`TABLE_SCALE` in `src/config.ts` sizes the table, and the ball, the players,
+their reach, the standing room behind the table, the serve spot and every
+contact tolerance are multiplied by it too — they only look right in proportion
+to one another, and anything left in bare metres quietly walks out of
+proportion the moment the scale moves. It sits above the rulebook's true
+dimensions because the game is played on a phone at arm's length, where a
+correctly sized court reads as a set of miniatures in a large arena.
+
+The other half of apparent size is the lens. `CAMERA` is deliberately tight: a
+wide shot of a teqball court is mostly empty floor and stands, while everything
+the player has to read is carried by two figures and a ball. Portrait cannot be
+tightened as far as it looks like it should allow — its lens is pinned
+horizontally (see `scene.ts`), so the field of view *is* the width of the shot,
+and the shot is narrowest in world units exactly where the near player stands.
+`tests/config.test.ts` holds that limit.
 
 ## Navigation
 

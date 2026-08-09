@@ -163,22 +163,30 @@ console.log("\nportrait: the screen is the controller");
   );
   check(walked, "the player runs to it");
 
-  // Standing near an incoming ball is enough for the first touch. Put the
-  // player on the interception point, press nothing, and wait for the touch
-  // count to move. The placement is repeated every poll rather than done once:
-  // a point can end between polls, and the next possession is just as good a
-  // chance to prove the rule.
+  // Standing near an incoming ball is enough for the first touch: press
+  // nothing, and the touch count moves on its own.
+  //
+  // The state is armed rather than waited for. Catching a live rally at the
+  // moment a ball arrives beside a stationary player needs the browser to hold
+  // still for a few tenths of a second, and this one renders about one frame a
+  // second — the rule held every time it was actually observed, and the check
+  // failed on the frames where it never got to look.
   const auto = await settles(
     page,
     () => {
       const m = window.__teq.match;
+      const c = m.chars.player;
       if (m.touchCount > 0) return true;
-      const spot = m.interceptSpot;
-      if (m.state === "rally" && m.strikeableSide === "player" && spot) {
-        m.setMoveTarget(null);
-        m.chars.player.position.x = spot.x;
-        m.chars.player.position.z = spot.z;
-      }
+      if (m.state !== "rally") return false;
+      m.setMoveTarget(null);
+      m.pendingTouch = null;
+      m.bufferedPress = null;
+      c.stopAction();
+      m.ball.held = false;
+      m.ball.state.pos.set(c.position.x + 0.5, c.position.y + c.height * 0.6, c.position.z);
+      m.ball.state.vel.set(0, -1, 0);
+      m.strikeableSide = "player";
+      m.touchCount = 0;
       return false;
     },
     90000
@@ -221,6 +229,77 @@ console.log("\nportrait: the screen is the controller");
   });
   check(dual.far.moved && !dual.far.aimed, "a tap with the ball still coming is a shift");
   check(dual.near.aimed && !dual.near.moved, "a tap with the ball in the vicinity aims the reception");
+
+  // The rule has to hold for every touch of the possession, not just the first.
+  // Portrait has no reception button, so if a tap on a ball that is already in
+  // the vicinity does not ask for the touch, nothing does — and the tap becomes
+  // a walk instead, which is how the player ends up strolling off mid-rally.
+  const later = await page.evaluate(() => {
+    const m = window.__teq.match;
+    const c = m.chars.player;
+    const V = m.aimSpot.player.constructor;
+    const arm = (touches, busy) => {
+      m.state = "rally";
+      m.pendingTouch = null;
+      m.bufferedPress = null;
+      if (!busy) m.chars.player.stopAction();
+      m.ball.held = false;
+      m.ball.state.pos.set(c.position.x + 0.4, c.position.y + c.height * 0.6, c.position.z);
+      m.ball.state.vel.set(0, 0, 0);
+      m.strikeableSide = "player";
+      m.touchCount = touches;
+      m.setMoveTarget(null);
+    };
+    arm(1, false);
+    m.tapAt(new V(c.position.x + 2, 0.4, c.position.z));
+    const second = { asked: m.bufferedPress?.kind ?? null, moved: m.moveTarget !== null };
+    // Deep and wide have to be distinguishable, or a directed set-up only ever
+    // reads as left and right.
+    arm(1, false);
+    m.tapAt(new V(c.position.x + 2.2, 0.4, c.position.z));
+    const deep = { ...m.bufferedPress };
+    arm(1, false);
+    m.tapAt(new V(c.position.x, 0.4, c.position.z + 2.2));
+    const wide = { ...m.bufferedPress };
+    return { second, deep, wide };
+  });
+  check(later.second.asked === "pop", "a tap on the second touch asks for the touch");
+  check(!later.second.moved, "and does not also become somewhere to walk");
+  check(
+    Math.abs(later.deep.aimX) > Math.abs(later.deep.aimZ),
+    `a tap ahead plays the ball deep (${later.deep.aimX?.toFixed?.(2)}, ${later.deep.aimZ?.toFixed?.(2)})`
+  );
+  check(
+    Math.abs(later.wide.aimZ) > Math.abs(later.wide.aimX),
+    `a tap to the side plays it wide (${later.wide.aimX?.toFixed?.(2)}, ${later.wide.aimZ?.toFixed?.(2)})`
+  );
+
+  // The reported symptom, checked directly: a tap that meant a touch must not
+  // survive as a destination and release the player across the court later.
+  const noStray = await page.evaluate(() => {
+    const m = window.__teq.match;
+    const c = m.chars.player;
+    const V = m.aimSpot.player.constructor;
+    m.state = "rally";
+    m.strikeableSide = "player";
+    m.touchCount = 1;
+    m.selfSetupSpot = new V(c.position.x, 0.4, c.position.z);
+    m.setMoveTarget(new V(c.position.x + 3, 0.4, c.position.z + 3));
+    const idle = {
+      moveX: 0,
+      moveZ: 0,
+      strikePressed: false,
+      strikeHeld: false,
+      strikePower: 0,
+      popPressed: false,
+      confirmPressed: false,
+      isPortrait: true,
+      isTouch: true,
+    };
+    m.update(1 / 60, idle, () => {});
+    return m.moveTarget === null;
+  });
+  check(noStray, "a stored destination is dropped when the auto-run takes over");
 
   await page.close();
 }
