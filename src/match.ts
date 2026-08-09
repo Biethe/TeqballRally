@@ -56,6 +56,17 @@ import {
 import type { InputState } from "./input";
 import type { AudioManager } from "./audio";
 import { reconcile } from "./net/reconcile";
+import {
+  clampToCourt,
+  loftFor,
+  onTableHalf,
+  rangeFor,
+  scatter,
+  spreadRadius,
+  tableTarget,
+  SPREAD,
+  type StrikeAim,
+} from "./aim";
 
 /**
  * True while the game is being played by gesture on a phone held upright.
@@ -111,6 +122,12 @@ export interface MatchUI {
   meterResult?(quality: number): void;
 }
 
+/** A press waiting for the ball to become hittable, with what it asked for. */
+type BufferedPress =
+  | { kind: "strike"; aim: StrikeAim; ttl: number }
+  | { kind: "pop"; aimX: number; aimZ: number; ttl: number }
+  | null;
+
 const other = (s: Side): Side => (s === "player" ? "ai" : "player");
 const sign = (s: Side): number => (s === "player" ? -1 : 1);
 
@@ -142,6 +159,20 @@ const STEER_MAX_GAP = 0.6;
 // reception. Wider than PLAYER_REACH — being close should be enough — and
 // inside LUNGE_MAX, so the contact still reads as a real touch.
 const AUTO_RECEPTION_REACH = 1.7;
+// Holding the kick control this long charges it fully. Long enough that the
+// difference between a tap and a held kick is a decision, short enough to make
+// inside the second or so a ball hangs in the air.
+const CHARGE_TIME = 0.8;
+/** Power a kick released without any charge at all is struck at. */
+const TAP_POWER = 0.3;
+/** How fast the aim marker travels under a fully pushed stick, in m/s. */
+const AIM_SPEED = 5.4;
+/**
+ * Power up to which a kick still lands roughly where it was aimed. Past it the
+ * spread widens faster than the extra pace is worth, unless the striker's
+ * precision has been improved enough to carry it.
+ */
+const SAFE_POWER = 0.62;
 
 // Celebration pool: any of these NLA tracks present on the model may play,
 // for point wins and the match win alike.
@@ -165,19 +196,6 @@ const TABLE_BOUNCE_DEBOUNCE = 0.25;
 const FOLLOWER_SNAP = 3.0;
 const FOLLOWER_CONVERGE = 0.12;
 const FOLLOWER_ARRIVE = 0.01;
-// Precision gauge: shown only for kicks (once the ball has been set up by a
-// control touch — never during receptions) and only against the CPU. The bar
-// fills over this approach horizon (s); only the green segment sends a kick
-// across the net toward the aimed opponent-side target.
-const METER_HORIZON = 1.25;
-// Keep a small tail after the planned contact so the enlarged green zone is
-// visibly bounded instead of being clipped against the right edge of the bar.
-const METER_POST_HORIZON = 0.25;
-const METER_GRADE_SPAN = 0.6;
-// The old green band was 0.30 seconds wide. This doubles it to 0.60 seconds;
-// its edges line up with the GOOD/OFF quality threshold.
-const METER_SWEET_HALF_WINDOW = METER_GRADE_SPAN / 2;
-const UNCONTROLLED_QUALITY = 0.45;
 
 /** Position on a sampled flight at (or just after) time `t`, clipped to before any ground bounce. */
 function flightAt(flight: FlightSample[], t: number): Vector3 {
@@ -220,6 +238,8 @@ export class MatchController {
     moveX: 0,
     moveZ: 0,
     strikePressed: false,
+    strikeHeld: false,
+    strikePower: 0,
     popPressed: false,
     confirmPressed: false,
   };
@@ -243,16 +263,24 @@ export class MatchController {
   /** Cached prediction for the landing marker (refreshed with the intercepts). */
   private landingSpot: { pos: Vector3; onTable: boolean } | null = null;
   /** Buffered strike/pop presses, retried until they land or expire. */
-  private bufferedPress: { kind: "strike" | "pop"; ttl: number } | null = null;
-  private bufferedPress2: { kind: "strike" | "pop"; ttl: number } | null = null;
+  private bufferedPress: BufferedPress = null;
+  private bufferedPress2: BufferedPress = null;
+  /**
+   * Where each side's next kick is aimed, in world x/z on the court plane.
+   *
+   * A point, not a pair of stick offsets bent onto the table: the aim can sit
+   * anywhere on the court, including places a kick has no business landing.
+   * That is what makes a miss the player's own doing rather than the game's.
+   */
+  private aimSpot: Record<Side, Vector3> = {
+    player: new Vector3(TABLE.halfLen * 0.6, 0, 0),
+    ai: new Vector3(-TABLE.halfLen * 0.6, 0, 0),
+  };
+  /** Seconds each side has held its kick control, 0 when nothing is charging. */
+  private charging: Record<Side, number> = { player: 0, ai: 0 };
   /** Table-bounce debounce state (see TABLE_BOUNCE_DEBOUNCE). */
   private tableEventCooldown = 0;
   private lastTableSide: Side | null = null;
-  /**
-   * Precision bar: seconds until the ball's ideal strike moment for the
-   * player, refreshed with the intercepts; `age` accumulates between refreshes.
-   */
-  private strikeWindow: { tIdeal: number; age: number } | null = null;
   /** After the player's own pop: spot to auto-run to so the drop stays in reach. */
   private selfSetupSpot: Vector3 | null = null;
   /** Same, for the second human in versus mode. */
@@ -674,6 +702,10 @@ export class MatchController {
     this.contactSync = null;
     this.pendingTouch = null;
     this.moveTarget = null;
+    // A charge only ever advances during a rally, so one held when the point
+    // ended would otherwise sit there — on the power bar, and on the next
+    // kick — until something else cleared it.
+    this.charging = { player: 0, ai: 0 };
     this.celebration = null;
     this.interceptSpot = null;
     this.repredictIn = 0;
@@ -887,13 +919,10 @@ export class MatchController {
   }
 
   /** A committed touch waiting for the ball to drop back into striking range. */
-  private pendingTouch: {
-    side: Side;
-    kind: "strike" | "pop";
-    aimX: number;
-    aimZ: number;
-    wait: number;
-  } | null = null;
+  private pendingTouch:
+    | { side: Side; kind: "strike"; aim: StrikeAim; wait: number }
+    | { side: Side; kind: "pop"; aimX: number; aimZ: number; wait: number }
+    | null = null;
 
   /**
    * Seconds to hold a just-pressed touch before starting its wind-up, so the
@@ -916,40 +945,90 @@ export class MatchController {
     return 0;
   }
 
-  /** Attempt the return strike for `side`. Aim values in [-1, 1]: forward = deeper. */
-  tryStrike(side: Side, aimFwd: number, aimLat: number): boolean {
+  /**
+   * What the next kick is asking for.
+   *
+   * Portrait aims by direction rather than by point: a swipe says "that way,
+   * this hard", so the target is placed in front of the striker at a distance
+   * the power decides. Landscape hands back the marker the stick has been
+   * moving. Either way the power is the charge if one was held, and whatever
+   * the input scheme decided for itself if not.
+   */
+  private aimFor(side: Side, input: InputState): StrikeAim {
+    const charged = this.charging[side];
+    const power =
+      charged > 0
+        ? TAP_POWER + (1 - TAP_POWER) * Math.min(1, charged / CHARGE_TIME)
+        : Math.max(TAP_POWER, input.strikePower);
+    this.charging[side] = 0;
+    if (!this.portraitControls || side !== "player") {
+      return { target: this.aimSpot[side].clone(), power };
+    }
+    const c = this.chars[side];
+    const len = Math.hypot(input.moveX, input.moveZ);
+    // A swipe with no usable direction (or an aim that has gone stale) is
+    // played straight ahead rather than dropped.
+    const dx = len > 0.05 ? input.moveX / len : sign(other(side));
+    const dz = len > 0.05 ? input.moveZ / len : 0;
+    const reach = rangeFor(power);
+    const target = clampToCourt(new Vector3(c.position.x + dx * reach, 0, c.position.z + dz * reach));
+    this.aimSpot[side] = target.clone();
+    return { target, power };
+  }
+
+  /**
+   * Advance a held kick: the stick moves this side's aim marker instead of the
+   * player, and the charge grows. Returns true while that is happening, so the
+   * caller can keep the striker still.
+   *
+   * Portrait never charges — its swipe already said how hard — and a side that
+   * cannot strike right now cannot line one up either.
+   */
+  private updateCharge(side: Side, input: InputState, dt: number): boolean {
+    const aimable =
+      this.state === "rally" &&
+      this.strikeableSide === side &&
+      !this.chars[side].busy &&
+      !this.pendingTouch &&
+      !(this.portraitControls && side === "player");
+    if (!input.strikeHeld || !aimable) {
+      // The release arrives on the same frame as the press it fired, and this
+      // runs first: clearing the charge here would throw away the very thing
+      // that press is about to spend. aimFor() clears it when it reads it.
+      if (!input.strikeHeld && !input.strikePressed) this.charging[side] = 0;
+      return false;
+    }
+    this.charging[side] += dt;
+    const spot = this.aimSpot[side];
+    spot.x += input.moveX * AIM_SPEED * dt;
+    spot.z += input.moveZ * AIM_SPEED * dt;
+    this.aimSpot[side] = clampToCourt(spot);
+    return true;
+  }
+
+  /** Portrait touch play: no aim marker, and the swipe carries the aim. */
+  portraitControls = false;
+
+  /**
+   * Attempt the return strike for `side`, aimed at a point on the court and
+   * struck at a chosen power.
+   *
+   * Where it actually lands is that point plus a spread: wider the harder the
+   * ball is struck, wider again for a contact taken at full stretch, narrower
+   * for a precise striker. Nothing clamps the result back onto the table, so a
+   * kick aimed at the line and hit flat out can and should miss.
+   */
+  tryStrike(side: Side, aim: StrikeAim): boolean {
     if (!this.canTouch(side)) return false;
     const c = this.chars[side];
     const popped = this.touchCount > 0; // ball was set up by a control touch
+    const power = Math.min(1, Math.max(0, aim.power));
 
     // Ball still climbing (or way overhead): queue the touch until it drops.
     const wait = this.touchWait(c);
     if (wait > 0) {
-      this.pendingTouch = { side, kind: "strike", aimX: aimFwd, aimZ: aimLat, wait };
-      this.strikeWindow = null; // system-timed touch: the bar no longer applies
+      this.pendingTouch = { side, kind: "strike", aim: { target: aim.target.clone(), power }, wait };
       return true;
-    }
-
-    // Grade the player's press timing against the precision gauge: perfect =
-    // pressing STRIKE_LEAD before the ideal contact moment. A kick without an
-    // active gauge (direct volley, early queued press) stays playable but
-    // inaccurate; a visible meter shot must land in green to cross the net.
-    // The AI (and both humans in versus) stay neutral (null).
-    let quality: number | null = null;
-    let meteredShot = false;
-    let inGreenZone = true;
-    if (side === "player" && !this.versus) {
-      const w = this.strikeWindow;
-      meteredShot = w !== null;
-      if (w) {
-        const timingOffset = w.tIdeal - w.age - STRIKE_LEAD;
-        inGreenZone = Math.abs(timingOffset) <= METER_SWEET_HALF_WINDOW;
-        quality = Math.max(0.1, Math.min(1, 1 - Math.abs(timingOffset) / METER_GRADE_SPAN));
-      } else {
-        quality = UNCONTROLLED_QUALITY;
-      }
-      this.strikeWindow = null;
-      if (w) this.ui.meterResult?.(quality);
     }
 
     this.lastHitter = side;
@@ -968,7 +1047,7 @@ export class MatchController {
     const probe = flightAt(flight, STRIKE_LEAD);
     const lateral = (probe.z - c.position.z) * (side === "player" ? -1 : 1);
     const ballHeight = probe.y - GROUND_Y; // height above the ground plane
-    let clip = pickStrikeClip(ballHeight, lateral, c.height, c.def.strongFoot);
+    let clip = pickStrikeClip(ballHeight, lateral, c.height, c.def.strongFoot, power);
     // Backflip finish: only reachable off a pop-up that left the ball high,
     // and only with a foot this player's traits allow. If the natural foot is
     // barred but the other one qualifies, a near-centre ball can still be
@@ -997,61 +1076,57 @@ export class MatchController {
       this.contactSync = null;
       if (this.state !== "rally") return; // safety: the point ended mid-wind-up
       this.snapBallToLimb(c, clip);
-      const opp = other(side);
-      // A miss outside the visible green segment is deliberately short: it
-      // lands on the hitter's table half instead of being secretly steered to
-      // the opponent-side target. Direct volleys (no visible meter) retain
-      // the game's normal, less-accurate behavior.
-      const fallsShort = meteredShot && !inGreenZone;
-      // Gauge quality rules a successful meter kick. A perfect press (q≈1)
-      // bites exactly where aimed; an uncontrolled direct volley wobbles.
-      const depthWobble =
-        quality === null ? 0 : (Math.random() - 0.5) * 0.9 * (1 - quality);
-      const tx = sign(opp) * Math.min(1.45, Math.max(0.3, 0.85 + aimFwd * 0.5 + depthWobble));
-      // Held direction picks the landing side of the table; aiming shrinks the
-      // random spray but a residual remains, scaled by the striker's precision
-      // and by which foot hits (weak-foot kicks wobble, strong-foot ones bite).
+      // Where it was aimed, plus the spread that aim earned. The stretch term
+      // is how far the striker had to reach for the contact: a ball taken at
+      // arm's length is not struck as cleanly as one met in front.
       const ff = footFactor(c.def, clip);
-      const sprayAmp =
-        ((0.2 * ff.spray) / c.def.precision) * (quality === null ? 1 : 2.6 - 2.35 * quality);
-      const spray = (Math.random() - 0.5) * sprayAmp * (1 - 0.7 * Math.min(1, Math.abs(aimLat)));
-      const tz = Math.max(-0.68, Math.min(0.68, aimLat * 0.62 + spray));
-      let target: Vector3;
-      if (fallsShort) {
-        // Safely inside the hitter's own table half: the existing rules award
-        // the opponent once this visibly short shot lands there.
-        const shortX = sign(side) * 0.85;
-        const shortZ = Math.max(-0.55, Math.min(0.55, aimLat * 0.45 + (Math.random() - 0.5) * 0.12));
-        target = new Vector3(shortX, tableSurfaceY(shortX) + 0.02, shortZ);
-      } else {
-        target = new Vector3(tx, tableSurfaceY(tx) + 0.02, tz);
-      }
+      const chest = c.position.add(new Vector3(0, c.height * 0.55, 0));
+      const stretch = Vector3.Distance(chest, this.ball.state.pos) / PLAYER_REACH;
+      const radius = spreadRadius({
+        power,
+        precision: c.def.precision,
+        footSpray: ff.spray,
+        stretch,
+      });
+      const landed = scatter(aim.target, radius, Math.random);
+      // Aiming past the far edge is allowed — that is how a kick misses — but
+      // a target beyond the court is not a shot anyone meant to play.
+      const wanted = clampToCourt(landed);
+      const onTable = onTableHalf(wanted, sign(other(side)));
+      const surfaceY = onTable ? tableSurfaceY(wanted.x) : GROUND_Y;
+      const target = new Vector3(wanted.x, surfaceY + 0.02, wanted.z);
       const dist = Vector3.Distance(this.ball.state.pos, target);
       // Stronger kicks fly flatter and faster (shorter flight time).
-      let power = (KICK_POWER[clip] ?? 1) * c.def.power * ff.power;
-      if (quality !== null) power *= 0.88 + 0.18 * quality;
-      // The arc follows the contact height: a low volley must loft over the
-      // net, while a high contact is drilled flatter. Kicks initiated close to
-      // the table also flatten — there is no runway to need a lob — while deep
-      // ones float a touch more. On top of that, each clip's KICK_LOFT floats
-      // (>1) or flattens (<1) the arc.
+      let kickPower = (KICK_POWER[clip] ?? 1) * c.def.power * ff.power;
+      kickPower *= 0.72 + 0.5 * power;
+      // The arc follows the requested power first — a soft kick floats, a hard
+      // one is drilled — and then the contact: a low volley must still loft
+      // over the net while a high contact is hit down. Kicks taken close to
+      // the table flatten (there is no runway for a lob), deep ones float a
+      // touch more, and each clip's KICK_LOFT nudges it again.
       const relH = (this.ball.state.pos.y - GROUND_Y) / c.height;
       const clipLoft = KICK_LOFT[clip] ?? 1;
       const prox = Math.min(1, Math.max(0, (Math.abs(this.ball.state.pos.x) - TABLE.halfLen) / 2.2));
-      let loft = Math.min(1.1, Math.max(0.35, 1.25 - relH)) * clipLoft * (0.78 + 0.32 * prox);
+      let loft =
+        loftFor(power) * Math.min(1.1, Math.max(0.35, 1.25 - relH)) * clipLoft * (0.78 + 0.32 * prox);
       // The smash: a foot volley or backflip taken while the ball is still
       // high, or a header right at the table, flies near-flat and straight and
       // only skims the net.
       const smash =
-        ((clip.includes("FootKick") || clip.startsWith("Backflip")) && relH > 0.55) ||
-        (clip.includes("HeadKick") && relH > 0.75 && prox < 0.35);
+        power > 0.7 &&
+        (((clip.includes("FootKick") || clip.startsWith("Backflip")) && relH > 0.55) ||
+          (clip.includes("HeadKick") && relH > 0.75 && prox < 0.35));
       if (smash) loft = Math.min(loft, 0.42);
       const clearance = smash ? 0.02 : relH > 0.7 ? 0.05 : clipLoft < 1 ? 0.08 : 0.14;
       // Floor the flight time so the launch stays under this clip's speed cap:
       // headers are quick but human, only foot smashes and backflips get the
       // full whip (a clamped launch would also sag below the net clearance).
       const cap = KICK_SPEED_CAP[clip] ?? KICK_SPEED_CAP_DEFAULT;
-      const flight = Math.max(((0.5 + dist * 0.055) * loft) / power, dist / cap);
+      const flight = Math.max(((0.5 + dist * 0.055) * loft) / kickPower, dist / cap);
+      // How close the ball actually came to where it was sent, for the HUD.
+      if (side === "player" && !this.versus) {
+        this.ui.meterResult?.(Math.max(0, 1 - Vector3.Distance(wanted, aim.target) / SPREAD.max));
+      }
       const v = solveLaunchClearingNet(this.ball.state.pos, target, flight, clearance);
       this.ball.launch(v, 0.7 + relH); // smashes visibly spin faster
       this.audio.playKick();
@@ -1080,7 +1155,11 @@ export class MatchController {
    */
   tryControlTouch(side: Side, aimX = 0, aimZ = 0, reach = PLAYER_REACH): boolean {
     if (!this.canTouch(side, reach)) return false;
-    if (this.touchCount >= MAX_TOUCHES - 1) return this.tryStrike(side, aimX, aimZ);
+    if (this.touchCount >= MAX_TOUCHES - 1) {
+      // Out of touches: the set-up becomes the finish, aimed where this side's
+      // aim already points and struck at a middling pace.
+      return this.tryStrike(side, { target: this.aimSpot[side].clone(), power: 0.55 });
+    }
     const c = this.chars[side];
 
     // Ball still climbing (or way overhead): queue the touch until it drops.
@@ -1172,13 +1251,17 @@ export class MatchController {
         } else {
           this.strikeableSide = e.side;
           this.touchCount = 0;
+          // A fresh possession starts aimed at the middle of the other half,
+          // so an aim left in a corner never carries silently into it.
+          this.aimSpot[e.side] = new Vector3(sign(other(e.side)) * TABLE.halfLen * 0.6, 0, 0);
+          this.charging[e.side] = 0;
           this.emit({ type: "possession-start", side: e.side });
           if ((e.side === "player" || this.versus) && this.possessionHints < 2) {
             this.possessionHints++;
             this.ui.hint(
               portraitTouch()
-                ? "Tap to move · Double tap to set up · Swipe to return"
-                : "Hold a direction to aim · STRIKE returns · RECEPTION sets up"
+                ? "Swipe to return — fast and flat, or slow and looped"
+                : "Hold STRIKE to aim and charge · release to kick"
             );
           }
         }
@@ -1231,7 +1314,6 @@ export class MatchController {
     this.interceptSpot = null;
     this.bufferedPress = null;
     this.bufferedPress2 = null;
-    this.strikeWindow = null;
     this.landingSpot = null;
     this.tableEventCooldown = 0;
     this.lastTableSide = null;
@@ -1444,7 +1526,7 @@ export class MatchController {
             this.pendingTouch = null;
           } else if (p.wait <= 0) {
             this.pendingTouch = null;
-            if (p.kind === "strike") this.tryStrike(p.side, p.aimX, p.aimZ);
+            if (p.kind === "strike") this.tryStrike(p.side, p.aim);
             else this.tryControlTouch(p.side, p.aimX, p.aimZ);
           }
         }
@@ -1455,42 +1537,32 @@ export class MatchController {
           this.interceptSpot = this.computeIntercept("player");
           this.interceptSpot2 = this.versus ? this.computeIntercept("ai") : null;
           this.landingSpot = this.ball.held ? null : this.computeLandingSpot();
-          // Precision gauge: (re)estimate when the player's ideal kick moment
-          // comes. Kicks only — the ball must have been set up by a control
-          // touch first — and single-player only.
-          if (
-            !this.versus &&
-            this.strikeableSide === "player" &&
-            this.touchCount > 0 &&
-            !this.chars.player.busy &&
-            !this.pendingTouch
-          ) {
-            const tIdeal = this.idealContactIn("player");
-            this.strikeWindow = tIdeal === null ? null : { tIdeal, age: 0 };
-          } else if (this.strikeableSide !== "player" || this.touchCount === 0) {
-            this.strikeWindow = null;
-          }
         }
-        if (this.strikeWindow) this.strikeWindow.age += dt;
+        // Holding the kick control hands the stick to the aim marker and
+        // charges the shot; the player stands still while they line it up.
+        const aiming = this.updateCharge("player", input, dt);
         // After the player's own pop, run to the drop spot automatically —
         // the stick then only aims the finish (the direction that steered the
         // pop would otherwise keep carrying the player past the ball).
         const selfSetup =
           this.strikeableSide === "player" && this.touchCount > 0 && this.selfSetupSpot !== null;
-        if (player.busy) player.velocity.setAll(0);
+        if (player.busy || aiming) player.velocity.setAll(0);
         else if (selfSetup) player.moveToward(this.selfSetupSpot!, player.def.speed, dt);
         else this.movePlayer(input, dt);
-        // Presses are buffered briefly and retried, so pressing just before
+        // Presses are buffered briefly and retried, so releasing just before
         // the ball becomes strikeable (or drops into reach) still lands the
         // touch instead of being swallowed.
-        if (input.strikePressed) this.bufferedPress = { kind: "strike", ttl: PRESS_BUFFER };
-        else if (input.popPressed) this.bufferedPress = { kind: "pop", ttl: PRESS_BUFFER };
+        if (input.strikePressed) {
+          this.bufferedPress = { kind: "strike", aim: this.aimFor("player", input), ttl: PRESS_BUFFER };
+        } else if (input.popPressed) {
+          this.bufferedPress = { kind: "pop", aimX: input.moveX, aimZ: input.moveZ, ttl: PRESS_BUFFER };
+        }
         if (this.bufferedPress) {
           const bp = this.bufferedPress;
           const done =
             bp.kind === "strike"
-              ? this.tryStrike("player", input.moveX, input.moveZ)
-              : this.tryControlTouch("player", input.moveX, input.moveZ);
+              ? this.tryStrike("player", bp.aim)
+              : this.tryControlTouch("player", bp.aimX, bp.aimZ);
           bp.ttl -= dt;
           if (done || bp.ttl <= 0) this.bufferedPress = null;
         } else {
@@ -1548,25 +1620,6 @@ export class MatchController {
     return null;
   }
 
-  /**
-   * Seconds until the ball's ideal strike moment for `side` — the first
-   * sampled point where it is dropping through comfortable contact height —
-   * or null when no such moment is coming.
-   */
-  private idealContactIn(side: Side): number | null {
-    const c = this.chars[side];
-    const flight = sampleFlight(this.ball.state, 1.6);
-    let prevY = this.ball.state.pos.y;
-    for (const s of flight) {
-      if (s.grounded) break;
-      const relH = (s.pos.y - GROUND_Y) / c.height;
-      const descending = s.pos.y < prevY;
-      prevY = s.pos.y;
-      if (descending && relH <= 0.62 && relH >= 0.28) return s.t;
-    }
-    return null;
-  }
-
   /** Show/track the landing X while a rally ball is in the air. */
   private updateLandingMarker(): void {
     const m = this.landingMarker;
@@ -1581,44 +1634,31 @@ export class MatchController {
     }
   }
 
-  /** Drive the precision bar from the player's approach window. */
+  /**
+   * Drive the power bar from the kick being charged.
+   *
+   * The marked band is where the spread is still tight enough to trust a line:
+   * past it the ball goes harder and lands less reliably, which is the whole
+   * trade the bar exists to show.
+   */
   private updateMeter(): void {
-    const w = this.strikeWindow;
-    const active =
-      w !== null &&
-      !this.versus &&
-      this.state === "rally" &&
-      this.strikeableSide === "player" &&
-      this.touchCount > 0 &&
-      !this.pendingTouch &&
-      !this.chars.player.busy;
-    if (!active || !w) {
+    const held = this.charging.player;
+    if (held <= 0 || this.versus) {
       this.ui.meter?.(null, 0, 0);
       return;
     }
-    const remaining = w.tIdeal - w.age;
-    if (remaining < -METER_POST_HORIZON) {
-      this.ui.meter?.(null, 0, 0);
-      return;
-    }
-    const meterSpan = METER_HORIZON + METER_POST_HORIZON;
-    const frac = Math.min(1, Math.max(0, (METER_HORIZON - remaining) / meterSpan));
-    // The green band matches the exact gate used by tryStrike() and keeps a
-    // visible off-zone strip on both sides of the enlarged timing window.
-    const sweetStart = Math.min(
-      1,
-      Math.max(0, (METER_HORIZON - (STRIKE_LEAD + METER_SWEET_HALF_WINDOW)) / meterSpan)
-    );
-    const sweetEnd = Math.min(
-      1,
-      Math.max(0, (METER_HORIZON - (STRIKE_LEAD - METER_SWEET_HALF_WINDOW)) / meterSpan)
-    );
-    this.ui.meter?.(frac, sweetStart, sweetEnd);
+    const charge = Math.min(1, held / CHARGE_TIME);
+    const power = TAP_POWER + (1 - TAP_POWER) * charge;
+    const safeUpTo = (SAFE_POWER - TAP_POWER) / (1 - TAP_POWER);
+    this.ui.meter?.(power, 0, Math.max(0, Math.min(1, safeUpTo)));
   }
 
   /**
-   * Show where a strike or serve aimed with the current stick would land, for
-   * whichever human could hit right now (in versus, P2 gets it too).
+   * Show where the current aim would send the ball, for whichever human could
+   * hit right now (in versus, P2 gets one too).
+   *
+   * Portrait has no marker at all: its kick is aimed by the swipe that fires
+   * it, so there is nothing to show before the gesture and nothing to move.
    */
   private updateAimMarker(input: InputState): void {
     const marker = this.aimMarker;
@@ -1629,15 +1669,25 @@ export class MatchController {
     if (this.state === "rally" && this.strikeableSide) side = this.strikeableSide;
     else if (inServe) side = this.serveOwner;
     if (side === "ai" && !this.versus) side = null; // the CPU aims in private
+    if (side === "player" && this.portraitControls) side = null;
     marker.setEnabled(side !== null);
     if (!side) return;
-    // Mirror of the target computation in tryStrike / launchServe (no spray).
-    const inp = side === "player" ? input : this.versusInput;
-    const fwd = side === "player" ? inp.moveX : -inp.moveX; // + = deeper for that side
-    const tx = sign(other(side)) * Math.min(1.4, Math.max(0.35, 0.85 + fwd * 0.5));
-    const tz = Math.max(-0.62, Math.min(0.62, inp.moveZ * 0.62));
-    marker.position.set(tx, tableSurfaceY(tx) + 0.025, tz);
-    marker.scaling.setAll(1 + 0.08 * Math.sin(performance.now() / 180));
+    if (inServe) {
+      // The serve still aims by held direction, onto the opponent's half.
+      const inp = side === "player" ? input : this.versusInput;
+      const fwd = side === "player" ? inp.moveX : -inp.moveX;
+      const spot = tableTarget(sign(other(side)), fwd, inp.moveZ);
+      marker.position.set(spot.x, tableSurfaceY(spot.x) + 0.025, spot.z);
+    } else {
+      const spot = this.aimSpot[side];
+      const onTable = onTableHalf(spot, sign(other(side)));
+      const y = onTable ? tableSurfaceY(spot.x) : GROUND_Y;
+      marker.position.set(spot.x, y + 0.025, spot.z);
+    }
+    // A charging kick swells the marker, so the power in the bar is also
+    // visible where the player is actually looking.
+    const charge = Math.min(1, this.charging[side] / CHARGE_TIME);
+    marker.scaling.setAll(1 + 0.35 * charge + 0.08 * Math.sin(performance.now() / 180));
   }
 
   /** Versus mode: drive the "ai" character from the second human's input. */
@@ -1647,23 +1697,28 @@ export class MatchController {
     // After P2's own pop, auto-run to the drop spot (mirror of player 1).
     const selfSetup =
       this.strikeableSide === "ai" && this.touchCount > 0 && this.selfSetupSpot2 !== null;
-    if (c.busy) c.velocity.setAll(0);
+    const aiming = this.updateCharge("ai", v, dt);
+    if (c.busy || aiming) c.velocity.setAll(0);
     else if (selfSetup) c.moveToward(this.selfSetupSpot2!, c.def.speed, dt);
     else {
       // Same reach assist as player 1, toward this side's intercept.
       const [mx, mz] = this.bendAssist(c.position, this.interceptSpot2, v.moveX, v.moveZ);
       c.move(mx, mz, c.def.speed, dt);
     }
-    // Aim semantics match tryStrike: fwd + = deeper into the opponent's half
-    // (court -x for this side), lat = court z. Presses buffer like player 1's.
-    if (v.strikePressed) this.bufferedPress2 = { kind: "strike", ttl: PRESS_BUFFER };
-    else if (v.popPressed) this.bufferedPress2 = { kind: "pop", ttl: PRESS_BUFFER };
+    // The second seat aims and charges exactly as the first does; its axes
+    // arrive already expressed in court space, so the marker moves in world
+    // coordinates for both. Presses buffer like player 1's.
+    if (v.strikePressed) {
+      this.bufferedPress2 = { kind: "strike", aim: this.aimFor("ai", v), ttl: PRESS_BUFFER };
+    } else if (v.popPressed) {
+      this.bufferedPress2 = { kind: "pop", aimX: v.moveX, aimZ: v.moveZ, ttl: PRESS_BUFFER };
+    }
     if (this.bufferedPress2) {
       const bp = this.bufferedPress2;
       const done =
         bp.kind === "strike"
-          ? this.tryStrike("ai", -v.moveX, v.moveZ)
-          : this.tryControlTouch("ai", v.moveX, v.moveZ);
+          ? this.tryStrike("ai", bp.aim)
+          : this.tryControlTouch("ai", bp.aimX, bp.aimZ);
       bp.ttl -= dt;
       if (done || bp.ttl <= 0) this.bufferedPress2 = null;
     } else {

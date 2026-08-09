@@ -180,38 +180,40 @@ describe("pickStrikeClip", () => {
   const height = 1.8;
 
   it("heads a high ball and volleys a low one", () => {
-    stubRandom(0); // take the first option in every band
-    expect(pickStrikeClip(height * 0.9, 0.5, height)).toBe("RightHeadKick");
-    expect(pickStrikeClip(height * 0.7, 0.5, height)).toBe("ChestKick");
-    expect(pickStrikeClip(height * 0.5, 0.5, height)).toBe("RightKneeReception");
-    expect(pickStrikeClip(height * 0.2, 0.5, height)).toBe("RightFootKick");
+    stubRandom(0);
+    expect(pickStrikeClip(height * 0.9, 0.5, height, "both", 1)).toBe("RightHeadKick");
+    expect(pickStrikeClip(height * 0.7, 0.5, height, "both", 1)).toBe("RightHeadKick");
+    expect(pickStrikeClip(height * 0.5, 0.5, height, "both", 1)).toBe("ChestKick");
+    expect(pickStrikeClip(height * 0.2, 0.5, height, "both", 1)).toBe("RightFootKick");
   });
 
-  it("takes the alternative in each band on a high roll", () => {
-    stubRandom(0.99);
-    expect(pickStrikeClip(height * 0.7, 0.5, height)).toBe("RightHeadKick");
-    expect(pickStrikeClip(height * 0.5, 0.5, height)).toBe("ChestKick");
-    expect(pickStrikeClip(height * 0.2, 0.5, height)).toBe("InnerRightFootReception");
+  it("plays the floated clip in each band when the kick is a soft one", () => {
+    // The animation has to agree with the ball that comes off it: a lofted
+    // kick is played with the inner foot or the knee, never drilled.
+    stubRandom(0);
+    expect(pickStrikeClip(height * 0.7, 0.5, height, "both", 0.1)).toBe("ChestKick");
+    expect(pickStrikeClip(height * 0.5, 0.5, height, "both", 0.1)).toBe("RightKneeReception");
+    expect(pickStrikeClip(height * 0.2, 0.5, height, "both", 0.1)).toBe("InnerRightFootReception");
   });
 
   it("picks the side from the lateral offset", () => {
     stubRandom(0);
-    expect(pickStrikeClip(height * 0.9, 0.5, height)).toBe("RightHeadKick");
-    expect(pickStrikeClip(height * 0.9, -0.5, height)).toBe("LeftHeadKick");
+    expect(pickStrikeClip(height * 0.9, 0.5, height, "both", 1)).toBe("RightHeadKick");
+    expect(pickStrikeClip(height * 0.9, -0.5, height, "both", 1)).toBe("LeftHeadKick");
   });
 
   it("always heads a wide high ball rather than centring it", () => {
-    stubRandom(0); // 0 would otherwise select CenterHeadKick
-    expect(pickStrikeClip(height * 0.95, 0.5, height)).toBe("RightHeadKick");
-    // Dead centre it may centre-head instead.
-    expect(pickStrikeClip(height * 0.95, 0.1, height)).toBe("CenterHeadKick");
+    stubRandom(0);
+    expect(pickStrikeClip(height * 0.95, 0.5, height, "both", 1)).toBe("RightHeadKick");
+    // Dead centre a driven ball is headed straight through.
+    expect(pickStrikeClip(height * 0.95, 0.1, height, "both", 1)).toBe("CenterHeadKick");
   });
 
   it("favours the strong foot on a dead-centre ball", () => {
     // |lateral| < 0.06 makes pickSide consume the first random: 0.5 < 0.75
     // keeps the preferred side, then 0 takes the first option in the band.
     stubRandom(0.5, 0);
-    expect(pickStrikeClip(height * 0.2, 0, height, "left")).toBe("LeftFootKick");
+    expect(pickStrikeClip(height * 0.2, 0, height, "left", 1)).toBe("LeftFootKick");
 
     vi.restoreAllMocks();
     stubRandom(0.5, 0);
@@ -246,11 +248,11 @@ describe("pickStrikeClip", () => {
     vi.restoreAllMocks();
     stubRandom(0);
     // The same ball height is a knee ball for a 2 m player...
-    expect(pickStrikeClip(1.0, 0.5, 2.0)).toBe("RightKneeReception");
+    expect(pickStrikeClip(1.0, 0.5, 2.0, "both", 0.1)).toBe("RightKneeReception");
     vi.restoreAllMocks();
     stubRandom(0);
     // ...and a chest ball for a 1.5 m one.
-    expect(pickStrikeClip(1.0, 0.5, 1.5)).toBe("ChestKick");
+    expect(pickStrikeClip(1.0, 0.5, 1.5, "both", 0.1)).toBe("ChestKick");
   });
 });
 

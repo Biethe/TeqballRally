@@ -1,6 +1,7 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { predict, sampleFlight, type Prediction } from "./ball";
 import type { MatchController, MatchEvent } from "./match";
+import { tableTarget } from "./aim";
 import { AI_REACH, COURT, GROUND_Y, MAX_TOUCHES, SPAWN } from "./config";
 
 export interface AIDifficulty {
@@ -197,9 +198,14 @@ export class AIController {
             m.ball.state.pos.x > COURT.minX &&
             d < AI_REACH * 0.72;
           if (!holdForLow) {
+            // The CPU aims at a spot on the player's half and strikes at a
+            // pace it picks; its own aim error is left to the shared spread,
+            // which now decides whether a greedy line stays on the table.
             const aimFwd = Math.random() * 2 - 1;
             const aimLat = (Math.random() * 2 - 1) * (1 - this.diff.aimError * 0.4);
-            if (m.tryStrike("ai", aimFwd, aimLat)) {
+            const target = tableTarget(-1, aimFwd, aimLat);
+            const power = 0.35 + Math.random() * 0.5;
+            if (m.tryStrike("ai", { target, power })) {
               this.notifyNewRally();
             }
           }

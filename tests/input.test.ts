@@ -5,6 +5,8 @@ const sample = (over: Partial<InputState> = {}): InputState => ({
   moveX: 0,
   moveZ: 0,
   strikePressed: false,
+  strikeHeld: false,
+  strikePower: 0,
   popPressed: false,
   confirmPressed: false,
   ...over,

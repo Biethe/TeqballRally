@@ -111,6 +111,8 @@ export class OnlineSession {
     moveX: 0,
     moveZ: 0,
     strikePressed: false,
+    strikeHeld: false,
+    strikePower: 0,
     popPressed: false,
     confirmPressed: false,
   };
@@ -213,6 +215,10 @@ export class OnlineSession {
           // Presses latch until a simulation step consumes them, for the same
           // reason local input does: the guest's frame rate is not ours.
           strikePressed: this.pendingGuest.strike || msg.strike,
+          // A held kick is a level, not a press: it is never latched, and an
+          // older peer that does not send it simply never charges one.
+          strikeHeld: msg.hold === true,
+          strikePower: typeof msg.power === "number" ? msg.power : 0,
           popPressed: this.pendingGuest.pop || msg.pop,
           confirmPressed: this.pendingGuest.confirm || msg.confirm,
         };
@@ -307,6 +313,8 @@ export class OnlineSession {
           moveX: held.moveX,
           moveZ: held.moveZ,
           strike: held.strikePressed,
+          hold: held.strikeHeld,
+          power: held.strikePower,
           pop: held.popPressed,
           confirm: held.confirmPressed,
         },
@@ -314,7 +322,13 @@ export class OnlineSession {
       )
     );
     // Edges are sent once; axes persist until the next frame overwrites them.
-    this.localInput = { ...held, strikePressed: false, popPressed: false, confirmPressed: false };
+    this.localInput = {
+      ...held,
+      strikePressed: false,
+      strikePower: 0,
+      popPressed: false,
+      confirmPressed: false,
+    };
   }
 
   /**
@@ -327,6 +341,8 @@ export class OnlineSession {
       moveX: input.moveX,
       moveZ: input.moveZ,
       strikePressed: this.localInput.strikePressed || input.strikePressed,
+      strikeHeld: input.strikeHeld,
+      strikePower: input.strikePressed ? input.strikePower : this.localInput.strikePower,
       popPressed: this.localInput.popPressed || input.popPressed,
       confirmPressed: this.localInput.confirmPressed || input.confirmPressed,
     };

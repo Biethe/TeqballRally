@@ -34,6 +34,12 @@ export type Gesture =
       dy: number;
       /** 0..1, how far the finger travelled relative to a full-strength swipe. */
       strength: number;
+      /**
+       * 0..1, how fast it was drawn. This is the one a kick reads: a flick is
+       * a low, fast strike and a slow drag is a floated one, and the two are
+       * told apart by pace rather than by length.
+       */
+      speed: number;
     };
 
 export interface GestureTuning {
@@ -43,6 +49,8 @@ export interface GestureTuning {
   swipeMin: number;
   /** Travel that reads as a full-strength swipe; beyond it, strength saturates. */
   swipeFull: number;
+  /** Pace, in short-screen-sides per second, that reads as a full-speed flick. */
+  swipeFastest: number;
   /** A still press longer than this is a rest, not a tap. */
   tapMax: number;
   /** How long a tap waits for a second one before it is reported alone. */
@@ -60,6 +68,7 @@ export const DEFAULT_GESTURE_TUNING: GestureTuning = {
   slop: 0.035,
   swipeMin: 0.08,
   swipeFull: 0.3,
+  swipeFastest: 1.9,
   tapMax: 0.3,
   doubleWindow: 0.28,
   doubleRadius: 0.16,
@@ -73,6 +82,8 @@ interface Track {
   t0: number;
   /** Travelled past the slop, so it can only ever become a swipe. */
   moved: boolean;
+  /** When it first moved, which is when the swipe it may become began. */
+  movedAt: number | null;
 }
 
 export class GestureScheme {
@@ -100,15 +111,18 @@ export class GestureScheme {
   }
 
   begin(id: number, px: number, py: number, t: number): void {
-    this.tracks.set(id, { x0: px, y0: py, x: px, y: py, t0: t, moved: false });
+    this.tracks.set(id, { x0: px, y0: py, x: px, y: py, t0: t, moved: false, movedAt: null });
   }
 
-  move(id: number, px: number, py: number): void {
+  move(id: number, px: number, py: number, t: number): void {
     const track = this.tracks.get(id);
     if (!track) return;
     track.x = px;
     track.y = py;
-    if (Math.hypot(px - track.x0, py - track.y0) > this.tuning.slop * this.unit) track.moved = true;
+    if (Math.hypot(px - track.x0, py - track.y0) > this.tuning.slop * this.unit) {
+      track.moved = true;
+      track.movedAt ??= t;
+    }
   }
 
   /** Release a tap that has waited out its double-tap window. Call once a frame. */
@@ -132,8 +146,13 @@ export class GestureScheme {
 
     if (travel >= this.tuning.swipeMin) {
       const strength = Math.min(1, travel / this.tuning.swipeFull);
+      // Pace over the whole gesture. A finger that rested before setting off
+      // would otherwise read as slow no matter how hard it was then flicked,
+      // so the clock starts at the first movement, not at the press.
+      const drawn = Math.max(1e-3, t - (track.movedAt ?? track.t0));
+      const speed = Math.min(1, travel / drawn / this.tuning.swipeFastest);
       const len = Math.hypot(dx, dy);
-      this.out.push({ kind: "swipe", x, y, dx: dx / len, dy: dy / len, strength });
+      this.out.push({ kind: "swipe", x, y, dx: dx / len, dy: dy / len, strength, speed });
       return;
     }
     // A smudge too short to aim, or a finger that simply rested: neither is a
