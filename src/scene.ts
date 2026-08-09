@@ -236,9 +236,11 @@ export async function createGameScene(
   aimMarker.isPickable = false;
   aimMarker.setEnabled(false);
 
-  // Landing X: two crossed flat bars, distinct from the orange aim ring.
+  // Landing X: two crossed flat bars, distinct from the orange aim ring. Small
+  // on purpose — it marks a spot, and at any size that reads as a shape of its
+  // own it starts competing with the ball for the eye.
   const xBar = (name: string, yaw: number): Mesh => {
-    const bar = MeshBuilder.CreateBox(name, { width: 0.3, height: 0.012, depth: 0.05 }, scene);
+    const bar = MeshBuilder.CreateBox(name, { width: 0.19, height: 0.012, depth: 0.035 }, scene);
     bar.rotation.y = yaw;
     bar.bakeCurrentTransformIntoVertices();
     return bar;

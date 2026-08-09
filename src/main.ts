@@ -526,7 +526,9 @@ async function boot(): Promise<void> {
       match.portraitControls = match.tapSteering;
       const placement = input.pollTapPlacement();
       if (placement && !freecam) {
-        match.setMoveTarget(courtPointAt(placement.x, placement.y));
+        // The match decides what the tap meant: somewhere to stand, or which
+        // way to set up a reception that is already due.
+        match.tapAt(courtPointAt(placement.x, placement.y));
       }
       latchInput(latchedP1, inp);
       if (versusCam) {

@@ -1,5 +1,5 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { COURT, TABLE } from "./config";
+import { COURT, PLAY_BOX, TABLE, TABLE_SCALE } from "./config";
 
 /**
  * What a kick is trying to do: land the ball on a point, at a chosen power.
@@ -90,15 +90,30 @@ export function loftFor(power: number): number {
  */
 export function rangeFor(power: number): number {
   const p = Math.min(1, Math.max(0, power));
-  return 2.2 + 6.6 * p;
+  return (2.2 + 6.6 * p) * TABLE_SCALE;
 }
 
-/** Keep an aim point inside the court, where a marker can still be seen. */
+/** Keep a point a player is walking to inside the court they may stand on. */
 export function clampToCourt(point: Vector3): Vector3 {
   return new Vector3(
     Math.max(-COURT.maxX, Math.min(COURT.maxX, point.x)),
     point.y,
     Math.max(-COURT.maxZ, Math.min(COURT.maxZ, point.z))
+  );
+}
+
+/**
+ * Keep an aim, and the landing it scatters to, inside the playable rectangle.
+ *
+ * A kick has to be able to miss; it does not have to be able to end up in the
+ * stands. Clamping both ends of the shot to the same box means a bad one lands
+ * just past the line, still on screen, and still obviously a miss.
+ */
+export function clampToPlay(point: Vector3): Vector3 {
+  return new Vector3(
+    Math.max(-PLAY_BOX.halfLen, Math.min(PLAY_BOX.halfLen, point.x)),
+    point.y,
+    Math.max(-PLAY_BOX.halfWid, Math.min(PLAY_BOX.halfWid, point.z))
   );
 }
 
@@ -117,7 +132,9 @@ export function onTableHalf(point: Vector3, halfSign: number): boolean {
  * on the table rather than a free point on the court.
  */
 export function tableTarget(attackingSign: number, fwd: number, lat: number): Vector3 {
-  const depth = Math.min(1.45, Math.max(0.3, 0.85 + fwd * 0.5));
-  const lateral = Math.max(-0.68, Math.min(0.68, lat * 0.62));
+  // Fractions of the half rather than metres, so the aim keeps its shape if
+  // the table is ever resized again.
+  const depth = TABLE.halfLen * Math.min(0.97, Math.max(0.2, 0.57 + fwd * 0.33));
+  const lateral = TABLE.halfWid * Math.max(-0.9, Math.min(0.9, lat * 0.83));
   return new Vector3(attackingSign * depth, 0, lateral);
 }

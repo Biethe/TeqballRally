@@ -20,7 +20,7 @@ import { fixMetallicMaterials } from "./scene";
 
 const LOCO_CLIPS = ["Idle", "JogForward", "jogBackward", "JogStrafeLeft", "JogStrafeRight"] as const;
 /** Ground speed the jog clips look natural at; playback scales around it. */
-const LOCO_SPEED = 4.5;
+const LOCO_SPEED = 4.5 * CHARACTER_SCALE;
 type LocoClip = (typeof LOCO_CLIPS)[number];
 
 // The source kits are real shirt textures whose back panel contains a literal

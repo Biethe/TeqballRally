@@ -192,6 +192,36 @@ console.log("\nportrait: the screen is the controller");
   );
   check(auto, "the first reception is taken automatically");
 
+  // One tap, two meanings. With the ball still on its way it is a shift; with
+  // the ball already in the vicinity there is no time to go anywhere, so the
+  // same tap says which way to set the reception up instead. Driven directly
+  // rather than through a finger: both cases have to be observed inside one
+  // frame, and this browser renders about one a second.
+  const dual = await page.evaluate(() => {
+    const m = window.__teq.match;
+    const c = m.chars.player;
+    const V = m.aimSpot.player.constructor;
+    const point = new V(c.position.x + 2, 0.4, c.position.z + 2);
+    const place = (dx) => {
+      m.ball.held = false;
+      m.ball.state.pos.set(c.position.x + dx, c.position.y + c.height * 0.6, c.position.z);
+      m.ball.state.vel.set(0, 0, 0);
+      m.strikeableSide = "player";
+      m.touchCount = 0;
+      m.setMoveTarget(null);
+      m.receptionAim = null;
+    };
+    place(6); // ball far away
+    m.tapAt(point);
+    const far = { moved: m.moveTarget !== null, aimed: m.receptionAim !== null };
+    place(0.4); // ball right there
+    m.tapAt(point);
+    const near = { moved: m.moveTarget !== null, aimed: m.receptionAim !== null };
+    return { far, near };
+  });
+  check(dual.far.moved && !dual.far.aimed, "a tap with the ball still coming is a shift");
+  check(dual.near.aimed && !dual.near.moved, "a tap with the ball in the vicinity aims the reception");
+
   // A double tap is the controlled reception, and has to be told apart from
   // the placement tap that shares the same finger.
   //

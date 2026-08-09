@@ -19,6 +19,7 @@ either way up on a phone.
 | Action | Keyboard | Gamepad | Touch (landscape) | Touch (portrait) |
 | --- | --- | --- | --- | --- |
 | Move | WASD or arrows | Left stick | Move stick | Tap where to stand |
+| Aim a reception | WASD or arrows | Left stick | Move stick | Tap, with the ball already near |
 | Aim a kick | Hold Space, then WASD | Hold A, then stick | Hold STRIKE, then stick | Direction of the swipe |
 | Kick | Release Space | Release A | Release STRIKE | Swipe |
 | Serve | Space or Enter | A / Cross | STRIKE | Swipe |
@@ -31,6 +32,11 @@ aimed by where it lands, and a swipe kicks in the direction it was drawn. A
 resting finger deliberately does nothing: on a surface where every pixel is a
 control, an ambiguous gesture is safest doing nothing at all. Both layouts feed
 the same input state, and turning the phone switches between them mid-rally.
+
+The single tap carries two meanings, chosen by where the ball is. With the ball
+still on its way it is a shift: go and stand there. With the ball already in
+the vicinity there is nowhere to go in time and the reception is about to be
+taken anyway, so the same tap says which way to set it up instead.
 
 The first touch of a possession is automatic. Standing in the vicinity of an
 incoming ball is enough to receive it — no press, no timing. Every touch after
@@ -47,6 +53,11 @@ marker while the charge builds, and letting go strikes. Portrait swipes: the
 direction aims it and the *speed* of the swipe is the power, so a flick is a
 low fast drive and a slow drag is a floater. The animation follows the power,
 because a lob played with a drilled foot volley reads as a bug.
+
+Every aim, and every landing it scatters to, is clamped to `PLAY_BOX` — the
+table plus a margin. A kick has to be able to miss; it does not have to be able
+to reach the crowd, and a ball that leaves the picture is a worse punishment
+than the point it already cost.
 
 Where the ball actually lands is that aim plus a spread (`src/aim.ts`):
 
@@ -159,6 +170,14 @@ resolves to `medium`.
 The match simulates at a fixed 60 Hz regardless of display rate (`SIM_DT` in
 `src/main.ts`), so a 30fps phone and a 120fps phone play the same game. Presses
 are latched between simulation steps — see `latchInput` in `src/input.ts`.
+
+## Scale
+
+`TABLE_SCALE` in `src/config.ts` sizes the table, and the ball, the players and
+their reach are multiplied by it too — the four only look right in proportion
+to one another. It sits above the rulebook's true dimensions because the game
+is played on a phone at arm's length, where a correctly sized court reads as a
+set of miniatures in a large arena.
 
 ## Venues
 

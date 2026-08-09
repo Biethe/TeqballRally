@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import {
   clampToCourt,
+  clampToPlay,
   loftFor,
   onTableHalf,
   rangeFor,
@@ -10,7 +11,7 @@ import {
   tableTarget,
   SPREAD,
 } from "../src/aim";
-import { COURT, TABLE } from "../src/config";
+import { COURT, PLAY_BOX, TABLE } from "../src/config";
 
 const easy = { power: 0.5, precision: 1, footSpray: 1, stretch: 0 };
 
@@ -113,11 +114,34 @@ describe("power shapes the ball", () => {
 });
 
 describe("court geometry", () => {
-  it("keeps an aim point on the court", () => {
+  it("keeps a walking destination on the court", () => {
     const out = clampToCourt(new Vector3(99, 0, -99));
 
     expect(out.x).toBe(COURT.maxX);
     expect(out.z).toBe(-COURT.maxZ);
+  });
+
+  it("keeps a kick inside the playable box, well short of the crowd", () => {
+    const out = clampToPlay(new Vector3(99, 0, -99));
+
+    expect(out.x).toBe(PLAY_BOX.halfLen);
+    expect(out.z).toBe(-PLAY_BOX.halfWid);
+    // Room to miss, but only just: the box is a margin around the table, not
+    // the whole court, so a wild kick lands beside it rather than in the seats.
+    expect(PLAY_BOX.halfLen).toBeGreaterThan(TABLE.halfLen);
+    expect(PLAY_BOX.halfLen - TABLE.halfLen).toBeLessThan(1);
+    expect(PLAY_BOX.halfWid - TABLE.halfWid).toBeLessThan(1);
+    expect(PLAY_BOX.halfLen).toBeLessThan(COURT.maxX);
+  });
+
+  it("never lets the widest possible spread escape the box", () => {
+    // The clamp is applied after the scatter, so even the worst kick from the
+    // furthest legal aim stays inside it.
+    const corner = clampToPlay(new Vector3(PLAY_BOX.halfLen, 0, PLAY_BOX.halfWid));
+    const wild = clampToPlay(scatter(corner, SPREAD.max, () => 0.99));
+
+    expect(Math.abs(wild.x)).toBeLessThanOrEqual(PLAY_BOX.halfLen);
+    expect(Math.abs(wild.z)).toBeLessThanOrEqual(PLAY_BOX.halfWid);
   });
 
   it("knows which side of the table a point is on, and what is off it", () => {

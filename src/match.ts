@@ -57,7 +57,7 @@ import type { InputState } from "./input";
 import type { AudioManager } from "./audio";
 import { reconcile } from "./net/reconcile";
 import {
-  clampToCourt,
+  clampToPlay,
   loftFor,
   onTableHalf,
   rangeFor,
@@ -156,9 +156,10 @@ const STEER_WINDOW = 0.15;
 // Beyond this gap the touch is a genuine miss — no steering, no snap.
 const STEER_MAX_GAP = 0.6;
 // How near an incoming ball a player has to be for the automatic first
-// reception. Wider than PLAYER_REACH — being close should be enough — and
-// inside LUNGE_MAX, so the contact still reads as a real touch.
-const AUTO_RECEPTION_REACH = 1.7;
+// reception. Wider than PLAYER_REACH — being close should be enough — but only
+// a little: a reception granted from two paces away stops reading as standing
+// in the right place.
+const AUTO_RECEPTION_REACH = 1.5;
 // Holding the kick control this long charges it fully. Long enough that the
 // difference between a tap and a held kick is a decision, short enough to make
 // inside the second or so a ball hangs in the air.
@@ -466,6 +467,44 @@ export class MatchController {
     this.moveTarget = spot ? spot.clone() : null;
   }
 
+  /**
+   * A tap on the court, from portrait play. One gesture, two meanings, chosen
+   * by where the ball is.
+   *
+   * With the ball still on its way, a tap is a shift: go and stand there. With
+   * the ball already in the vicinity there is no time to go anywhere and no
+   * point trying — the reception is about to be taken automatically — so the
+   * same tap says which way to set it up instead. Tapping ahead of yourself
+   * pushes the ball forward, tapping to one side puts it out there.
+   */
+  tapAt(spot: Vector3 | null): void {
+    if (!spot) return;
+    const c = this.chars.player;
+    if (!this.receptionImminent()) {
+      this.setMoveTarget(spot);
+      return;
+    }
+    const dx = spot.x - c.position.x;
+    const dz = spot.z - c.position.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.05) return;
+    this.receptionAim = { x: dx / len, z: dz / len };
+  }
+
+  /** True while the ball is close enough that the next touch is already due. */
+  private receptionImminent(): boolean {
+    return (
+      this.state === "rally" &&
+      this.strikeableSide === "player" &&
+      this.touchCount === 0 &&
+      !this.ball.held &&
+      this.canTouch("player", AUTO_RECEPTION_REACH * 1.6)
+    );
+  }
+
+  /** Direction a tap asked the next automatic reception to be set up in. */
+  private receptionAim: { x: number; z: number } | null = null;
+
   private movePlayer(input: InputState, dt: number): void {
     const player = this.chars.player;
     if (this.moveTarget) {
@@ -706,6 +745,7 @@ export class MatchController {
     // ended would otherwise sit there — on the power bar, and on the next
     // kick — until something else cleared it.
     this.charging = { player: 0, ai: 0 };
+    this.receptionAim = null;
     this.celebration = null;
     this.interceptSpot = null;
     this.repredictIn = 0;
@@ -914,8 +954,11 @@ export class MatchController {
   private autoReceive(side: Side): void {
     if (!this.autoFirstReception || this.touchCount > 0 || this.ball.held) return;
     if (!this.canTouch(side, AUTO_RECEPTION_REACH)) return;
-    // Neutral aim: the ball comes up just in front of whoever received it.
-    this.tryControlTouch(side, 0, 0, AUTO_RECEPTION_REACH);
+    // Steered by the last tap if there was one, and set up just in front of
+    // the receiver if there was not.
+    const aim = side === "player" ? this.receptionAim : null;
+    this.receptionAim = null;
+    this.tryControlTouch(side, aim?.x ?? 0, aim?.z ?? 0, AUTO_RECEPTION_REACH);
   }
 
   /** A committed touch waiting for the ball to drop back into striking range. */
@@ -971,7 +1014,7 @@ export class MatchController {
     const dx = len > 0.05 ? input.moveX / len : sign(other(side));
     const dz = len > 0.05 ? input.moveZ / len : 0;
     const reach = rangeFor(power);
-    const target = clampToCourt(new Vector3(c.position.x + dx * reach, 0, c.position.z + dz * reach));
+    const target = clampToPlay(new Vector3(c.position.x + dx * reach, 0, c.position.z + dz * reach));
     this.aimSpot[side] = target.clone();
     return { target, power };
   }
@@ -1002,7 +1045,7 @@ export class MatchController {
     const spot = this.aimSpot[side];
     spot.x += input.moveX * AIM_SPEED * dt;
     spot.z += input.moveZ * AIM_SPEED * dt;
-    this.aimSpot[side] = clampToCourt(spot);
+    this.aimSpot[side] = clampToPlay(spot);
     return true;
   }
 
@@ -1091,7 +1134,7 @@ export class MatchController {
       const landed = scatter(aim.target, radius, Math.random);
       // Aiming past the far edge is allowed — that is how a kick misses — but
       // a target beyond the court is not a shot anyone meant to play.
-      const wanted = clampToCourt(landed);
+      const wanted = clampToPlay(landed);
       const onTable = onTableHalf(wanted, sign(other(side)));
       const surfaceY = onTable ? tableSurfaceY(wanted.x) : GROUND_Y;
       const target = new Vector3(wanted.x, surfaceY + 0.02, wanted.z);
@@ -1255,6 +1298,7 @@ export class MatchController {
           // so an aim left in a corner never carries silently into it.
           this.aimSpot[e.side] = new Vector3(sign(other(e.side)) * TABLE.halfLen * 0.6, 0, 0);
           this.charging[e.side] = 0;
+          this.receptionAim = null;
           this.emit({ type: "possession-start", side: e.side });
           if ((e.side === "player" || this.versus) && this.possessionHints < 2) {
             this.possessionHints++;
