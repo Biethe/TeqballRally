@@ -41,6 +41,9 @@ export interface CrowdFigure {
  * different motions vary the shape.
  */
 export const CROWD_FIGURES: CrowdFigure[] = [
+  // Mixamo character: mesh, rig and clapping animation from one source, so
+  // nothing has to be retargeted.
+  { file: "m1.glb", clip: "own", posture: "standing" },
   { file: "f1.glb", clip: "Cheering", posture: "standing" },
   { file: "f2.glb", clip: "Fist_Pump", posture: "standing" },
   { file: "f3.glb", clip: "Sitting_Clap", posture: "seated" },
