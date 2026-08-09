@@ -98,8 +98,46 @@ const results: Record<string, { width: number; height: number; data: string }> =
 
 for (const figure of CROWD_FIGURES) {
   const res = await SceneLoader.ImportMeshAsync("", "/models/Crowd/", figure.file, scene);
-  const mesh = res.meshes.find((m) => m.getTotalVertices() > 0)!;
+  const meshes = res.meshes.filter((m) => m.getTotalVertices() > 0);
+  // Mixamo ships a decorative joint-marker mesh alongside the body.
+  const mesh = meshes.find((m) => !/Joints/i.test(m.name)) ?? meshes[0];
   const skeleton = res.skeletons[0];
+
+  // A figure that carries its own animation needs no retargeting at all: its
+  // mesh, rig and motion come from one source with one set of conventions.
+  // That is the whole reason retargeting was ever attempted, and the whole
+  // reason it kept failing.
+  const own = res.animationGroups[0];
+  if (own) {
+    for (const g of res.animationGroups) g.stop();
+    own.play(false);
+    const perFrameOwn = (skeleton.bones.length + 1) * 16;
+    const dataOwn = new Float32Array(perFrameOwn * CROWD_FRAMES);
+    for (let frame = 0; frame < CROWD_FRAMES; frame++) {
+      own.goToFrame(own.from + ((own.to - own.from) * frame) / CROWD_FRAMES);
+      skeleton.prepare(true);
+      dataOwn.set(skeleton.getTransformMatrices(mesh), frame * perFrameOwn);
+    }
+    let spreadOwn = 0;
+    for (let frame = 1; frame < CROWD_FRAMES; frame++) {
+      for (let i = 0; i < perFrameOwn; i++) {
+        spreadOwn = Math.max(spreadOwn, Math.abs(dataOwn[i] - dataOwn[frame * perFrameOwn + i]));
+      }
+    }
+    console.log(
+      `baked ${figure.file} from its own ${own.name}: ` +
+        `${skeleton.bones.length} bones, ${mesh.getTotalIndices() / 3} tris, spread ${spreadOwn.toFixed(4)}`
+    );
+    results[figure.file] = {
+      width: (skeleton.bones.length + 1) * 4,
+      height: CROWD_FRAMES,
+      data: toBase64(new Uint8Array(dataOwn.buffer, dataOwn.byteOffset, dataOwn.byteLength)),
+    };
+    for (const m of res.meshes) m.dispose();
+    skeleton.dispose();
+    continue;
+  }
+
   const clip = clips[figure.clip];
   if (!clip) throw new Error(`no clip named ${figure.clip}`);
 
