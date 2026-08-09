@@ -23,15 +23,14 @@ either way up on a phone.
 | Aim a kick | Hold Space, then WASD | Hold A, then stick | Hold STRIKE, then stick | Direction of the swipe |
 | Kick | Release Space | Release A | Release STRIKE | Swipe |
 | Serve | Space or Enter | A / Cross | STRIKE | Swipe |
-| Make a reception | K | B / Circle | RECEPTION | Double tap |
+| Make a reception | K | B / Circle | RECEPTION | Automatic, aimed by a tap |
 | Pause | Escape | Start / Options | Pause button | Pause button |
 
 Portrait has no room for a stick and two buttons, so the whole screen becomes
-the controller instead — a tap places the player, a double tap is a reception
-aimed by where it lands, and a swipe kicks in the direction it was drawn. A
-resting finger deliberately does nothing: on a surface where every pixel is a
-control, an ambiguous gesture is safest doing nothing at all. Both layouts feed
-the same input state, and turning the phone switches between them mid-rally.
+the controller instead — a tap and a swipe, and nothing else. A resting finger
+deliberately does nothing: on a surface where every pixel is a control, an
+ambiguous gesture is safest doing nothing at all. Both layouts feed the same
+input state, and turning the phone switches between them mid-rally.
 
 The single tap carries two meanings, chosen by where the ball is. With the ball
 still on its way it is a shift: go and stand there. With the ball already in
@@ -178,6 +177,18 @@ their reach are multiplied by it too — the four only look right in proportion
 to one another. It sits above the rulebook's true dimensions because the game
 is played on a phone at arm's length, where a correctly sized court reads as a
 set of miniatures in a large arena.
+
+## Settings
+
+`src/settings.ts` remembers everything that is not the graphics tier — music,
+sound, the camera a match opens in, and whether the first touch is automatic —
+and the settings window shows them all on one screen with the control that
+fits each. The tier is the exception it warns about: the engine's MSAA is fixed
+when the WebGL context is created, so changing it reloads the page, and the row
+says so before it is touched and asks again before it happens.
+
+The venue is not in there. It is a per-match choice, so it is picked on the
+last screen before the whistle, beside the player and the ball.
 
 ## Venues
 

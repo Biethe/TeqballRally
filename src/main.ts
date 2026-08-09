@@ -27,7 +27,7 @@ import {
   type InputState,
   type VersusAssign,
 } from "./input";
-import { UI } from "./ui";
+import { UI, type SettingRow } from "./ui";
 import { AudioManager } from "./audio";
 import { NetConnection } from "./net/connection";
 import { OnlineSession } from "./net/session";
@@ -42,6 +42,7 @@ import {
 } from "./net/protocol";
 import { ModelViewer } from "./viewer";
 import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
+import { readPreferences, storePreferences, type Preferences } from "./settings";
 import { BALLS, CAMERA, CHARACTERS, COURT, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
 
 /** Longest real frame the simulation will honour; beyond this, time is dropped. */
@@ -124,6 +125,11 @@ async function boot(): Promise<void> {
   // The venue is purely cosmetic — backdrop model plus court palette — so it is
   // a local choice and never negotiated with an opponent.
   let venueId = resolveVenue(location.search);
+  // Remembered choices that are not the graphics tier. Applied as they are
+  // read, so a fresh boot sounds and plays the way the last session left it.
+  const prefs: Preferences = readPreferences();
+  audio.setMusicEnabled(prefs.music);
+  audio.setSoundEnabled(prefs.sound);
   const gs: GameScene = await createGameScene(canvas, settingsFor(qualityTier), venueFor(venueId));
   const viewer = new ModelViewer(gs.engine, canvas);
   (window as unknown as Record<string, unknown>).__viewer = viewer;
@@ -185,7 +191,7 @@ async function boot(): Promise<void> {
 
   // ---- split screen (versus mode) ----
   let versusCam: TargetCamera | null = null;
-  let cameraMode: CameraMode = "court";
+  let cameraMode: CameraMode = prefs.camera;
   /**
    * Seconds left of the establishing shot, or null when a match is being
    * played normally. The simulation is held while it runs: the CPU is
@@ -607,7 +613,7 @@ async function boot(): Promise<void> {
         {
           id: "btn-mode-settings",
           label: "SETTINGS",
-          sub: `Graphics ${TIER_LABELS[qualityTier].label} · venue ${venueFor(venueId).label}`,
+          sub: `Graphics, camera, sound · currently ${TIER_LABELS[qualityTier].label}`,
           tag: "OPTIONS",
         },
       ],
@@ -624,98 +630,106 @@ async function boot(): Promise<void> {
     );
   };
 
+  /**
+   * The settings window.
+   *
+   * One screen with every remembered choice on it, rather than a menu that
+   * walks into a submenu per setting. The graphics tier is the only one that
+   * cannot simply be applied: the engine's MSAA is fixed when the WebGL
+   * context is created, so changing it restarts the game — which the row says
+   * before it is touched, and a confirmation says again before it happens.
+   */
   const showSettings = () => {
-    ui.showMenu(
-      "SETTINGS",
-      [
-        {
-          id: "btn-settings-graphics",
-          label: "GRAPHICS",
-          sub: `Framerate against detail · currently ${TIER_LABELS[qualityTier].label}`,
-          tag: TIER_LABELS[qualityTier].label,
-          primary: true,
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    const rows = (): SettingRow[] => [
+      {
+        id: "graphics",
+        label: "Graphics",
+        hint: "Detail against framerate",
+        warning: "Changing this restarts the game.",
+        control: {
+          kind: "choice",
+          value: qualityTier,
+          options: QUALITY_TIERS.map((tier) => ({ id: tier, label: TIER_LABELS[tier].label })),
         },
-        {
-          id: "btn-settings-venue",
-          label: "VENUE",
-          sub: `Where the court is set up · currently ${venueFor(venueId).label}`,
-          tag: "LOOK",
+      },
+      {
+        id: "camera",
+        label: "Camera",
+        hint: "The view a match opens in",
+        control: {
+          kind: "choice",
+          value: prefs.camera,
+          options: [
+            { id: "court", label: "Court" },
+            { id: "side", label: "Side" },
+            { id: "top", label: "Top" },
+          ],
         },
-      ],
-      (id) => {
-        if (id === "btn-settings-graphics") showGraphics();
-        else showVenues();
       },
-      "Change how the game looks and how hard it works your phone.",
-      showModes
-    );
-  };
-
-  /**
-   * Venue picker. Swaps in place — reloading the page for a cosmetic choice
-   * threw away the player's whole session.
-   */
-  const showVenues = () => {
-    ui.showMenu(
-      "VENUE",
-      VENUE_IDS.map((id) => {
-        const v = venueFor(id);
-        return {
-          id: `btn-venue-${id}`,
-          label: v.label,
-          sub: id === venueId ? `${v.sub} · IN USE` : v.sub,
-          tag: id === venueId ? "CURRENT" : undefined,
-          primary: id === venueId,
-        };
-      }),
-      (id) => {
-        const picked = VENUE_IDS.find((v) => id === `btn-venue-${v}`);
-        if (!picked) return;
-        if (picked === venueId) {
-          showSettings();
-          return;
-        }
-        storeVenue(picked);
-        venueId = picked;
-        ui.showLoading("Setting up the new court…");
-        void gs.setVenue(venueFor(picked)).then(showSettings);
+      {
+        id: "autoReception",
+        label: "Automatic reception",
+        hint: "Standing near the ball takes the first touch for you",
+        control: { kind: "toggle", value: prefs.autoReception },
       },
-      "The venue is yours alone — an opponent online keeps their own.",
-      showSettings
-    );
-  };
-
-  /**
-   * Graphics quality picker. Applying a tier reloads the page rather than
-   * reconfiguring a live scene: the engine's MSAA is fixed at context
-   * creation, and rebuilding the shadow generator and its caster list mid-match
-   * is a lot of moving parts for a setting players change once. A reload from
-   * the packaged app is cheap because every asset is already local.
-   */
-  const showGraphics = () => {
-    ui.showMenu(
-      "GRAPHICS",
-      QUALITY_TIERS.map((tier) => ({
-        id: `btn-quality-${tier}`,
-        label: TIER_LABELS[tier].label,
-        sub: tier === qualityTier ? `${TIER_LABELS[tier].sub} · IN USE` : TIER_LABELS[tier].sub,
-        tag: tier === qualityTier ? "CURRENT" : undefined,
-        primary: tier === qualityTier,
-      })),
-      (id) => {
-        const picked = QUALITY_TIERS.find((tier) => id === `btn-quality-${tier}`);
-        if (!picked) return;
-        if (picked === qualityTier) {
-          showSettings();
-          return;
-        }
-        storeTier(picked);
-        ui.showLoading("Applying graphics settings…");
-        location.reload();
+      { id: "music", label: "Music", hint: "Menu and match loops", control: { kind: "toggle", value: prefs.music } },
+      {
+        id: "sound",
+        label: "Sound effects",
+        hint: "Kicks, bounces and the crowd",
+        control: { kind: "toggle", value: prefs.sound },
       },
-      "Lower settings mean a smoother game on older phones.",
-      showSettings
-    );
+    ];
+    const render = () =>
+      ui.showSettings(
+        rows(),
+        (id, value) => {
+          if (id === "graphics") {
+            const picked = QUALITY_TIERS.find((tier) => tier === value);
+            if (!picked || picked === qualityTier) return;
+            ui.confirm(
+              "RESTART REQUIRED",
+              `Switching to ${TIER_LABELS[picked].label} rebuilds the scene, so the game starts over from the title screen. Any match in progress is lost.`,
+              "RESTART NOW",
+              () => {
+                storeTier(picked);
+                ui.showLoading("Applying graphics settings…");
+                location.reload();
+              }
+            );
+            return;
+          }
+          if (id === "camera" && typeof value === "string") {
+            const picked: CameraMode | undefined = (["court", "side", "top"] as CameraMode[]).find(
+              (mode) => mode === value
+            );
+            if (picked) {
+              prefs.camera = picked;
+              cameraMode = picked;
+              ui.setCameraMode(picked);
+            }
+          }
+          if (id === "autoReception" && typeof value === "boolean") {
+            prefs.autoReception = value;
+            if (match) match.autoFirstReception = value;
+          }
+          if (id === "music" && typeof value === "boolean") {
+            prefs.music = value;
+            audio.setMusicEnabled(value);
+            if (value) audio.startMusic();
+          }
+          if (id === "sound" && typeof value === "boolean") {
+            prefs.sound = value;
+            audio.setSoundEnabled(value);
+          }
+          storePreferences(prefs);
+          render();
+        },
+        showModes
+      );
+    render();
   };
 
   // ------------------------------------------------------------ online play
@@ -1055,6 +1069,14 @@ async function boot(): Promise<void> {
     showPlayerOne();
   };
 
+  /**
+   * Player, ball and venue, on the last screen before the whistle.
+   *
+   * The venue used to live in settings, which made a per-match choice into a
+   * preference and put it three screens away from the match it applies to. It
+   * swaps the live scene behind the picker — the model viewer is a different
+   * scene, so nothing of it is visible until the match starts anyway.
+   */
   const showSelect = (
     title: string,
     onConfirm: (charId: string, ballId: string) => void,
@@ -1068,6 +1090,15 @@ async function boot(): Promise<void> {
     ui.showSelect({
       characters: CHARACTERS,
       balls: BALLS,
+      venues: VENUE_IDS.map((id) => ({ id, label: venueFor(id).label })),
+      venue: venueId,
+      onVenue: (id) => {
+        const picked = VENUE_IDS.find((v) => v === id);
+        if (!picked || picked === venueId) return;
+        storeVenue(picked);
+        venueId = picked;
+        void gs.setVenue(venueFor(picked));
+      },
       title,
       onBrowse: async (kind, id) => {
         const shown = await viewer.show(kind, id);
@@ -1293,6 +1324,7 @@ async function boot(): Promise<void> {
     controller.landingMarker = gs.landingMarker;
     controller.versus = opts.versus !== null;
     controller.practice = opts.practice === true;
+    controller.autoFirstReception = prefs.autoReception;
     match = controller;
     // Online play is a two-human match whose second seat is a socket, so it
     // needs no AI and no split screen: each player has their own device.

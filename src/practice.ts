@@ -192,7 +192,7 @@ export class PracticeCoach {
   }
 
   private popPrompt(): TrainingPauseState {
-    return this.prompt("pop", this.control("K", "B", "RECEPTION", "DOUBLE TAP"));
+    return this.prompt("pop", this.control("K", "B", "RECEPTION", "TAP TO AIM IT"));
   }
 
   private finishPrompt(): TrainingPauseState {

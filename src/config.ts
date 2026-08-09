@@ -28,8 +28,8 @@ export const TABLE = {
  * the picture.
  */
 export const PLAY_BOX = {
-  halfLen: TABLE.halfLen + 0.62,
-  halfWid: TABLE.halfWid + 0.5,
+  halfLen: TABLE.halfLen + 0.72,
+  halfWid: TABLE.halfWid + 0.8,
 };
 
 export const BALL_RADIUS = 0.08095 * TABLE_SCALE; // size 5 football, oversized with the table

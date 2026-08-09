@@ -9,7 +9,7 @@ import { GestureScheme } from "./gestures";
  * Touch has two layouts, chosen by which way the phone is held. Landscape
  * keeps the visible move/aim stick and its action buttons. Portrait has no
  * room for either, so the whole screen becomes the controller instead: tap to
- * place the player, double tap to receive, swipe to kick. Both feed this same
+ * place the player or aim a reception, swipe to kick. Both feed this same
  * InputState — the match never learns which one is in use.
  */
 export interface InputState {
@@ -345,7 +345,7 @@ export class Input {
     portraitHints.id = "touch-portrait-hints";
     portraitHints.setAttribute("role", "status");
     portraitHints.innerHTML =
-      '<span><b>TAP</b>move</span><span><b>DOUBLE TAP</b>receive</span><span><b>SWIPE</b>kick</span>';
+      '<span><b>TAP</b>move · aim</span><span><b>SWIPE</b>kick</span>';
     zone.appendChild(portraitHints);
 
     this.joyBase = document.createElement("div");
@@ -592,13 +592,12 @@ export class Input {
    */
   private pumpGestures(): void {
     const t = performance.now() / 1000;
-    this.gestures.tick(t);
     for (const g of this.gestures.take()) {
       if (g.kind === "tap") {
-        // Placement is the one gesture with no analogue in the shared input
-        // state: it names a point on the court, so the app resolves it.
+        // A tap is the one gesture with no analogue in the shared input state:
+        // it names a point on the court, so the app resolves what it meant.
         this.tapQueued = { x: g.x, y: g.y };
-      } else if (g.kind === "swipe") {
+      } else {
         // Direction aims the kick; pace decides how hard it is struck. Length
         // only weights the aim, so a short sharp flick is still a hard shot.
         this.gestureAim = {
@@ -609,16 +608,6 @@ export class Input {
         this.gesturePower = g.speed;
         this.strikeQueued = true;
         this.confirmQueued = true;
-      } else {
-        // A reception is aimed by where on the screen it was double tapped —
-        // left, right, near or far from the middle of the court in front of
-        // the player, which is where the set-up ball will come down.
-        this.gestureAim = {
-          sx: Math.max(-1, Math.min(1, (g.x - 0.5) * 2.4)),
-          sy: Math.max(-1, Math.min(1, (g.y - 0.5) * 2.4)),
-          until: t + Input.AIM_HOLD,
-        };
-        this.popQueued = true;
       }
     }
   }
