@@ -1,18 +1,38 @@
 // Dimensions from the FITEQ rulebook (metres). The playing surface is curved:
 // 0.76 m high at the net, 0.565 m at the table ends, modelled as y = hCenter - k*x^2.
+// Everything here is the rulebook's geometry scaled up by a tenth. The court
+// is played on a phone held at arm's length: at true scale the table, the ball
+// and the players all read as miniatures in the middle of a large arena, and
+// the sport is more legible slightly oversized than it is exactly right.
+// Scale the ball and the characters with it — the three only look right in
+// proportion to each other.
+export const TABLE_SCALE = 1.1;
 export const TABLE = {
-  length: 3.0,
-  width: 1.5,
-  halfLen: 1.5,
-  halfWid: 0.75,
-  hCenter: 0.76,
-  hEnd: 0.565,
-  curveK: (0.76 - 0.565) / (1.5 * 1.5),
-  netTop: 0.9,
-  netHalfWidth: 0.85,
+  length: 3.0 * TABLE_SCALE,
+  width: 1.5 * TABLE_SCALE,
+  halfLen: 1.5 * TABLE_SCALE,
+  halfWid: 0.75 * TABLE_SCALE,
+  hCenter: 0.76 * TABLE_SCALE,
+  hEnd: 0.565 * TABLE_SCALE,
+  curveK: (0.76 - 0.565) / (1.5 * 1.5 * TABLE_SCALE),
+  netTop: 0.9 * TABLE_SCALE,
+  netHalfWidth: 0.85 * TABLE_SCALE,
 };
 
-export const BALL_RADIUS = 0.08095; // size 5 football, ~67.5 cm circumference
+/**
+ * The rectangle a kick can reach, and never leave.
+ *
+ * A kick has to be able to miss, but a miss is a ball that lands just past the
+ * line — not one that ends up in the crowd. Every aim and every landing is
+ * clamped to this box, so the spread costs the point without the ball leaving
+ * the picture.
+ */
+export const PLAY_BOX = {
+  halfLen: TABLE.halfLen + 0.62,
+  halfWid: TABLE.halfWid + 0.5,
+};
+
+export const BALL_RADIUS = 0.08095 * TABLE_SCALE; // size 5 football, oversized with the table
 export const GRAVITY = 9.81;
 
 // How far the players may travel. These are gameplay, not decoration: they are
@@ -20,7 +40,7 @@ export const GRAVITY = 9.81;
 // run the same simulation. What the court *looks* like — its size, shape,
 // colours and boards — is a venue preset in `venue.ts`.
 export const COURT = {
-  minX: 1.55, // players stay behind the table end
+  minX: 1.7, // players stay behind the table end
   maxX: 6.8,
   maxZ: 4.6,
 };
@@ -57,7 +77,7 @@ export const TABLE_VISUAL = {
 
 // Global multiplier on every character's height (individual heights are in
 // CHARACTERS below). Scales the model and gameplay proportions together.
-export const CHARACTER_SCALE = 0.8;
+export const CHARACTER_SCALE = 0.8 * TABLE_SCALE;
 
 // Soft magnetism toward the incoming ball: when the ball is dropping onto the
 // player's side and the stick pushes roughly toward its interception point,
@@ -137,8 +157,9 @@ export const SIM_DT = 1 / SIM_HZ;
 
 export const SERVE_X = 4.0; // service line is 3.5 m from table centre
 export const MAX_TOUCHES = 3; // touches allowed per possession (reception, prep, kick)
-export const PLAYER_REACH = 1.2;
-export const AI_REACH = 1.2;
+// Reach scales with the players, who scale with the table.
+export const PLAYER_REACH = 1.2 * TABLE_SCALE;
+export const AI_REACH = 1.2 * TABLE_SCALE;
 export const WIN_SCORE = 12; // points to win a set
 export const SETS_TO_WIN = 2; // sets to win the game (best of 3)
 export const SERVE_EVERY = 2;
@@ -292,10 +313,11 @@ export interface CharacterDef {
   /** Dominant foot; "both" = two-footed (no weak-foot penalty, no strong-foot bonus). */
   strongFoot: Foot | "both";
   /**
-   * Court movement speed in m/s. Raised by about a fifth over the original
-   * 4.1-4.9 spread: shifting position was the part of a rally that felt heavy,
-   * and it is the part a player does before every single touch. The spread
-   * between characters is kept — it is most of what makes them feel different.
+   * Court movement speed in m/s. Above the original 4.1-4.9 spread — shifting
+   * position was the heavy part of a rally, and it happens before every touch
+   * — but backed off from the first attempt at it, which overshot into
+   * skating. The spread between characters is kept: it is most of what makes
+   * them feel different.
    */
   speed: number;
   /** Multiplier on every kick/serve ball speed (stacks with KICK_POWER and the foot factor). */
@@ -313,10 +335,10 @@ export interface CharacterDef {
 // SPAIN — the technician: two-footed and the most precise, softest ball, strong-foot-rule
 //         flips (two-footed, so either foot qualifies).
 export const CHARACTERS: CharacterDef[] = [
-  { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 5.9, power: 1.0, precision: 1.1, backflips: "both" },
-  { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.9, power: 1.7, precision: 0.9, backflips: "none" },
-  { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5.4, power: 1.05, precision: 1.0, backflips: "strong" },
-  { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 5.3, power: 0.95, precision: 1.2, backflips: "strong" },
+  { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 5.4, power: 1.0, precision: 1.1, backflips: "both" },
+  { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.5, power: 1.7, precision: 0.9, backflips: "none" },
+  { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5.0, power: 1.05, precision: 1.0, backflips: "strong" },
+  { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 4.9, power: 0.95, precision: 1.2, backflips: "strong" },
 ];
 
 // Strong/weak-foot modifiers, applied to any clip that uses a specific foot
