@@ -112,22 +112,53 @@ body {
   object-fit: contain;
 }
 
-.skip-intro {
+/* Loading bar over the clip's last frame. Hidden until the clip is done —
+   during it there is something to watch, and a bar over moving footage is
+   clutter. */
+.intro-progress {
   position: absolute;
-  right: max(14px, env(safe-area-inset-right));
-  bottom: max(16px, env(safe-area-inset-bottom));
-  padding: 8px 18px;
-  border: 2px solid rgba(255, 255, 255, 0.5);
-  border-radius: 999px;
-  background: rgba(7, 20, 38, 0.45);
-  color: #fff;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  cursor: pointer;
+  left: 50%;
+  bottom: max(30px, env(safe-area-inset-bottom));
+  width: min(76%, 420px);
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 260ms ease-out;
+  pointer-events: none;
+  text-align: center;
 }
+
+.intro-progress.visible {
+  opacity: 1;
+}
+
+.intro-progress-label {
+  margin-bottom: 10px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.75);
+}
+
+.intro-progress-track {
+  height: 14px;
+  border: 3px solid rgba(255, 255, 255, 0.85);
+  border-radius: 999px;
+  background: rgba(7, 20, 38, 0.55);
+  overflow: hidden;
+}
+
+.intro-progress-track span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--gold), var(--teq));
+  box-shadow: 0 0 14px rgba(255, 106, 19, 0.85);
+  transition: width 200ms ease-out;
+}
+
 
 @keyframes intro-clip-in {
   from {
@@ -214,7 +245,7 @@ button.pad-focus {
   text-transform: uppercase;
 }
 
-/* ------- TeqOpen welcome screen ------- */
+/* ------- TeqRally welcome screen ------- */
 .title-content {
   display: flex;
   flex-direction: column;
