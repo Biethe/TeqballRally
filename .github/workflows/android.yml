@@ -5,7 +5,7 @@ name: Android APK
 # development machine to hand.
 #
 # The APK is attached to the run as an artifact. Open the run on a phone,
-# download "teqopen-debug-apk", unzip it and install app-debug.apk. Android
+# download "teqrally-debug-apk", unzip it and install app-debug.apk. Android
 # will ask you to allow installs from unknown sources.
 
 on:
@@ -94,7 +94,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: teqopen-debug-apk
+          name: teqrally-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
@@ -110,9 +110,9 @@ jobs:
           RELAY: ${{ inputs.relay_url || vars.VITE_RELAY_URL || env.DEFAULT_RELAY }}
         run: |
           tag="build-${{ github.run_number }}"
-          cp android/app/build/outputs/apk/debug/app-debug.apk "teqopen-${tag}.apk"
-          gh release create "$tag" "teqopen-${tag}.apk" \
-            --title "TeqOpen debug ${tag}" \
+          cp android/app/build/outputs/apk/debug/app-debug.apk "teqrally-${tag}.apk"
+          gh release create "$tag" "teqrally-${tag}.apk" \
+            --title "TeqRally debug ${tag}" \
             --notes "Commit \`${GITHUB_SHA:0:7}\` on \`${GITHUB_REF_NAME}\`.
           Relay: \`${RELAY:-none — online play disabled in this build}\`
 

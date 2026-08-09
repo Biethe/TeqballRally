@@ -76,9 +76,9 @@ node scripts/verify-build.mjs
 node scripts/verify-portrait.mjs   # the phone-upright control scheme
 ```
 
-`?ts=8` speeds up simulation time. `?q=low|medium|high` forces a graphics tier
-for the session (`?light=1` still maps to `low`), overriding both the remembered
-choice and auto-detection.
+`?ts=8` speeds up simulation time. `?q=medium|high` forces a graphics tier for
+the session, overriding both the remembered choice and auto-detection. `?q=low`
+and `?light=1` still parse, and now resolve to `medium`.
 
 ## Phone layout
 
@@ -113,7 +113,7 @@ action on a screen is never ambiguous.
 
 ## Graphics quality
 
-`src/quality.ts` defines three tiers, picked automatically on first launch from
+`src/quality.ts` defines two tiers, picked automatically on first launch from
 `navigator.deviceMemory`, core count and whether the device is touch, then
 overridable from the in-game SETTINGS menu and remembered in `localStorage`.
 Applying a tier reloads the page — the engine's MSAA is fixed when the WebGL
@@ -121,12 +121,13 @@ context is created.
 
 | | Pixel ratio cap | MSAA | Shadow map | Venue backdrop |
 | --- | --- | --- | --- | --- |
-| LOW | 1.0 | off | 512 | skipped |
-| MEDIUM | 1.5 | off | 1024 | loaded |
+| MEDIUM | 1.0 | off | 1024 | loaded |
 | HIGH | 2.0 | on | 1024 | loaded |
 
-Skipping the backdrop on LOW avoids a 1-5 MB download and its meshes; the
-procedural court is fully playable on its own.
+There was a third tier below these. LOW dropped the venue backdrop to save a
+1-5 MB download, which meant the venue a player had chosen did not appear — too
+high a price for the framerate it bought. A stored or requested `low` now
+resolves to `medium`.
 
 The match simulates at a fixed 60 Hz regardless of display rate (`SIM_DT` in
 `src/main.ts`), so a 30fps phone and a 120fps phone play the same game. Presses
@@ -474,7 +475,7 @@ Everything below can be done from a mobile browser.
    `wss://` URL. Or skip this and type the URL each time in step 3.
 3. **Build.** GitHub → Actions → *Android APK* → **Run workflow**, optionally
    pasting the relay URL. The run summary prints which relay was baked in.
-4. **Install.** Download the `teqopen-debug-apk` artifact from the finished
+4. **Install.** Download the `teqrally-debug-apk` artifact from the finished
    run, unzip, open the APK. Repeat on the second phone.
 
 A build with no relay configured still installs and plays; online is shown as
