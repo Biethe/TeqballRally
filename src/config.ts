@@ -68,26 +68,6 @@ export const REACH_ASSIST = {
   strength: 0.5, // 0 = off, 1 = full auto-run when pushing straight at the ball
 };
 
-/**
- * Bullet time on the approach: while a ball is dropping toward the human
- * player and the touch is still theirs to choose, the whole simulation eases
- * down so there is real time to read the ball and pick a shot. It is the
- * difference between a rally that punishes reflexes and one that rewards
- * decisions — and on a phone, where the controls are a swipe rather than a
- * stick, that margin is what makes the game playable at all.
- *
- * The *whole* step is scaled, never the ball alone: the characters, their
- * animation and the timing gauge all have to stay in lockstep with it.
- */
-export const APPROACH_SLOWDOWN = {
-  /** Distance from the receiver at which time starts easing off (m). */
-  start: 4.0,
-  /** Fully slowed by here — just outside PLAYER_REACH, so the decision is due. */
-  full: 1.6,
-  /** Slowest the simulation runs. 1 disables the effect entirely. */
-  scale: 0.5,
-};
-
 export type CameraMode = "court" | "side" | "top";
 
 // Rally camera framing (hand-editable). Cameras are fully static: they never

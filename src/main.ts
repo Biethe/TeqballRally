@@ -225,7 +225,7 @@ async function boot(): Promise<void> {
   // Toggling it off logs the position/target so values can be copied into code.
   let freecam: UniversalCamera | null = null;
   const toggleFreecam = () => {
-    if (viewer.active || match?.isReplayActive) return; // replay owns the game camera
+    if (viewer.active) return;
     if (freecam) {
       const p = freecam.position;
       const t = freecam.getTarget();
@@ -305,96 +305,6 @@ async function boot(): Promise<void> {
   // applied, so this bound is simply that clamp expressed in simulation steps.
   const maxSimSteps = Math.ceil((MAX_FRAME_DT * timeScale) / SIM_DT) + 1;
 
-  // ---- replay camera orbit ----
-  // Match cameras are authored and reset every frame. During a replay only,
-  // rotate that freshly authored view around the action; when the replay ends
-  // the next normal camera update restores the exact regular match framing.
-  const replayOrbit = {
-    yaw: 0,
-    pitch: 0,
-    session: false,
-    drag: null as { pointerId: number; x: number; y: number } | null,
-  };
-  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
-  const resetReplayOrbit = () => {
-    replayOrbit.yaw = 0;
-    replayOrbit.pitch = 0;
-    const drag = replayOrbit.drag;
-    if (drag && canvas.hasPointerCapture(drag.pointerId)) canvas.releasePointerCapture(drag.pointerId);
-    replayOrbit.drag = null;
-  };
-  const nudgeReplayOrbit = (yaw: number, pitch: number) => {
-    if (!match?.isReplayActive) return;
-    replayOrbit.yaw = clamp(replayOrbit.yaw + yaw, -Math.PI, Math.PI);
-    // Keep the eye inside the gym and above the court while still allowing a
-    // low or elevated inspection of a backflip/reception.
-    replayOrbit.pitch = clamp(replayOrbit.pitch + pitch, -0.62, 0.62);
-  };
-  const replayFocus = (): Vector3 | null => {
-    if (!match?.isReplayActive || chars.length === 0) return null;
-    // Prefer the action owner; late in a flight, choose the closest player so
-    // the focal point stays with the readable action rather than a fixed end.
-    const actionActor = chars.find((c) => c.busy);
-    let actor = actionActor ?? chars[0];
-    if (!actionActor) {
-      for (const c of chars) {
-        if (Vector3.DistanceSquared(c.position, ball.state.pos) < Vector3.DistanceSquared(actor.position, ball.state.pos)) {
-          actor = c;
-        }
-      }
-    }
-    const focus = Vector3.Lerp(actor.position, ball.state.pos, 0.46);
-    focus.y = clamp(focus.y + actor.height * 0.3, GROUND_Y + 0.7, GROUND_Y + 3.3);
-    return focus;
-  };
-  const applyReplayOrbit = (camera: TargetCamera) => {
-    if (Math.abs(replayOrbit.yaw) < 1e-4 && Math.abs(replayOrbit.pitch) < 1e-4) return;
-    const focus = replayFocus();
-    if (!focus) return;
-
-    // `updateCamera()` has just restored the safe authored replay shot,
-    // including +/- zoom. Rotate its vector instead of swapping camera types,
-    // so lens settings and controls cannot leak into the live match. Bounds
-    // protect P2's asymmetric interior camera from the outer gym shell.
-    const offset = camera.position.subtract(focus);
-    const radius = clamp(offset.length(), 4.5, 13);
-    const baseElevation = Math.atan2(offset.y, Math.max(0.001, Math.hypot(offset.x, offset.z)));
-    const elevation = clamp(baseElevation + replayOrbit.pitch, -0.08, 1.2);
-    const azimuth = Math.atan2(offset.z, offset.x) + replayOrbit.yaw;
-    const horizontal = radius * Math.cos(elevation);
-    camera.position.set(
-      clamp(focus.x + horizontal * Math.cos(azimuth), -12.0, 9.4),
-      clamp(focus.y + radius * Math.sin(elevation), GROUND_Y + 1.1, GROUND_Y + 10),
-      clamp(focus.z + horizontal * Math.sin(azimuth), -7.6, 7.6)
-    );
-    camera.setTarget(focus);
-  };
-  const beginReplayDrag = (e: PointerEvent) => {
-    if (!match?.isReplayActive || (e.pointerType === "mouse" && e.button !== 0)) return;
-    replayOrbit.drag = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
-    canvas.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  };
-  const moveReplayDrag = (e: PointerEvent) => {
-    const drag = replayOrbit.drag;
-    if (!drag || drag.pointerId !== e.pointerId) return;
-    const dx = e.clientX - drag.x;
-    const dy = e.clientY - drag.y;
-    drag.x = e.clientX;
-    drag.y = e.clientY;
-    nudgeReplayOrbit(dx * 0.007, -dy * 0.0055);
-    e.preventDefault();
-  };
-  const endReplayDrag = (e: PointerEvent) => {
-    if (replayOrbit.drag?.pointerId !== e.pointerId) return;
-    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-    replayOrbit.drag = null;
-  };
-  canvas.addEventListener("pointerdown", beginReplayDrag);
-  canvas.addEventListener("pointermove", moveReplayDrag);
-  canvas.addEventListener("pointerup", endReplayDrag);
-  canvas.addEventListener("pointercancel", endReplayDrag);
-
   // ---- pause ----
   let paused = false;
   let shutdownInProgress = false;
@@ -472,7 +382,7 @@ async function boot(): Promise<void> {
     }
   };
   const cycleCameraMode = () => {
-    if (!match || match.isReplayActive || paused || freecam || viewer.active) return;
+    if (!match || paused || freecam || viewer.active) return;
     const modes: CameraMode[] = ["court", "side", "top"];
     cameraMode = modes[(modes.indexOf(cameraMode) + 1) % modes.length];
     ui.setCameraMode(cameraMode);
@@ -480,12 +390,6 @@ async function boot(): Promise<void> {
     ui.banner(label, "C or Y / △ to switch");
   };
   const requestPauseToggle = () => {
-    // The replay transport owns pause while a highlight is on screen; never
-    // put the match pause overlay over its touch controls.
-    if (match?.isReplayActive) {
-      match.controlReplay("toggle");
-      return;
-    }
     // Online: a pause belongs to both players, so it is asked for rather than
     // taken. Outside a private game there is no request to make.
     if (session) {
@@ -497,13 +401,6 @@ async function boot(): Promise<void> {
   };
   ui.onPauseRequest = requestPauseToggle;
   ui.onCameraRequest = cycleCameraMode;
-  ui.onReplayControl = (control) => {
-    if (control === "reset-camera") {
-      resetReplayOrbit();
-      return;
-    }
-    match?.controlReplay(control);
-  };
   const hasBlockingScreen = () =>
     ["title-screen", "menu-screen", "standings-screen", "select-screen", "end-screen"].some(
       (id) => !document.getElementById(id)?.classList.contains("hidden")
@@ -553,28 +450,18 @@ async function boot(): Promise<void> {
 
   gs.engine.runRenderLoop(() => {
     // Frame time drives everything presentational (the model viewer, the
-    // replay orbit). Gameplay is stepped separately, at SIM_DT.
+    // cameras). Gameplay is stepped separately, at SIM_DT.
     const dt = Math.min(gs.engine.getDeltaTime() / 1000, MAX_FRAME_DT) * timeScale;
     menuNav();
     // Poll even off-court so a held C / Y can never leak into the next match.
     const cameraCycle = input.pollCameraCycle();
-    const replayControls = input.pollReplayControls();
-    const pauseControls = input.pollPauseControls();
+    const pauseRequested = input.pollPauseEdge();
     if (viewer.active) {
       viewer.update(dt);
       viewer.scene.render();
       return;
     }
-    // A replay owns Start/Options: it toggles replay playback rather than the
-    // match pause menu. Escape retains its established role of skipping it.
-    if (match?.hasReplayPresentation) {
-      if (pauseControls.escape) match.controlReplay("skip");
-    } else if (
-      pauseControls.toggle &&
-      match &&
-      !practiceCoach?.isPaused &&
-      !hasBlockingScreen()
-    ) {
+    if (pauseRequested && match && !practiceCoach?.isPaused && !hasBlockingScreen()) {
       requestPauseToggle();
     }
     if (paused) {
@@ -588,22 +475,7 @@ async function boot(): Promise<void> {
       gs.scene.render();
       return;
     }
-    // Replay commands and view cycling settle before either local player's
-    // gameplay poll, so P1 and P2 use the same mapping on the cycle frame.
-    if (match?.hasReplayPresentation) {
-      if (replayControls.skip) match.controlReplay("skip");
-      else {
-        if (replayControls.back) match.controlReplay("back");
-        if (replayControls.forward) match.controlReplay("forward");
-        if (replayControls.zoomOut) match.controlReplay("zoom-out");
-        if (replayControls.zoomIn) match.controlReplay("zoom-in");
-        if (replayControls.toggle) match.controlReplay("toggle");
-      }
-    }
-    if (cameraCycle && match) {
-      if (match.isReplayActive) resetReplayOrbit();
-      else cycleCameraMode();
-    }
+    if (cameraCycle && match) cycleCameraMode();
     const inp = input.poll(cameraMode);
     if (introLeft !== null) {
       // Any deliberate press skips the shot. The press is spent doing that
@@ -643,7 +515,7 @@ async function boot(): Promise<void> {
       // its movement away would leave the player rooted to the spot.
       match.tapSteering = input.isTouch && input.isPortrait;
       const placement = input.pollTapPlacement();
-      if (placement && !freecam && !match.isReplayActive) {
+      if (placement && !freecam) {
         match.setMoveTarget(courtPointAt(placement.x, placement.y));
       }
       latchInput(latchedP1, inp);
@@ -679,32 +551,14 @@ async function boot(): Promise<void> {
       // A frame long enough to exhaust the step budget (tab restore, a GC
       // pause) drops the remainder instead of trying to catch up forever.
       if (steps >= maxSimSteps) simAccumulator = 0;
-      // While a replay is active, a dedicated WASD/analogue-only poll drives
-      // the free-angle orbit. D-pad/arrows stay assigned to the replay
-      // timeline transport above, so a seek never rotates view.
-      if (match.isReplayActive) {
-        if (!replayOrbit.session) {
-          resetReplayOrbit();
-          replayOrbit.session = true;
-        }
-        const orbit = input.pollReplayOrbit();
-        nudgeReplayOrbit(orbit.x * dt * 1.55, -orbit.y * dt * 1.1);
-      } else if (replayOrbit.session) {
-        resetReplayOrbit();
-        replayOrbit.session = false;
-      }
       if (!freecam) {
         match.updateCamera(gs.camera, cameraMode);
         if (versusCam) match.updateCamera2(versusCam, cameraMode);
-        if (match.isReplayActive) {
-          applyReplayOrbit(gs.camera);
-          if (versusCam) applyReplayOrbit(versusCam);
-        }
       }
     }
-    // The crowd runs on wall-clock time and outside the simulation: it is
-    // scenery, it must not consume simulation steps, and it keeps moving
-    // through a replay or a menu sitting over the court.
+    // Scenery runs on wall-clock time and outside the simulation: it must not
+    // consume simulation steps, and it keeps moving through a menu sitting
+    // over the court.
     gs.scene.render();
   });
 
@@ -1418,12 +1272,6 @@ async function boot(): Promise<void> {
       hint: (t) => ui.hint(t),
       meter: (f, s0, s1) => ui.meter(f, s0, s1),
       meterResult: (q) => ui.meterResult(q),
-      setReplay: (active, label, replayPaused, zoom, replayPosition, replayDuration, replaySegment) => {
-        ui.setReplay(active, label, replayPaused, zoom, replayPosition, replayDuration, replaySegment);
-        // Keep the normal STRIKE/RECEPTION touch buttons out of a cinematic
-        // replay, leaving only the explicit transport controls above them.
-        input.setTouchControlsEnabled(!active);
-      },
       onMatchEnd: (winner) => {
         const sets: [number, number] = [controller.sets.player, controller.sets.ai];
         window.setTimeout(() => opts.onEnd(winner, sets), 1800);
