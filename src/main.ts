@@ -1,9 +1,7 @@
 import "./style.css";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
-import { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { Viewport } from "@babylonjs/core/Maths/math.viewport";
 import { createGameScene, loadBall, type GameScene } from "./scene";
 import {
   QUALITY_TIERS,
@@ -25,7 +23,6 @@ import {
   latchInput,
   newLatch,
   type InputState,
-  type VersusAssign,
 } from "./input";
 import { UI, type SettingRow } from "./ui";
 import { AudioManager } from "./audio";
@@ -43,7 +40,8 @@ import {
 import { ModelViewer } from "./viewer";
 import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
 import { readPreferences, storePreferences, type Preferences } from "./settings";
-import { BALLS, CAMERA, CHARACTERS, COURT, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
+import { LANGUAGES, detectLanguage, isLanguage, setLanguage, t as tr } from "./i18n";
+import { BALLS, CHARACTERS, COURT, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
 
 /** Longest real frame the simulation will honour; beyond this, time is dropped. */
 const MAX_FRAME_DT = 1 / 20;
@@ -52,8 +50,6 @@ const MAX_FRAME_DT = 1 / 20;
 interface MatchOpts {
   opponent: CharacterDef;
   difficulty: DifficultyLevel;
-  /** Second human drives the opponent (split screen); device assignment for both. */
-  versus: VersusAssign | null;
   /** Online: the opponent is a remote human on the far end of this connection. */
   online?: { conn: NetConnection; role: PeerRole; private: boolean };
   labels: [string, string];
@@ -78,7 +74,7 @@ async function boot(): Promise<void> {
   window.addEventListener("pointerdown", unlock);
   window.addEventListener("keydown", unlock);
 
-  ui.showLoading("Building the court…");
+  ui.showLoading(tr("loading.court"));
   // The opening clip runs over the loading screen rather than in front of it,
   // so the scene builds during it and the wait costs nothing. `?intro=0` skips
   // it, which is what the headless verification scripts use.
@@ -128,6 +124,7 @@ async function boot(): Promise<void> {
   // Remembered choices that are not the graphics tier. Applied as they are
   // read, so a fresh boot sounds and plays the way the last session left it.
   const prefs: Preferences = readPreferences();
+  setLanguage(prefs.language ?? detectLanguage());
   audio.setMusicEnabled(prefs.music);
   audio.setSoundEnabled(prefs.sound);
   const gs: GameScene = await createGameScene(canvas, settingsFor(qualityTier), venueFor(venueId));
@@ -190,7 +187,6 @@ async function boot(): Promise<void> {
   };
 
   // ---- split screen (versus mode) ----
-  let versusCam: TargetCamera | null = null;
   let cameraMode: CameraMode = prefs.camera;
   /**
    * Seconds left of the establishing shot, or null when a match is being
@@ -199,33 +195,6 @@ async function boot(): Promise<void> {
    * with the score already 1-0 is worse than no intro.
    */
   let introLeft: number | null = null;
-  const enableSplit = (assign: VersusAssign) => {
-    input.versusAssign = assign;
-    gs.camera.viewport = new Viewport(0, 0, 0.5, 1);
-    versusCam = new TargetCamera(
-      "cam2",
-      new Vector3(CAMERA.p2Court.x, GROUND_Y + CAMERA.p2Court.height, 0),
-      gs.scene
-    );
-    versusCam.setTarget(new Vector3(0, GROUND_Y + CAMERA.p2Court.lookY, 0));
-    versusCam.minZ = 0.1;
-    // Half-width viewports are tall; widen both views a touch.
-    gs.camera.fov = 1.0;
-    versusCam.fov = CAMERA.p2Court.fov;
-    versusCam.viewport = new Viewport(0.5, 0, 0.5, 1);
-    gs.scene.activeCameras = [gs.camera, versusCam];
-  };
-  const disableSplit = () => {
-    input.versusAssign = null;
-    if (!versusCam) return;
-    gs.scene.activeCameras = [];
-    gs.scene.activeCamera = gs.camera;
-    gs.camera.viewport = new Viewport(0, 0, 1, 1);
-    gs.camera.fov = gs.engine.getRenderWidth() < gs.engine.getRenderHeight() ? 1.1 : 0.85;
-    versusCam.dispose();
-    versusCam = null;
-  };
-
   // Debug free-fly camera (F2): place the camera by hand to evaluate the scene.
   // WASD/arrows move, drag mouse to look, E/Q up/down, hold Shift for speed.
   // Toggling it off logs the position/target so values can be copied into code.
@@ -314,7 +283,6 @@ async function boot(): Promise<void> {
   // that actually simulate, so pausing cannot bank time and burst on resume.
   let simAccumulator = 0;
   const latchedP1 = newLatch();
-  const latchedP2 = newLatch();
   // The frame delta is already clamped to MAX_FRAME_DT before the time scale is
   // applied, so this bound is simply that clamp expressed in simulation steps.
   const maxSimSteps = Math.ceil((MAX_FRAME_DT * timeScale) / SIM_DT) + 1;
@@ -334,7 +302,6 @@ async function boot(): Promise<void> {
     chars = [];
     match = null;
     aiCtl = null;
-    disableSplit();
     audio.startMusic();
     showModes();
   };
@@ -537,11 +504,6 @@ async function boot(): Promise<void> {
         match.tapAt(courtPointAt(placement.x, placement.y));
       }
       latchInput(latchedP1, inp);
-      if (versusCam) {
-        // Player 2's device, flipped into their court frame (they attack -x).
-        const p2 = input.pollP2(cameraMode);
-        latchInput(latchedP2, { ...p2, moveX: -p2.moveX, moveZ: -p2.moveZ });
-      }
       // Step the match in fixed SIM_DT slices, consuming whatever real time
       // this frame delivered. A slow frame runs several steps, a fast one may
       // run none — which is why the presses are latched rather than sampled.
@@ -549,7 +511,6 @@ async function boot(): Promise<void> {
       let steps = 0;
       while (simAccumulator >= SIM_DT && steps < maxSimSteps) {
         const stepInput = consumeInput(latchedP1);
-        if (versusCam) match.versusInput = consumeInput(latchedP2);
         // A guest's controls belong to the host's match, so they go to the
         // wire before the local update — which, as a follower, ignores them.
         session?.setLocalInput(stepInput);
@@ -569,10 +530,7 @@ async function boot(): Promise<void> {
       // A frame long enough to exhaust the step budget (tab restore, a GC
       // pause) drops the remainder instead of trying to catch up forever.
       if (steps >= maxSimSteps) simAccumulator = 0;
-      if (!freecam) {
-        match.updateCamera(gs.camera, cameraMode);
-        if (versusCam) match.updateCamera2(versusCam, cameraMode);
-      }
+      if (!freecam) match.updateCamera(gs.camera, cameraMode);
     }
     // Scenery runs on wall-clock time and outside the simulation: it must not
     // consume simulation steps, and it keeps moving through a menu sitting
@@ -581,135 +539,185 @@ async function boot(): Promise<void> {
   });
 
   const showTitle = () => {
-    ui.showTitle(() => {
-      audio.startMusic();
-      // Prefetch the decorative gym only after the first screen is visible.
-      // The model viewer and selection menus give it time to arrive without
-      // making the initial page appear stuck on “Building the court…”.
-      void gs.ensureArena();
-      showModes();
-    });
+    ui.showTitle(
+      () => {
+        audio.startMusic();
+        // Prefetch the decorative gym only after the first screen is visible.
+        // The model viewer and selection menus give it time to arrive without
+        // making the initial page appear stuck on “Building the court…”.
+        void gs.ensureArena();
+        showModes();
+      },
+      () => showSettings(showTitle)
+    );
   };
 
   // ------------------------------------------------------------- mode flow
 
+  /**
+   * One question: how do you want to play? Four routes and nothing else —
+   * settings live on the title screen, where they are not in the way of a
+   * player who came here to start a match.
+   */
   const showModes = () => {
     viewer.deactivate();
     input.setTouchControlsEnabled(false);
     ui.showMenu(
-      "GAME MODE",
+      tr("play.title"),
       [
-        { id: "btn-mode-practice", label: "PRACTICE", sub: "Learn one skill at a time", tag: "LEARN" },
         {
           id: "btn-mode-friendly",
-          label: "FRIENDLY",
-          sub: "Start a quick match against the CPU",
-          tag: "QUICK PLAY",
+          label: tr("play.friendly"),
+          sub: tr("play.friendly.sub"),
           primary: true,
         },
-        { id: "btn-mode-competition", label: "COMPETITION", sub: "Play a cup or league campaign", tag: "TOURNAMENT" },
-        { id: "btn-mode-online", label: "PLAY ONLINE", sub: "Take on another player over the net", tag: "ONLINE" },
-        { id: "btn-mode-versus", label: "2 PLAYERS", sub: "Share the court in split screen", tag: "LOCAL" },
-        {
-          id: "btn-mode-settings",
-          label: "SETTINGS",
-          sub: `Graphics, camera, sound · currently ${TIER_LABELS[qualityTier].label}`,
-          tag: "OPTIONS",
-        },
+        { id: "btn-mode-practice", label: tr("play.practice"), sub: tr("play.practice.sub") },
+        { id: "btn-mode-competition", label: tr("play.competition"), sub: tr("play.competition.sub") },
+        { id: "btn-mode-online", label: tr("play.online"), sub: tr("play.online.sub") },
       ],
       (id) => {
         if (id === "btn-mode-practice") showPractice();
         else if (id === "btn-mode-friendly") showDifficulty();
         else if (id === "btn-mode-competition") showFormats();
-        else if (id === "btn-mode-online") showOnline();
-        else if (id === "btn-mode-settings") showSettings();
-        else showVersusSelect();
+        else showOnline();
       },
-      "Pick a route and get on the table.",
+      undefined,
       showTitle
     );
   };
 
   /**
-   * The settings window.
+   * Settings, in three doors rather than one long list.
    *
-   * One screen with every remembered choice on it, rather than a menu that
-   * walks into a submenu per setting. The graphics tier is the only one that
-   * cannot simply be applied: the engine's MSAA is fixed when the WebGL
-   * context is created, so changing it restarts the game — which the row says
-   * before it is touched, and a confirmation says again before it happens.
+   * Five rows on one screen made a player read all five to change one. The
+   * categories answer "which kind of thing am I changing?" first, and each
+   * opens a screen with two or three rows on it — still Home → Category →
+   * Choice, never deeper.
+   *
+   * The graphics tier is the only setting that cannot simply be applied: the
+   * engine's MSAA is fixed when the WebGL context is created, so changing it
+   * restarts the game. The row says so before it is touched, and a
+   * confirmation says it again before anything happens.
    */
-  const showSettings = () => {
+  const showSettings = (back: () => void = showTitle) => {
     viewer.deactivate();
     input.setTouchControlsEnabled(false);
-    const rows = (): SettingRow[] => [
-      {
-        id: "graphics",
-        label: "Graphics",
-        hint: "Detail against framerate",
-        warning: "Changing this restarts the game.",
-        control: {
-          kind: "choice",
-          value: qualityTier,
-          options: QUALITY_TIERS.map((tier) => ({ id: tier, label: TIER_LABELS[tier].label })),
+    ui.showMenu(
+      tr("settings.title"),
+      [
+        { id: "btn-set-display", label: tr("settings.display"), sub: tr("settings.display.sub"), primary: true },
+        { id: "btn-set-gameplay", label: tr("settings.gameplay"), sub: tr("settings.gameplay.sub") },
+        { id: "btn-set-audio", label: tr("settings.audio"), sub: tr("settings.audio.sub") },
+      ],
+      (id) => {
+        if (id === "btn-set-display") showSettingsGroup("display", back);
+        else if (id === "btn-set-gameplay") showSettingsGroup("gameplay", back);
+        else showSettingsGroup("audio", back);
+      },
+      undefined,
+      back
+    );
+  };
+
+  /** One focused screen of settings, and the rows that belong on it. */
+  const showSettingsGroup = (group: "display" | "gameplay" | "audio", back: () => void) => {
+    const rows = (): SettingRow[] => {
+      if (group === "display") {
+        return [
+          {
+            id: "graphics",
+            label: tr("settings.graphics"),
+            hint: tr("settings.graphics.hint"),
+            warning: tr("settings.graphics.warning"),
+            control: {
+              kind: "choice",
+              value: qualityTier,
+              options: QUALITY_TIERS.map((tier) => ({ id: tier, label: TIER_LABELS[tier].label })),
+            },
+          },
+          {
+            id: "camera",
+            label: tr("settings.camera"),
+            hint: tr("settings.camera.hint"),
+            control: {
+              kind: "choice",
+              value: prefs.camera,
+              options: [
+                { id: "court", label: tr("settings.camera.court") },
+                { id: "side", label: tr("settings.camera.side") },
+                { id: "top", label: tr("settings.camera.top") },
+              ],
+            },
+          },
+          {
+            id: "language",
+            label: tr("settings.language"),
+            hint: tr("settings.language.hint"),
+            control: {
+              kind: "choice",
+              value: prefs.language ?? "en",
+              options: LANGUAGES.map((l) => ({ id: l.id, label: l.label })),
+            },
+          },
+        ];
+      }
+      if (group === "gameplay") {
+        return [
+          {
+            id: "autoReception",
+            label: tr("settings.autoReception"),
+            hint: tr("settings.autoReception.hint"),
+            control: { kind: "toggle", value: prefs.autoReception },
+          },
+        ];
+      }
+      return [
+        {
+          id: "music",
+          label: tr("settings.music"),
+          hint: tr("settings.music.hint"),
+          control: { kind: "toggle", value: prefs.music },
         },
-      },
-      {
-        id: "camera",
-        label: "Camera",
-        hint: "The view a match opens in",
-        control: {
-          kind: "choice",
-          value: prefs.camera,
-          options: [
-            { id: "court", label: "Court" },
-            { id: "side", label: "Side" },
-            { id: "top", label: "Top" },
-          ],
+        {
+          id: "sound",
+          label: tr("settings.sound"),
+          hint: tr("settings.sound.hint"),
+          control: { kind: "toggle", value: prefs.sound },
         },
-      },
-      {
-        id: "autoReception",
-        label: "Automatic reception",
-        hint: "Standing near the ball takes the first touch for you",
-        control: { kind: "toggle", value: prefs.autoReception },
-      },
-      { id: "music", label: "Music", hint: "Menu and match loops", control: { kind: "toggle", value: prefs.music } },
-      {
-        id: "sound",
-        label: "Sound effects",
-        hint: "Kicks, bounces and the crowd",
-        control: { kind: "toggle", value: prefs.sound },
-      },
-    ];
+      ];
+    };
     const render = () =>
       ui.showSettings(
+        tr(`settings.${group}`),
         rows(),
         (id, value) => {
           if (id === "graphics") {
             const picked = QUALITY_TIERS.find((tier) => tier === value);
             if (!picked || picked === qualityTier) return;
             ui.confirm(
-              "RESTART REQUIRED",
-              `Switching to ${TIER_LABELS[picked].label} rebuilds the scene, so the game starts over from the title screen. Any match in progress is lost.`,
-              "RESTART NOW",
+              tr("settings.restart.title"),
+              tr("settings.restart.body"),
+              tr("settings.restart.confirm"),
+              tr("settings.restart.cancel"),
               () => {
                 storeTier(picked);
-                ui.showLoading("Applying graphics settings…");
+                ui.showLoading(tr("loading.court"));
                 location.reload();
               }
             );
             return;
           }
           if (id === "camera" && typeof value === "string") {
-            const picked: CameraMode | undefined = (["court", "side", "top"] as CameraMode[]).find(
-              (mode) => mode === value
-            );
+            const picked = (["court", "side", "top"] as CameraMode[]).find((mode) => mode === value);
             if (picked) {
               prefs.camera = picked;
               cameraMode = picked;
               ui.setCameraMode(picked);
             }
+          }
+          if (id === "language" && isLanguage(value)) {
+            prefs.language = value;
+            setLanguage(value);
           }
           if (id === "autoReception" && typeof value === "boolean") {
             prefs.autoReception = value;
@@ -727,7 +735,7 @@ async function boot(): Promise<void> {
           storePreferences(prefs);
           render();
         },
-        showModes
+        () => showSettings(back)
       );
     render();
   };
@@ -759,9 +767,8 @@ async function boot(): Promise<void> {
       void startMatch(me, ballId, {
         opponent: them,
         difficulty: "normal",
-        versus: null,
         online: { conn, role, private: isPrivate },
-        labels: ["YOU", "RIVAL"],
+        labels: [tr("hud.you"), "RIVAL"],
         onEnd: (winner) => {
           ui.showEnd(winner, () => leaveMatch(), () => leaveMatch());
         },
@@ -776,7 +783,7 @@ async function boot(): Promise<void> {
       },
     });
 
-    showSelect("CHOOSE YOUR PLAYER", (charId, ballId) => {
+    showSelect(tr("select.title"), (charId, ballId) => {
       mine = { character: charId, ball: ballId };
       conn.send({ t: "setup", character: charId, ball: ballId });
       ui.showLobbyStatus("READY", "Waiting for your opponent to choose…", null, abandonLobby);
@@ -893,33 +900,22 @@ async function boot(): Promise<void> {
 
   const showOnline = () => {
     if (!onlineAvailable) {
-      ui.showLobbyStatus(
-        "ONLINE UNAVAILABLE",
-        "This build has no match server configured",
-        null,
-        showModes
-      );
+      ui.showLobbyStatus(tr("online.title"), tr("online.unavailable"), null, showModes);
       return;
     }
     ui.showMenu(
-      "PLAY ONLINE",
+      tr("online.title"),
       [
-        {
-          id: "btn-online-quick",
-          label: "QUICK MATCH",
-          sub: "Get paired with another player",
-          tag: "FASTEST",
-          primary: true,
-        },
-        { id: "btn-online-host", label: "PLAY A FRIEND", sub: "Create a game and share the code", tag: "PRIVATE" },
-        { id: "btn-online-join", label: "ENTER A CODE", sub: "Join a friend's game", tag: "PRIVATE" },
+        { id: "btn-online-quick", label: tr("online.quick"), sub: tr("online.quick.sub"), primary: true },
+        { id: "btn-online-host", label: tr("online.friend"), sub: tr("online.friend.sub") },
+        { id: "btn-online-join", label: tr("online.code"), sub: tr("online.code.sub") },
       ],
       (id) => {
         if (id === "btn-online-quick") quickMatch();
         else if (id === "btn-online-host") hostPrivateGame();
         else joinPrivateGame();
       },
-      "Play someone else, wherever they are.",
+      tr("online.sub"),
       showModes
     );
   };
@@ -928,7 +924,7 @@ async function boot(): Promise<void> {
     // The trainer is fixed, so it is a safe useful prefetch while the user is
     // choosing their own player.
     scheduleAssetPrefetch("/models/characters/SpanishPlayer.glb", 700);
-    showSelect("PRACTICE SETUP", (charId, ballId) => {
+    showSelect(tr("select.title"), (charId, ballId) => {
       const playerDef = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
       const trainer =
         CHARACTERS.find((c) => c.id !== playerDef.id && c.id === "SpanishPlayer") ??
@@ -937,8 +933,7 @@ async function boot(): Promise<void> {
       void startMatch(playerDef, ballId, {
         opponent: trainer,
         difficulty: "easy",
-        versus: null,
-        labels: ["YOU", "TRAINER"],
+        labels: [tr("hud.you"), "TRAINER"],
         practice: true,
         onEnd: () => match?.reset(),
       });
@@ -947,136 +942,51 @@ async function boot(): Promise<void> {
 
   const showDifficulty = () => {
     ui.showMenu(
-      "DIFFICULTY",
+      tr("difficulty.title"),
       [
-        { id: "btn-diff-easy", label: "EASY", sub: "Relaxed rallies and extra room", tag: "RELAXED" },
-        { id: "btn-diff-normal", label: "NORMAL", sub: "A balanced match", tag: "RECOMMENDED", primary: true },
-        { id: "btn-diff-hard", label: "HARD", sub: "Tournament pace and sharper returns", tag: "CHALLENGE" },
+        { id: "btn-diff-easy", label: tr("difficulty.easy"), sub: tr("difficulty.easy.sub") },
+        { id: "btn-diff-normal", label: tr("difficulty.normal"), sub: tr("difficulty.normal.sub"), primary: true },
+        { id: "btn-diff-hard", label: tr("difficulty.hard"), sub: tr("difficulty.hard.sub") },
       ],
       (id) => {
         const diff = id.replace("btn-diff-", "") as DifficultyLevel;
-        showSelect("CHOOSE YOUR SETUP", (charId, ballId) => {
+        showSelect(tr("select.title"), (charId, ballId) => {
           const playerDef = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
           const others = CHARACTERS.filter((c) => c.id !== charId);
           const opponent = others[Math.floor(Math.random() * others.length)];
           void startMatch(playerDef, ballId, {
             opponent,
             difficulty: diff,
-            versus: null,
-            labels: ["YOU", opponent.label],
+            labels: [tr("hud.you"), opponent.label],
             onEnd: (winner) => {
               ui.showEnd(winner, () => match?.reset(), () => leaveMatch());
             },
           });
         }, showDifficulty);
       },
-      "Friendly match",
+      tr("difficulty.sub"),
       showModes
     );
   };
 
   const showFormats = () => {
     ui.showMenu(
-      "COMPETITION",
+      tr("comp.title"),
       [
-        { id: "btn-format-cup", label: "CUP", sub: "A knockout run to the final", tag: "ELIMINATION", primary: true },
-        { id: "btn-format-league", label: "LEAGUE", sub: "Three rounds. Every result counts.", tag: "ROUND ROBIN" },
+        { id: "btn-format-cup", label: tr("comp.cup"), sub: tr("comp.cup.sub"), primary: true },
+        { id: "btn-format-league", label: tr("comp.league"), sub: tr("comp.league.sub") },
       ],
       (id) => {
         const format = id === "btn-format-cup" ? ("cup" as const) : ("league" as const);
-        showSelect("CHOOSE YOUR SETUP", (charId, ballId) => {
+        showSelect(tr("select.title"), (charId, ballId) => {
           startCompetition(format, charId, ballId);
         }, showFormats);
       },
-      "Build your run",
+      tr("comp.sub"),
       showModes
     );
   };
 
-  const showVersusSelect = () => {
-    if (!input.hasGamepad()) {
-      ui.showMenu(
-        "2 PLAYERS",
-        [
-          { id: "btn-versus-retry", label: "CHECK CONTROLLER", sub: "Press a controller button, then try again", tag: "RETRY", primary: true },
-          {
-            id: "btn-versus-kb",
-            label: "SHARED KEYBOARD",
-            sub: "P1: WASD + SPACE/K · P2: ARROWS + ENTER/R-SHIFT",
-            tag: "LOCAL",
-          },
-        ],
-        (id) => {
-          if (id === "btn-versus-retry") showVersusSelect();
-          else versusSelectFlow({ p1: "kbWASD", p2: "kbArrows" });
-        },
-        "Connect a controller, or share one keyboard.",
-        showModes
-      );
-      return;
-    }
-    console.log("[versus] pads:", input.padCount(), input.padName());
-    showVersusDevices();
-  };
-
-  /** Let the players decide who uses which device (controller order included). */
-  const showVersusDevices = () => {
-    const pads = input.padCount();
-    const options =
-      pads >= 2
-        ? [
-            { id: "btn-assign-a", label: "P1 CONTROLLER 1 · P2 CONTROLLER 2", assign: { p1: "pad1", p2: "pad2" } as VersusAssign },
-            { id: "btn-assign-b", label: "P1 CONTROLLER 2 · P2 CONTROLLER 1", assign: { p1: "pad2", p2: "pad1" } as VersusAssign },
-            { id: "btn-assign-c", label: "P1 KEYBOARD · P2 CONTROLLER 1", assign: { p1: "kb", p2: "pad1" } as VersusAssign },
-            { id: "btn-assign-d", label: "SHARED KEYBOARD", sub: "P1 WASD + SPACE/K · P2 ARROWS + ENTER/R-SHIFT", assign: { p1: "kbWASD", p2: "kbArrows" } as VersusAssign },
-          ]
-        : [
-            { id: "btn-assign-a", label: "P1 KEYBOARD · P2 CONTROLLER", assign: { p1: "kb", p2: "pad1" } as VersusAssign },
-            { id: "btn-assign-b", label: "P1 CONTROLLER · P2 KEYBOARD", assign: { p1: "pad1", p2: "kb" } as VersusAssign },
-            { id: "btn-assign-c", label: "SHARED KEYBOARD", sub: "P1 WASD + SPACE/K · P2 ARROWS + ENTER/R-SHIFT", assign: { p1: "kbWASD", p2: "kbArrows" } as VersusAssign },
-          ];
-    ui.showMenu(
-      "WHO PLAYS WITH WHAT?",
-      options.map(({ id, label, sub }) => ({ id, label, sub })),
-      (picked) => {
-        const opt = options.find((o) => o.id === picked)!;
-        versusSelectFlow(opt.assign);
-      },
-      pads >= 2 ? "Two controllers detected" : "One controller detected",
-      showModes
-    );
-  };
-
-  const versusSelectFlow = (assign: VersusAssign) => {
-    const showPlayerOne = () => {
-      showSelect("PLAYER 1 — CHOOSE", (p1Id) => {
-        // Both players get the same picker; the ball is shared, last choice wins.
-        showSelect("PLAYER 2 — CHOOSE", (p2Id, ballId) => {
-          const p1 = CHARACTERS.find((c) => c.id === p1Id) ?? CHARACTERS[0];
-          const p2 = CHARACTERS.find((c) => c.id === p2Id) ?? CHARACTERS[1];
-          void startMatch(p1, ballId, {
-            opponent: p2,
-            difficulty: "normal",
-            versus: assign,
-            labels: ["P1", "P2"],
-            onEnd: (winner) => {
-              ui.showEnd(winner, () => match?.reset(), () => leaveMatch());
-            },
-          });
-        }, showPlayerOne);
-      }, showVersusDevices);
-    };
-    showPlayerOne();
-  };
-
-  /**
-   * Player, ball and venue, on the last screen before the whistle.
-   *
-   * The venue used to live in settings, which made a per-match choice into a
-   * preference and put it three screens away from the match it applies to. It
-   * swaps the live scene behind the picker — the model viewer is a different
-   * scene, so nothing of it is visible until the match starts anyway.
-   */
   const showSelect = (
     title: string,
     onConfirm: (charId: string, ballId: string) => void,
@@ -1154,8 +1064,7 @@ async function boot(): Promise<void> {
     void startMatch(human, ballId, {
       opponent,
       difficulty,
-      versus: null,
-      labels: ["YOU", opponent.label],
+      labels: [tr("hud.you"), opponent.label],
       onEnd: (winner, sets) => onEnd(winner === "player", sets),
     });
   };
@@ -1322,16 +1231,16 @@ async function boot(): Promise<void> {
     }, audio);
     controller.aimMarker = gs.aimMarker;
     controller.landingMarker = gs.landingMarker;
-    controller.versus = opts.versus !== null;
     controller.practice = opts.practice === true;
     controller.autoFirstReception = prefs.autoReception;
     match = controller;
     // Online play is a two-human match whose second seat is a socket, so it
     // needs no AI and no split screen: each player has their own device.
-    aiCtl =
-      opts.versus || opts.online
-        ? null
-        : new AIController(controller, opts.practice ? PRACTICE_DIFFICULTY : DIFFICULTIES[opts.difficulty]);
+    // Online is a two-human match whose second seat is a socket, so it needs
+    // no AI; the session turns `versus` on for itself.
+    aiCtl = opts.online
+      ? null
+      : new AIController(controller, opts.practice ? PRACTICE_DIFFICULTY : DIFFICULTIES[opts.difficulty]);
     if (opts.online) {
       // The guest shows a match the host runs. Without this both peers would
       // run their own rule engine, disagree from the first serve, and end up
@@ -1375,8 +1284,6 @@ async function boot(): Promise<void> {
     }
     cameraMode = "court";
     ui.setCameraMode(cameraMode);
-    if (opts.versus) enableSplit(opts.versus);
-    else disableSplit();
     match.reset();
     ui.showHUD();
     // No establishing shot online: it holds the local simulation, and the

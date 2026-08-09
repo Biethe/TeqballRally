@@ -1,6 +1,7 @@
 import type { Side } from "./ball";
 import type { CameraMode, CharacterDef } from "./config";
 import type { ViewerKind } from "./viewer";
+import { t } from "./i18n";
 
 export interface SelectItem {
   id: string;
@@ -156,12 +157,13 @@ export class UI {
         <div class="brand-lockup">
           <span class="brand-orb" aria-hidden="true"></span>
           <div>
-            <div class="brand-kicker">TABLE FOOTBALL</div>
+            <div class="brand-kicker" id="title-kicker">TABLE FOOTBALL</div>
             <div class="logo">TeqRally</div>
           </div>
         </div>
-        <p class="title-tagline">Fast rallies on the curved table.</p>
+        <p class="title-tagline" id="title-tagline">Fast rallies on the curved table.</p>
         <button class="big-btn" id="btn-play" data-menu-primary="true">PLAY</button>
+        <button class="ghost-btn" id="btn-title-settings" type="button">SETTINGS</button>
       </main>`;
 
     // Select screen is a transparent overlay: the 3D model viewer renders behind it.
@@ -170,13 +172,13 @@ export class UI {
     this.selectEl.innerHTML = `
       <div class="select-top">
         <div class="select-bar">
-          <button class="select-back" id="btn-select-back" type="button" data-menu-back>← BACK</button>
+          <button class="select-back" id="btn-select-back" type="button" data-menu-back>← ${t("nav.back")}</button>
           <div class="select-brand">TeqRally</div>
         </div>
         <div class="select-title">CHOOSE YOUR SETUP</div>
         <div class="tabs">
-          <button class="tab-btn active" data-tab="character">PLAYER</button>
-          <button class="tab-btn" data-tab="ball">BALL</button>
+          <button class="tab-btn active" data-tab="character"></button>
+          <button class="tab-btn" data-tab="ball"></button>
         </div>
       </div>
       <div class="select-stage">
@@ -255,10 +257,10 @@ export class UI {
     this.pauseEl = this.screen("pause-screen");
     this.pauseEl.innerHTML = `
       <section class="pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
-        <h1 id="pause-title">PAUSED</h1>
+        <h1 id="pause-title"></h1>
         <div class="pause-actions">
           <button class="pause-action pause-resume" id="btn-resume" data-menu-primary="true">
-            <strong>RESUME</strong><kbd>ESC / START</kbd>
+            <strong id="pause-resume-label"></strong><kbd>ESC / START</kbd>
           </button>
           <button class="pause-action" id="btn-restart"><strong>RESTART MATCH</strong></button>
           <button class="pause-action" id="btn-change-player"><strong>EXIT TO MODES</strong></button>
@@ -288,8 +290,8 @@ export class UI {
     const btns = document.createElement("div");
     btns.className = "end-btns";
     btns.innerHTML = `
-      <button class="big-btn" id="btn-rematch">REMATCH</button>
-      <button class="big-btn alt" id="btn-change">GAME MODES</button>`;
+      <button class="big-btn" id="btn-rematch"></button>
+      <button class="big-btn alt" id="btn-change"></button>`;
     this.endEl.append(this.endTitle, btns);
 
     // Generic list menu (game mode, difficulty, competition format).
@@ -342,7 +344,7 @@ export class UI {
       <main class="menu-shell">
         <header class="menu-header">
           <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRally</div>
-          ${onBack ? '<button class="menu-back" id="btn-menu-back" type="button" data-menu-back>← BACK</button>' : ""}
+          ${onBack ? `<button class="menu-back" id="btn-menu-back" type="button" data-menu-back>← ${t("nav.back")}</button>` : ""}
         </header>
         <section class="menu-heading">
           <h1>${title}</h1>
@@ -502,6 +504,7 @@ export class UI {
    * changing it restarts the game.
    */
   showSettings(
+    title: string,
     rows: SettingRow[],
     onChange: (id: string, value: string | boolean) => void,
     onBack: () => void
@@ -511,11 +514,12 @@ export class UI {
       <main class="menu-shell settings-shell">
         <header class="menu-header">
           <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRally</div>
-          <button class="menu-back" id="btn-settings-back" type="button" data-menu-back>← BACK</button>
+          <button class="menu-back" id="btn-settings-back" type="button" data-menu-back>← ${t("nav.back")}</button>
         </header>
-        <section class="menu-heading"><h1>SETTINGS</h1></section>
+        <section class="menu-heading"><h1></h1></section>
         <div class="settings-rows"></div>
       </main>`;
+    this.settingsEl.querySelector<HTMLHeadingElement>("h1")!.textContent = title;
     const list = this.settingsEl.querySelector<HTMLDivElement>(".settings-rows")!;
     for (const row of rows) {
       const el = document.createElement("div");
@@ -544,6 +548,10 @@ export class UI {
       control.className = "setting-control";
       if (row.control.kind === "choice") {
         control.classList.add("seg");
+        // Four options do not fit beside a label on a phone. Past three, the
+        // row stacks and the control takes the full width rather than
+        // squeezing the words it belongs to.
+        if (row.control.options.length > 3) el.classList.add("stacked");
         for (const option of row.control.options) {
           const b = document.createElement("button");
           b.type = "button";
@@ -576,13 +584,19 @@ export class UI {
    * A yes/no question over whatever is on screen. Used where a choice cannot
    * simply be undone — restarting the game to change the graphics tier.
    */
-  confirm(title: string, detail: string, confirmLabel: string, onConfirm: () => void): void {
+  confirm(
+    title: string,
+    detail: string,
+    confirmLabel: string,
+    cancelLabel: string,
+    onConfirm: () => void
+  ): void {
     this.showOnlinePause(title, detail, [
       [confirmLabel, () => {
         this.hideOnlinePause();
         onConfirm();
       }],
-      ["CANCEL", () => this.hideOnlinePause()],
+      [cancelLabel, () => this.hideOnlinePause()],
     ]);
   }
 
@@ -593,6 +607,8 @@ export class UI {
     onChangePlayer: () => void,
     onShutdownServer?: () => void
   ): void {
+    this.pauseEl.querySelector<HTMLHeadingElement>("#pause-title")!.textContent = t("pause.title");
+    this.pauseEl.querySelector<HTMLElement>("#pause-resume-label")!.textContent = t("pause.resume");
     this.pauseEl.querySelector<HTMLButtonElement>("#btn-resume")!.onclick = () => onResume();
     this.pauseEl.querySelector<HTMLButtonElement>("#btn-restart")!.onclick = () => onRestart();
     this.pauseEl.querySelector<HTMLButtonElement>("#btn-change-player")!.onclick = () => onChangePlayer();
@@ -731,11 +747,24 @@ export class UI {
     this.introClipDone?.();
   }
 
-  showTitle(onPlay: () => void): void {
+  /**
+   * The first screen: one obvious action, and a quiet way to the settings.
+   *
+   * Everything else — practice, competition, online — is one press further in.
+   * A title screen that lists every mode is a dashboard, and a player opening a
+   * game for the first time should only have to recognise PLAY.
+   */
+  showTitle(onPlay: () => void, onSettings: () => void): void {
     this.hideAll();
-    this.titleEl.classList.remove("hidden");
+    this.titleEl.querySelector<HTMLDivElement>("#title-kicker")!.textContent = t("title.kicker");
+    this.titleEl.querySelector<HTMLParagraphElement>("#title-tagline")!.textContent = t("title.tagline");
     const btn = this.titleEl.querySelector<HTMLButtonElement>("#btn-play")!;
+    btn.textContent = t("title.play");
     btn.onclick = () => onPlay();
+    const settings = this.titleEl.querySelector<HTMLButtonElement>("#btn-title-settings")!;
+    settings.textContent = t("title.settings");
+    settings.onclick = () => onSettings();
+    this.titleEl.classList.remove("hidden");
   }
 
   private selTab: ViewerKind = "character";
@@ -746,7 +775,13 @@ export class UI {
     this.hideAll();
     this.selectEl.classList.remove("hidden");
     this.selectEl.querySelector<HTMLDivElement>(".select-title")!.textContent =
-      opts.title ?? "CHOOSE YOUR SETUP";
+      opts.title ?? t("select.title");
+    const tabLabels: Record<string, string> = { character: t("select.player"), ball: t("select.ball") };
+    for (const tab of this.selectEl.querySelectorAll<HTMLButtonElement>(".tab-btn")) {
+      tab.textContent = tabLabels[tab.dataset.tab ?? "character"] ?? "";
+    }
+    this.selectEl.querySelector<HTMLButtonElement>("#btn-start")!.textContent = t("select.play");
+    this.selectEl.querySelector<HTMLDivElement>("#item-status")!.textContent = t("select.loading");
 
     const nameEl = this.selectEl.querySelector<HTMLDivElement>("#item-name")!;
     const statusEl = this.selectEl.querySelector<HTMLDivElement>("#item-status")!;
@@ -792,7 +827,7 @@ export class UI {
       return max === min ? 100 : Math.round(60 + ((value - min) / (max - min)) * 40);
     };
     const footLabel = (foot: CharacterDef["strongFoot"]): string =>
-      foot === "both" ? "TWO-FOOTED" : foot.toUpperCase();
+      foot === "both" ? t("select.twoFooted") : foot === "left" ? t("select.left") : t("select.right");
     const renderProfile = (player: CharacterDef | null): void => {
       if (!player) {
         profileEl.classList.add("hidden");
@@ -802,19 +837,19 @@ export class UI {
       profileStatsEl.replaceChildren();
       const stats: Array<{ label: string; value: string; fill: number; detail: string }> = [
         {
-          label: "REACTIVITY",
+          label: t("select.abilities.reactivity"),
           value: String(abilityScore(player.speed, (p) => p.speed)),
           fill: abilityScore(player.speed, (p) => p.speed) / 100,
           detail: "Response and court movement",
         },
         {
-          label: "POWER",
+          label: t("select.abilities.power"),
           value: String(abilityScore(player.power, (p) => p.power)),
           fill: abilityScore(player.power, (p) => p.power) / 100,
           detail: "Kick and serve power",
         },
         {
-          label: "CONTROL",
+          label: t("select.abilities.control"),
           value: String(abilityScore(player.precision, (p) => p.precision)),
           fill: abilityScore(player.precision, (p) => p.precision) / 100,
           detail: "Aim precision and placement",
@@ -839,8 +874,8 @@ export class UI {
       }
       profileTraitsEl.replaceChildren();
       const traits = [
-        ["STRONG FOOT", footLabel(player.strongFoot)],
-        ["HEIGHT", `${player.height.toFixed(2)} m`],
+        [t("select.strongFoot"), footLabel(player.strongFoot)],
+        [t("select.height"), `${player.height.toFixed(2)} m`],
       ];
       for (const [labelText, valueText] of traits) {
         const trait = document.createElement("span");
@@ -975,6 +1010,8 @@ export class UI {
     // HUD stays visible behind the end overlay.
     this.endTitle.textContent = winner === "player" ? `${this.labels[0]} WINS! 🏆` : `${this.labels[1]} WINS`;
     this.endEl.classList.remove("hidden");
+    this.endEl.querySelector<HTMLButtonElement>("#btn-rematch")!.textContent = t("end.rematch");
+    this.endEl.querySelector<HTMLButtonElement>("#btn-change")!.textContent = t("end.change");
     this.endEl.querySelector<HTMLButtonElement>("#btn-rematch")!.onclick = () => {
       this.endEl.classList.add("hidden");
       onRematch();

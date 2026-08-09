@@ -1,3 +1,30 @@
+/* Exo 2, self-hosted: a squarish athletic grotesque, which is what a sports
+   broadcast graphic is set in. Bundled rather than fetched from a CDN because
+   the packaged app has no network guarantee and a menu whose type arrives late
+   reflows in front of the player. One variable file per subset, 400-900.
+   SIL Open Font License 1.1. */
+@font-face {
+  font-family: "Exo 2";
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url("/fonts/exo2-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Exo 2";
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url("/fonts/exo2-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 /* Palette from the competition itself: teqball's vermilion and the deep blue
    of a lit indoor court, pushed to the saturation a phone game is read at.
    The rule the whole screen follows is that one warm colour means "do this"
@@ -40,7 +67,7 @@ body {
   height: 100%;
   overflow: hidden;
   background: var(--ink);
-  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-family: "Exo 2", "Segoe UI", system-ui, -apple-system, sans-serif;
   -webkit-user-select: none;
   user-select: none;
   touch-action: none;
@@ -91,6 +118,26 @@ body {
 
 .screen.hidden {
   display: none;
+}
+
+/* Screens arrive rather than appear. Fast enough to stay out of the way of a
+   player moving quickly, slow enough to say which direction they went.
+   Deliberately no fill-mode and no fully transparent keyframe: a phone slow
+   enough to delay the animation's first frame would otherwise show nothing at
+   all until it started, and those are exactly the phones this runs on. */
+.screen:not(.hidden):not(#hud):not(#intro-clip) {
+  animation: screen-in 220ms cubic-bezier(0.22, 0.8, 0.3, 1);
+}
+
+@keyframes screen-in {
+  from {
+    opacity: 0.45;
+    transform: translateY(9px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* Opening clip: sits above the loading screen it plays over. The clip is shot
@@ -232,6 +279,32 @@ body {
   text-shadow: 0 2px 0 rgba(2, 18, 40, 0.6);
 }
 
+/* The quiet way out of the title screen. Deliberately not a card and not
+   orange: settings are for the player who went looking for them. */
+.ghost-btn {
+  pointer-events: auto;
+  margin-top: 4px;
+  min-height: 44px;
+  padding: 0 26px;
+  border: 1px solid rgba(160, 200, 245, 0.4);
+  border-radius: 999px;
+  background: rgba(8, 26, 52, 0.55);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+
+.ghost-btn:hover {
+  border-color: rgba(200, 226, 255, 0.7);
+  background: rgba(14, 38, 72, 0.7);
+  color: var(--text);
+}
+
 button:focus-visible,
 button.pad-focus {
   outline: 3px solid rgba(255, 255, 255, 0.9);
@@ -305,11 +378,11 @@ button.pad-focus {
 /* Transparent overlay: the 3D viewer renders on the canvas behind it, so the
    screen itself must let pointer events through to the canvas for orbiting. */
 .viewer-select {
-  /* The showroom has its own cool, contemporary accent rather than borrowing
-     the court's vermilion UI colour. */
-  --teq: #76a9ff;
-  --teq-deep: #4b7cd1;
-  --viewer-accent-soft: rgba(118, 169, 255, 0.18);
+  /* The picker used to run a cool blue accent of its own. It reads well on its
+     own and wrongly beside every other screen: orange means selected and means
+     go, and the button that starts the match is the most important control in
+     the game. The soft blues stay for the ability bars, which are data. */
+  --viewer-accent-soft: rgba(255, 140, 40, 0.2);
   --viewer-accent-glow: rgba(105, 170, 255, 0.42);
   background: none;
   pointer-events: none;
@@ -504,10 +577,12 @@ button.pad-focus {
   background: linear-gradient(180deg, #ffbc42 0%, #ef6a08 100%);
 }
 
+/* Selected reads the same everywhere: orange fill, bright border. A tinted
+   wash over blue said "sort of selected", which is not a state. */
 .viewer-select .tab-btn.active {
-  border-color: #93bdff;
-  background: var(--viewer-accent-soft);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 214, 150, 0.9);
+  background: linear-gradient(180deg, #ff9c2e 0%, #ef6405 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
 .browse {
@@ -594,15 +669,13 @@ button.pad-focus {
 }
 
 .venue-chip.on {
-  border-color: rgba(255, 255, 255, 0.75);
-  background: linear-gradient(180deg, #78acff, #4d79ca);
+  border-color: rgba(255, 214, 150, 0.9);
+  background: linear-gradient(180deg, #ff9c2e 0%, #ef6405 100%);
   color: #fff;
 }
 
 .viewer-select .big-btn {
   pointer-events: auto;
-  background: linear-gradient(135deg, #78acff, #4d79ca);
-  box-shadow: 0 12px 30px rgba(28, 78, 155, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 /* ------- game hub ------- */
@@ -612,12 +685,24 @@ button.pad-focus {
     max(20px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
 }
 
+/* The header sits at the top of the screen so BACK is always in the same
+   place, while the heading and the cards float in the space beneath it. */
 .menu-shell {
   position: relative;
   display: flex;
   width: min(680px, 100%);
-  margin: auto;
+  height: 100%;
+  margin: 0 auto;
+  padding: max(14px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
   flex-direction: column;
+}
+
+.menu-shell .menu-heading {
+  margin-top: auto;
+}
+
+.menu-shell .menu-options {
+  margin-bottom: auto;
 }
 
 .menu-header {
@@ -652,13 +737,13 @@ button.pad-focus {
 
 .menu-heading h1 {
   color: var(--text);
-  font-size: clamp(36px, 6vw, 60px);
-  font-weight: 950;
-  letter-spacing: -0.045em;
-  line-height: 0.95;
-  -webkit-text-stroke: 2.5px rgba(4, 20, 44, 0.8);
-  paint-order: stroke fill;
-  text-shadow: 0 4px 0 rgba(4, 20, 44, 0.4);
+  font-size: clamp(28px, 4.6vw, 46px);
+  font-weight: 800;
+  letter-spacing: 0.005em;
+  line-height: 1;
+  text-transform: uppercase;
+  font-stretch: 95%;
+  text-shadow: 0 3px 0 rgba(4, 20, 44, 0.45), 0 10px 26px rgba(0, 0, 0, 0.4);
 }
 
 .menu-heading p {
@@ -675,44 +760,57 @@ button.pad-focus {
   gap: 10px;
 }
 
+/* A card is a substantial object, not a list row: deep blue surface, a
+   controlled border, and a flat lip it drops onto when pressed. Only the
+   recommended route is orange — if every card shouts, none of them does. */
 .menu-option {
   display: flex;
+  position: relative;
   width: 100%;
-  min-height: 74px;
-  padding: 13px 18px;
-  border: 3px solid rgba(255, 255, 255, 0.55);
-  border-radius: 18px;
+  min-height: 78px;
+  padding: 14px 18px;
+  border: 2px solid rgba(139, 183, 235, 0.3);
+  border-radius: 14px;
   flex-direction: column;
   justify-content: center;
-  gap: 4px;
+  gap: 5px;
   color: var(--text);
   font: inherit;
   text-align: left;
-  background: var(--panel);
+  background: linear-gradient(180deg, rgba(38, 84, 145, 0.95) 0%, rgba(15, 44, 84, 0.95) 100%);
   cursor: pointer;
-  box-shadow: var(--lip);
-  transition: transform 0.1s ease, border-color 0.16s ease, box-shadow 0.1s ease;
+  box-shadow: 0 4px 0 rgba(4, 16, 34, 0.7), 0 10px 20px rgba(0, 0, 0, 0.35);
+  transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease,
+    background 0.14s ease;
 }
 
 .menu-option:hover {
-  border-color: var(--line-strong);
+  border-color: rgba(180, 214, 255, 0.6);
+  background: linear-gradient(180deg, rgba(46, 99, 166, 0.97) 0%, rgba(19, 53, 98, 0.97) 100%);
 }
 
 .menu-option:active {
-  transform: translateY(4px);
-  box-shadow: var(--lip-press);
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 rgba(4, 16, 34, 0.7), 0 4px 9px rgba(0, 0, 0, 0.35);
 }
 
+/* The route the game recommends. One per screen. */
 .menu-option.is-primary {
-  border-color: rgba(255, 255, 255, 0.92);
-  background: linear-gradient(180deg, #ffbc42 0%, #ff8a16 48%, #ee6104 100%);
+  border-color: rgba(255, 214, 150, 0.85);
+  background: linear-gradient(180deg, #ff9c2e 0%, #f4740c 55%, #d95a02 100%);
+  box-shadow: 0 4px 0 rgba(92, 36, 0, 0.75), 0 12px 26px rgba(217, 90, 2, 0.28);
+}
+
+.menu-option.is-primary small {
+  color: rgba(255, 244, 232, 0.95);
 }
 
 .menu-option strong {
-  font-size: clamp(16px, 2.4vw, 20px);
-  font-weight: 900;
-  letter-spacing: 0.05em;
-  text-shadow: 0 2px 0 rgba(3, 18, 40, 0.55);
+  font-size: clamp(17px, 2.5vw, 21px);
+  font-weight: 800;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  text-shadow: 0 2px 0 rgba(3, 18, 40, 0.45);
 }
 
 .menu-option small {
@@ -791,14 +889,17 @@ button.pad-focus {
   gap: 14px;
   max-height: 100%;
   min-height: 0;
-  padding: max(10px, env(safe-area-inset-top)) 0 max(10px, env(safe-area-inset-bottom));
+  padding: max(10px, env(safe-area-inset-top)) 16px max(10px, env(safe-area-inset-bottom));
 }
 
 .settings-rows {
   display: flex;
   width: min(560px, 100%);
   min-height: 0;
-  flex: 1 1 auto;
+  /* Centred in the space under the header, and only as tall as it needs —
+     until there are more rows than fit, when it scrolls instead. */
+  flex: 0 1 auto;
+  margin: auto 0;
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
@@ -845,6 +946,23 @@ button.pad-focus {
 
 .setting-control {
   flex: 0 0 auto;
+}
+
+/* Label above, control below: for a choice with more options than fit beside
+   the words explaining it. */
+.setting-row.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.setting-row.stacked .seg {
+  width: 100%;
+}
+
+.setting-row.stacked .seg-btn {
+  flex: 1 1 0;
+  padding: 0 8px;
 }
 
 .seg {
