@@ -123,10 +123,23 @@ async function boot(): Promise<void> {
   const onlineAvailable = looksReachable(relayUrl(), Capacitor.isNativePlatform());
   // The venue is purely cosmetic — backdrop model plus court palette — so it is
   // a local choice and never negotiated with an opponent.
-  const venueId = resolveVenue(location.search);
+  let venueId = resolveVenue(location.search);
   const gs: GameScene = await createGameScene(canvas, settingsFor(qualityTier), venueFor(venueId));
   const viewer = new ModelViewer(gs.engine, canvas);
   (window as unknown as Record<string, unknown>).__viewer = viewer;
+  // Test hook, alongside the viewer's: swaps venues through the same call the
+  // settings screen makes and reports what the scene holds afterwards, which
+  // is how a swap that leaks meshes or textures gets caught.
+  (window as unknown as Record<string, unknown>).__swap = async (id: string) => {
+    venueId = VENUE_IDS.find((v) => v === id) ?? venueId;
+    await gs.setVenue(venueFor(venueId));
+    return {
+      venue: venueId,
+      meshes: gs.scene.meshes.length,
+      materials: gs.scene.materials.length,
+      textures: gs.scene.textures.length,
+    };
+  };
 
   const ball = new Ball();
   let ballMesh: AbstractMesh | null = null;
@@ -732,10 +745,8 @@ async function boot(): Promise<void> {
   };
 
   /**
-   * Venue picker. Like the graphics tier this reloads: the backdrop is merged
-   * and normalised once at load, and the court's floor, lines and boards are
-   * built with the scene, so swapping venues live would mean tearing both down
-   * mid-frame for a setting players change between matches at most.
+   * Venue picker. Swaps in place — reloading the page for a cosmetic choice
+   * threw away the player's whole session.
    */
   const showVenues = () => {
     ui.showMenu(
@@ -758,8 +769,9 @@ async function boot(): Promise<void> {
           return;
         }
         storeVenue(picked);
+        venueId = picked;
         ui.showLoading("Setting up the new court…");
-        location.reload();
+        void gs.setVenue(venueFor(picked)).then(showSettings);
       },
       "The venue is yours alone — an opponent online keeps their own.",
       showSettings
