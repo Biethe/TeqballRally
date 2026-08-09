@@ -66,28 +66,6 @@ export function consumeInput(latched: LatchedInput): InputState {
   return state;
 }
 
-/** Edge-triggered controls available only while a highlight replay is visible. */
-export interface ReplayControls {
-  /** Toggle the presentation between playing and paused. */
-  toggle: boolean;
-  /** Leave the replay and return to the normal between-points flow. */
-  skip: boolean;
-  /** Move the replay timeline backward/forward one discrete step. */
-  back: boolean;
-  forward: boolean;
-  /** Move the replay camera one zoom step closer/farther. */
-  zoomIn: boolean;
-  zoomOut: boolean;
-}
-
-/** Global pause edge plus whether it originated from Escape. */
-export interface PauseControls {
-  /** Escape/Pause on keyboard or Start/Options on any connected controller. */
-  toggle: boolean;
-  /** Escape remains a replay-skip shortcut instead of pausing a replay. */
-  escape: boolean;
-}
-
 /**
  * A device a versus player can be assigned to:
  * - "kb": the whole keyboard (WASD + arrows, Space/Enter/J strike, K reception) + touch
@@ -124,17 +102,7 @@ export class Input {
   /** Global view-cycle action: C on keyboard, Y / Triangle on a gamepad. */
   private cameraQueued = false;
   private prevCameraCycle = false;
-  /** Replay-only keyboard actions; physical gamepad edges are sampled below. */
-  private replayToggleQueued = false;
-  private replaySkipQueued = false;
-  private replayBackQueued = false;
-  private replayForwardQueued = false;
-  private replayZoomInQueued = false;
-  private replayZoomOutQueued = false;
-  private prevReplayControls = { toggle: false, skip: false, back: false, forward: false, zoomIn: false, zoomOut: false };
-  /** Live-match pause is independent of replay transport's Start edge. */
   private pauseQueued = false;
-  private escapeQueued = false;
   private prevPauseGamepad = false;
   private prevGamepadStrike = false;
   private prevGamepadPop = false;
@@ -195,7 +163,6 @@ export class Input {
       if (e.code === "Escape") {
         this.menuBackQueued = true;
         this.pauseQueued = true;
-        this.escapeQueued = true;
         return;
       }
       if (e.code === "Backspace") {
@@ -209,35 +176,6 @@ export class Input {
       }
       if (e.code === "KeyC") {
         this.cameraQueued = true;
-        e.preventDefault();
-        return;
-      }
-      // SPACE deliberately keeps its regular STRIKE binding as well. The app
-      // consumes the replay edge first when a highlight is active, while a
-      // normal rally still sees the exact same strike press.
-      if (e.code === "Space" || e.code === "KeyP") {
-        this.replayToggleQueued = true;
-        if (e.code === "KeyP") {
-          e.preventDefault();
-          return;
-        }
-      }
-      if (e.code === "KeyX") {
-        this.replaySkipQueued = true;
-        e.preventDefault();
-        return;
-      }
-      // Keep arrow keys / J playable in a live rally. During a replay their
-      // separate edge is consumed as a timeline seek before match input.
-      if (e.code === "ArrowLeft" || e.code === "KeyJ") this.replayBackQueued = true;
-      if (e.code === "ArrowRight" || e.code === "KeyL") this.replayForwardQueued = true;
-      if (e.code === "Equal" || e.code === "NumpadAdd") {
-        this.replayZoomInQueued = true;
-        e.preventDefault();
-        return;
-      }
-      if (e.code === "Minus" || e.code === "NumpadSubtract") {
-        this.replayZoomOutQueued = true;
         e.preventDefault();
         return;
       }
@@ -703,95 +641,22 @@ export class Input {
     return out;
   }
 
+
   /**
-   * Consume the universal pause edge. Start/Options is intentionally sampled
-   * every frame, including while the game is paused, so the same button also
-   * resumes the match. Replay handling remains separate in main.ts.
+   * Consume the universal pause edge: Escape or Pause on a keyboard,
+   * Start/Options on any pad. Sampled every frame, including while the game is
+   * already paused, so the same button also resumes the match.
    */
-  pollPauseControls(): PauseControls {
+  pollPauseEdge(): boolean {
     let gamepadPause = false;
     for (const p of Input.connectedPads()) {
       const b = p.buttons[9]; // Start / Options in the standard gamepad map.
       gamepadPause ||= !!b && (b.pressed || b.value > 0.5);
     }
-    const out = {
-      toggle: this.pauseQueued || (gamepadPause && !this.prevPauseGamepad),
-      escape: this.escapeQueued,
-    };
+    const out = this.pauseQueued || (gamepadPause && !this.prevPauseGamepad);
     this.prevPauseGamepad = gamepadPause;
     this.pauseQueued = false;
-    this.escapeQueued = false;
     return out;
-  }
-
-  /**
-   * Consume global replay controls from any local device. These are polled
-   * every frame (including menus) so a held controller button cannot fire in
-   * a later replay. Keyboard: SPACE/P play-pause, X skip, arrows/J/L seek,
-   * +/- zoom. Gamepad: Start/Options play-pause, B/Circle or Share/View skip,
-   * D-pad left/right seek, LB/RB zoom.
-   */
-  pollReplayControls(): ReplayControls {
-    let toggle = this.replayToggleQueued;
-    let skip = this.replaySkipQueued;
-    let back = this.replayBackQueued;
-    let forward = this.replayForwardQueued;
-    let zoomIn = this.replayZoomInQueued;
-    let zoomOut = this.replayZoomOutQueued;
-    for (const p of Input.connectedPads()) {
-      const btn = (i: number) => !!p.buttons[i]?.pressed;
-      toggle ||= btn(9); // Start / Options
-      skip ||= btn(1) || btn(8); // B / Circle, Back / Share / View
-      back ||= btn(14); // D-pad left
-      forward ||= btn(15); // D-pad right
-      zoomOut ||= btn(4); // LB / L1
-      zoomIn ||= btn(5); // RB / R1
-    }
-    const out = {
-      toggle: toggle && !this.prevReplayControls.toggle,
-      skip: skip && !this.prevReplayControls.skip,
-      back: back && !this.prevReplayControls.back,
-      forward: forward && !this.prevReplayControls.forward,
-      zoomIn: zoomIn && !this.prevReplayControls.zoomIn,
-      zoomOut: zoomOut && !this.prevReplayControls.zoomOut,
-    };
-    this.prevReplayControls = { toggle, skip, back, forward, zoomIn, zoomOut };
-    this.replayToggleQueued = false;
-    this.replaySkipQueued = false;
-    this.replayBackQueued = false;
-    this.replayForwardQueued = false;
-    this.replayZoomInQueued = false;
-    this.replayZoomOutQueued = false;
-    return out;
-  }
-
-  /**
-   * Continuous replay-camera orbit axes. Deliberately read only WASD and
-   * analogue stick axes: replay arrows and the physical D-pad are reserved
-   * for timeline seek, even when a side/top view rotates gameplay D-pad input.
-   * Every connected pad participates so either local player can inspect a
-   * split-screen highlight.
-   */
-  pollReplayOrbit(): { x: number; y: number } {
-    let x = 0;
-    let y = 0;
-    if (this.keys.has("KeyA")) x -= 1;
-    if (this.keys.has("KeyD")) x += 1;
-    if (this.keys.has("KeyW")) y -= 1;
-    if (this.keys.has("KeyS")) y += 1;
-    for (const p of Input.connectedPads()) {
-      const axis = (i: number) => p.axes[i] ?? 0;
-      // Standard pads expose their left stick on 0/1. A few DirectInput pads
-      // expose their only analogue stick on 2/3; use that only when 0/1 are
-      // centred so the D-pad/hat never becomes an orbit source.
-      let px = Math.abs(axis(0)) > 0.18 ? axis(0) : 0;
-      let py = Math.abs(axis(1)) > 0.18 ? axis(1) : 0;
-      if (p.mapping !== "standard" && px === 0 && Math.abs(axis(2)) > 0.18) px = axis(2);
-      if (p.mapping !== "standard" && py === 0 && Math.abs(axis(3)) > 0.18) py = axis(3);
-      x += px;
-      y += py;
-    }
-    return { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y)) };
   }
 
   /**

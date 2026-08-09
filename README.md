@@ -30,12 +30,6 @@ direction it was drawn, and a press held in place is a reception aimed by which
 side of the screen it was made on. Both layouts feed the same input state, and
 turning the phone switches between them mid-rally.
 
-While a ball is dropping toward you and the touch is still yours to choose,
-time eases down to half speed (`APPROACH_SLOWDOWN` in `src/config.ts`). It is
-the whole simulation that slows, never the ball alone — characters, animation
-and the timing gauge have to stay in step with it — and never in versus, where
-one peer bending time would simply be playing a different match.
-
 ## Checks
 
 ```bash
@@ -610,7 +604,7 @@ npx firebase-tools deploy --only hosting --project YOUR_FIREBASE_PROJECT_ID
 - `src/scene.ts` — Babylon scene, court, table, backdrop, and asset loading.
 - `src/venue.ts` — venue presets: which backdrop, which court palette.
 - `src/character.ts` — character rigs, animation timing, and contact offsets.
-- `src/ball.ts` / `src/match.ts` — ball physics, rallies, scoring, sets, and replays.
+- `src/ball.ts` / `src/match.ts` — ball physics, rallies, scoring and sets.
 - `src/ai.ts` / `src/input.ts` — CPU behavior and keyboard, touch, and gamepad input.
 - `src/ui.ts` / `src/main.ts` — menus, practice flow, cameras, and application flow.
 - `assets/` — compressed GLB models, audio, and the local Meshopt decoder.
@@ -629,5 +623,5 @@ groups.
 ## Codex and GPT-5.6
 
 I built and tested TeqRally in Codex with GPT-5.6. Codex helped implement and
-debug the animation, physics, match rules, AI, input, replay, mobile, and
+debug the animation, physics, match rules, AI, input, mobile, and
 hosting work. Product decisions and playtesting remained mine.

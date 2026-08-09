@@ -3,13 +3,11 @@ import { Camera } from "@babylonjs/core/Cameras/camera";
 import type { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import {
-  approachTimeScale,
   Ball,
   predict,
   sampleFlight,
   solveLaunch,
   solveLaunchClearingNet,
-  stepBall,
   type BallEvent,
   type BodyCollider,
   type FlightSample,
@@ -33,7 +31,6 @@ import {
   tableSurfaceY,
   tossFraction,
   windupStartFraction,
-  APPROACH_SLOWDOWN,
   BALL_RADIUS,
   CAMERA,
   COURT,
@@ -72,7 +69,6 @@ function portraitTouch(): boolean {
 }
 
 export type MatchState = "serve_move" | "serve_ready" | "serve_anim" | "rally" | "point" | "over";
-export type ReplayControl = "toggle" | "skip" | "back" | "forward" | "zoom-in" | "zoom-out";
 
 /**
  * Small, public match milestones. The guided practice flow listens to these
@@ -113,16 +109,6 @@ export interface MatchUI {
   meter?(frac: number | null, sweetStart: number, sweetEnd: number): void;
   /** Flash the graded quality of the strike press that was just committed. */
   meterResult?(quality: number): void;
-  /** Compact on-court marker shown while a highlight replay is running. */
-  setReplay?(
-    active: boolean,
-    label?: string,
-    paused?: boolean,
-    zoom?: number,
-    position?: number,
-    duration?: number,
-    segment?: string
-  ): void;
 }
 
 const other = (s: Side): Side => (s === "player" ? "ai" : "player");
@@ -188,92 +174,6 @@ const METER_GRADE_SPAN = 0.6;
 // its edges line up with the GOOD/OFF quality threshold.
 const METER_SWEET_HALF_WINDOW = METER_GRADE_SPAN / 2;
 const UNCONTROLLED_QUALITY = 0.45;
-
-// Highlights are deliberately short: they add a satisfying broadcast beat
-// without turning every point into an interruption.
-const REPLAY_BACKFLIP_CHANCE = 0.55;
-const REPLAY_RECENT_WINDOW = 3.8;
-const REPLAY_START_DELAY = 0.32;
-// Replays deliberately breathe longer than the first implementation: the
-// kick and its outgoing ball have time to read before play resumes.
-const REPLAY_SPEED = 0.5;
-const REPLAY_POST_CONTACT = 2.0;
-const REPLAY_MIN_DURATION = 2.7;
-const REPLAY_MAX_DURATION = 4.6;
-const REPLAY_SCRUB_STEP = 0.75;
-const REPLAY_ZOOM_MIN = -2;
-const REPLAY_ZOOM_MAX = 3;
-// A defender's locomotion is sampled sparsely and re-enacted during the
-// highlight.  The replay is presentation-only, so a small path buffer is
-// enough to preserve the readable run without storing a full physics trace.
-const REPLAY_DEFENDER_SAMPLE_INTERVAL = 1 / 30;
-const REPLAY_DEFENDER_TAIL = 0.12;
-
-type ReplayActionKind = "serve" | "strike";
-
-interface ReplayPoseSample {
-  time: number;
-  position: Vector3;
-  rotationY: number;
-}
-
-/** A compact re-enactment seed captured when an action launches. */
-interface ReplaySeed {
-  kind: ReplayActionKind;
-  side: Side;
-  clip: string;
-  startFrac: number;
-  /** Speed ratio used by the original action when this seed was captured. */
-  sourceSpeed: number;
-  /** Seconds from the selected clip frame to ball contact at regular speed. */
-  contactIn: number;
-  yawOffset: number;
-  actorPosition: Vector3;
-  actorRotationY: number;
-  opponentPosition: Vector3;
-  opponentRotationY: number;
-  ballOrigin: Vector3;
-  ballVelocity: Vector3;
-  ballWasHeld: boolean;
-  lungeTarget: Vector3 | null;
-  launchPosition: Vector3 | null;
-  launchVelocity: Vector3 | null;
-  /** Live clock when the action was selected, before its contact frame. */
-  startedAt: number;
-  launchedAt: number;
-  backflip: boolean;
-  /** Defender path captured while this action was live. */
-  defenderSamples: ReplayPoseSample[];
-}
-
-interface ReplayPending {
-  seed: ReplaySeed;
-  label: string;
-  delay: number;
-}
-
-interface ReplaySegment {
-  seed: ReplaySeed;
-  /** Position on the combined replay timeline. */
-  start: number;
-  /** Full presentation length of this action, including its outgoing ball. */
-  duration: number;
-  /** Presentation time at which this action launches the ball. */
-  launchAt: number;
-  label: string;
-}
-
-interface ReplayPlayback {
-  segments: ReplaySegment[];
-  label: string;
-  elapsed: number;
-  duration: number;
-  activeSegment: number;
-  launched: boolean;
-  paused: boolean;
-  /** -2..3; positive steps move the camera closer to the fixed replay shot. */
-  zoom: number;
-}
 
 /** Position on a sampled flight at (or just after) time `t`, clipped to before any ground bounce. */
 function flightAt(flight: FlightSample[], t: number): Vector3 {
@@ -548,41 +448,12 @@ export class MatchController {
     player.move(mx, mz, player.def.speed, dt);
   }
 
-  /**
-   * How fast this step should run. Time eases down while a ball drops toward
-   * the human player and the touch is still theirs to choose, so there is room
-   * to read it and decide — the whole simulation together, never the ball
-   * alone, or the characters would slide out of step with their own animation.
-   *
-   * Never in versus: a peer that dilates time on its own would simply be
-   * playing a different match from the one across the wire.
-   */
-  private approachScale(): number {
-    if (!this.slowApproach || this.versus) return 1;
-    if (this.state !== "rally" || this.strikeableSide !== "player") return 1;
-    if (this.ball.held || this.pendingTouch || this.chars.player.busy) return 1;
-    const c = this.chars.player;
-    const chest = c.position.add(new Vector3(0, c.height * 0.55, 0));
-    return approachTimeScale(this.ball.state, chest, APPROACH_SLOWDOWN);
-  }
-
-  /** Off switch for the approach slow-motion (settings, tests). */
-  slowApproach = true;
 
   private totalPoints = 0;
   private timer = 0;
   private pointWinner: Side | null = null;
-  /** Advances only with live simulation; timestamps replay seeds. */
+  /** Advances only with live simulation. */
   private matchClock = 0;
-  /** Last actual strike/serve launch, eligible to become a highlight. */
-  private lastReplaySeed: ReplaySeed | null = null;
-  /** Kept separately so a memorable flip can survive one later return. */
-  private lastBackflipSeed: ReplaySeed | null = null;
-  private serveReplaySeed: ReplaySeed | null = null;
-  /** The currently live action whose defender path is still being sampled. */
-  private replayRecordingSeed: ReplaySeed | null = null;
-  private replayPending: ReplayPending | null = null;
-  private replay: ReplayPlayback | null = null;
   private servePhase: "idle" | "toss" | "launched" = "idle";
   private pendingEvents: BallEvent[] = [];
 
@@ -778,423 +649,6 @@ export class MatchController {
     });
   }
 
-  /** Capture the exact setup for a replayable action. */
-  private makeReplaySeed(
-    kind: ReplayActionKind,
-    side: Side,
-    clip: string,
-    startFrac: number,
-    sourceSpeed: number,
-    contactIn: number,
-    yawOffset = 0
-  ): ReplaySeed {
-    const actor = this.chars[side];
-    const opponent = this.chars[other(side)];
-    const seed: ReplaySeed = {
-      kind,
-      side,
-      clip,
-      startFrac,
-      sourceSpeed,
-      contactIn,
-      yawOffset,
-      actorPosition: actor.position.clone(),
-      actorRotationY: actor.root.rotation.y,
-      opponentPosition: opponent.position.clone(),
-      opponentRotationY: opponent.root.rotation.y,
-      ballOrigin: this.ball.state.pos.clone(),
-      ballVelocity: this.ball.state.vel.clone(),
-      ballWasHeld: this.ball.held,
-      lungeTarget: null,
-      launchPosition: null,
-      launchVelocity: null,
-      startedAt: this.matchClock,
-      launchedAt: -Infinity,
-      backflip: clip.startsWith("Backflip"),
-      defenderSamples: [
-        {
-          time: 0,
-          position: opponent.position.clone(),
-          rotationY: opponent.root.rotation.y,
-        },
-      ],
-    };
-    // Keep sampling from the instant the action is selected, not just from
-    // contact. The defender can already be moving during the wind-up.
-    this.replayRecordingSeed = seed;
-    return seed;
-  }
-
-  /** The live launch is the only moment a replay seed becomes valid. */
-  private commitReplaySeed(seed: ReplaySeed, launchPosition: Vector3, launchVelocity: Vector3): void {
-    seed.launchPosition = launchPosition.clone();
-    seed.launchVelocity = launchVelocity.clone();
-    seed.launchedAt = this.matchClock;
-    this.lastReplaySeed = seed;
-    if (seed.backflip) this.lastBackflipSeed = seed;
-    this.replayRecordingSeed = seed;
-  }
-
-  /** Presentation path length in live seconds for a replay segment. */
-  private replaySourceDuration(seed: ReplaySeed): number {
-    const launchAt = seed.contactIn * (seed.sourceSpeed / REPLAY_SPEED);
-    const duration = Math.min(REPLAY_MAX_DURATION, Math.max(REPLAY_MIN_DURATION, launchAt + REPLAY_POST_CONTACT));
-    return duration * (REPLAY_SPEED / Math.max(0.1, seed.sourceSpeed));
-  }
-
-  /** Sample the non-kicking character while a replayable action is live. */
-  private recordReplayDefenderSample(seed: ReplaySeed | null = this.replayRecordingSeed, force = false): void {
-    if (!seed) return;
-    const time = this.matchClock - seed.startedAt;
-    if (time < -1e-4 || time > this.replaySourceDuration(seed) + REPLAY_DEFENDER_TAIL) {
-      if (seed === this.replayRecordingSeed) this.replayRecordingSeed = null;
-      return;
-    }
-    const last = seed.defenderSamples[seed.defenderSamples.length - 1];
-    if (!force && last && time - last.time < REPLAY_DEFENDER_SAMPLE_INTERVAL) return;
-    const defender = this.chars[other(seed.side)];
-    seed.defenderSamples.push({
-      time,
-      position: defender.position.clone(),
-      rotationY: defender.root.rotation.y,
-    });
-  }
-
-  /** Restore the defender's sampled position, facing, and locomotion speed. */
-  private applyReplayDefenderPose(seed: ReplaySeed, sourceTime: number): void {
-    const defender = this.chars[other(seed.side)];
-    const samples = seed.defenderSamples;
-    if (samples.length === 0) {
-      defender.position.copyFrom(seed.opponentPosition);
-      defender.root.rotation.y = seed.opponentRotationY;
-      defender.velocity.setAll(0);
-      return;
-    }
-
-    const first = samples[0];
-    let before = first;
-    let after = first;
-    for (let i = 1; i < samples.length; i++) {
-      const sample = samples[i];
-      if (sample.time >= sourceTime) {
-        after = sample;
-        break;
-      }
-      before = sample;
-      after = sample;
-    }
-    const span = after.time - before.time;
-    const t = span > 1e-5 ? Math.max(0, Math.min(1, (sourceTime - before.time) / span)) : 0;
-    defender.position.copyFrom(Vector3.Lerp(before.position, after.position, t));
-    const yawDelta = Math.atan2(Math.sin(after.rotationY - before.rotationY), Math.cos(after.rotationY - before.rotationY));
-    defender.root.rotation.y = before.rotationY + yawDelta * t;
-    if (span > 1e-5 && after !== before) {
-      defender.velocity.copyFrom(after.position.subtract(before.position).scale(1 / span));
-    } else {
-      defender.velocity.setAll(0);
-    }
-  }
-
-  /** Decide whether the point deserves a short broadcast-style re-enactment. */
-  private queueReplayForPoint(winner: Side, setWinning: boolean): void {
-    if (this.practice || this.replayPending || this.replay) return;
-    // The point can be awarded from the physics callback before the normal
-    // character-update tail of this frame. Capture that last defender pose so
-    // the replay does not freeze one frame before the ball lands.
-    this.recordReplayDefenderSample(this.replayRecordingSeed, true);
-    const fresh = (seed: ReplaySeed | null): seed is ReplaySeed =>
-      !!seed &&
-      seed.launchPosition !== null &&
-      seed.launchVelocity !== null &&
-      this.matchClock - seed.launchedAt <= REPLAY_RECENT_WINDOW;
-    const pointSeed = fresh(this.lastReplaySeed) && this.lastReplaySeed.side === winner ? this.lastReplaySeed : null;
-    const flipSeed = fresh(this.lastBackflipSeed) ? this.lastBackflipSeed : null;
-    const useSetPoint = setWinning && pointSeed !== null;
-    const useBackflip = !useSetPoint && flipSeed !== null && Math.random() < REPLAY_BACKFLIP_CHANCE;
-    if (!useSetPoint && !useBackflip) return;
-    const seed = useSetPoint ? pointSeed : flipSeed!;
-    const matchWinning = setWinning && this.sets[winner] + 1 >= SETS_TO_WIN;
-    this.replayPending = {
-      seed,
-      label: useSetPoint ? (matchWinning ? "MATCH POINT" : "SET POINT") : "BACKFLIP REPLAY",
-      delay: REPLAY_START_DELAY,
-    };
-  }
-
-  /** Build one highlight segment: every replay begins directly on its kick. */
-  private buildReplaySegments(seed: ReplaySeed): ReplaySegment[] {
-    const launchAt = seed.contactIn * (seed.sourceSpeed / REPLAY_SPEED);
-    const duration = Math.min(REPLAY_MAX_DURATION, Math.max(REPLAY_MIN_DURATION, launchAt + REPLAY_POST_CONTACT));
-    return [
-      {
-        seed,
-        start: 0,
-        duration,
-        launchAt,
-        label: seed.kind === "serve" ? "SERVE" : seed.backflip ? "BACKFLIP KICK" : "KICK",
-      },
-    ];
-  }
-
-  /** Re-stage a seed at an arbitrary presentation time without touching rules. */
-  private stageReplayAt(replay: ReplayPlayback, targetTime: number, freeze: boolean): void {
-    const max = Math.max(0, replay.duration - 1e-5);
-    const time = Math.max(0, Math.min(max, targetTime));
-    let segmentIndex = replay.segments.findIndex((s) => time < s.start + s.duration);
-    if (segmentIndex < 0) segmentIndex = replay.segments.length - 1;
-    const segment = replay.segments[segmentIndex];
-    const localTime = Math.max(0, time - segment.start);
-    const { seed } = segment;
-    const actor = this.chars[seed.side];
-    const opponent = this.chars[other(seed.side)];
-
-    // Clear the prior segment before restoring the deterministic seed. This
-    // is presentation-only: the live point state remains untouched beneath it.
-    for (const side of ["player", "ai"] as Side[]) {
-      this.chars[side].resumePresentation();
-      this.chars[side].stopAction();
-      this.chars[side].velocity.setAll(0);
-    }
-    actor.position.copyFrom(seed.actorPosition);
-    actor.root.rotation.y = seed.actorRotationY;
-    opponent.position.copyFrom(seed.opponentPosition);
-    opponent.root.rotation.y = seed.opponentRotationY;
-
-    this.placeReplayBall(seed, segment.launchAt, localTime);
-    const played =
-      localTime > 0
-        ? actor.seekAction(seed.clip, {
-            startFrac: seed.startFrac,
-            speed: REPLAY_SPEED,
-            yawOffset: seed.yawOffset,
-            elapsed: localTime,
-          })
-        : actor.playAction(seed.clip, {
-            startFrac: seed.startFrac,
-            speed: REPLAY_SPEED,
-            yawOffset: seed.yawOffset,
-          });
-    if (played && seed.lungeTarget && segment.launchAt > 0.04) {
-      if (localTime <= 0) {
-        actor.lungeTo(seed.lungeTarget, segment.launchAt);
-      } else if (localTime < segment.launchAt) {
-        const p = localTime / segment.launchAt;
-        const eased = p * p * (3 - 2 * p);
-        actor.position.copyFrom(Vector3.Lerp(seed.actorPosition, seed.lungeTarget, eased));
-        actor.lungeTo(seed.lungeTarget, segment.launchAt - localTime);
-      } else {
-        actor.position.copyFrom(seed.lungeTarget);
-      }
-    }
-
-    // The kick is deterministic, but the defender is not: they were already
-    // moving during the live rally. Re-stage that sampled run on every seek,
-    // including when the replay is paused.
-    this.applyReplayDefenderPose(seed, localTime * (REPLAY_SPEED / Math.max(0.1, seed.sourceSpeed)));
-
-    replay.elapsed = time;
-    replay.activeSegment = segmentIndex;
-    replay.launched = localTime >= segment.launchAt;
-    if (freeze) {
-      this.chars.player.pausePresentation();
-      this.chars.ai.pausePresentation();
-    }
-  }
-
-  /** Put the replay ball at an exact time by re-simulating a copied state. */
-  private placeReplayBall(seed: ReplaySeed, launchAt: number, localTime: number): void {
-    const factor = REPLAY_SPEED / seed.sourceSpeed;
-    const physicalTime = localTime * factor;
-    const state = { pos: seed.ballOrigin.clone(), vel: seed.ballVelocity.clone() };
-    let held = seed.ballWasHeld;
-    if (localTime >= launchAt && seed.launchPosition && seed.launchVelocity) {
-      if (!held && seed.contactIn > 0) stepBall(state, seed.contactIn);
-      state.pos.copyFrom(seed.launchPosition);
-      state.vel.copyFrom(seed.launchVelocity);
-      held = false;
-      const afterContact = Math.max(0, physicalTime - seed.contactIn);
-      if (afterContact > 0) stepBall(state, afterContact);
-    } else if (!held && physicalTime > 0) {
-      stepBall(state, physicalTime);
-    }
-    this.ball.state.pos.copyFrom(state.pos);
-    this.ball.state.vel.copyFrom(state.vel);
-    this.ball.held = held;
-    this.ball.mesh?.position.copyFrom(state.pos);
-  }
-
-  /** Re-stage the saved setup + finish sequence at slow speed, never rules/input. */
-  private startReplay(pending: ReplayPending): void {
-    const { seed } = pending;
-    if (!seed.launchPosition || !seed.launchVelocity) {
-      this.replayPending = null;
-      return;
-    }
-    const segments = this.buildReplaySegments(seed);
-    const duration = segments.reduce((total, segment) => total + segment.duration, 0);
-
-    // Start the winner's normal celebration only after the replay returns to
-    // the between-points state, rather than fighting the replay action.
-    if (this.pointWinner) this.celebration = { side: this.pointWinner, delay: CELEBRATE_DELAY };
-    this.replay = {
-      segments,
-      label: pending.label,
-      elapsed: 0,
-      duration,
-      activeSegment: 0,
-      launched: false,
-      paused: false,
-      zoom: 0,
-    };
-    this.replayPending = null;
-    this.stageReplayAt(this.replay, 0, false);
-    this.aimMarker?.setEnabled(false);
-    this.landingMarker?.setEnabled(false);
-    this.ui.meter?.(null, 0, 0);
-    this.syncReplayUI();
-  }
-
-  /** True while the action is being re-enacted (as distinct from its short start delay). */
-  get isReplayActive(): boolean {
-    return this.replay !== null;
-  }
-
-  /** True from the point highlight being scheduled until it has been dismissed. */
-  get hasReplayPresentation(): boolean {
-    return this.replay !== null || this.replayPending !== null;
-  }
-
-  /** Route an explicit replay control without ever touching live match state. */
-  controlReplay(control: ReplayControl): boolean {
-    if (!this.replay) {
-      // A fast skip during the short pre-replay beat remains useful and avoids
-      // an accidental pause screen just before a highlight starts.
-      if (control === "skip" && this.replayPending) {
-        this.replayPending = null;
-        return true;
-      }
-      return false;
-    }
-
-    if (control === "skip") {
-      this.finishReplay();
-      return true;
-    }
-    if (control === "toggle") {
-      this.setReplayPaused(!this.replay.paused);
-      return true;
-    }
-    if (control === "back" || control === "forward") {
-      this.seekReplay(control === "back" ? -REPLAY_SCRUB_STEP : REPLAY_SCRUB_STEP);
-      return true;
-    }
-    const delta = control === "zoom-in" ? 1 : -1;
-    const next = Math.max(REPLAY_ZOOM_MIN, Math.min(REPLAY_ZOOM_MAX, this.replay.zoom + delta));
-    if (next !== this.replay.zoom) {
-      this.replay.zoom = next;
-      this.syncReplayUI();
-    }
-    return true;
-  }
-
-  /** Discrete timeline seek. It works while playing or paused and never runs rules. */
-  private seekReplay(delta: number): void {
-    const replay = this.replay;
-    if (!replay) return;
-    const target = Math.max(0, Math.min(replay.duration - 1e-5, replay.elapsed + delta));
-    this.stageReplayAt(replay, target, replay.paused);
-    this.syncReplayUI();
-  }
-
-  private setReplayPaused(paused: boolean): void {
-    const replay = this.replay;
-    if (!replay || replay.paused === paused) return;
-    replay.paused = paused;
-    for (const side of ["player", "ai"] as Side[]) {
-      if (paused) this.chars[side].pausePresentation();
-      else this.chars[side].resumePresentation();
-    }
-    this.syncReplayUI();
-  }
-
-  private syncReplayUI(): void {
-    const replay = this.replay;
-    const segment = replay ? replay.segments[replay.activeSegment] : undefined;
-    this.ui.setReplay?.(
-      !!replay,
-      replay?.label,
-      replay?.paused,
-      replay?.zoom,
-      replay?.elapsed,
-      replay?.duration,
-      segment?.label
-    );
-  }
-
-  /** Advance the presentation-only replay; physics events are intentionally ignored. */
-  private updateReplay(dt: number): void {
-    const replay = this.replay;
-    if (!replay) return;
-    if (replay.paused) return;
-    let remaining = dt;
-    while (remaining > 1e-6 && this.replay === replay) {
-      const segment = replay.segments[replay.activeSegment];
-      const local = replay.elapsed - segment.start;
-      const untilEnd = Math.max(0, segment.duration - local);
-      const step = Math.min(remaining, untilEnd);
-      if (step > 0) this.advanceReplaySegment(replay, segment, local, step);
-      replay.elapsed += step;
-      remaining -= step;
-      if (local + step >= segment.duration - 1e-5) {
-        const next = replay.activeSegment + 1;
-        if (next >= replay.segments.length) {
-          this.finishReplay();
-          return;
-        }
-        this.stageReplayAt(replay, replay.segments[next].start, false);
-      }
-    }
-    this.syncReplayUI();
-  }
-
-  /** Advance the current segment while retaining the normal action playback. */
-  private advanceReplaySegment(replay: ReplayPlayback, segment: ReplaySegment, local: number, dt: number): void {
-    const { seed } = segment;
-    const end = local + dt;
-    const advanceBall = (span: number) => {
-      if (span <= 0) return;
-      if (!this.ball.held) this.ball.update(span * (REPLAY_SPEED / seed.sourceSpeed));
-      else this.ball.mesh?.position.copyFrom(this.ball.state.pos);
-    };
-    if (!replay.launched && end >= segment.launchAt) {
-      advanceBall(segment.launchAt - local);
-      this.ball.state.pos.copyFrom(seed.launchPosition!);
-      this.ball.launch(seed.launchVelocity!);
-      replay.launched = true;
-      advanceBall(end - segment.launchAt);
-    } else {
-      advanceBall(dt);
-    }
-    this.applyReplayDefenderPose(seed, end * (REPLAY_SPEED / Math.max(0.1, seed.sourceSpeed)));
-    this.chars.player.update(dt);
-    this.chars.ai.update(dt);
-  }
-
-  private finishReplay(): void {
-    if (!this.replay) return;
-    // Stopping a paused group directly can leave its next render frame frozen;
-    // resume first so Character.stopAction() restores ordinary locomotion.
-    for (const side of ["player", "ai"] as Side[]) this.chars[side].resumePresentation();
-    this.replay = null;
-    this.ball.held = true;
-    this.ball.state.vel.setAll(0);
-    this.chars.player.stopAction();
-    this.chars.ai.stopAction();
-    this.chars.player.velocity.setAll(0);
-    this.chars.ai.velocity.setAll(0);
-    this.syncReplayUI();
-  }
-
   // ---------------------------------------------------------------- serve
 
   /** Follows the held aim before the serve, so the ball rides the right hand. */
@@ -1205,13 +659,6 @@ export class MatchController {
   private beginServeCycle(): void {
     this.state = "serve_move";
     this.servePhase = "idle";
-    this.replay = null;
-    this.replayPending = null;
-    this.replayRecordingSeed = null;
-    this.serveReplaySeed = null;
-    this.lastReplaySeed = null;
-    this.lastBackflipSeed = null;
-    this.ui.setReplay?.(false);
     // A point celebration may still be playing; it must not block the walk
     // to the serve spot.
     this.chars.player.stopAction();
@@ -1335,8 +782,6 @@ export class MatchController {
     const tossF = tossFraction(clip);
     const contactF = contactFraction(clip);
     const airTime = Math.max(0.25, (contactF - tossF) * durSec);
-    this.serveReplaySeed = this.makeReplaySeed("serve", this.serveOwner, clip, 0, 1, contactF * durSec);
-
     this.state = "serve_anim";
     this.ui.hint(null);
     server.playAction(clip, {
@@ -1391,10 +836,6 @@ export class MatchController {
       (0.55 + dist * 0.07) / power,
       SERVE_NET_CLEARANCE
     );
-    if (this.serveReplaySeed) {
-      this.commitReplaySeed(this.serveReplaySeed, this.ball.state.pos, v);
-      this.serveReplaySeed = null;
-    }
     this.servePhase = "launched";
     this.lastHitter = this.serveOwner;
     this.strikeableSide = null;
@@ -1518,16 +959,7 @@ export class MatchController {
       }
     }
     const plan = this.planContact(c, clip, STRIKE_SPEED, flight);
-    const replayYawOffset = clip.startsWith("Backflip") ? Math.PI : 0;
-    const replaySeed = this.makeReplaySeed(
-      "strike",
-      side,
-      clip,
-      plan.startFrac,
-      STRIKE_SPEED,
-      plan.t,
-      replayYawOffset
-    );
+    const yawOffset = clip.startsWith("Backflip") ? Math.PI : 0;
     // The ball leaves at the planned contact moment, from wherever its natural
     // flight put it — the lunge carried the limb there, so the visual contact
     // and the launch coincide. Fired by the countdown in update(); the
@@ -1595,7 +1027,6 @@ export class MatchController {
       const cap = KICK_SPEED_CAP[clip] ?? KICK_SPEED_CAP_DEFAULT;
       const flight = Math.max(((0.5 + dist * 0.055) * loft) / power, dist / cap);
       const v = solveLaunchClearingNet(this.ball.state.pos, target, flight, clearance);
-      this.commitReplaySeed(replaySeed, this.ball.state.pos, v);
       this.ball.launch(v, 0.7 + relH); // smashes visibly spin faster
       this.audio.playKick();
       this.emitLaunch(side, "strike", clip, 0.7 + relH);
@@ -1607,14 +1038,9 @@ export class MatchController {
       speed: STRIKE_SPEED,
       callbacks: [{ frac: contactFraction(clip), fn: launch }],
       // Bicycle kicks are performed with the back to the net.
-      yawOffset: replayYawOffset,
+      yawOffset,
     });
-    if (played) {
-      // This is calculated after playAction applies the backflip yaw offset,
-      // so the replay uses the same lunge target as the live strike.
-      replaySeed.lungeTarget = this.contactLungeTarget(c, clip, plan.pos);
-      this.beginContactLunge(c, clip, plan, launch);
-    }
+    if (played) this.beginContactLunge(c, clip, plan, launch);
     else launch();
     return true;
   }
@@ -1783,10 +1209,8 @@ export class MatchController {
     this.landingSpot = null;
     this.tableEventCooldown = 0;
     this.lastTableSide = null;
-    const setWinning = !this.practice && this.score[winner] + 1 >= WIN_SCORE;
     this.score[winner]++;
     this.totalPoints++;
-    this.queueReplayForPoint(winner, setWinning);
     this.emit({ type: "point-awarded", winner, reason });
     this.audio.playApplause();
     // The point winner celebrates after a short beat, while the banner shows
@@ -1880,21 +1304,14 @@ export class MatchController {
 
   // ---------------------------------------------------------------- update
 
-  update(rawDt: number, input: InputState, aiUpdate: (dt: number) => void): void {
+  update(dt: number, input: InputState, aiUpdate: (dt: number) => void): void {
     if (this.tutorialFrozen) return;
     // Online guest: the host owns the rules, so running them here too would
     // produce a second, disagreeing match. Only presentation advances.
     if (this.netFollower) {
-      this.updateAsFollower(rawDt, input);
+      this.updateAsFollower(dt, input);
       return;
     }
-    if (this.replay) {
-      this.updateReplay(rawDt);
-      return;
-    }
-    // Everything below this line runs on match time, which is not always wall
-    // time: an incoming ball the player still has to answer slows it down.
-    const dt = rawDt * this.approachScale();
     this.matchClock += dt;
     const player = this.chars.player;
     const ai = this.chars.ai;
@@ -2062,14 +1479,6 @@ export class MatchController {
         this.timer += dt;
         player.velocity.setAll(0);
         ai.velocity.setAll(0);
-        if (this.replayPending) {
-          this.replayPending.delay -= dt;
-          if (this.replayPending.delay <= 0) {
-            this.startReplay(this.replayPending);
-            if (this.replay) return;
-          }
-          break;
-        }
         if (this.celebration) {
           this.celebration.delay -= dt;
           if (this.celebration.delay <= 0) {
@@ -2096,7 +1505,6 @@ export class MatchController {
     this.updateMeter();
     player.update(dt);
     ai.update(dt);
-    this.recordReplayDefenderSample();
   }
 
   /** Where the airborne ball will first come down (table half or floor). */
@@ -2230,23 +1638,6 @@ export class MatchController {
     }
   }
 
-  /** Apply replay-only camera magnification while preserving the chosen view mode. */
-  private applyReplayZoom(camera: TargetCamera, target: Vector3): void {
-    const zoom = this.replay?.zoom ?? 0;
-    if (zoom === 0) return;
-    if (zoom > 0) {
-      // Zooming in is safe: it only pulls the eye toward the authored target.
-      const distanceScale = 1 - zoom * 0.1;
-      camera.position.copyFrom(Vector3.Lerp(target, camera.position, distanceScale));
-      return;
-    }
-    // Never push the eye backward through the gym shell for a zoom-out. Keep
-    // the authored, arena-safe camera position and widen its lens instead.
-    // This also works for P2's asymmetric court camera and the top preset.
-    camera.fov = Math.min(2.05, camera.fov + -zoom * 0.1);
-  }
-
-  /** Place one of the fixed match cameras without changing player controls. */
   private updateCameraForSide(camera: TargetCamera, side: Side, mode: CameraMode): void {
     const playerOne = side === "player";
     const mirror = playerOne ? -1 : 1;
@@ -2269,7 +1660,6 @@ export class MatchController {
         // the deliberately wider half-width lens in local versus. This also
         // restores the correct lens after leaving the wide top view.
         camera.fov = this.versus ? 1.0 : portrait ? CAMERA.portrait.fov : 0.85;
-        this.applyReplayZoom(camera, target);
       } else {
         // The imported gym is asymmetric. A literal mirror of P1's camera is
         // outside its far wall, so P2 gets a deliberately interior position.
@@ -2277,7 +1667,6 @@ export class MatchController {
         camera.position.set(CAMERA.p2Court.x, GROUND_Y + CAMERA.p2Court.height, 0);
         camera.setTarget(target);
         camera.fov = CAMERA.p2Court.fov;
-        this.applyReplayZoom(camera, target);
       }
       return;
     }
@@ -2290,7 +1679,6 @@ export class MatchController {
       const target = new Vector3(0, GROUND_Y + CAMERA.side.lookY, 0);
       camera.position.set(0, GROUND_Y + CAMERA.side.height, mirror * CAMERA.side.distance);
       camera.setTarget(target);
-      this.applyReplayZoom(camera, target);
       return;
     }
 
@@ -2308,7 +1696,6 @@ export class MatchController {
       mirror * CAMERA.top.offsetZ
     );
     camera.setTarget(target);
-    this.applyReplayZoom(camera, target);
   }
 
   /** Fixed match camera for P1 / the single-player view. */

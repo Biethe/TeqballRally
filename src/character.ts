@@ -275,9 +275,6 @@ export class Character {
   private actionOnEnd: (() => void) | null = null;
   /** Temporary yaw applied for the current action (e.g. backflips face away). */
   private actionYawOffset = 0;
-  /** Groups paused by a presentation replay, resumed together on play/skip. */
-  private presentationPaused = new Set<AnimationGroup>();
-
   velocity = new Vector3();
 
   /** Active contact lunge: glides the root while an action clip plays. */
@@ -504,54 +501,7 @@ export class Character {
     return true;
   }
 
-  /**
-   * Stage a one-shot at an exact presentation time without advancing game
-   * callbacks. Highlight replay scrubbing uses this before pausing the scene
-   * animation groups, so seeking backward never re-fires a kick or serve.
-   */
-  seekAction(
-    name: string,
-    opts: { startFrac?: number; speed?: number; yawOffset?: number; elapsed: number }
-  ): boolean {
-    const played = this.playAction(name, {
-      startFrac: opts.startFrac,
-      speed: opts.speed,
-      yawOffset: opts.yawOffset,
-    });
-    const g = this.action;
-    if (!played || !g) return false;
-    // All imported gameplay clips use the 60 fps timeline also used by the
-    // contact metadata in config.ts. Clamp at the end rather than looping.
-    const start = g.from + (opts.startFrac ?? 0) * (g.to - g.from);
-    const frame = Math.max(g.from, Math.min(g.to, start + opts.elapsed * (opts.speed ?? 1) * 60));
-    g.goToFrame(frame);
-    return true;
-  }
-
-  /**
-   * Freeze every animation currently contributing to this character. Babylon
-   * advances groups during scene.render(), so replay pause cannot rely on
-   * simply skipping Character.update().
-   */
-  pausePresentation(): void {
-    if (this.presentationPaused.size > 0) return;
-    for (const g of this.groups.values()) {
-      if (!g.isPlaying) continue;
-      g.pause();
-      this.presentationPaused.add(g);
-    }
-  }
-
-  /** Resume exactly the groups paused by pausePresentation(). */
-  resumePresentation(): void {
-    for (const g of this.presentationPaused) g.restart();
-    this.presentationPaused.clear();
-  }
-
   stopAction(): void {
-    // Never leave a paused group behind when a replay is skipped or the next
-    // serve cleans up the current action.
-    this.resumePresentation();
     if (this.action) {
       this.action.stop();
       this.action = null;

@@ -4,7 +4,6 @@ import {
   type BallEvent,
   type BallState,
   type BodyCollider,
-  approachTimeScale,
   heightAtNet,
   predict,
   sampleFlight,
@@ -13,7 +12,6 @@ import {
   stepBall,
 } from "../src/ball";
 import {
-  APPROACH_SLOWDOWN,
   BALL_RADIUS,
   GRAVITY,
   GROUND_Y,
@@ -378,45 +376,3 @@ describe("predict", () => {
   });
 });
 
-describe("approach slowdown", () => {
-  const chest = new Vector3(-3, 1.2, 0);
-  const at = (distance: number, closing: boolean): BallState => ({
-    pos: new Vector3(chest.x - distance, chest.y, chest.z),
-    vel: new Vector3(closing ? 6 : -6, 0, 0),
-  });
-
-  it("runs at full speed while the ball is still far away", () => {
-    expect(approachTimeScale(at(APPROACH_SLOWDOWN.start + 0.1, true), chest, APPROACH_SLOWDOWN)).toBe(1);
-  });
-
-  it("is fully slowed by the time the ball is in reach", () => {
-    const scale = approachTimeScale(at(APPROACH_SLOWDOWN.full, true), chest, APPROACH_SLOWDOWN);
-    expect(scale).toBeCloseTo(APPROACH_SLOWDOWN.scale, 6);
-    // Closer still stays there rather than stalling the rally completely.
-    expect(approachTimeScale(at(0.2, true), chest, APPROACH_SLOWDOWN)).toBeCloseTo(
-      APPROACH_SLOWDOWN.scale,
-      6
-    );
-  });
-
-  it("eases down rather than changing gear", () => {
-    const span = APPROACH_SLOWDOWN.start - APPROACH_SLOWDOWN.full;
-    const scales = [0.9, 0.7, 0.5, 0.3, 0.1].map((f) =>
-      approachTimeScale(at(APPROACH_SLOWDOWN.full + span * f, true), chest, APPROACH_SLOWDOWN)
-    );
-
-    for (let i = 1; i < scales.length; i++) expect(scales[i]).toBeLessThan(scales[i - 1]);
-    expect(scales[0]).toBeGreaterThan(0.9); // barely touched at the far end
-  });
-
-  it("leaves a ball travelling away from the player alone", () => {
-    // The player's own set-up climbs out of reach before it drops back; slowing
-    // that would stretch every pop into a crawl.
-    expect(approachTimeScale(at(0.6, false), chest, APPROACH_SLOWDOWN)).toBe(1);
-  });
-
-  it("can be switched off by collapsing its band", () => {
-    const off = { start: 0, full: 0, scale: 0.5 };
-    expect(approachTimeScale(at(0.1, true), chest, off)).toBe(1);
-  });
-});

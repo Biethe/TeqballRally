@@ -2,15 +2,6 @@ import type { Side } from "./ball";
 import type { CameraMode, CharacterDef } from "./config";
 import type { ViewerKind } from "./viewer";
 
-export type ReplayControl =
-  | "toggle"
-  | "skip"
-  | "back"
-  | "forward"
-  | "zoom-in"
-  | "zoom-out"
-  | "reset-camera";
-
 export interface SelectItem {
   id: string;
   label: string;
@@ -91,25 +82,12 @@ export class UI {
   private practiceEl: HTMLDivElement;
   private trainingPauseEl: HTMLDivElement;
   private cameraBtn: HTMLButtonElement;
-  private replayEl: HTMLDivElement;
-  private replayControlsEl: HTMLDivElement;
-  private replayToggleBtn: HTMLButtonElement;
-  private replayTimelineLabel: HTMLSpanElement;
-  private replayProgressEl: HTMLSpanElement;
-  private replayBackBtn: HTMLButtonElement;
-  private replayForwardBtn: HTMLButtonElement;
-  private replayZoomLabel: HTMLSpanElement;
-  private replayZoomOutBtn: HTMLButtonElement;
-  private replayZoomInBtn: HTMLButtonElement;
-  private replayResetCameraBtn: HTMLButtonElement;
   /** Score-line names, set per match ("YOU"/"CPU", "P1"/"P2", country labels…). */
   private labels: [string, string] = ["YOU", "CPU"];
   /** Set by the app; called when the HUD pause button is tapped. */
   onPauseRequest: (() => void) | null = null;
   /** Set by the app; called when the HUD camera button is tapped. */
   onCameraRequest: (() => void) | null = null;
-  /** Set by the app; every replay button calls through this small command API. */
-  onReplayControl: ((control: ReplayControl) => void) | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -216,97 +194,6 @@ export class UI {
     this.introEl = document.createElement("div");
     this.introEl.id = "intro-card";
     this.introEl.classList.add("hidden");
-    this.replayEl = document.createElement("div");
-    this.replayEl.id = "replay-indicator";
-    this.replayEl.classList.add("hidden");
-    this.replayEl.setAttribute("role", "status");
-    this.replayEl.setAttribute("aria-live", "polite");
-    this.replayControlsEl = document.createElement("div");
-    this.replayControlsEl.id = "replay-controls";
-    this.replayControlsEl.classList.add("hidden");
-    this.replayControlsEl.setAttribute("role", "group");
-    this.replayControlsEl.setAttribute("aria-label", "Replay controls");
-    const replayAction = (id: string, text: string, control: ReplayControl, label: string) => {
-      const b = document.createElement("button");
-      b.id = id;
-      b.type = "button";
-      b.textContent = text;
-      b.setAttribute("aria-label", label);
-      b.title = label;
-      b.onclick = () => this.onReplayControl?.(control);
-      return b;
-    };
-    this.replayToggleBtn = replayAction(
-      "replay-toggle-btn",
-      "❚❚ PAUSE",
-      "toggle",
-      "Pause replay — Space, P, or controller Start / Options"
-    );
-    const skip = replayAction(
-      "replay-skip-btn",
-      "SKIP",
-      "skip",
-      "Skip replay — X, controller B / Circle, or Share / View"
-    );
-    this.replayBackBtn = replayAction(
-      "replay-back-btn",
-      "↶ 0.75S",
-      "back",
-      "Scrub replay backward 0.75 seconds — Left Arrow, J, or controller D-pad Left"
-    );
-    this.replayForwardBtn = replayAction(
-      "replay-forward-btn",
-      "0.75S ↷",
-      "forward",
-      "Scrub replay forward 0.75 seconds — Right Arrow, L, or controller D-pad Right"
-    );
-    this.replayZoomOutBtn = replayAction(
-      "replay-zoom-out-btn",
-      "−",
-      "zoom-out",
-      "Zoom replay camera out — Minus or controller LB / L1"
-    );
-    this.replayZoomInBtn = replayAction(
-      "replay-zoom-in-btn",
-      "+",
-      "zoom-in",
-      "Zoom replay camera in — Plus or controller RB / R1"
-    );
-    this.replayResetCameraBtn = replayAction(
-      "replay-reset-camera-btn",
-      "RESET VIEW",
-      "reset-camera",
-      "Reset replay camera angle — C or controller Y / Triangle"
-    );
-    this.replayZoomLabel = document.createElement("span");
-    this.replayZoomLabel.className = "replay-zoom-label";
-    this.replayTimelineLabel = document.createElement("span");
-    this.replayTimelineLabel.className = "replay-timeline-label";
-    const replayTimeline = document.createElement("div");
-    replayTimeline.className = "replay-timeline";
-    replayTimeline.setAttribute("role", "progressbar");
-    replayTimeline.setAttribute("aria-label", "Replay timeline");
-    this.replayProgressEl = document.createElement("span");
-    replayTimeline.appendChild(this.replayProgressEl);
-    const replayHint = document.createElement("div");
-    replayHint.className = "replay-control-hint";
-    replayHint.textContent =
-      "DRAG · WASD / LEFT STICK ORBIT   C · Y/△ RESET VIEW   SPACE/P · START PLAY/PAUSE   ←/→ · D-PAD SEEK   +/− · LB/RB ZOOM   X · B/○ SKIP";
-    const replayScrub = document.createElement("div");
-    replayScrub.className = "replay-scrub-controls";
-    replayScrub.append(this.replayBackBtn, this.replayTimelineLabel, this.replayForwardBtn);
-    const replayZoom = document.createElement("div");
-    replayZoom.className = "replay-zoom-controls";
-    replayZoom.append(this.replayZoomOutBtn, this.replayZoomLabel, this.replayZoomInBtn);
-    this.replayControlsEl.append(
-      this.replayToggleBtn,
-      skip,
-      replayScrub,
-      replayZoom,
-      this.replayResetCameraBtn,
-      replayTimeline,
-      replayHint
-    );
     const cameraBtn = document.createElement("button");
     cameraBtn.id = "camera-btn";
     cameraBtn.type = "button";
@@ -336,8 +223,6 @@ export class UI {
       this.bannerEl,
       this.hintEl,
       this.introEl,
-      this.replayEl,
-      this.replayControlsEl,
       this.meterEl,
       this.meterFlashEl,
       this.practiceEl,
@@ -585,45 +470,6 @@ export class UI {
     this.cameraBtn.dataset.short = label;
     this.cameraBtn.setAttribute("aria-label", `Camera view: ${label}. Switch with C or Y / Triangle.`);
     this.cameraBtn.title = `Camera: ${label} — press C or Y / Triangle to switch`;
-  }
-
-  /** Replay status plus touch-accessible transport and camera controls. */
-  setReplay(
-    active: boolean,
-    label = "REPLAY",
-    paused = false,
-    zoom = 0,
-    position = 0,
-    duration = 0,
-    segment = ""
-  ): void {
-    this.replayEl.textContent = paused ? `${label} · PAUSED` : label;
-    this.replayEl.classList.toggle("hidden", !active);
-    this.replayControlsEl.classList.toggle("hidden", !active);
-    this.replayToggleBtn.textContent = paused ? "▶ PLAY" : "❚❚ PAUSE";
-    this.replayToggleBtn.setAttribute(
-      "aria-label",
-      paused
-        ? "Play replay — Space, P, or controller Start / Options"
-        : "Pause replay — Space, P, or controller Start / Options"
-    );
-    this.replayToggleBtn.title = this.replayToggleBtn.getAttribute("aria-label") ?? "Toggle replay";
-    const total = Math.max(0.01, duration);
-    const clamped = Math.max(0, Math.min(total, position));
-    const percent = (clamped / total) * 100;
-    const stamp = `${clamped.toFixed(1)} / ${total.toFixed(1)}s`;
-    this.replayTimelineLabel.textContent = segment ? `${segment} · ${stamp}` : stamp;
-    this.replayProgressEl.style.width = `${percent.toFixed(1)}%`;
-    const timeline = this.replayProgressEl.parentElement!;
-    timeline.setAttribute("aria-valuemin", "0");
-    timeline.setAttribute("aria-valuemax", total.toFixed(2));
-    timeline.setAttribute("aria-valuenow", clamped.toFixed(2));
-    timeline.setAttribute("aria-valuetext", segment ? `${segment}, ${stamp}` : stamp);
-    this.replayBackBtn.disabled = clamped <= 0.01;
-    this.replayForwardBtn.disabled = clamped >= total - 0.01;
-    this.replayZoomLabel.textContent = `CAM ${(1 + zoom * 0.1).toFixed(1)}×`;
-    this.replayZoomOutBtn.disabled = zoom <= -2;
-    this.replayZoomInBtn.disabled = zoom >= 3;
   }
 
   /** Pause overlay on top of the HUD (which stays visible behind it). */
