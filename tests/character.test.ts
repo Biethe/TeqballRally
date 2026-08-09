@@ -3,8 +3,10 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import {
   CLIP_CONTACT_BONE,
   HEAD_CONTACT_PUSH,
+  MOVE_TAU,
   SERVE_CLIPS,
   SERVE_TOSS_HAND,
+  approachVelocity,
   backflipAllowed,
   clipFoot,
   footFactor,
@@ -371,5 +373,51 @@ describe("contact bone tables", () => {
       if (bone !== "Head") continue;
       expect(clip, clip).toMatch(/Head/);
     }
+  });
+});
+
+describe("approachVelocity", () => {
+  const dt = 1 / 60;
+
+  it("gets a standing player almost up to speed inside a sixth of a second", () => {
+    let v = 0;
+    for (let i = 0; i < 9; i++) v = approachVelocity(v, 5, dt);
+
+    // Nine 60 Hz frames is 0.15 s: the run has to be all but there by then, or
+    // a shift asked for on the far side of the court arrives late.
+    expect(v).toBeGreaterThan(5 * 0.93);
+    expect(v).toBeLessThan(5);
+  });
+
+  it("answers on the very first frame", () => {
+    // Weight, not input lag: something has to happen the frame it is asked for.
+    expect(approachVelocity(0, 5, dt)).toBeGreaterThan(5 * 0.2);
+  });
+
+  it("brakes rather than stopping dead", () => {
+    const braked = approachVelocity(5, 0, dt);
+
+    expect(braked).toBeLessThan(5);
+    expect(braked).toBeGreaterThan(0);
+  });
+
+  it("turns around through zero instead of flipping", () => {
+    // Reversing at full pace must cost the momentum first, so a player who
+    // changes their mind leans out of the old direction.
+    expect(approachVelocity(5, -5, dt)).toBeGreaterThan(0);
+  });
+
+  it("never overshoots what it was asked for", () => {
+    let v = 0;
+    for (let i = 0; i < 240; i++) {
+      v = approachVelocity(v, 5, dt);
+      expect(v).toBeLessThanOrEqual(5);
+    }
+    expect(v).toBeCloseTo(5, 6);
+  });
+
+  it("snaps when a frame is longer than the time constant", () => {
+    // A stalled frame must not leave the velocity behind by an arbitrary amount.
+    expect(approachVelocity(0, 5, MOVE_TAU * 4)).toBe(5);
   });
 });

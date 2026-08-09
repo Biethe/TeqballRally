@@ -129,9 +129,11 @@ describe("court geometry", () => {
     // Room to miss, but only just: the box is a margin around the table, not
     // the whole court, so a wild kick lands beside it rather than in the seats.
     expect(PLAY_BOX.halfLen).toBeGreaterThan(TABLE.halfLen);
-    expect(PLAY_BOX.halfLen - TABLE.halfLen).toBeLessThan(1);
-    expect(PLAY_BOX.halfWid - TABLE.halfWid).toBeLessThan(1);
     expect(PLAY_BOX.halfLen).toBeLessThan(COURT.maxX);
+    // A hand's width of grass, not a run-off area. Every miss has to read as
+    // one that nearly went in, so the margin stays a fraction of the table.
+    expect(PLAY_BOX.halfLen - TABLE.halfLen).toBeLessThan(TABLE.halfLen * 0.3);
+    expect(PLAY_BOX.halfWid - TABLE.halfWid).toBeLessThan(TABLE.halfWid * 0.5);
   });
 
   it("never lets the widest possible spread escape the box", () => {

@@ -266,7 +266,7 @@ export async function createGameScene(
   const frameLens = (): void => {
     const portrait = engine.getRenderWidth() < engine.getRenderHeight();
     camera.fovMode = portrait ? Camera.FOVMODE_HORIZONTAL_FIXED : Camera.FOVMODE_VERTICAL_FIXED;
-    camera.fov = portrait ? CAMERA.portrait.fov : 0.85;
+    camera.fov = portrait ? CAMERA.portrait.fov : CAMERA.fov;
   };
   window.addEventListener("resize", () => {
     engine.resize();

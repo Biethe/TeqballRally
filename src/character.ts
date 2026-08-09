@@ -21,6 +21,24 @@ import { fixMetallicMaterials } from "./scene";
 const LOCO_CLIPS = ["Idle", "JogForward", "jogBackward", "JogStrafeLeft", "JogStrafeRight"] as const;
 /** Ground speed the jog clips look natural at; playback scales around it. */
 const LOCO_SPEED = 4.5 * CHARACTER_SCALE;
+
+/**
+ * Time constant for the run's acceleration and braking, in seconds. Roughly
+ * 95% of the requested speed inside 0.15 s: enough weight to see, short enough
+ * that a shift still starts on the frame it was asked for.
+ */
+export const MOVE_TAU = 0.055;
+
+/**
+ * One step of a run's velocity toward the speed being asked for.
+ *
+ * Pure, and exported, because this is the whole feel of moving a player: it is
+ * gameplay, not presentation, and the same function has to run identically on
+ * both peers of a networked match.
+ */
+export function approachVelocity(current: number, desired: number, dt: number): number {
+  return current + (desired - current) * Math.min(1, dt / MOVE_TAU);
+}
 type LocoClip = (typeof LOCO_CLIPS)[number];
 
 // The source kits are real shirt textures whose back panel contains a literal
@@ -439,17 +457,34 @@ export class Character {
     this.lungeState = { from: this.position.clone(), to: target.clone(), dur: duration, t: 0 };
   }
 
-  /** Kinematic move, clamped to this character's half of the court. */
+  /**
+   * Kinematic move, clamped to this character's half of the court.
+   *
+   * The velocity eases toward what was asked for rather than snapping to it.
+   * A body has mass: it leans into a start and rides out a stop, and the
+   * locomotion blend reads this same velocity, so easing it is also what stops
+   * the jog animation popping in and out at full weight. MOVE_TAU is short
+   * enough that the shift still answers the tap immediately — this is weight,
+   * not input lag.
+   */
   move(dirX: number, dirZ: number, speed: number, dt: number): void {
     const len = Math.hypot(dirX, dirZ);
     if (len > 1) {
       dirX /= len;
       dirZ /= len;
     }
-    this.velocity.set(dirX * speed, 0, dirZ * speed);
+    this.velocity.x = approachVelocity(this.velocity.x, dirX * speed, dt);
+    this.velocity.z = approachVelocity(this.velocity.z, dirZ * speed, dt);
+    this.velocity.y = 0;
     const p = this.position;
     p.x += this.velocity.x * dt;
     p.z += this.velocity.z * dt;
+    this.clampToCourt();
+  }
+
+  /** Keep the root inside this character's half of the court. */
+  private clampToCourt(): void {
+    const p = this.position;
     const sideSign = this.faceDir === -1 ? -1 : 1;
     p.x = sideSign * Math.min(COURT.maxX, Math.max(COURT.minX, sideSign * p.x));
     p.z = Math.max(-COURT.maxZ, Math.min(COURT.maxZ, p.z));
@@ -465,7 +500,19 @@ export class Character {
       return 0;
     }
     this.move(dx / d, dz / d, Math.min(speed, d / dt), dt);
-    return d;
+    // Momentum must not carry the run past the spot it was sent to: once the
+    // remaining offset flips sign the run has arrived, whatever the distance
+    // says. Without this the eased velocity oscillates around the target.
+    const nx = target.x - this.position.x;
+    const nz = target.z - this.position.z;
+    if (nx * dx + nz * dz <= 0) {
+      this.position.x = target.x;
+      this.position.z = target.z;
+      this.clampToCourt();
+      this.velocity.setAll(0);
+      return 0;
+    }
+    return Math.hypot(nx, nz);
   }
 
   playAction(
