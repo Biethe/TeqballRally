@@ -6,6 +6,8 @@ import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
+import type { Material } from "@babylonjs/core/Materials/material";
+import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
@@ -46,6 +48,17 @@ export interface GameScene {
    * immediately, without downloading anything, on tiers that skip the arena.
    */
   ensureArena: () => Promise<void>;
+  /**
+   * Swap the venue in place.
+   *
+   * This used to reload the page, which threw away the player's whole session
+   * — menu position, picked character, the lot — for a cosmetic choice. The
+   * court, backdrop, dressing and surroundings all hang off one node, so
+   * changing venue is disposing that node and building the next one.
+   */
+  setVenue: (venue: Venue) => Promise<void>;
+  /** The venue currently built. */
+  currentVenue: () => Venue;
   /** Glowing ring showing where the player's strike will land. */
   aimMarker: Mesh;
   /** Glowing X showing where the airborne ball will first come down. */
@@ -120,12 +133,56 @@ export async function createGameScene(
   // A venue that plays on its backdrop's surface still needs a floor painted
   // when that backdrop is never going to arrive — and with no backdrop there
   // is no venue centre line either, so it has to draw its own.
-  const backdrop = quality.arena && venue.arena !== null;
-  buildCourt(
-    scene,
-    backdrop ? venue.court : { ...venue.court, centreLine: "own" },
-    venue.court.surface === "own" || !backdrop
-  );
+  /**
+   * Everything the current venue owns, so the next one can replace it.
+   *
+   * Anything created while a venue is being built and left without a parent is
+   * adopted here, which covers the procedural court, the backdrop's own
+   * wrapper, the dressing and the surroundings without each builder having to
+   * know about this.
+   */
+  let venueRoot: TransformNode | null = null;
+  /**
+   * Materials and textures the venue brought with it.
+   *
+   * Disposing the node tree is not enough. The crowd's baked animation
+   * textures belong to their animation manager rather than to any mesh, so
+   * they survive their meshes — measured as roughly thirty textures leaking
+   * per swap, which a phone would not survive being played with.
+   */
+  let venueMaterials: Material[] = [];
+  let venueTextures: BaseTexture[] = [];
+  let built = venue;
+
+  const buildVenue = async (next: Venue): Promise<void> => {
+    if (venueRoot) {
+      venueRoot.dispose(false, true);
+      venueRoot = null;
+      for (const m of venueMaterials) m.dispose(true, true);
+      for (const t of venueTextures) t.dispose();
+    }
+    arenaPromise = null;
+    built = next;
+    const root = new TransformNode("venue-root", scene);
+    venueRoot = root;
+    const before = new Set<unknown>([...scene.meshes, ...scene.transformNodes]);
+    const materialsBefore = new Set<Material>(scene.materials);
+    const texturesBefore = new Set<BaseTexture>(scene.textures);
+
+    const hasBackdrop = quality.arena && next.arena !== null;
+    buildCourt(
+      scene,
+      hasBackdrop ? next.court : { ...next.court, centreLine: "own" },
+      next.court.surface === "own" || !hasBackdrop
+    );
+    await ensureArena();
+
+    for (const node of [...scene.meshes, ...scene.transformNodes]) {
+      if (node !== root && !node.parent && !before.has(node)) node.parent = root;
+    }
+    venueMaterials = scene.materials.filter((m) => !materialsBefore.has(m));
+    venueTextures = scene.textures.filter((t) => !texturesBefore.has(t));
+  };
 
   // The table is small and required for the first playable frame.  The gym
   // backdrop is a 21+ MB GLB, so waiting for it here makes the hosted title
@@ -137,8 +194,9 @@ export async function createGameScene(
     // Tiers that skip the backdrop never fetch it: the download, the meshes and
     // their textures are the largest single memory saving available on a phone.
     // The procedural court keeps the venue's palette either way.
-    if (!quality.arena || !venue.arena) return Promise.resolve();
-    const model = venue.arena;
+    if (!quality.arena || !built.arena) return Promise.resolve();
+    const model = built.arena;
+    const forVenue = built;
     if (!arenaPromise) {
       // Dressing rides with the backdrop — the tier that skips one skips both
       // — and loads alongside it rather than before, so the board ring and the
@@ -149,13 +207,13 @@ export async function createGameScene(
           // restrictive host cannot fetch the decorative gym model.
           console.warn("Arena failed to load:", e);
         }),
-        buildEnvironment(scene, venue).catch((e) => {
+        buildEnvironment(scene, forVenue).catch((e) => {
           console.warn("Venue dressing failed to load:", e);
         }),
         // The world outside the fence. Cheap, procedural and synchronous, but
         // it belongs with the backdrop: without the venue there is nothing for
         // it to stand around.
-        Promise.resolve().then(() => buildSurroundings(scene, venue)),
+        Promise.resolve().then(() => buildSurroundings(scene, forVenue)),
       ]).then(() => undefined);
     }
     return arenaPromise;
@@ -201,7 +259,22 @@ export async function createGameScene(
   });
   camera.fov = engine.getRenderWidth() < engine.getRenderHeight() ? 1.1 : 0.85;
 
-  return { engine, scene, camera, shadows, quality, ensureArena, aimMarker, landingMarker };
+  // The first venue is built the same way every later one is, so there is only
+  // one path to get wrong.
+  await buildVenue(venue);
+
+  return {
+    engine,
+    scene,
+    camera,
+    shadows,
+    quality,
+    ensureArena: () => ensureArena(),
+    setVenue: buildVenue,
+    currentVenue: () => built,
+    aimMarker,
+    landingMarker,
+  };
 }
 
 /**
