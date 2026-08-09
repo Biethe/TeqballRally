@@ -8,45 +8,76 @@ const scheme = (): GestureScheme => {
   return s;
 };
 
-const HOLD = DEFAULT_GESTURE_TUNING.holdDelay;
+const { doubleWindow: WINDOW, tapMax: TAP_MAX } = DEFAULT_GESTURE_TUNING;
+
+/** Press and release in one place, without moving. */
+const press = (s: GestureScheme, id: number, x: number, y: number, at: number, held = 0.05) => {
+  s.begin(id, x, y, at);
+  s.end(id, at + held);
+};
 
 describe("portrait gestures", () => {
-  it("reads a quick press in one place as a placement tap", () => {
+  it("reports a lone tap once its double-tap window has passed", () => {
     const s = scheme();
-    s.begin(1, 120, 500, 0);
-    s.tick(0.05);
-    s.end(1, 0.08);
+    press(s, 1, 120, 500, 0);
 
+    // Held back at first: this could still be the first half of a double tap.
+    s.tick(0.05 + WINDOW - 0.01);
+    expect(s.take()).toEqual([]);
+
+    s.tick(0.05 + WINDOW + 0.01);
     expect(s.take()).toEqual<Gesture[]>([{ kind: "tap", x: 0.3, y: 0.625 }]);
   });
 
-  it("reads a press held in place as a reception, while the finger is still down", () => {
+  it("pairs two quick taps into one double tap, and never a placement", () => {
     const s = scheme();
-    s.begin(1, 320, 400, 0);
+    press(s, 1, 200, 400, 0);
+    press(s, 2, 206, 404, 0.14);
+    s.tick(1);
 
-    s.tick(HOLD - 0.01);
-    expect(s.take()).toEqual([]); // too early: this could still become a tap
-
-    s.tick(HOLD + 0.01);
-    expect(s.take()).toEqual<Gesture[]>([{ kind: "hold", x: 0.8, y: 0.5 }]);
-
-    // Lifting off must not fire a second gesture on the way out.
-    s.end(1, 0.6);
-    expect(s.take()).toEqual([]);
+    const out = s.take();
+    expect(out).toHaveLength(1);
+    expect(out[0].kind).toBe("doubletap");
   });
 
-  it("aims a reception by the side of the screen it happens on", () => {
-    const left = scheme();
-    left.begin(1, 40, 400, 0);
-    left.tick(HOLD + 0.01);
-    const right = scheme();
-    right.begin(1, 360, 400, 0);
-    right.tick(HOLD + 0.01);
+  it("aims a double tap by where on the screen it lands", () => {
+    const corners: Record<string, [number, number]> = {
+      left: [40, 400],
+      right: [360, 400],
+      up: [200, 120],
+      down: [200, 700],
+    };
+    const seen: Record<string, Gesture> = {};
+    for (const [name, [x, y]] of Object.entries(corners)) {
+      const s = scheme();
+      press(s, 1, x, y, 0);
+      press(s, 2, x, y, 0.12);
+      seen[name] = s.take()[0];
+    }
 
-    const l = left.take()[0];
-    const r = right.take()[0];
-    expect(l.x).toBeLessThan(0.5);
-    expect(r.x).toBeGreaterThan(0.5);
+    expect(seen.left.x).toBeLessThan(0.5);
+    expect(seen.right.x).toBeGreaterThan(0.5);
+    expect(seen.up.y).toBeLessThan(0.5);
+    expect(seen.down.y).toBeGreaterThan(0.5);
+  });
+
+  it("keeps two taps far apart as two separate placements", () => {
+    const s = scheme();
+    press(s, 1, 60, 200, 0);
+    press(s, 2, 340, 700, 0.12); // same instant, opposite corner
+    s.tick(1);
+
+    expect(s.take().map((g) => g.kind)).toEqual(["tap", "tap"]);
+  });
+
+  it("keeps two slow taps as two separate placements", () => {
+    const s = scheme();
+    press(s, 1, 200, 400, 0);
+    s.tick(0.05 + WINDOW + 0.01);
+    press(s, 2, 200, 400, 0.5);
+    s.tick(2);
+
+    expect(s.take().map((g) => g.kind)).toEqual(["tap", "tap"]);
   });
 
   it("reads a directional drag as a swipe, with its direction", () => {
@@ -75,45 +106,28 @@ describe("portrait gestures", () => {
     expect(g.dx).toBeCloseTo(1, 5);
   });
 
-  it("never turns a moving finger into a tap or a reception", () => {
+  it("still swipes when the finger rested before setting off", () => {
+    // A thumb that lands, waits, then flicks is one gesture, not a dead press.
     const s = scheme();
     s.begin(1, 200, 600, 0);
-    s.move(1, 224, 600); // 24 px: past the slop, short of a swipe
-    s.tick(1); // held far longer than the hold delay
+    s.move(1, 200, 470);
     s.end(1, 1.2);
 
-    // A smudge is not a decision: better nothing than the wrong touch.
-    expect(s.take()).toEqual([]);
+    expect(s.take().map((g) => g.kind)).toEqual(["swipe"]);
   });
 
-  it("still reports a lingering press when no frame ran to tick it", () => {
-    const s = scheme();
-    s.begin(1, 200, 600, 0);
-    s.end(1, HOLD + 0.5);
+  it("does nothing for a resting finger or a smudge", () => {
+    const rest = scheme();
+    press(rest, 1, 200, 600, 0, TAP_MAX + 0.1);
+    rest.tick(3);
+    expect(rest.take()).toEqual([]);
 
-    expect(s.take()).toEqual<Gesture[]>([{ kind: "hold", x: 0.5, y: 0.75 }]);
-  });
-
-  it("tracks two fingers independently", () => {
-    const s = scheme();
-    s.begin(1, 100, 200, 0);
-    s.begin(2, 300, 700, 0);
-    s.move(2, 300, 580);
-    s.end(2, 0.1); // second finger swipes
-    s.end(1, 0.12); // first finger taps
-
-    const kinds = s.take().map((g) => g.kind);
-    expect(kinds).toEqual(["swipe", "tap"]);
-  });
-
-  it("forgets everything on clear, so a rotation cannot fire a stale gesture", () => {
-    const s = scheme();
-    s.begin(1, 200, 600, 0);
-    s.clear();
-    s.tick(1);
-    s.end(1, 1.1);
-
-    expect(s.take()).toEqual([]);
+    const smudge = scheme();
+    smudge.begin(1, 200, 600, 0);
+    smudge.move(1, 224, 600); // 24 px: past the slop, short of a swipe
+    smudge.end(1, 0.1);
+    smudge.tick(3);
+    expect(smudge.take()).toEqual([]);
   });
 
   it("judges distance against the short side, whichever way the screen turns", () => {
@@ -131,5 +145,14 @@ describe("portrait gestures", () => {
     const w = wide.take()[0];
     if (t.kind !== "swipe" || w.kind !== "swipe") throw new Error("both should swipe");
     expect(t.strength).toBeCloseTo(w.strength, 5);
+  });
+
+  it("forgets everything on clear, so a rotation cannot fire a stale gesture", () => {
+    const s = scheme();
+    press(s, 1, 200, 600, 0);
+    s.clear();
+    s.tick(3);
+
+    expect(s.take()).toEqual([]);
   });
 });

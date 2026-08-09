@@ -1,15 +1,20 @@
 /**
  * Portrait play is touch only: the screen *is* the controller.
  *
- *   - a quick tap places the player on the court,
- *   - a directional swipe kicks, its direction aiming the shot,
- *   - a press held in place is a reception, aimed by the side of the screen it
- *     happens on.
+ *   - a tap places the player on the court,
+ *   - a double tap makes a controlled reception, aimed by where it lands,
+ *   - a directional swipe kicks, its direction aiming the shot.
  *
- * Three gestures on one surface have to be told apart from partial evidence —
- * a finger that has been down for 80 ms and moved 4 px could still become any
- * of them. The rules below resolve that with one decision each: distance
- * separates a swipe from the other two, and time separates a tap from a hold.
+ * Anything else — a finger resting, a smudge too short to aim — deliberately
+ * does nothing. On a surface where every pixel is a control, the safest thing
+ * an ambiguous gesture can do is nothing at all.
+ *
+ * Telling them apart has to be done from partial evidence: a finger that has
+ * been down for 80 ms and moved 4 px could still become any of them. Two rules
+ * resolve it. Distance separates a swipe from the taps. Time separates a tap
+ * from a rest — and a tap is not reported until the double-tap window has
+ * passed without a second one, or the first press of every double tap would
+ * send the player running before the second arrived.
  *
  * Pointer plumbing deliberately lives in input.ts instead, so the whole scheme
  * can be exercised without a browser: feed it begin/move/end/tick and drain
@@ -19,6 +24,7 @@
 /** Screen positions are normalised to 0..1 of the viewport, origin top-left. */
 export type Gesture =
   | { kind: "tap"; x: number; y: number }
+  | { kind: "doubletap"; x: number; y: number }
   | {
       kind: "swipe";
       x: number;
@@ -28,8 +34,7 @@ export type Gesture =
       dy: number;
       /** 0..1, how far the finger travelled relative to a full-strength swipe. */
       strength: number;
-    }
-  | { kind: "hold"; x: number; y: number };
+    };
 
 export interface GestureTuning {
   /** Travel past this (fraction of the short screen side) is no longer a tap. */
@@ -38,22 +43,26 @@ export interface GestureTuning {
   swipeMin: number;
   /** Travel that reads as a full-strength swipe; beyond it, strength saturates. */
   swipeFull: number;
-  /** A press still in place after this many seconds is a reception. */
-  holdDelay: number;
+  /** A still press longer than this is a rest, not a tap. */
+  tapMax: number;
+  /** How long a tap waits for a second one before it is reported alone. */
+  doubleWindow: number;
+  /** How near the first tap the second has to land to pair with it. */
+  doubleRadius: number;
 }
 
 /**
- * Tuned for a thumb on a phone held one-handed. `holdDelay` is the one number
- * a player feels: too short and a deliberate placement tap turns into a
- * reception and burns a touch, too long and a reception arrives after the ball
- * has gone. A quick tap is under 120 ms and a hold is meant to be held, so it
- * sits well clear of the first without making the second feel sticky.
+ * Tuned for a thumb on a phone held one-handed. `doubleWindow` is the number a
+ * player feels: it is latency on every placement tap, and shortening it starts
+ * dropping the second tap of a genuine pair.
  */
 export const DEFAULT_GESTURE_TUNING: GestureTuning = {
   slop: 0.035,
   swipeMin: 0.08,
   swipeFull: 0.3,
-  holdDelay: 0.22,
+  tapMax: 0.3,
+  doubleWindow: 0.28,
+  doubleRadius: 0.16,
 };
 
 interface Track {
@@ -64,14 +73,18 @@ interface Track {
   t0: number;
   /** Travelled past the slop, so it can only ever become a swipe. */
   moved: boolean;
-  /** Already reported as a reception; its release means nothing. */
-  held: boolean;
 }
 
 export class GestureScheme {
   private width = 1;
   private height = 1;
   private tracks = new Map<number, Track>();
+  /**
+   * A tap waiting to see whether a second one turns it into a double. Kept in
+   * pixels as well as normalised units: how far apart two taps are is a
+   * distance on the glass, and the two axes normalise by different numbers.
+   */
+  private pendingTap: { x: number; y: number; px: number; py: number; t: number } | null = null;
   private out: Gesture[] = [];
 
   constructor(private tuning: GestureTuning = DEFAULT_GESTURE_TUNING) {}
@@ -87,7 +100,7 @@ export class GestureScheme {
   }
 
   begin(id: number, px: number, py: number, t: number): void {
-    this.tracks.set(id, { x0: px, y0: py, x: px, y: py, t0: t, moved: false, held: false });
+    this.tracks.set(id, { x0: px, y0: py, x: px, y: py, t0: t, moved: false });
   }
 
   move(id: number, px: number, py: number): void {
@@ -98,24 +111,18 @@ export class GestureScheme {
     if (Math.hypot(px - track.x0, py - track.y0) > this.tuning.slop * this.unit) track.moved = true;
   }
 
-  /**
-   * Fire receptions whose hold has matured. Called once a frame: a hold is the
-   * one gesture that has to be reported while the finger is still down, or the
-   * player would have to lift off before the game reacted.
-   */
+  /** Release a tap that has waited out its double-tap window. Call once a frame. */
   tick(t: number): void {
-    for (const track of this.tracks.values()) {
-      if (track.moved || track.held || t - track.t0 < this.tuning.holdDelay) continue;
-      track.held = true;
-      this.out.push({ kind: "hold", x: track.x / this.width, y: track.y / this.height });
-    }
+    const pending = this.pendingTap;
+    if (!pending || t - pending.t < this.tuning.doubleWindow) return;
+    this.pendingTap = null;
+    this.out.push({ kind: "tap", x: pending.x, y: pending.y });
   }
 
   end(id: number, t: number): void {
     const track = this.tracks.get(id);
     if (!track) return;
     this.tracks.delete(id);
-    if (track.held) return; // its reception already went out
 
     const dx = track.x - track.x0;
     const dy = track.y - track.y0;
@@ -129,12 +136,27 @@ export class GestureScheme {
       this.out.push({ kind: "swipe", x, y, dx: dx / len, dy: dy / len, strength });
       return;
     }
-    // A finger that stayed put: quick is a placement, lingering is a
-    // reception. The second case only arises when tick() never ran (a stalled
-    // frame), and dropping it there would silently eat the touch.
-    if (track.moved) return; // a smudge too short to aim: no gesture at all
-    if (t - track.t0 < this.tuning.holdDelay) this.out.push({ kind: "tap", x, y });
-    else this.out.push({ kind: "hold", x, y });
+    // A smudge too short to aim, or a finger that simply rested: neither is a
+    // decision, and guessing at one would cost a touch.
+    if (track.moved || t - track.t0 > this.tuning.tapMax) return;
+
+    const first = this.pendingTap;
+    const near =
+      first !== null &&
+      t - first.t < this.tuning.doubleWindow &&
+      Math.hypot(track.x - first.px, track.y - first.py) <= this.tuning.doubleRadius * this.unit;
+    if (near) {
+      this.pendingTap = null;
+      this.out.push({ kind: "doubletap", x, y });
+      return;
+    }
+    // A tap that does not pair with the one waiting settles it: two taps too
+    // far apart, or too far apart in time, are two placements, and dropping
+    // the first would lose a deliberate instruction.
+    if (first) this.out.push({ kind: "tap", x: first.x, y: first.y });
+    // Held back until tick() decides no second tap is coming. Reporting it now
+    // would send the player running on the first half of every double tap.
+    this.pendingTap = { x, y, px: track.x, py: track.y, t };
   }
 
   cancel(id: number): void {
@@ -152,6 +174,7 @@ export class GestureScheme {
   /** Forget every finger and pending gesture (orientation change, blur, pause). */
   clear(): void {
     this.tracks.clear();
+    this.pendingTap = null;
     this.out.length = 0;
   }
 }

@@ -19,6 +19,8 @@ import {
 import { fixMetallicMaterials } from "./scene";
 
 const LOCO_CLIPS = ["Idle", "JogForward", "jogBackward", "JogStrafeLeft", "JogStrafeRight"] as const;
+/** Ground speed the jog clips look natural at; playback scales around it. */
+const LOCO_SPEED = 4.5;
 type LocoClip = (typeof LOCO_CLIPS)[number];
 
 // The source kits are real shirt textures whose back panel contains a literal
@@ -577,6 +579,10 @@ export class Character {
       else target = lat > 0 ? "JogStrafeRight" : "JogStrafeLeft";
     }
     this.currentLoco = target;
+    // The jog clips were authored for roughly LOCO_SPEED. Playing them at a
+    // fixed rate while the character travels faster is what reads as skating,
+    // so the playback rate follows the actual ground speed instead.
+    const stride = Math.min(1.6, Math.max(0.7, speed / LOCO_SPEED));
     const rate = dt / 0.12;
     for (const name of LOCO_CLIPS) {
       const cur = this.locoWeights.get(name) ?? 0;
@@ -584,7 +590,10 @@ export class Character {
       const next = cur + Math.sign(goal - cur) * Math.min(rate, Math.abs(goal - cur));
       if (next !== cur) this.setLocoWeight(name, next);
       const g = this.groups.get(name);
-      if (g && next > 0 && !g.isPlaying) g.start(true, 1.0);
+      if (!g || next <= 0) continue;
+      const playback = name === "Idle" ? 1 : stride;
+      g.speedRatio = playback;
+      if (!g.isPlaying) g.start(true, playback);
     }
   }
 

@@ -138,6 +138,10 @@ const CONTACT_SNAP = 0.15;
 const STEER_WINDOW = 0.15;
 // Beyond this gap the touch is a genuine miss — no steering, no snap.
 const STEER_MAX_GAP = 0.6;
+// How near an incoming ball a player has to be for the automatic first
+// reception. Wider than PLAYER_REACH — being close should be enough — and
+// inside LUNGE_MAX, so the contact still reads as a real touch.
+const AUTO_RECEPTION_REACH = 1.7;
 
 // Celebration pool: any of these NLA tracks present on the model may play,
 // for point wins and the match win alike.
@@ -850,14 +854,36 @@ export class MatchController {
   // ---------------------------------------------------------------- touches
 
   /** Common gate for any touch: in a rally, in possession, free and in reach. */
-  private canTouch(side: Side): boolean {
+  private canTouch(side: Side, reach = PLAYER_REACH): boolean {
     if (this.state !== "rally" || this.servePhase === "toss") return false;
     if (this.strikeableSide !== side) return false;
     if (this.pendingTouch) return false; // a queued touch is already waiting
     const c = this.chars[side];
     if (c.busy) return false;
     const chest = c.position.add(new Vector3(0, c.height * 0.55, 0));
-    return Vector3.Distance(chest, this.ball.state.pos) <= PLAYER_REACH;
+    return Vector3.Distance(chest, this.ball.state.pos) <= reach;
+  }
+
+  /**
+   * Semi-automatic reception: standing near an incoming ball is enough to take
+   * the first touch of a possession. No press, no timing — being there is the
+   * whole requirement.
+   *
+   * Only the first touch. What to do with the ball once it is under control —
+   * set it up again, or finish — stays entirely the player's, and that is
+   * where the interesting decision was all along. Chasing the ball down to
+   * make contact at all never was one.
+   *
+   * The vicinity is wider than the reach a pressed touch needs, because "near
+   * it" has to actually mean near it. The gap is well inside what the contact
+   * lunge can cover (LUNGE_MAX), so the reception still visibly connects.
+   */
+  autoFirstReception = true;
+  private autoReceive(side: Side): void {
+    if (!this.autoFirstReception || this.touchCount > 0 || this.ball.held) return;
+    if (!this.canTouch(side, AUTO_RECEPTION_REACH)) return;
+    // Neutral aim: the ball comes up just in front of whoever received it.
+    this.tryControlTouch(side, 0, 0, AUTO_RECEPTION_REACH);
   }
 
   /** A committed touch waiting for the ball to drop back into striking range. */
@@ -1052,8 +1078,8 @@ export class MatchController {
    * with no direction held it hovers just in front. The last allowed touch
    * must cross the net, so it is converted into a strike.
    */
-  tryControlTouch(side: Side, aimX = 0, aimZ = 0): boolean {
-    if (!this.canTouch(side)) return false;
+  tryControlTouch(side: Side, aimX = 0, aimZ = 0, reach = PLAYER_REACH): boolean {
+    if (!this.canTouch(side, reach)) return false;
     if (this.touchCount >= MAX_TOUCHES - 1) return this.tryStrike(side, aimX, aimZ);
     const c = this.chars[side];
 
@@ -1151,7 +1177,7 @@ export class MatchController {
             this.possessionHints++;
             this.ui.hint(
               portraitTouch()
-                ? "Tap to move · Swipe to return · Hold to set up"
+                ? "Tap to move · Double tap to set up · Swipe to return"
                 : "Hold a direction to aim · STRIKE returns · RECEPTION sets up"
             );
           }
@@ -1467,6 +1493,11 @@ export class MatchController {
               : this.tryControlTouch("player", input.moveX, input.moveZ);
           bp.ttl -= dt;
           if (done || bp.ttl <= 0) this.bufferedPress = null;
+        } else {
+          // Nothing pressed: the first touch of the possession is taken for
+          // them. A buffered press is checked first so a player going for a
+          // direct return never has it received out from under them.
+          this.autoReceive("player");
         }
         // Online play arrives here as an ordinary two-human match: the second
         // seat's controls come off the wire into versusInput, exactly where a
@@ -1635,6 +1666,8 @@ export class MatchController {
           : this.tryControlTouch("ai", v.moveX, v.moveZ);
       bp.ttl -= dt;
       if (done || bp.ttl <= 0) this.bufferedPress2 = null;
+    } else {
+      this.autoReceive("ai");
     }
   }
 
