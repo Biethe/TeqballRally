@@ -11,6 +11,12 @@ export interface SelectOptions {
   /** Character definitions carry the live abilities shown in the selector. */
   characters: CharacterDef[];
   balls: SelectItem[];
+  /** Venues to choose between, right before the match rather than in settings. */
+  venues?: SelectItem[];
+  /** Which venue is currently built. */
+  venue?: string;
+  /** Called when a different venue is picked; the scene swaps behind the picker. */
+  onVenue?: (id: string) => void;
   /** Heading shown above the tabs (defaults to "CHOOSE YOUR SETUP"). */
   title?: string;
   /** Called whenever the browsed item changes; resolve when the model is visible. */
@@ -18,6 +24,20 @@ export interface SelectOptions {
   onConfirm: (characterId: string, ballId: string) => void;
   /** Return to the screen that led into the picker. */
   onBack?: () => void;
+}
+
+/** One row in the settings window: a label, a hint, and a control. */
+export type SettingControl =
+  | { kind: "choice"; options: { id: string; label: string }[]; value: string }
+  | { kind: "toggle"; value: boolean };
+
+export interface SettingRow {
+  id: string;
+  label: string;
+  hint?: string;
+  /** Shown under the row in warning colours, e.g. what changing it costs. */
+  warning?: string;
+  control: SettingControl;
 }
 
 export interface MenuOption {
@@ -74,6 +94,7 @@ export class UI {
   /** First press on the development-server action only arms the confirmation. */
   private shutdownArmed = false;
   private menuEl: HTMLDivElement;
+  private settingsEl: HTMLDivElement;
   private standingsEl: HTMLDivElement;
   private bannerTimer: number | null = null;
   private meterEl: HTMLDivElement;
@@ -160,7 +181,6 @@ export class UI {
       </div>
       <div class="select-stage">
         <aside class="player-profile hidden" id="player-profile" aria-live="polite">
-          <div class="profile-kicker">PLAYER ABILITIES · /100</div>
           <div class="profile-stats"></div>
           <div class="profile-traits"></div>
         </aside>
@@ -174,9 +194,11 @@ export class UI {
           </div>
           <button class="arrow-btn" id="btn-next">▶</button>
         </div>
-        <div class="viewer-hint">drag to rotate · scroll to zoom</div>
+        <div class="venue-strip hidden" id="venue-strip" aria-label="Venue"></div>
         <button class="big-btn" id="btn-start">PLAY</button>
       </div>`;
+
+    this.settingsEl = this.screen("settings-screen");
 
     this.hudEl = this.screen("hud");
     this.hudEl.classList.add("transparent");
@@ -299,6 +321,7 @@ export class UI {
       this.trainingPauseEl,
       this.menuEl,
       this.standingsEl,
+      this.settingsEl,
     ]) {
       el.classList.add("hidden");
     }
@@ -472,6 +495,97 @@ export class UI {
     this.cameraBtn.title = `Camera: ${label} — press C or Y / Triangle to switch`;
   }
 
+  /**
+   * The settings window: every remembered choice on one screen, each with the
+   * control that fits it, rather than a menu that walks into a submenu per
+   * setting. A row can carry its own warning — the graphics tier does, because
+   * changing it restarts the game.
+   */
+  showSettings(
+    rows: SettingRow[],
+    onChange: (id: string, value: string | boolean) => void,
+    onBack: () => void
+  ): void {
+    this.hideAll();
+    this.settingsEl.innerHTML = `
+      <main class="menu-shell settings-shell">
+        <header class="menu-header">
+          <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRally</div>
+          <button class="menu-back" id="btn-settings-back" type="button" data-menu-back>← BACK</button>
+        </header>
+        <section class="menu-heading"><h1>SETTINGS</h1></section>
+        <div class="settings-rows"></div>
+      </main>`;
+    const list = this.settingsEl.querySelector<HTMLDivElement>(".settings-rows")!;
+    for (const row of rows) {
+      const el = document.createElement("div");
+      el.className = "setting-row";
+      const text = document.createElement("div");
+      text.className = "setting-text";
+      const label = document.createElement("div");
+      label.className = "setting-label";
+      label.textContent = row.label;
+      text.appendChild(label);
+      if (row.hint) {
+        const hint = document.createElement("div");
+        hint.className = "setting-hint";
+        hint.textContent = row.hint;
+        text.appendChild(hint);
+      }
+      if (row.warning) {
+        const warn = document.createElement("div");
+        warn.className = "setting-warning";
+        warn.textContent = row.warning;
+        text.appendChild(warn);
+      }
+      el.appendChild(text);
+
+      const control = document.createElement("div");
+      control.className = "setting-control";
+      if (row.control.kind === "choice") {
+        control.classList.add("seg");
+        for (const option of row.control.options) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "seg-btn";
+          b.textContent = option.label;
+          b.classList.toggle("on", option.id === row.control.value);
+          b.onclick = () => onChange(row.id, option.id);
+          control.appendChild(b);
+        }
+      } else {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "switch";
+        b.setAttribute("role", "switch");
+        b.setAttribute("aria-checked", String(row.control.value));
+        b.classList.toggle("on", row.control.value);
+        b.innerHTML = '<i></i><span></span>';
+        const on = row.control.kind === "toggle" && row.control.value;
+        b.onclick = () => onChange(row.id, !on);
+        control.appendChild(b);
+      }
+      el.appendChild(control);
+      list.appendChild(el);
+    }
+    this.settingsEl.querySelector<HTMLButtonElement>("#btn-settings-back")!.onclick = () => onBack();
+    this.settingsEl.classList.remove("hidden");
+  }
+
+  /**
+   * A yes/no question over whatever is on screen. Used where a choice cannot
+   * simply be undone — restarting the game to change the graphics tier.
+   */
+  confirm(title: string, detail: string, confirmLabel: string, onConfirm: () => void): void {
+    this.showOnlinePause(title, detail, [
+      [confirmLabel, () => {
+        this.hideOnlinePause();
+        onConfirm();
+      }],
+      ["CANCEL", () => this.hideOnlinePause()],
+    ]);
+  }
+
   /** Pause overlay on top of the HUD (which stays visible behind it). */
   showPause(
     onResume: () => void,
@@ -640,6 +754,28 @@ export class UI {
     const profileEl = this.selectEl.querySelector<HTMLElement>("#player-profile")!;
     const profileStatsEl = profileEl.querySelector<HTMLDivElement>(".profile-stats")!;
     const profileTraitsEl = profileEl.querySelector<HTMLDivElement>(".profile-traits")!;
+    // The venue is a match choice, not a preference, so it is picked here —
+    // beside the player and the ball, on the last screen before the whistle.
+    const venueStrip = this.selectEl.querySelector<HTMLDivElement>("#venue-strip")!;
+    venueStrip.replaceChildren();
+    venueStrip.classList.toggle("hidden", !opts.venues || opts.venues.length === 0);
+    if (opts.venues) {
+      for (const venue of opts.venues) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "venue-chip";
+        chip.dataset.venue = venue.id;
+        chip.textContent = venue.label;
+        chip.classList.toggle("on", venue.id === opts.venue);
+        chip.onclick = () => {
+          if (chip.classList.contains("on")) return;
+          for (const other of venueStrip.querySelectorAll(".venue-chip")) other.classList.remove("on");
+          chip.classList.add("on");
+          opts.onVenue?.(venue.id);
+        };
+        venueStrip.appendChild(chip);
+      }
+    }
     const back = this.selectEl.querySelector<HTMLButtonElement>("#btn-select-back")!;
     back.hidden = !opts.onBack;
     back.onclick = opts.onBack ? () => opts.onBack?.() : null;

@@ -11,6 +11,9 @@ export class AudioManager {
   private music: HTMLAudioElement | null = null;
   private nextMusicIndex = 0;
   private unlocked = false;
+  /** Player preferences. Muting music stops the loop; muting sound skips SFX. */
+  private musicOn = true;
+  private soundOn = true;
 
   constructor() {
     this.applause.volume = 0.7;
@@ -22,21 +25,31 @@ export class AudioManager {
     this.unlocked = true;
   }
 
+  /** Silence or restore the menu loop, keeping whatever is playing in step. */
+  setMusicEnabled(on: boolean): void {
+    this.musicOn = on;
+    if (!on) this.stopMusic();
+  }
+
+  setSoundEnabled(on: boolean): void {
+    this.soundOn = on;
+  }
+
   playKick(): void {
-    if (!this.unlocked) return;
+    if (!this.unlocked || !this.soundOn) return;
     const k = this.kick.cloneNode() as HTMLAudioElement;
     k.volume = this.kick.volume;
     void k.play().catch(() => {});
   }
 
   playApplause(): void {
-    if (!this.unlocked) return;
+    if (!this.unlocked || !this.soundOn) return;
     this.applause.currentTime = 0;
     void this.applause.play().catch(() => {});
   }
 
   startMusic(): void {
-    if (!this.unlocked) return;
+    if (!this.unlocked || !this.musicOn) return;
     if (!this.music) {
       const track = new Audio(MUSIC_LOOPS[this.nextMusicIndex]);
       track.loop = true;

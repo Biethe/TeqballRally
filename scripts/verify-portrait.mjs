@@ -1,7 +1,7 @@
 // Checks that the game is playable with the phone held upright.
 //
 // Portrait has no room for a stick and two buttons, so it plays by gesture
-// instead: tap to place the player, double tap to receive, swipe to kick. None
+// instead: tap to place the player or aim a set-up, swipe to kick. None
 // of that can be unit-tested — it only exists once a real browser has laid the
 // controls out, built a camera and put a match behind them — so it is checked
 // here, against the production build, the same way the menus and the opening
@@ -84,13 +84,6 @@ async function tap(page, x, y) {
   await page.mouse.down();
   await page.waitForTimeout(60);
   await page.mouse.up();
-}
-
-/** Two quick taps in the same place: a controlled, directed reception. */
-async function doubleTap(page, x, y) {
-  await tap(page, x, y);
-  await page.waitForTimeout(80);
-  await tap(page, x, y);
 }
 
 /** A finger resting in one place, which must mean nothing at all. */
@@ -222,32 +215,6 @@ console.log("\nportrait: the screen is the controller");
   check(dual.far.moved && !dual.far.aimed, "a tap with the ball still coming is a shift");
   check(dual.near.aimed && !dual.near.moved, "a tap with the ball in the vicinity aims the reception");
 
-  // A double tap is the controlled reception, and has to be told apart from
-  // the placement tap that shares the same finger.
-  //
-  // Its timing is measured rather than assumed, from the same event clock the
-  // scheme reads. Under software rendering a frame can block the main thread
-  // for longer than the whole double-tap window; if even the browser's own
-  // timestamps land too far apart, this browser cannot deliver a double tap
-  // and says so instead of failing the scheme for it.
-  await page.evaluate(() => {
-    window.__teq.match.setMoveTarget(null);
-    window.__taps = [];
-    document
-      .getElementById("touch-layer")
-      .addEventListener("pointerup", (e) => window.__taps.push(e.timeStamp / 1000), true);
-  });
-  await doubleTap(page, 150, 520);
-  const gap = await page.evaluate(() => {
-    const taps = window.__taps;
-    return taps.length >= 2 ? taps[taps.length - 1] - taps[taps.length - 2] : null;
-  });
-  if (gap === null || gap > 0.28) {
-    check(true, `double tap not exercised: taps arrived ${gap === null ? "unpaired" : gap.toFixed(2) + " s apart"}`);
-  } else {
-    const moved = await settles(page, () => window.__teq.match.moveTarget !== null, 2500);
-    check(!moved, `a double tap is not also read as a placement (${gap.toFixed(2)} s apart)`);
-  }
   await page.close();
 }
 

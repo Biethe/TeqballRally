@@ -60,6 +60,16 @@ function studioMaterial(
  * on a pedestal, with an orbit camera the user can drag. Loaded models are
  * cached so browsing back and forth is instant.
  */
+/**
+ * How near and how far the orbit camera may sit, per kind of model. The near
+ * limits are the ones that matter: closer than these and the camera is inside
+ * the model, showing the inside of a shirt or the far wall of a ball.
+ */
+const ZOOM_LIMIT: Record<ViewerKind, { min: number; max: number }> = {
+  character: { min: 2.35, max: 6.5 },
+  ball: { min: 1.1, max: 4.0 },
+};
+
 export class ModelViewer {
   readonly scene: Scene;
   active = false;
@@ -80,8 +90,8 @@ export class ModelViewer {
     this.scene.imageProcessingConfiguration.exposure = 1.1;
 
     this.camera = new ArcRotateCamera("viewer-cam", Math.PI / 2, 1.25, 3.2, new Vector3(0, 0.95, 0), this.scene);
-    this.camera.lowerRadiusLimit = 1.2;
-    this.camera.upperRadiusLimit = 6.5;
+    this.camera.lowerRadiusLimit = ZOOM_LIMIT.character.min;
+    this.camera.upperRadiusLimit = ZOOM_LIMIT.character.max;
     this.camera.lowerBetaLimit = 0.3;
     this.camera.upperBetaLimit = Math.PI / 2 + 0.2;
     this.camera.wheelDeltaPercentage = 0.01;
@@ -172,6 +182,11 @@ export class ModelViewer {
   }
 
   private frameFor(kind: ViewerKind): void {
+    // Zoom stops short of the surface. A character and a ball are very
+    // different sizes, so one limit for both meant the near end of a
+    // character's range put the camera inside their chest.
+    this.camera.lowerRadiusLimit = ZOOM_LIMIT[kind].min;
+    this.camera.upperRadiusLimit = ZOOM_LIMIT[kind].max;
     if (kind === "character") {
       this.camera.setTarget(new Vector3(0, 0.95, 0));
       this.camera.radius = 3.2;
@@ -181,6 +196,7 @@ export class ModelViewer {
       this.camera.radius = 1.7;
       this.camera.beta = 1.35;
     }
+    this.camera.radius = Math.max(ZOOM_LIMIT[kind].min, this.camera.radius);
     this.camera.alpha = Math.PI / 2; // face the model front
   }
 

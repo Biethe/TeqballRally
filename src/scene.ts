@@ -100,18 +100,20 @@ export async function createGameScene(
   // GPU.
   const grade = scene.imageProcessingConfiguration;
   grade.applyByPostProcess = false;
-  grade.contrast = 1.12;
-  grade.exposure = 1.04;
+  grade.contrast = 1.08;
+  grade.exposure = 1.03;
   grade.colorCurvesEnabled = true;
   const curves = new ColorCurves();
   // Saturation does the heavy lifting; the warm mid-tone lift keeps skin and
-  // wood from going grey under a blue sky.
-  curves.globalSaturation = 20;
+  // wood from going grey under a blue sky. Deliberately restrained — the
+  // venues are already painted in strong flat colours, and grading them hard
+  // on top turned a sports hall into a cartoon.
+  curves.globalSaturation = 8;
   curves.globalHue = 0;
-  curves.midtonesSaturation = 14;
+  curves.midtonesSaturation = 7;
   curves.midtonesHue = 5;
-  curves.highlightsSaturation = 10;
-  curves.shadowsSaturation = 8;
+  curves.highlightsSaturation = 5;
+  curves.shadowsSaturation = 4;
   grade.colorCurves = curves;
 
   const hemi = new HemisphericLight("hemi", new Vector3(0.2, 1, 0.1), scene);

@@ -32,12 +32,41 @@ async function audit(page, label) {
       const s = getComputedStyle(el);
       return s.display !== "none" && s.visibility !== "hidden" && Number(s.opacity) > 0.05;
     };
+    /**
+     * Whether some ancestor scrolls this element into view.
+     *
+     * A control below the fold of a scrollable list is reachable, which is not
+     * the same defect as one drawn off the edge of a screen that cannot move.
+     * Without this the settings list — deliberately scrollable on a phone held
+     * sideways — reported every row past the third as broken.
+     */
+    const scrollsIntoView = (el) => {
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        const s = getComputedStyle(p);
+        const scrolls = /(auto|scroll)/.test(s.overflowY) && p.scrollHeight > p.clientHeight + 1;
+        if (scrolls) return true;
+      }
+      return false;
+    };
+    /** Whether a point is inside every scrolling ancestor's visible area. */
+    const inScrollerView = (el, x, y) => {
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        const s = getComputedStyle(p);
+        if (!/(auto|scroll)/.test(s.overflowY)) continue;
+        const box = p.getBoundingClientRect();
+        if (y < box.top || y > box.bottom || x < box.left || x > box.right) return false;
+      }
+      return true;
+    };
     // Anything interactive that a finger cannot reach is a real defect.
     for (const el of document.querySelectorAll("button, input, .menu-option")) {
       if (!visible(el) || !el.offsetParent) continue;
       const r = el.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) continue;
-      if (r.left < -1 || r.top < -1 || r.right > vw + 1 || r.bottom > vh + 1) {
+      if (
+        !scrollsIntoView(el) &&
+        (r.left < -1 || r.top < -1 || r.right > vw + 1 || r.bottom > vh + 1)
+      ) {
         problems.push({
           screen: name,
           what: el.id || el.className || el.tagName,
@@ -66,7 +95,15 @@ async function audit(page, label) {
       const cx = Math.round(r.left + r.width / 2);
       const cy = Math.round(r.top + r.height / 2);
       if (cx < 0 || cy < 0 || cx > vw || cy > vh) continue;
+      // A control straddling the fold of a scrollable list has its centre
+      // clipped away, so the hit test lands on whatever is behind the list.
+      // That is a scroll position, not a control someone drew over.
+      if (scrollsIntoView(el) && !inScrollerView(el, cx, cy)) continue;
       const hit = document.elementFromPoint(cx, cy);
+      // A modal is meant to cover what is behind it. Only the dialog's own
+      // controls are auditable while one is up.
+      const modal = document.querySelector("#pause-screen:not(.hidden)");
+      if (modal && modal.contains(hit) && !modal.contains(el)) continue;
       if (hit && hit !== el && !el.contains(hit)) {
         problems.push({
           screen: name,
@@ -163,16 +200,15 @@ for (const dev of DEVICES) {
   await page.waitForTimeout(300);
   await shot("settings");
 
-  // Both settings sub-screens: the venue list is the longest menu in the game.
-  await page.locator("#btn-settings-venue").click();
+  // The graphics row asks before it restarts anything, and that dialog is a
+  // screen of its own worth checking the layout of.
+  await page.locator(".setting-row .seg-btn").nth(1).click();
   await page.waitForTimeout(300);
-  await shot("venue");
-  // "gym" is the venue already in use, so this returns rather than reloading.
-  await page.locator("#btn-venue-gym").click();
+  await shot("graphics-warning");
+  await page.locator(".pause-actions .big-btn").nth(1).click();
   await page.waitForTimeout(300);
-  await page.locator("#btn-settings-graphics").click();
+  await page.locator("#btn-settings-back").click();
   await page.waitForTimeout(300);
-  await shot("graphics");
 
   await page.goto(`http://localhost:${PORT}/?q=low&intro=0`, { waitUntil: "load" });
   await page.waitForTimeout(3000);
