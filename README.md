@@ -2,7 +2,7 @@
 
 TeqRally is a browser-based 3D teqball game built with Babylon.js, TypeScript,
 and Vite. Play solo against the CPU, learn in Practice, compete in a cup or
-league, or share the court locally with a second player.
+league, or take someone on online.
 
 ## Run locally
 
@@ -152,7 +152,8 @@ action on a screen is never ambiguous.
 
 `src/quality.ts` defines two tiers, picked automatically on first launch from
 `navigator.deviceMemory`, core count and whether the device is touch, then
-overridable from the in-game SETTINGS menu and remembered in `localStorage`.
+overridable from SETTINGS › DISPLAY on the title screen and remembered in
+`localStorage`.
 Applying a tier reloads the page — the engine's MSAA is fixed when the WebGL
 context is created.
 
@@ -178,17 +179,50 @@ to one another. It sits above the rulebook's true dimensions because the game
 is played on a phone at arm's length, where a correctly sized court reads as a
 set of miniatures in a large arena.
 
-## Settings
+## Navigation
 
-`src/settings.ts` remembers everything that is not the graphics tier — music,
-sound, the camera a match opens in, and whether the first touch is automatic —
-and the settings window shows them all on one screen with the control that
-fits each. The tier is the exception it warns about: the engine's MSAA is fixed
-when the WebGL context is created, so changing it reloads the page, and the row
-says so before it is touched and asks again before it happens.
+Every screen answers one question, and the title screen asks the easiest one.
 
-The venue is not in there. It is a per-match choice, so it is picked on the
+```
+TITLE ── PLAY ──┬── FRIENDLY ──── difficulty ── pick ── match
+      │         ├── PRACTICE ──── pick ── match
+      │         ├── COMPETITION ─ cup / league ── pick ── run
+      │         └── ONLINE ────── quick / friend / code
+      └── SETTINGS ── DISPLAY / GAMEPLAY / AUDIO
+```
+
+Nothing is ever more than Home → Category → Choice deep, and every screen has
+its BACK control in the same place. The title screen carries one dominant
+action and one quiet one: a player opening the game for the first time only has
+to recognise PLAY.
+
+Settings sit on the title screen rather than in the play menu — a player who
+came to start a match should not have to read past a settings card to find one,
+and a player looking for a setting is not thinking about game modes.
+
+`src/settings.ts` remembers everything that is not the graphics tier: language,
+music, sound, the camera a match opens in, and whether the first touch is
+automatic. The tier is the exception the DISPLAY screen warns about — the
+engine's MSAA is fixed when the WebGL context is created, so changing it
+reloads the page, and the row says so before it is touched and asks again
+before it happens.
+
+The venue is not in settings. It is a per-match choice, so it is picked on the
 last screen before the whistle, beside the player and the ball.
+
+## Language
+
+`src/i18n.ts` holds every string outside the 3D scene, in English, French,
+Spanish and Portuguese — the four countries on the court. The English
+catalogue is the source of truth: its keys are the type, so a translation that
+misses one, or invents one, fails the build rather than showing a player a
+blank button. The interface language is guessed from the device on a first run
+and remembered once chosen.
+
+The typeface is Exo 2, bundled as two variable-weight subsets in
+`assets/fonts/` (71 KB together, SIL OFL). It is not fetched from a font CDN:
+the packaged app has no network guarantee, and a menu whose type arrives late
+reflows in front of the player.
 
 ## Venues
 

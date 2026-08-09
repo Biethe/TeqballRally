@@ -94,34 +94,6 @@ export function consumeInput(latched: LatchedInput): InputState {
   return state;
 }
 
-/**
- * A device a versus player can be assigned to:
- * - "kb": the whole keyboard (WASD + arrows, Space/Enter/J strike, K reception) + touch
- * - "kbWASD": WASD half (Space/J strike, K reception) + touch
- * - "kbArrows": arrows half (Enter strike, right Shift reception)
- * - "pad1"/"pad2": first/second connected gamepad
- */
-export type DeviceId = "kb" | "kbWASD" | "kbArrows" | "pad1" | "pad2";
-
-export interface VersusAssign {
-  p1: DeviceId;
-  p2: DeviceId;
-}
-
-/** Which keyboard code fires a strike/reception for a given device assignment. */
-function kbOwns(d: DeviceId | undefined, code: string, kind: "strike" | "pop"): boolean {
-  if (!d) return false;
-  if (kind === "strike") {
-    if (d === "kb") return code === "Space" || code === "Enter" || code === "KeyJ";
-    if (d === "kbWASD") return code === "Space" || code === "KeyJ";
-    if (d === "kbArrows") return code === "Enter";
-  } else {
-    if (d === "kb" || d === "kbWASD") return code === "KeyK";
-    if (d === "kbArrows") return code === "ShiftRight";
-  }
-  return false;
-}
-
 export class Input {
   private keys = new Set<string>();
   private strikeQueued = false;
@@ -139,21 +111,12 @@ export class Input {
    * was held is what decides how hard the ball is struck, and that is not
    * known until it comes back up.
    */
-  private strikeDown: [boolean, boolean] = [false, false];
-  /** Pad levels, so a pad release is only reported once. */
+  private strikeDown = false;
+  /** Pad level, so a pad release is only reported once. */
   private padStrikeWasDown = false;
-  private pad2StrikeWasDown = false;
   private prevGamepadPop = false;
   /** Neutral axis-9 values for non-standard HID hat switches, by pad index. */
   private hatIdleByPad = new Map<number, number>();
-  /**
-   * Versus mode: which device each player uses (chosen in the versus menu).
-   * null outside versus — then keyboard, touch and every pad all feed P1.
-   */
-  versusAssign: VersusAssign | null = null;
-  private p2StrikeQueued = false;
-  private p2PopQueued = false;
-  private prevPad2Pop = false;
   /** Keyboard cancel is queued because a quick Escape tap can occur between render frames. */
   private menuBackQueued = false;
   /** Set once a gamepadconnected event fires (some browsers hide pads until then). */
@@ -218,46 +181,19 @@ export class Input {
         e.preventDefault();
         return;
       }
-      const a = this.versusAssign;
-      if (!a) {
-        // Single human: every strike/reception key belongs to them.
-        if (e.code === "Space" || e.code === "Enter" || e.code === "KeyJ") {
-          this.setStrikeDown(0, true);
-          e.preventDefault();
-        }
-        if (e.code === "KeyK") {
-          this.popQueued = true;
-          e.preventDefault();
-        }
-        return;
-      }
-      // Versus: route each key to whichever player's device owns it.
-      if (kbOwns(a.p1, e.code, "strike")) {
-        this.setStrikeDown(0, true);
+      // Every strike/reception key belongs to the one player.
+      if (e.code === "Space" || e.code === "Enter" || e.code === "KeyJ") {
+        this.setStrikeDown(true);
         e.preventDefault();
       }
-      if (kbOwns(a.p1, e.code, "pop")) {
+      if (e.code === "KeyK") {
         this.popQueued = true;
-        e.preventDefault();
-      }
-      if (kbOwns(a.p2, e.code, "strike")) {
-        this.setStrikeDown(1, true);
-        e.preventDefault();
-      }
-      if (kbOwns(a.p2, e.code, "pop")) {
-        this.p2PopQueued = true;
         e.preventDefault();
       }
     });
     window.addEventListener("keyup", (e) => {
       this.keys.delete(e.code);
-      const a = this.versusAssign;
-      if (!a) {
-        if (e.code === "Space" || e.code === "Enter" || e.code === "KeyJ") this.setStrikeDown(0, false);
-        return;
-      }
-      if (kbOwns(a.p1, e.code, "strike")) this.setStrikeDown(0, false);
-      if (kbOwns(a.p2, e.code, "strike")) this.setStrikeDown(1, false);
+      if (e.code === "Space" || e.code === "Enter" || e.code === "KeyJ") this.setStrikeDown(false);
     });
     window.addEventListener("blur", () => {
       this.keys.clear();
@@ -307,20 +243,19 @@ export class Input {
    * let go. Confirm still fires on the way down, so menus and the serve toss
    * answer a press immediately.
    */
-  private setStrikeDown(seat: 0 | 1, down: boolean): void {
-    if (down === this.strikeDown[seat]) return;
-    this.strikeDown[seat] = down;
+  private setStrikeDown(down: boolean): void {
+    if (down === this.strikeDown) return;
+    this.strikeDown = down;
     if (down) {
-      if (seat === 0) this.confirmQueued = true;
+      this.confirmQueued = true;
       return;
     }
-    if (seat === 0) this.strikeQueued = true;
-    else this.p2StrikeQueued = true;
+    this.strikeQueued = true;
   }
 
   /** Drop a held kick without firing it (focus loss, a hidden touch layer). */
   private clearStrikeHold(): void {
-    this.strikeDown = [false, false];
+    this.strikeDown = false;
   }
 
   /** Hide the touch layer while a screen needs direct canvas interaction (model viewer). */
@@ -363,7 +298,7 @@ export class Input {
       "STRIKE",
       "HOLD TO AIM",
       "Hold to aim and charge the kick, release to strike",
-      (down) => this.setStrikeDown(0, down)
+      (down) => this.setStrikeDown(down)
     );
     this.popBtn = this.makeTouchAction(
       "pop-btn",
@@ -557,33 +492,21 @@ export class Input {
     }
   }
 
-  /** Movement axes for a keyboard device (touch joystick joins the WASD side). */
-  private kbAxes(device: DeviceId): { sx: number; sy: number } {
+  /** Movement axes from the keyboard, with the touch joystick folded in. */
+  private kbAxes(): { sx: number; sy: number } {
     let sx = 0;
     let sy = 0;
-    const wasd = device === "kb" || device === "kbWASD";
-    const arrows = device === "kb" || device === "kbArrows";
-    if (wasd) {
-      if (this.keys.has("KeyA")) sx -= 1;
-      if (this.keys.has("KeyD")) sx += 1;
-      if (this.keys.has("KeyW")) sy -= 1;
-      if (this.keys.has("KeyS")) sy += 1;
-      sx += this.joyVec.x;
-      sy += this.joyVec.y;
-    }
-    if (arrows) {
-      if (this.keys.has("ArrowLeft")) sx -= 1;
-      if (this.keys.has("ArrowRight")) sx += 1;
-      if (this.keys.has("ArrowUp")) sy -= 1;
-      if (this.keys.has("ArrowDown")) sy += 1;
-    }
+    if (this.keys.has("KeyA")) sx -= 1;
+    if (this.keys.has("KeyD")) sx += 1;
+    if (this.keys.has("KeyW")) sy -= 1;
+    if (this.keys.has("KeyS")) sy += 1;
+    if (this.keys.has("ArrowLeft")) sx -= 1;
+    if (this.keys.has("ArrowRight")) sx += 1;
+    if (this.keys.has("ArrowUp")) sy -= 1;
+    if (this.keys.has("ArrowDown")) sy += 1;
+    sx += this.joyVec.x;
+    sy += this.joyVec.y;
     return { sx, sy };
-  }
-
-  /** Resolve a pad device to a connected gamepad. */
-  private static padOf(device: DeviceId): Gamepad | undefined {
-    const pads = Input.connectedPads();
-    return device === "pad2" ? pads[1] : pads[0];
   }
 
   /**
@@ -633,43 +556,27 @@ export class Input {
     return tap;
   }
 
-  /** Poll and consume one frame of player 1's input. Screen-space: x right, y down. */
+  /** Poll and consume one frame of the player's input. Screen-space: x right, y down. */
   poll(cameraMode: CameraMode = "court"): InputState {
     if (this.portrait) this.pumpGestures();
-    const a = this.versusAssign;
     // The active view is passed into this concrete poll rather than cached on
-    // Input. That keeps both players correct on the exact frame a view cycles.
+    // Input, so a view that cycles this frame is already reflected here.
     const rotateDpad = cameraMode === "side" || cameraMode === "top";
-    let sx = 0;
-    let sy = 0;
     let padStrike = false;
     let padPop = false;
-    if (!a) {
-      // Single human: whole keyboard, touch and every connected pad.
-      ({ sx, sy } = this.kbAxes("kb"));
-      const aim = this.aimVector();
-      sx += aim.sx;
-      sy += aim.sy;
-      for (const p of Input.connectedPads()) {
-        const r = this.readPad(p, rotateDpad);
-        sx += r.x;
-        sy += r.y;
-        padStrike ||= r.strike;
-        padPop ||= r.pop;
-      }
-    } else if (a.p1.startsWith("kb")) {
-      ({ sx, sy } = this.kbAxes(a.p1));
-    } else {
-      const p = Input.padOf(a.p1);
-      if (p) {
-        const r = this.readPad(p, rotateDpad);
-        sx = r.x;
-        sy = r.y;
-        padStrike = r.strike;
-        padPop = r.pop;
-      }
+    // Keyboard, touch and every connected pad, all feeding the one player.
+    let { sx, sy } = this.kbAxes();
+    const aim = this.aimVector();
+    sx += aim.sx;
+    sy += aim.sy;
+    for (const p of Input.connectedPads()) {
+      const r = this.readPad(p, rotateDpad);
+      sx += r.x;
+      sy += r.y;
+      padStrike ||= r.strike;
+      padPop ||= r.pop;
     }
-    if (padStrike || this.padStrikeWasDown) this.setStrikeDown(0, padStrike);
+    if (padStrike || this.padStrikeWasDown) this.setStrikeDown(padStrike);
     this.padStrikeWasDown = padStrike;
     if (padPop && !this.prevGamepadPop) this.popQueued = true;
     this.prevGamepadPop = padPop;
@@ -683,7 +590,7 @@ export class Input {
       moveX: -sy,
       moveZ: -sx,
       strikePressed: this.strikeQueued,
-      strikeHeld: this.strikeDown[0],
+      strikeHeld: this.strikeDown,
       strikePower: this.gesturePower,
       popPressed: this.popQueued,
       confirmPressed: this.confirmQueued,
@@ -817,52 +724,6 @@ export class Input {
     return Input.connectedPads()[0]?.id ?? null;
   }
 
-  /** Number of currently connected gamepads (for the versus device menu). */
-  padCount(): number {
-    return Input.connectedPads().length;
-  }
-
-  /**
-   * Poll player 2's assigned device (versus mode) — a gamepad or their half
-   * of the keyboard. Returned in the same screen→court mapping as poll() for
-   * a -x-side camera view — the caller flips it into the second player's frame.
-   */
-  pollP2(cameraMode: CameraMode = "court"): InputState {
-    const d = this.versusAssign?.p2 ?? "pad1";
-    const rotateDpad = cameraMode === "side" || cameraMode === "top";
-    let sx = 0;
-    let sy = 0;
-    let padStrike = false;
-    let padPop = false;
-    if (d.startsWith("kb")) {
-      ({ sx, sy } = this.kbAxes(d));
-    } else {
-      const p = Input.padOf(d);
-      if (p) {
-        const r = this.readPad(p, rotateDpad);
-        sx = r.x;
-        sy = r.y;
-        padStrike = r.strike;
-        padPop = r.pop;
-      }
-    }
-    if (padStrike || this.pad2StrikeWasDown) this.setStrikeDown(1, padStrike);
-    this.pad2StrikeWasDown = padStrike;
-    const strikePressed = this.p2StrikeQueued;
-    const popPressed = (padPop && !this.prevPad2Pop) || this.p2PopQueued;
-    this.prevPad2Pop = padPop;
-    this.p2StrikeQueued = false;
-    this.p2PopQueued = false;
-    return {
-      moveX: -Math.max(-1, Math.min(1, sy)),
-      moveZ: -Math.max(-1, Math.min(1, sx)),
-      strikePressed,
-      strikeHeld: this.strikeDown[1],
-      strikePower: 0,
-      popPressed,
-      confirmPressed: strikePressed,
-    };
-  }
 
   /**
    * Edge-triggered menu navigation from every connected pad plus the keyboard

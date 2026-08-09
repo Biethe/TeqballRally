@@ -1830,13 +1830,8 @@ export class MatchController {
     camera.setTarget(target);
   }
 
-  /** Fixed match camera for P1 / the single-player view. */
+  /** Fixed match camera. */
   updateCamera(camera: TargetCamera, mode: CameraMode = "court"): void {
     this.updateCameraForSide(camera, "player", mode);
-  }
-
-  /** Fixed match camera for the P2 split-screen view. */
-  updateCamera2(camera: TargetCamera, mode: CameraMode = "court"): void {
-    this.updateCameraForSide(camera, "ai", mode);
   }
 }

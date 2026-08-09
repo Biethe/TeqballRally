@@ -1,4 +1,5 @@
 import type { CameraMode } from "./config";
+import { isLanguage, type Language } from "./i18n";
 
 /**
  * Player preferences that are not the graphics tier.
@@ -10,6 +11,9 @@ import type { CameraMode } from "./config";
  * a settings file is not worth failing a boot over.
  */
 export interface Preferences {
+  /** Interface language. Absent until the player picks one, which is the
+   * difference between "they chose English" and "we guessed from the device". */
+  language: Language | null;
   music: boolean;
   sound: boolean;
   /** Which view a match opens in. The HUD button still cycles from there. */
@@ -19,6 +23,7 @@ export interface Preferences {
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
+  language: null,
   music: true,
   sound: true,
   camera: "court",
@@ -36,6 +41,7 @@ export function readPreferences(): Preferences {
     if (!raw) return { ...DEFAULT_PREFERENCES };
     const stored = JSON.parse(raw) as Partial<Record<keyof Preferences, unknown>>;
     return {
+      language: isLanguage(stored.language) ? stored.language : null,
       music: typeof stored.music === "boolean" ? stored.music : DEFAULT_PREFERENCES.music,
       sound: typeof stored.sound === "boolean" ? stored.sound : DEFAULT_PREFERENCES.sound,
       camera: isCameraMode(stored.camera) ? stored.camera : DEFAULT_PREFERENCES.camera,

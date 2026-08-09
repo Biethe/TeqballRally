@@ -195,7 +195,14 @@ console.log("\nportrait: the screen is the controller");
     const c = m.chars.player;
     const V = m.aimSpot.player.constructor;
     const point = new V(c.position.x + 2, 0.4, c.position.z + 2);
+    // Both halves of the rule need the same starting state, and a rally at one
+    // frame a second will not hold still on its own: a character mid-animation
+    // or a queued touch would send the tap down the other branch and read as a
+    // failure of the rule rather than of the timing.
     const place = (dx) => {
+      m.state = "rally";
+      m.pendingTouch = null;
+      m.chars.player.stopAction();
       m.ball.held = false;
       m.ball.state.pos.set(c.position.x + dx, c.position.y + c.height * 0.6, c.position.z);
       m.ball.state.vel.set(0, 0, 0);
@@ -228,10 +235,13 @@ console.log("\nlandscape: the stick and buttons are back");
   check(state.hintsShown === false, "the gesture legend is hidden");
   check(state.tapSteering === false, "the stick steers, not taps");
 
-  // Holding the kick control charges it and hands the stick to the marker.
-  // Only while the ball is actually this player's to hit, so the control is
-  // held down across the exchange and the charge is expected to start by
-  // itself the moment possession arrives.
+  // Holding the kick control charges it and hands the stick to the aim marker.
+  //
+  // The state it needs is set directly rather than waited for. Charging is
+  // only allowed while the ball is this player's and they are not already
+  // mid-animation, and at one rendered frame a second that window opens and
+  // shuts between polls — waiting for it made this check report a working
+  // feature as broken about a third of the time.
   await page.evaluate(() => {
     const m = window.__teq.match;
     for (let i = 0; i < 60 && m.serveOwner !== "player"; i++) m.reset();
@@ -240,10 +250,24 @@ console.log("\nlandscape: the stick and buttons are back");
   await page.keyboard.press("Space"); // serve
   check(await settles(page, () => window.__teq.match.state === "rally", 40000), "a keyboard serve starts the rally");
 
-  const before = await readMatch(page);
+  const before = await page.evaluate(() => {
+    const m = window.__teq.match;
+    const c = m.chars.player;
+    m.state = "rally";
+    m.pendingTouch = null;
+    m.bufferedPress = null;
+    c.stopAction();
+    m.ball.held = false;
+    m.ball.state.pos.set(c.position.x + 1, c.position.y + c.height * 0.6, c.position.z);
+    m.ball.state.vel.set(0, 0, 0);
+    m.strikeableSide = "player";
+    m.touchCount = 1; // already received: nothing will be taken automatically
+    m.charging.player = 0;
+    return { aim: { x: m.aimSpot.player.x, z: m.aimSpot.player.z } };
+  });
   await page.keyboard.down("Space");
   await page.keyboard.down("KeyD"); // push the aim sideways while charging
-  const charged = await settles(page, () => window.__teq.match.charging.player > 0.2, 90000);
+  const charged = await settles(page, () => window.__teq.match.charging.player > 0.2, 30000);
   const held = await readMatch(page);
   await page.keyboard.up("KeyD");
   await page.keyboard.up("Space");

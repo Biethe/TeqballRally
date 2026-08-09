@@ -179,7 +179,7 @@ for (const dev of DEVICES) {
   await shot("title");
   await page.locator("#btn-play").click();
   await page.waitForTimeout(400);
-  await shot("modes");
+  await shot("play");
 
   await page.locator("#btn-mode-online").click();
   await page.waitForTimeout(300);
@@ -189,17 +189,22 @@ for (const dev of DEVICES) {
   await page.waitForTimeout(400);
   await shot("code-entry");
 
-  // Code entry -> online menu -> mode menu. The second step is easy to miss:
-  // without it the settings screens below are never reached and every check on
-  // them passes for the wrong reason.
+  // Code entry -> online menu -> play menu -> title, then in through the
+  // settings door. Missing a step here is easy: without it the settings
+  // screens are never reached and every check on them passes for nothing.
   await page.locator("#btn-code-back").click();
   await page.waitForTimeout(300);
   await page.locator("#btn-menu-back").click();
   await page.waitForTimeout(300);
-  await page.locator("#btn-mode-settings").click();
-  await page.waitForTimeout(300);
+  await page.locator("#btn-menu-back").click();
+  await page.waitForTimeout(400);
+  await page.locator("#btn-title-settings").click();
+  await page.waitForTimeout(400);
   await shot("settings");
 
+  await page.locator("#btn-set-display").click();
+  await page.waitForTimeout(400);
+  await shot("settings-display");
   // The graphics row asks before it restarts anything, and that dialog is a
   // screen of its own worth checking the layout of.
   await page.locator(".setting-row .seg-btn").nth(1).click();
