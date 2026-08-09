@@ -17,20 +17,23 @@ const signals = (over: Partial<DeviceSignals> = {}): DeviceSignals => ({
 
 describe("settingsFor", () => {
   it("gets cheaper at every step down", () => {
-    const [low, medium, high] = QUALITY_TIERS.map(settingsFor);
+    const [medium, high] = QUALITY_TIERS.map(settingsFor);
 
-    expect(low.maxPixelRatio).toBeLessThan(medium.maxPixelRatio);
     expect(medium.maxPixelRatio).toBeLessThan(high.maxPixelRatio);
     // MSAA is the top tier's alone.
-    expect(low.antialias).toBe(false);
     expect(medium.antialias).toBe(false);
     expect(high.antialias).toBe(true);
   });
 
-  it("only skips the gym backdrop on the lowest tier", () => {
-    expect(settingsFor("low").arena).toBe(false);
-    expect(settingsFor("medium").arena).toBe(true);
-    expect(settingsFor("high").arena).toBe(true);
+  // The venue is the thing a player picks; a tier that silently drops it is
+  // not a graphics setting, it is a different game.
+  it("keeps the venue backdrop on every tier", () => {
+    for (const tier of QUALITY_TIERS) expect(settingsFor(tier).arena).toBe(true);
+  });
+
+  it("resolves a retired 'low' choice to the new floor", () => {
+    expect(tierFromSearch("?q=low")).toBe("medium");
+    expect(tierFromSearch("?light=1")).toBe("medium");
   });
 
   it("never raises the shadow map as the tier drops", () => {
@@ -61,14 +64,14 @@ describe("settingsFor", () => {
 });
 
 describe("detectTier", () => {
-  it("puts a 2 GB phone on low", () => {
-    expect(detectTier(signals({ deviceMemory: 2 }))).toBe("low");
-    expect(detectTier(signals({ deviceMemory: 1 }))).toBe("low");
-    expect(detectTier(signals({ deviceMemory: 0.5 }))).toBe("low");
+  it("puts a 2 GB phone on the cheapest tier", () => {
+    expect(detectTier(signals({ deviceMemory: 2 }))).toBe("medium");
+    expect(detectTier(signals({ deviceMemory: 1 }))).toBe("medium");
+    expect(detectTier(signals({ deviceMemory: 0.5 }))).toBe("medium");
   });
 
-  it("puts a weak CPU on low even when memory looks fine", () => {
-    expect(detectTier(signals({ deviceMemory: 8, hardwareConcurrency: 4 }))).toBe("low");
+  it("puts a weak CPU on the cheapest tier even when memory looks fine", () => {
+    expect(detectTier(signals({ deviceMemory: 8, hardwareConcurrency: 4 }))).toBe("medium");
   });
 
   it("puts a capable phone on medium, not high", () => {
@@ -108,14 +111,13 @@ describe("detectTier", () => {
 
 describe("tierFromSearch", () => {
   it("reads an explicit ?q=", () => {
-    expect(tierFromSearch("?q=low")).toBe("low");
     expect(tierFromSearch("?q=medium")).toBe("medium");
     expect(tierFromSearch("?q=high")).toBe("high");
   });
 
   it("keeps the original ?light=1 dev flag working", () => {
-    expect(tierFromSearch("?light=1")).toBe("low");
-    expect(tierFromSearch("?ts=8&light=1")).toBe("low");
+    expect(tierFromSearch("?light=1")).toBe("medium");
+    expect(tierFromSearch("?ts=8&light=1")).toBe("medium");
   });
 
   it("is null when the URL asks for nothing", () => {
@@ -143,7 +145,7 @@ describe("TIER_LABELS", () => {
   });
 
   it("lists the tiers cheapest first", () => {
-    const order: QualityTier[] = ["low", "medium", "high"];
+    const order: QualityTier[] = ["medium", "high"];
     expect(QUALITY_TIERS).toEqual(order);
   });
 });

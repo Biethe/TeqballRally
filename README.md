@@ -1,6 +1,6 @@
-# TeqOpen
+# TeqRally
 
-TeqOpen is a browser-based 3D teqball game built with Babylon.js, TypeScript,
+TeqRally is a browser-based 3D teqball game built with Babylon.js, TypeScript,
 and Vite. Play solo against the CPU, learn in Practice, compete in a cup or
 league, or share the court locally with a second player.
 
@@ -582,7 +582,7 @@ cleartext, so a shipped app must use `https://` and `wss://`.
 
 ## Deploy
 
-TeqOpen is a static site; Firebase Hosting serves the built `dist/` folder.
+TeqRally is a static site; Firebase Hosting serves the built `dist/` folder.
 
 ```bash
 npx firebase-tools login
@@ -613,6 +613,6 @@ groups.
 
 ## Codex and GPT-5.6
 
-I built and tested TeqOpen in Codex with GPT-5.6. Codex helped implement and
+I built and tested TeqRally in Codex with GPT-5.6. Codex helped implement and
 debug the animation, physics, match rules, AI, input, replay, mobile, and
 hosting work. Product decisions and playtesting remained mine.

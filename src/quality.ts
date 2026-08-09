@@ -7,13 +7,18 @@
  * occupy. Each tier turns those four knobs together.
  *
  * A tier is picked automatically on first launch and can be overridden from the
- * settings screen; the override is remembered. `?q=low|medium|high` forces one
- * for a session, and the older `?light=1` dev flag still maps to "low".
+ * settings screen; the override is remembered. `?q=medium|high` forces one for
+ * a session.
+ *
+ * There were three tiers. "Low" dropped the arena backdrop entirely, which
+ * meant the venues a player picked did not appear — too high a price for the
+ * framerate it bought, so the floor is now "medium". A stored or requested
+ * "low" resolves to it.
  */
 
-export type QualityTier = "low" | "medium" | "high";
+export type QualityTier = "medium" | "high";
 
-export const QUALITY_TIERS: QualityTier[] = ["low", "medium", "high"];
+export const QUALITY_TIERS: QualityTier[] = ["medium", "high"];
 
 export interface QualitySettings {
   tier: QualityTier;
@@ -36,11 +41,11 @@ export interface QualitySettings {
 }
 
 const SETTINGS: Record<QualityTier, Omit<QualitySettings, "tier">> = {
-  // Entry-level phones: native resolution, no MSAA, no gym. Shadows stay on
-  // because the ball's shadow is a depth cue the game is played on, and the
-  // only casters are the table, the ball and two characters — never the arena.
-  low: { maxPixelRatio: 1.0, antialias: false, shadowMapSize: 512, arena: false },
-  medium: { maxPixelRatio: 1.5, antialias: false, shadowMapSize: 1024, arena: true },
+  // Entry-level phones: native resolution, no MSAA, but the venue still
+  // arrives. Shadows stay on because the ball's shadow is a depth cue the game
+  // is played on, and the only casters are the table, the ball and the two
+  // characters — never the arena.
+  medium: { maxPixelRatio: 1.0, antialias: false, shadowMapSize: 1024, arena: true },
   high: { maxPixelRatio: 2.0, antialias: true, shadowMapSize: 1024, arena: true },
 };
 
@@ -78,10 +83,9 @@ export function readSignals(): DeviceSignals {
 export function detectTier(s: DeviceSignals): QualityTier {
   // deviceMemory is the strongest signal where it exists, and it is reported
   // in coarse buckets (0.25/0.5/1/2/4/8).
-  if (s.deviceMemory !== undefined && s.deviceMemory <= 2) return "low";
-  if (s.hardwareConcurrency !== undefined && s.hardwareConcurrency <= 4) return "low";
+  if (s.deviceMemory !== undefined && s.deviceMemory <= 2) return "medium";
+  if (s.hardwareConcurrency !== undefined && s.hardwareConcurrency <= 4) return "medium";
   if (!s.touch) return "high";
-  if (s.deviceMemory !== undefined && s.deviceMemory <= 4) return "medium";
   return "medium";
 }
 
@@ -96,14 +100,18 @@ export function tierFromSearch(search: string): QualityTier | null {
   const params = new URLSearchParams(search);
   const q = params.get("q");
   if (isTier(q)) return q;
-  if (params.has("light")) return "low"; // the original dev flag
+  // "low" is gone; the scripts and links that still ask for it, and the older
+  // `?light=1` dev flag, get the new floor rather than nothing.
+  if (q === "low" || params.has("light")) return "medium";
   return null;
 }
 
 export function storedTier(): QualityTier | null {
   try {
     const v = localStorage.getItem(STORAGE_KEY);
-    return isTier(v) ? v : null;
+    if (isTier(v)) return v;
+    // Anyone who chose "low" before it was removed keeps a working setting.
+    return v === "low" ? "medium" : null;
   } catch {
     return null; // private mode / storage disabled
   }
@@ -126,7 +134,6 @@ export function resolveTier(search: string, signals: DeviceSignals): QualityTier
 }
 
 export const TIER_LABELS: Record<QualityTier, { label: string; sub: string }> = {
-  low: { label: "LOW", sub: "Best framerate. No gym backdrop, native resolution." },
-  medium: { label: "MEDIUM", sub: "Balanced. The gym, sharper picture, no anti-aliasing." },
+  medium: { label: "MEDIUM", sub: "Best framerate. Native resolution, no anti-aliasing." },
   high: { label: "HIGH", sub: "Full detail and anti-aliasing. For newer phones." },
 };

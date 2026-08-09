@@ -85,6 +85,35 @@ async function boot(): Promise<void> {
     new URLSearchParams(location.search).get("intro") === "0"
       ? Promise.resolve()
       : ui.playIntroClip();
+
+  /**
+   * Pull the player models and the ball into the browser cache while the clip
+   * plays.
+   *
+   * This is what the clip's four seconds are for. The character models are the
+   * heaviest thing the game loads — around 4 MB each — and fetching them here
+   * means the picker opens on a model that is already local instead of showing
+   * "Loading…" over an empty stage.
+   *
+   * Failures are ignored on purpose: this only warms a cache, and every one of
+   * these files is fetched again properly at the point it is used.
+   */
+  const preloadUrls = [
+    ...CHARACTERS.map((c) => `/models/characters/${c.id}.glb`),
+    `/models/Ball_and_Table/${BALLS[0].id}.glb`,
+  ];
+  let preloaded = 0;
+  const preload = Promise.all(
+    preloadUrls.map((url) =>
+      fetch(url)
+        .then((r) => r.arrayBuffer())
+        .catch(() => undefined)
+        .finally(() => {
+          preloaded++;
+          ui.showIntroProgress(preloaded / preloadUrls.length);
+        })
+    )
+  );
   // The tier decides the engine's MSAA, which cannot be changed on a live
   // context, so it has to be resolved before the scene exists.
   const qualityTier = resolveTier(location.search, readSignals());
@@ -1423,10 +1452,14 @@ async function boot(): Promise<void> {
     (window as unknown as Record<string, unknown>).__teq = { match, ball, engine: gs.engine };
   };
 
-  // Everything above is ready; the only thing still owed is the clip's own
-  // running time. It ends on the logo, so a load that outlasts it holds on that
-  // frame instead of flicking back to the spinner.
+  // Everything above is ready; what is still owed is the clip's running time
+  // and whatever is left of the asset download. The clip holds on its last
+  // frame while the bar finishes, rather than cutting to a spinner.
   await introClip;
+  ui.showIntroProgress(preloaded / preloadUrls.length, "Loading players…");
+  // Not a hard gate: a slow connection should reach the title screen and let
+  // the player read the menu while the rest arrives.
+  await Promise.race([preload, new Promise((r) => setTimeout(r, 4000))]);
   ui.hideIntroClip();
 
   showTitle();

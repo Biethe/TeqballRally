@@ -67,6 +67,9 @@ export class UI {
   private introClipVideo: HTMLVideoElement;
   /** Resolves the pending `playIntroClip()`; null when no clip is running. */
   private introClipDone: (() => void) | null = null;
+  private introProgressEl: HTMLDivElement;
+  private introProgressFill: HTMLSpanElement;
+  private introProgressLabel: HTMLDivElement;
   private titleEl: HTMLDivElement;
   private selectEl: HTMLDivElement;
   private hudEl: HTMLDivElement;
@@ -113,7 +116,7 @@ export class UI {
 
     this.loadingEl = this.screen("loading-screen");
     this.loadingEl.innerHTML = `
-      <div class="logo">TeqOpen</div>
+      <div class="logo">TeqRally</div>
       <div class="teq-loader" aria-hidden="true">
         <span class="teq-loader-ball"></span>
         <span class="teq-loader-line"></span>
@@ -130,8 +133,14 @@ export class UI {
     this.introClipEl.classList.add("hidden");
     this.introClipEl.innerHTML = `
       <video id="intro-clip-video" playsinline preload="auto" disablepictureinpicture></video>
-      <button id="btn-skip-intro" class="skip-intro" type="button">Skip</button>`;
+      <div class="intro-progress" id="intro-progress">
+        <div class="intro-progress-label" id="intro-progress-label">Loading players…</div>
+        <div class="intro-progress-track"><span id="intro-progress-fill"></span></div>
+      </div>`;
     this.introClipVideo = this.introClipEl.querySelector<HTMLVideoElement>("#intro-clip-video")!;
+    this.introProgressEl = this.introClipEl.querySelector<HTMLDivElement>("#intro-progress")!;
+    this.introProgressFill = this.introClipEl.querySelector<HTMLSpanElement>("#intro-progress-fill")!;
+    this.introProgressLabel = this.introClipEl.querySelector<HTMLDivElement>("#intro-progress-label")!;
 
     this.titleEl = this.screen("title-screen");
     this.titleEl.innerHTML = `
@@ -149,7 +158,7 @@ export class UI {
           <span class="brand-orb" aria-hidden="true"></span>
           <div>
             <div class="brand-kicker">TABLE FOOTBALL</div>
-            <div class="logo">TeqOpen</div>
+            <div class="logo">TeqRally</div>
           </div>
         </div>
         <p class="title-tagline">Fast rallies on the curved table.</p>
@@ -163,7 +172,7 @@ export class UI {
       <div class="select-top">
         <div class="select-bar">
           <button class="select-back" id="btn-select-back" type="button" data-menu-back>← BACK</button>
-          <div class="select-brand">TeqOpen</div>
+          <div class="select-brand">TeqRally</div>
         </div>
         <div class="select-title">CHOOSE YOUR SETUP</div>
         <div class="tabs">
@@ -424,7 +433,7 @@ export class UI {
     this.menuEl.innerHTML = `
       <main class="menu-shell">
         <header class="menu-header">
-          <div class="menu-brand"><span class="menu-brand-orb"></span>TeqOpen</div>
+          <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRally</div>
           ${onBack ? '<button class="menu-back" id="btn-menu-back" type="button" data-menu-back>← BACK</button>' : ""}
         </header>
         <section class="menu-heading">
@@ -683,14 +692,15 @@ export class UI {
   }
 
   /**
-   * Plays the opening clip over the loading screen, resolving when it ends, is
-   * skipped, or turns out to be unplayable.
+   * Plays the opening clip over the loading screen, resolving when it ends or
+   * turns out to be unplayable.
    *
-   * The overlay is only revealed once frames are actually arriving, so a device
-   * that cannot decode the file never shows a black rectangle — it simply keeps
-   * loading. On a clean finish the last frame is left up (the clip ends on the
-   * logo) until `hideIntroClip()`, which turns a slow load into a held title
-   * card rather than a cut back to the spinner.
+   * Deliberately unskippable: the clip's four seconds are what the player
+   * models and the ball are downloading in, so cutting it short would only
+   * move the wait to a loading screen with nothing to look at.
+   *
+   * The overlay is only revealed once frames are arriving, so a device that
+   * cannot decode the file shows nothing at all and boots straight through.
    */
   playIntroClip(src = "/video/intro.mp4"): Promise<void> {
     this.hideIntroClip();
@@ -700,12 +710,11 @@ export class UI {
     }
 
     const video = this.introClipVideo;
-    const skipBtn = this.introClipEl.querySelector<HTMLButtonElement>("#btn-skip-intro")!;
 
     return new Promise<void>((resolve) => {
       let settled = false;
       // A decoder that stalls without ever erroring would otherwise hold the
-      // player on the loading screen indefinitely.
+      // player here indefinitely.
       const watchdog = window.setTimeout(() => finish(), 15000);
 
       const finish = (): void => {
@@ -715,32 +724,20 @@ export class UI {
         video.onplaying = null;
         video.onended = null;
         video.onerror = null;
-        skipBtn.onclick = null;
-        this.introClipEl.onpointerdown = null;
-        window.removeEventListener("keydown", onKey);
         this.introClipDone = null;
         resolve();
-      };
-      const skip = (): void => {
-        this.hideIntroClip();
-        finish();
-      };
-      const onKey = (e: KeyboardEvent): void => {
-        if (["Escape", "Enter", " ", "Spacebar"].includes(e.key)) skip();
       };
 
       this.introClipDone = finish;
       video.onplaying = () => this.introClipEl.classList.remove("hidden");
+      // Hold on the last frame rather than clearing: the loading bar sits over
+      // it while whatever is left of the download finishes.
       video.onended = () => finish();
       video.onerror = () => finish();
-      skipBtn.onclick = skip;
-      this.introClipEl.onpointerdown = skip;
-      window.addEventListener("keydown", onKey);
 
       video.src = src;
       // Try it with its own sound first: a native WebView is allowed to start
-      // unmuted, a browser tab is not, and muted playback is the fallback that
-      // always starts.
+      // unmuted, a browser tab is not, and muted playback always starts.
       video.muted = false;
       void video.play().catch(() => {
         video.muted = true;
@@ -749,9 +746,22 @@ export class UI {
     });
   }
 
+  /**
+   * Show how far the asset download has got, over the clip's last frame.
+   *
+   * Only worth showing once the clip is done — during it there is something to
+   * watch, and a bar over moving footage is just clutter.
+   */
+  showIntroProgress(fraction: number, label?: string): void {
+    this.introProgressEl.classList.add("visible");
+    this.introProgressFill.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+    if (label !== undefined) this.introProgressLabel.textContent = label;
+  }
+
   /** Clears the opening clip and releases its decoder. */
   hideIntroClip(): void {
     this.introClipEl.classList.add("hidden");
+    this.introProgressEl.classList.remove("visible");
     const video = this.introClipVideo;
     video.pause();
     if (video.getAttribute("src")) {

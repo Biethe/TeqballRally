@@ -291,7 +291,7 @@ export class Input {
     rotateNotice.id = "touch-rotate-notice";
     rotateNotice.setAttribute("role", "status");
     rotateNotice.innerHTML =
-      '<span class="rotate-device-icon" aria-hidden="true"></span><strong>Rotate for play</strong><span>TeqOpen is best in landscape.</span>';
+      '<span class="rotate-device-icon" aria-hidden="true"></span><strong>Rotate for play</strong><span>TeqRally is best in landscape.</span>';
     // In portrait the notice covers this layer. Consume its pointer events so
     // a replay orbit or free camera cannot move invisibly behind the prompt.
     const consumeRotateNotice = (e: PointerEvent) => {

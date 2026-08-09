@@ -1,8 +1,10 @@
 // Checks the opening clip's boot contract in a real browser.
 //
 // The clip must never be able to cost the player the game: if it plays, the
-// title screen waits for it and a tap gets past it; if the device cannot decode
-// it, boot carries on immediately and nothing black is ever shown.
+// title screen waits for it and it ends on its own; if the device cannot decode
+// it, boot carries on immediately and nothing black is ever shown. It is
+// deliberately unskippable — its running time is what the player models are
+// downloading in.
 //
 // Chromium builds without proprietary codecs (Playwright's included, and CI's)
 // cannot decode the shipped H.264 file, which is itself one of the cases worth
@@ -76,20 +78,22 @@ if (canDecode || WEBM) {
   check(cleared.hidden && cleared.src === null, "releases the decoder once the title is up");
   await page.close();
 
-  console.log("\nthe clip can be skipped");
-  for (const [how, act] of [
-    ["the skip button", (p) => p.click("#btn-skip-intro")],
-    ["a tap anywhere", (p) => p.mouse.click(400, 200)],
-    ["a key", (p) => p.keyboard.press("Escape")],
-  ]) {
+  console.log("\nthe clip cannot be skipped");
+  {
+    // The clip's running time is what the player models download in, so
+    // letting it be cut short would only move the wait somewhere emptier.
     const p = await open();
     await p.waitForSelector("#intro-clip:not(.hidden)", { timeout: 30000 });
-    const t = Date.now();
-    await act(p);
-    await p.waitForSelector("#title-screen:not(.hidden)", { timeout: 30000 });
-    check(Date.now() - t < 3000, `${how} gets past it (${Date.now() - t} ms)`);
+    await p.mouse.click(400, 200);
+    await p.keyboard.press("Escape");
+    await p.keyboard.press("Enter");
+    await p.waitForTimeout(1500);
+    check(!(await p.isVisible("#title-screen:not(.hidden)")), "a tap and keys do not get past it");
+    await p.waitForSelector("#title-screen:not(.hidden)", { timeout: 40000 });
+    check(true, "it ends on its own");
     await p.close();
   }
+
 } else {
   console.log("\nskipping the playing cases: no H.264 decoder and no WEBM= stand-in");
 }
