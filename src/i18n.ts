@@ -176,6 +176,24 @@ const EN = {
   "board.you": "YOU",
   "board.empty": "Nobody has played yet. Be first.",
 
+  // — recovery —
+  "recovery.title": "WRITE THIS DOWN",
+  "recovery.why": "This is the only way back into your profile if you lose this phone. It is shown once and cannot be shown again.",
+  "recovery.saved": "I HAVE WRITTEN IT DOWN",
+  "recovery.copy": "COPY",
+  "recovery.copied": "COPIED",
+  "recovery.restore": "RESTORE A PROFILE",
+  "recovery.restoreTitle": "RESTORE YOUR PROFILE",
+  "recovery.restoreWhy": "Enter the player code and the recovery code you wrote down. The profile moves to this phone and the old one stops working.",
+  "recovery.playerCode": "Player code",
+  "recovery.code": "Recovery code",
+  "recovery.go": "RESTORE",
+  "recovery.badCode": "That is not a recovery code.",
+  "recovery.badPlayer": "A player code is eight characters.",
+  "recovery.new": "NEW RECOVERY CODE",
+  "recovery.replaced": "The old code no longer works.",
+
+
   "challenge.matches": "Play {n} matches",
   "challenge.wins": "Win {n} matches",
   "challenge.points": "Score {n} points",
@@ -360,6 +378,24 @@ const FR: Catalogue = {
   "board.you": "VOUS",
   "board.empty": "Personne n'a encore joué. À vous.",
 
+  // — recovery —
+  "recovery.title": "NOTEZ-LE",
+  "recovery.why": "C’est le seul moyen de retrouver votre profil si vous perdez ce téléphone. Il n’est affiché qu’une fois.",
+  "recovery.saved": "C’EST NOTÉ",
+  "recovery.copy": "COPIER",
+  "recovery.copied": "COPIÉ",
+  "recovery.restore": "RESTAURER UN PROFIL",
+  "recovery.restoreTitle": "RESTAURER VOTRE PROFIL",
+  "recovery.restoreWhy": "Saisissez le code joueur et le code de récupération noté. Le profil passe sur ce téléphone et l’ancien cesse de fonctionner.",
+  "recovery.playerCode": "Code joueur",
+  "recovery.code": "Code de récupération",
+  "recovery.go": "RESTAURER",
+  "recovery.badCode": "Ce n’est pas un code de récupération.",
+  "recovery.badPlayer": "Un code joueur fait huit caractères.",
+  "recovery.new": "NOUVEAU CODE",
+  "recovery.replaced": "L’ancien code ne fonctionne plus.",
+
+
   "challenge.matches": "Jouez {n} matchs",
   "challenge.wins": "Gagnez {n} matchs",
   "challenge.points": "Marquez {n} points",
@@ -541,6 +577,24 @@ const ES: Catalogue = {
   "board.you": "TÚ",
   "board.empty": "Aún no ha jugado nadie. Empieza tú.",
 
+  // — recovery —
+  "recovery.title": "APÚNTALO",
+  "recovery.why": "Es la única forma de recuperar tu perfil si pierdes este móvil. Se muestra una sola vez.",
+  "recovery.saved": "YA LO HE APUNTADO",
+  "recovery.copy": "COPIAR",
+  "recovery.copied": "COPIADO",
+  "recovery.restore": "RESTAURAR UN PERFIL",
+  "recovery.restoreTitle": "RESTAURAR TU PERFIL",
+  "recovery.restoreWhy": "Introduce el código de jugador y el de recuperación que apuntaste. El perfil pasa a este móvil y el anterior deja de funcionar.",
+  "recovery.playerCode": "Código de jugador",
+  "recovery.code": "Código de recuperación",
+  "recovery.go": "RESTAURAR",
+  "recovery.badCode": "Eso no es un código de recuperación.",
+  "recovery.badPlayer": "Un código de jugador tiene ocho caracteres.",
+  "recovery.new": "CÓDIGO NUEVO",
+  "recovery.replaced": "El código anterior ya no sirve.",
+
+
   "challenge.matches": "Juega {n} partidos",
   "challenge.wins": "Gana {n} partidos",
   "challenge.points": "Anota {n} puntos",
@@ -721,6 +775,24 @@ const PT: Catalogue = {
   "board.sub": "{n} jogadores",
   "board.you": "TU",
   "board.empty": "Ainda ninguém jogou. Começa tu.",
+
+  // — recovery —
+  "recovery.title": "APONTA ISTO",
+  "recovery.why": "É a única forma de voltar ao teu perfil se perderes este telemóvel. Só é mostrado uma vez.",
+  "recovery.saved": "JÁ APONTEI",
+  "recovery.copy": "COPIAR",
+  "recovery.copied": "COPIADO",
+  "recovery.restore": "RESTAURAR UM PERFIL",
+  "recovery.restoreTitle": "RESTAURAR O TEU PERFIL",
+  "recovery.restoreWhy": "Escreve o código de jogador e o de recuperação que apontaste. O perfil passa para este telemóvel e o antigo deixa de funcionar.",
+  "recovery.playerCode": "Código de jogador",
+  "recovery.code": "Código de recuperação",
+  "recovery.go": "RESTAURAR",
+  "recovery.badCode": "Isso não é um código de recuperação.",
+  "recovery.badPlayer": "Um código de jogador tem oito caracteres.",
+  "recovery.new": "CÓDIGO NOVO",
+  "recovery.replaced": "O código antigo já não funciona.",
+
 
   "challenge.matches": "Joga {n} jogos",
   "challenge.wins": "Ganha {n} jogos",

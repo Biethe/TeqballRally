@@ -133,15 +133,51 @@ async function request<T>(
   }
 }
 
-/** Claim a name and get an account. The only call that returns a token. */
-export async function signUp(name: string): Promise<{ identity: Identity; profile: Profile; career: Career }> {
-  const body = await request<Profile & { token: string; career: Career }>("/api/players", {
-    method: "POST",
-    body: { name },
-  });
-  const identity: Identity = { id: body.id, name: body.name, token: body.token };
+/** What registering or recovering hands back, secrets included. */
+export interface Issued {
+  identity: Identity;
+  profile: Profile;
+  career: Career;
+  /**
+   * Shown to the player once and never retrievable. The screen has to make
+   * them look at it, because the server cannot show it again — it only kept a
+   * salted digest.
+   */
+  recoveryCode: string;
+}
+
+/** Claim a name and get an account. One of two calls that return the secrets. */
+export async function signUp(name: string): Promise<Issued> {
+  return claimAccount("/api/players", { name });
+}
+
+/**
+ * Take an account over onto this device with its recovery code.
+ *
+ * The previous device stops working the moment this succeeds, which is the
+ * point: this is what somebody does when a phone is gone.
+ */
+export async function restore(id: string, code: string): Promise<Issued> {
+  return claimAccount("/api/players/recover", { id: id.trim().toUpperCase(), code });
+}
+
+async function claimAccount(path: string, body: Record<string, string>): Promise<Issued> {
+  const res = await request<Profile & { token: string; recoveryCode: string; career: Career }>(
+    path,
+    { method: "POST", body }
+  );
+  const identity: Identity = { id: res.id, name: res.name, token: res.token };
   storeIdentity(identity);
-  return { identity, profile: body, career: body.career };
+  return { identity, profile: res, career: res.career, recoveryCode: res.recoveryCode };
+}
+
+/** A fresh recovery code, from a device that is already signed in. */
+export async function newRecoveryCode(token: string): Promise<string> {
+  const body = await request<{ recoveryCode: string }>("/api/players/me/recovery", {
+    method: "POST",
+    token,
+  });
+  return body.recoveryCode;
 }
 
 export async function fetchMe(token: string): Promise<Profile & { career: Career }> {
@@ -217,4 +253,27 @@ export function nameProblem(raw: string): "short" | "long" | "characters" | null
   if (name.length > NAME_MAX) return "long";
   if (!NAME_RE.test(name)) return "characters";
   return null;
+}
+
+/**
+ * Tidy a typed recovery code the same way the server does.
+ *
+ * Deliberately in step with `tidyRecovery` in `server/secrets.mjs`, which is
+ * the one that decides — this only spares a round trip for something the
+ * screen can see is wrong.
+ */
+export function tidyCode(raw: string): string {
+  const cleaned = raw
+    .toUpperCase()
+    .replace(/[^0-9A-Z]/g, "")
+    .replace(/O/g, "0")
+    .replace(/[IL]/g, "1");
+  const groups: string[] = [];
+  for (let i = 0; i < cleaned.length; i += 4) groups.push(cleaned.slice(i, i + 4));
+  return groups.join("-");
+}
+
+/** True when a typed code is the right shape to be worth sending. */
+export function looksLikeCode(raw: string): boolean {
+  return /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/.test(tidyCode(raw));
 }

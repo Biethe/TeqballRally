@@ -150,6 +150,10 @@ export interface ProfileView {
   busy: boolean;
   onCreate: (name: string) => void;
   onRename: (name: string) => void;
+  /** Somebody who already has a profile, on a phone that does not. */
+  onRestore: () => void;
+  /** Replace the recovery code, for a player who lost the slip of paper. */
+  onNewCode: () => void;
   onLeaderboard: () => void;
   onBack: () => void;
 }
@@ -169,6 +173,22 @@ export interface LeaderboardViewModel {
   /** The caller's row when they are outside the visible top. */
   me: BoardRow | null;
   message: string | null;
+  onBack: () => void;
+}
+
+/** The one-time showing of a recovery code. */
+export interface RecoveryView {
+  code: string;
+  /** Extra line under the code, e.g. that it replaced an older one. */
+  note: string | null;
+  onDone: () => void;
+}
+
+/** Taking an account over onto this device. */
+export interface RestoreView {
+  message: string | null;
+  busy: boolean;
+  onRestore: (id: string, code: string) => void;
   onBack: () => void;
 }
 
@@ -219,6 +239,8 @@ export class UI {
   private resultEl: HTMLDivElement;
   private profileEl: HTMLDivElement;
   private boardEl: HTMLDivElement;
+  private recoveryEl: HTMLDivElement;
+  private restoreEl: HTMLDivElement;
   /** The coins/trophies strip drawn over the title screen. */
   private walletEl: HTMLDivElement;
   private bannerTimer: number | null = null;
@@ -437,6 +459,8 @@ export class UI {
     this.resultEl = this.screen("result-screen");
     this.profileEl = this.screen("profile-screen");
     this.boardEl = this.screen("board-screen");
+    this.recoveryEl = this.screen("recovery-screen");
+    this.restoreEl = this.screen("restore-screen");
 
     // The wallet rides above the title screen rather than inside it: it is the
     // one thing that has to look the same on every screen that shows it.
@@ -474,6 +498,8 @@ export class UI {
       this.resultEl,
       this.profileEl,
       this.boardEl,
+      this.recoveryEl,
+      this.restoreEl,
     ]) {
       el.classList.add("hidden");
     }
@@ -1237,6 +1263,7 @@ export class UI {
         <label class="account-field"><span></span><input id="profile-name" type="text" maxlength="16" autocomplete="off" spellcheck="false"></label>
         <p class="account-warning fresh hidden"></p>
         <button class="big-btn" id="btn-profile-create" type="button" data-menu-primary="true"></button>
+        <button class="ghost-btn" id="btn-profile-restore" type="button"></button>
         <p class="account-warning"></p>`;
       card.querySelector<HTMLHeadingElement>(".account-pitch")!.textContent = t("profile.signedOut");
       card.querySelector<HTMLParagraphElement>(".account-why")!.textContent = t("profile.why");
@@ -1251,6 +1278,9 @@ export class UI {
       create.textContent = view.busy ? t("profile.creating") : t("profile.create");
       create.disabled = view.busy;
       create.onclick = () => view.onCreate(input.value);
+      const restore = card.querySelector<HTMLButtonElement>("#btn-profile-restore")!;
+      restore.textContent = t("recovery.restore");
+      restore.onclick = () => view.onRestore();
       input.onkeydown = (e) => {
         if (e.key === "Enter") view.onCreate(input.value);
       };
@@ -1274,6 +1304,7 @@ export class UI {
       </div>
       <label class="account-field"><span></span><input id="profile-name" type="text" maxlength="16" autocomplete="off" spellcheck="false"></label>
       <button class="ghost-btn" id="btn-profile-rename" type="button"></button>
+      <button class="ghost-btn" id="btn-profile-newcode" type="button"></button>
       <button class="big-btn" id="btn-profile-board" type="button" data-menu-primary="true"></button>`;
     card.querySelector<HTMLSpanElement>(".account-code-label")!.textContent = t("profile.code");
     card.querySelector<HTMLElement>(".account-code-value")!.textContent = p.id;
@@ -1293,6 +1324,10 @@ export class UI {
     renameBtn.textContent = t("profile.rename");
     renameBtn.disabled = view.busy;
     renameBtn.onclick = () => view.onRename(input.value);
+    const newCode = card.querySelector<HTMLButtonElement>("#btn-profile-newcode")!;
+    newCode.textContent = t("recovery.new");
+    newCode.disabled = view.busy;
+    newCode.onclick = () => view.onNewCode();
     const board = card.querySelector<HTMLButtonElement>("#btn-profile-board")!;
     board.textContent = t("profile.leaderboard");
     board.onclick = () => view.onLeaderboard();
@@ -1349,6 +1384,92 @@ export class UI {
       pinned.classList.remove("hidden");
       pinned.appendChild(rowEl(view.me));
     }
+  }
+
+  /**
+   * The recovery code, shown once.
+   *
+   * There is no back button and no way past it except the acknowledgement,
+   * because the server kept only a salted digest and genuinely cannot show
+   * this again. A screen that can be dismissed by accident is a screen that
+   * loses somebody their account six months from now.
+   */
+  showRecoveryCode(view: RecoveryView): void {
+    this.hideAll();
+    this.recoveryEl.classList.remove("hidden");
+    this.recoveryEl.innerHTML = `
+      <div class="account-card recovery-card">
+        <h2 class="career-title"></h2>
+        <p class="account-why"></p>
+        <b class="recovery-code"></b>
+        <p class="account-message hidden"></p>
+        <button class="ghost-btn" id="btn-recovery-copy" type="button"></button>
+        <button class="big-btn" id="btn-recovery-done" type="button" data-menu-primary="true"></button>
+      </div>`;
+    const card = this.recoveryEl.querySelector<HTMLDivElement>(".recovery-card")!;
+    card.querySelector<HTMLHeadingElement>(".career-title")!.textContent = t("recovery.title");
+    card.querySelector<HTMLParagraphElement>(".account-why")!.textContent = t("recovery.why");
+    card.querySelector<HTMLElement>(".recovery-code")!.textContent = view.code;
+    const note = card.querySelector<HTMLParagraphElement>(".account-message")!;
+    note.textContent = view.note ?? "";
+    note.classList.toggle("hidden", !view.note);
+
+    const copy = card.querySelector<HTMLButtonElement>("#btn-recovery-copy")!;
+    copy.textContent = t("recovery.copy");
+    copy.onclick = () => {
+      // Best effort: a webview without clipboard permission simply leaves the
+      // code on screen to be copied by hand, which is what it is there for.
+      void navigator.clipboard?.writeText(view.code).then(
+        () => (copy.textContent = t("recovery.copied")),
+        () => undefined
+      );
+    };
+    const done = card.querySelector<HTMLButtonElement>("#btn-recovery-done")!;
+    done.textContent = t("recovery.saved");
+    done.onclick = () => view.onDone();
+  }
+
+  /** Entering a code to take an account over onto this device. */
+  showRestore(view: RestoreView): void {
+    this.hideAll();
+    this.restoreEl.classList.remove("hidden");
+    this.restoreEl.innerHTML = `
+      <div class="career-head">
+        <button class="select-back" type="button" data-menu-back></button>
+        <div><h2 class="career-title"></h2></div>
+      </div>
+      <div class="career-list">
+        <div class="account-card">
+          <p class="account-why"></p>
+          <label class="account-field"><span></span><input id="restore-id" type="text" maxlength="8" autocomplete="off" spellcheck="false" autocapitalize="characters"></label>
+          <label class="account-field"><span></span><input id="restore-code" type="text" maxlength="19" autocomplete="off" spellcheck="false" autocapitalize="characters"></label>
+          <p class="account-message hidden"></p>
+          <button class="big-btn" id="btn-restore" type="button" data-menu-primary="true"></button>
+        </div>
+      </div>`;
+    const back = this.restoreEl.querySelector<HTMLButtonElement>(".select-back")!;
+    back.textContent = `← ${t("nav.back")}`;
+    back.onclick = () => view.onBack();
+    this.restoreEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
+      t("recovery.restoreTitle");
+    this.restoreEl.querySelector<HTMLParagraphElement>(".account-why")!.textContent =
+      t("recovery.restoreWhy");
+    const labels = this.restoreEl.querySelectorAll(".account-field span");
+    labels[0].textContent = t("recovery.playerCode");
+    labels[1].textContent = t("recovery.code");
+    const idEl = this.restoreEl.querySelector<HTMLInputElement>("#restore-id")!;
+    const codeEl = this.restoreEl.querySelector<HTMLInputElement>("#restore-code")!;
+    const message = this.restoreEl.querySelector<HTMLParagraphElement>(".account-message")!;
+    message.textContent = view.message ?? "";
+    message.classList.toggle("hidden", !view.message);
+    const go = this.restoreEl.querySelector<HTMLButtonElement>("#btn-restore")!;
+    go.textContent = view.busy ? t("profile.creating") : t("recovery.go");
+    go.disabled = view.busy;
+    const submit = () => view.onRestore(idEl.value, codeEl.value);
+    go.onclick = submit;
+    codeEl.onkeydown = (e) => {
+      if (e.key === "Enter") submit();
+    };
   }
 
   private selTab: ViewerKind = "character";

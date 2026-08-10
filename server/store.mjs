@@ -1,24 +1,27 @@
 /**
- * Where players are kept.
+ * Where players are kept, and the interface any store has to satisfy.
  *
- * One interface, one implementation. The implementation is a JSON file written
- * atomically — no database, no schema migration, no ORM — because the whole
- * dataset is a few hundred bytes per player and the thing that would actually
- * sink this project is a weekend spent on infrastructure instead of on the
- * game.
+ * Every method is async, including the ones a JSON file could answer
+ * instantly. That is not an accident: the store this actually deploys onto is
+ * Firestore, and an interface shaped around the in-memory case would have had
+ * to be torn up the day it moved. The cost is a few `await`s in a file that
+ * did not need them.
  *
- * It is a real limitation and worth naming: a container with an ephemeral
- * filesystem (Cloud Run's default) loses the file when it restarts. That is
- * fine for a preview deployment and not fine for a community, which is why the
- * seam is here rather than the reads and writes being scattered through the
- * request handlers. Swapping this for Firestore — already in the project's
- * stack, since Hosting serves the game — is one file.
+ * Two implementations:
  *
- * Writes are debounced and coalesced: a hundred players finishing a match in
- * the same second should cost one write, not a hundred.
+ *   JsonStore       one file, written atomically, everything in memory.
+ *                   Right for local development and for a single machine.
+ *                   Wrong for a container with an ephemeral disk, which is
+ *                   why it is not what production runs.
+ *
+ *   FirestoreStore  server/firestore.mjs. What Cloud Run runs.
+ *
+ * Uniqueness of names and the token index are the two things a store has to
+ * get right, so both are part of the interface rather than something callers
+ * assemble: `create` and `rename` either take the name or fail, atomically.
  */
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename as renameFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 /** How long a change waits for company before the file is rewritten. */
@@ -26,16 +29,26 @@ const FLUSH_MS = 400;
 /** …and the longest a change may wait, however busy it is. */
 const MAX_FLUSH_DELAY_MS = 3000;
 
+/** A name is unique case-insensitively; this is the key that decides it. */
+export const nameKey = (name) => name.toLowerCase();
+
+export class NameTakenError extends Error {
+  constructor() {
+    super("that name is taken");
+    this.status = 409;
+  }
+}
+
 export class JsonStore {
   /** @param {string} file Path to the JSON file backing the store. */
   constructor(file) {
     this.file = file;
     /** @type {Map<string, any>} id → player record */
     this.players = new Map();
-    /** @type {Map<string, string>} lowercased name → id, for uniqueness */
-    this.byName = new Map();
-    /** @type {Map<string, string>} token → id */
-    this.byToken = new Map();
+    /** @type {Map<string, string>} lowercased name → id */
+    this.names = new Map();
+    /** @type {Map<string, string>} token digest → id */
+    this.tokens = new Map();
     this.dirty = false;
     this.flushTimer = null;
     this.firstDirtyAt = 0;
@@ -46,9 +59,7 @@ export class JsonStore {
     try {
       const raw = await readFile(this.file, "utf8");
       const parsed = JSON.parse(raw);
-      for (const player of parsed.players ?? []) {
-        this.index(player);
-      }
+      for (const player of parsed.players ?? []) this.index(player);
     } catch (err) {
       // A missing file is a first run, not a failure. Anything else is worth
       // saying out loud before the server carries on with an empty store —
@@ -61,36 +72,52 @@ export class JsonStore {
     return this;
   }
 
-  /** @param {any} player */
   index(player) {
     this.players.set(player.id, player);
-    this.byName.set(player.name.toLowerCase(), player.id);
-    this.byToken.set(player.token, player.id);
+    this.names.set(nameKey(player.name), player.id);
+    this.tokens.set(player.tokenHash, player.id);
   }
 
-  get(id) {
+  async get(id) {
     return this.players.get(id) ?? null;
   }
 
-  byTokenValue(token) {
-    const id = this.byToken.get(token);
+  async byToken(digest) {
+    const id = this.tokens.get(digest);
     return id ? (this.players.get(id) ?? null) : null;
   }
 
-  nameTaken(name, exceptId = null) {
-    const owner = this.byName.get(name.toLowerCase());
-    return owner !== undefined && owner !== exceptId;
+  async nameOwner(key) {
+    return this.names.get(key) ?? null;
   }
 
-  add(player) {
+  /** Add a player, or throw if the name went to somebody else first. */
+  async create(player) {
+    if (this.names.has(nameKey(player.name))) throw new NameTakenError();
     this.index(player);
     this.touch();
   }
 
-  rename(player, name) {
-    this.byName.delete(player.name.toLowerCase());
+  /** Take a new name for a player, atomically with releasing the old one. */
+  async rename(player, name) {
+    const key = nameKey(name);
+    const owner = this.names.get(key);
+    if (owner !== undefined && owner !== player.id) throw new NameTakenError();
+    this.names.delete(nameKey(player.name));
     player.name = name;
-    this.byName.set(name.toLowerCase(), player.id);
+    this.names.set(key, player.id);
+    this.touch();
+  }
+
+  /** Persist changes made to a record the caller already holds. */
+  async save(player) {
+    // The token can be replaced by a recovery, so the index is rebuilt rather
+    // than assumed. Cheap, and it cannot go stale.
+    for (const [digest, id] of this.tokens) {
+      if (id === player.id && digest !== player.tokenHash) this.tokens.delete(digest);
+    }
+    this.tokens.set(player.tokenHash, player.id);
+    this.players.set(player.id, player);
     this.touch();
   }
 
@@ -121,7 +148,7 @@ export class JsonStore {
         await mkdir(dirname(this.file), { recursive: true });
         const tmp = `${this.file}.tmp`;
         await writeFile(tmp, snapshot);
-        await rename(tmp, this.file);
+        await renameFile(tmp, this.file);
       } catch (err) {
         console.error("[store] write failed", err.message);
         // Put the flag back: the next change retries, and a store that failed
@@ -134,15 +161,15 @@ export class JsonStore {
     return this.writing;
   }
 
-  /** Highest trophy counts first. Recomputed per call — see the note in relay. */
-  leaderboard(limit) {
+  /** Highest trophy counts first, ties settled by who got there first. */
+  async leaderboard(limit) {
     return [...this.players.values()]
       .sort((a, b) => b.career.trophies - a.career.trophies || a.created - b.created)
       .slice(0, limit);
   }
 
-  /** One-based position in the leaderboard, counting everyone. */
-  rankOf(id) {
+  /** One-based position, counting everyone. */
+  async rankOf(id) {
     const target = this.players.get(id);
     if (!target) return null;
     let rank = 1;
@@ -158,13 +185,27 @@ export class JsonStore {
     return rank;
   }
 
-  get size() {
+  async size() {
     return this.players.size;
+  }
+
+  async close() {
+    await this.flush();
   }
 }
 
-/** The store the server runs with, rooted at DATA_DIR (default ./data). */
-export function defaultStore() {
-  const dir = process.env.DATA_DIR ?? join(process.cwd(), "data");
-  return new JsonStore(join(dir, "players.json"));
+/**
+ * The store this process should use.
+ *
+ * Firestore when a project is configured, the JSON file otherwise — so
+ * `npm run relay` works on a laptop with nothing set up, and production is one
+ * environment variable away rather than a code path nobody exercises.
+ */
+export async function openStore(env = process.env) {
+  if (env.FIRESTORE_PROJECT) {
+    const { firestoreStore } = await import("./firestore.mjs");
+    return firestoreStore(env.FIRESTORE_PROJECT, env.FIRESTORE_DATABASE).load();
+  }
+  const dir = env.DATA_DIR ?? join(process.cwd(), "data");
+  return new JsonStore(join(dir, "players.json")).load();
 }

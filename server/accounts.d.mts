@@ -1,6 +1,6 @@
 /** Types for the accounts module. See the note in `store.d.mts`. */
 import type { Career, MatchOutcome } from "../src/progress";
-import type { JsonStore, PlayerRecord } from "./store.mjs";
+import type { PlayerRecord, PlayerStore } from "./store.mjs";
 
 export declare const NAME_MIN: number;
 export declare const NAME_MAX: number;
@@ -22,31 +22,54 @@ export interface PublicProfile {
   rank: number | null;
 }
 
+/** A new or recovered account, with the two secrets that are only sent once. */
+export interface Issued {
+  player: PlayerRecord;
+  token: string;
+  recoveryCode: string;
+}
+
 export declare function normaliseName(raw: unknown): string;
 export declare function publicProfile(player: PlayerRecord, rank?: number | null): PublicProfile;
 export declare function privateProfile(
-  store: JsonStore,
+  store: PlayerStore,
   player: PlayerRecord
-): PublicProfile & { career: Career };
-export declare function register(store: JsonStore, name: unknown, now?: Date): PlayerRecord;
-export declare function rename(store: JsonStore, player: PlayerRecord, name: unknown): PlayerRecord;
-export declare function authenticate(store: JsonStore, token: unknown): PlayerRecord | null;
+): Promise<PublicProfile & { career: Career }>;
+export declare function register(store: PlayerStore, name: unknown, now?: Date): Promise<Issued>;
+export declare function rename(
+  store: PlayerStore,
+  player: PlayerRecord,
+  name: unknown
+): Promise<PlayerRecord>;
+export declare function recover(store: PlayerStore, id: unknown, code: unknown): Promise<Issued>;
+export declare function regenerateRecovery(
+  store: PlayerStore,
+  player: PlayerRecord
+): Promise<string>;
+export declare function authenticate(
+  store: PlayerStore,
+  token: unknown
+): Promise<PlayerRecord | null>;
 export declare function validateResult(body: unknown): {
   championId: string;
   difficulty: "easy" | "normal" | "hard";
   tally: { won: boolean; points: number; sets: number; rallies: number };
 };
 export declare function recordMatch(
-  store: JsonStore,
+  store: PlayerStore,
   player: PlayerRecord,
   body: unknown,
   now?: Date
-): { career: Career; outcome: MatchOutcome };
+): Promise<{ career: Career; outcome: MatchOutcome }>;
 export declare function claim(
-  store: JsonStore,
+  store: PlayerStore,
   player: PlayerRecord,
   challengeId: unknown,
   now?: Date
-): Career;
-export declare function upgrade(store: JsonStore, player: PlayerRecord, championId: unknown): Career;
-export declare function leaderboard(store: JsonStore, limit: number): PublicProfile[];
+): Promise<Career>;
+export declare function upgrade(
+  store: PlayerStore,
+  player: PlayerRecord,
+  championId: unknown
+): Promise<Career>;
+export declare function leaderboard(store: PlayerStore, limit: number): Promise<PublicProfile[]>;

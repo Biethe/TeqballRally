@@ -80,7 +80,7 @@ afterAll(async () => {
 describe("the server, end to end", () => {
   it("reports the player count on its health check", async () => {
     const res = await fetch(`${HTTP}/healthz`);
-    const body = (await res.json()) as { ok: boolean; players: number };
+    const body = (await res.json()) as { ok: boolean; players: number | null };
 
     expect(body.ok).toBe(true);
     expect(typeof body.players).toBe("number");

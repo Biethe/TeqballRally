@@ -62,16 +62,25 @@ check(Boolean(shortMsg?.trim()), `a name that is too short is refused locally ($
 await page.locator("#profile-name").fill(NAME);
 await page.locator("#btn-profile-create").click();
 
-const code = await page
-  .waitForFunction(
-    () => document.querySelector(".account-code-value")?.textContent?.trim() || null,
-    null,
-    { timeout: 20000, polling: 250 }
-  )
+// The recovery code comes first, and cannot be got past without acknowledging.
+const recovery = await page
+  .waitForFunction(() => document.querySelector(".recovery-code")?.textContent?.trim() || null, null, {
+    timeout: 20000,
+    polling: 250,
+  })
   .then((h) => h.jsonValue())
   .catch(() => null);
-check(Boolean(code), `the server issued a player code (${code})`);
-check(/^[0-9A-HJKMNP-TV-Z]{8}$/.test(code ?? ""), "and it is a code a person could read out");
+check(Boolean(recovery), `the server issued a recovery code (${recovery})`);
+check(
+  /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/.test(recovery ?? ""),
+  "and it is four groups a person could copy onto paper"
+);
+await page.locator("#btn-recovery-done").click();
+await page.waitForTimeout(600);
+
+const code = await page.locator(".account-code-value").textContent();
+check(Boolean(code?.trim()), `the server issued a player code (${code?.trim()})`);
+check(/^[0-9A-HJKMNP-TV-Z]{8}$/.test(code?.trim() ?? ""), "and it is a code a person could read out");
 
 const stored = await page.evaluate(() => localStorage.getItem("teqopen.identity"));
 check(Boolean(stored && JSON.parse(stored).token), "the device kept the token");
@@ -98,6 +107,50 @@ await page.locator("#profile-screen .select-back").click();
 await page.waitForTimeout(600);
 const chip = await page.locator("#btn-title-profile").textContent();
 check(chip?.trim() === NAME, `the profile chip wears the player's name (${chip?.trim()})`);
+
+console.log("\nrecovering onto another device");
+{
+  // A different page with nothing in its storage is the closest this can get
+  // to a new phone, which is exactly the case recovery exists for.
+  const fresh = await browser.newPage({ viewport: { width: 390, height: 780 }, hasTouch: true });
+  fresh.on("pageerror", (e) => failures.push(`page error: ${e.message}`));
+  await fresh.goto(`${BASE}?q=medium&intro=0`, { waitUntil: "load" });
+  await fresh.waitForTimeout(2500);
+  await fresh.locator("#btn-title-profile").click();
+  await fresh.waitForTimeout(500);
+  await fresh.locator("#btn-profile-restore").click();
+  await fresh.waitForTimeout(400);
+  await fresh.locator("#restore-id").fill(code?.trim() ?? "");
+  await fresh.locator("#restore-code").fill(recovery ?? "");
+  await fresh.locator("#btn-restore").click();
+
+  const issued = await fresh
+    .waitForFunction(() => document.querySelector(".recovery-code")?.textContent?.trim() || null, null, {
+      timeout: 20000,
+      polling: 250,
+    })
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  check(Boolean(issued), "the account came back onto a phone that never had it");
+  check(issued !== recovery, "and the spent code was replaced with a new one");
+  await fresh.locator("#btn-recovery-done").click();
+  await fresh.waitForTimeout(600);
+  const name = await fresh.locator("#btn-title-profile").textContent().catch(() => null);
+  const back = await fresh.locator(".account-code-value").textContent().catch(() => null);
+  check(back?.trim() === code?.trim(), `the same player, not a new one (${back?.trim()})`);
+  void name;
+
+  // …and the phone it was recovered away from is now signed out.
+  await page.reload({ waitUntil: "load" });
+  await page.waitForTimeout(3000);
+  await page.locator("#btn-title-profile").click();
+  await page.waitForTimeout(1500);
+  check(
+    await page.locator("#profile-name").isVisible().catch(() => false),
+    "the old device is signed out, as recovery is meant to do"
+  );
+  await fresh.close();
+}
 
 await browser.close();
 
