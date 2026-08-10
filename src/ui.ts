@@ -154,6 +154,7 @@ export interface ProfileView {
   onRestore: () => void;
   /** Replace the recovery code, for a player who lost the slip of paper. */
   onNewCode: () => void;
+  onFriends: () => void;
   onLeaderboard: () => void;
   onBack: () => void;
 }
@@ -189,6 +190,28 @@ export interface RestoreView {
   message: string | null;
   busy: boolean;
   onRestore: (id: string, code: string) => void;
+  onBack: () => void;
+}
+
+/** One person on the friends list. */
+export interface FriendRow {
+  id: string;
+  name: string;
+  trophies: number;
+  tier: string;
+  online: boolean;
+  /** Already worded — "Seen today", or empty for somebody online. */
+  seen: string;
+}
+
+export interface FriendsView {
+  rows: FriendRow[];
+  /** The caller's own code, so it can be read out to whoever is adding them. */
+  myCode: string;
+  message: string | null;
+  busy: boolean;
+  onAdd: (code: string) => void;
+  onRemove: (id: string) => void;
   onBack: () => void;
 }
 
@@ -241,6 +264,7 @@ export class UI {
   private boardEl: HTMLDivElement;
   private recoveryEl: HTMLDivElement;
   private restoreEl: HTMLDivElement;
+  private friendsEl: HTMLDivElement;
   /** The coins/trophies strip drawn over the title screen. */
   private walletEl: HTMLDivElement;
   private bannerTimer: number | null = null;
@@ -461,6 +485,7 @@ export class UI {
     this.boardEl = this.screen("board-screen");
     this.recoveryEl = this.screen("recovery-screen");
     this.restoreEl = this.screen("restore-screen");
+    this.friendsEl = this.screen("friends-screen");
 
     // The wallet rides above the title screen rather than inside it: it is the
     // one thing that has to look the same on every screen that shows it.
@@ -500,6 +525,7 @@ export class UI {
       this.boardEl,
       this.recoveryEl,
       this.restoreEl,
+      this.friendsEl,
     ]) {
       el.classList.add("hidden");
     }
@@ -1304,6 +1330,7 @@ export class UI {
       </div>
       <label class="account-field"><span></span><input id="profile-name" type="text" maxlength="16" autocomplete="off" spellcheck="false"></label>
       <button class="ghost-btn" id="btn-profile-rename" type="button"></button>
+      <button class="big-btn alt" id="btn-profile-friends" type="button"></button>
       <button class="ghost-btn" id="btn-profile-newcode" type="button"></button>
       <button class="big-btn" id="btn-profile-board" type="button" data-menu-primary="true"></button>`;
     card.querySelector<HTMLSpanElement>(".account-code-label")!.textContent = t("profile.code");
@@ -1324,6 +1351,9 @@ export class UI {
     renameBtn.textContent = t("profile.rename");
     renameBtn.disabled = view.busy;
     renameBtn.onclick = () => view.onRename(input.value);
+    const friends = card.querySelector<HTMLButtonElement>("#btn-profile-friends")!;
+    friends.textContent = t("friends.title");
+    friends.onclick = () => view.onFriends();
     const newCode = card.querySelector<HTMLButtonElement>("#btn-profile-newcode")!;
     newCode.textContent = t("recovery.new");
     newCode.disabled = view.busy;
@@ -1470,6 +1500,91 @@ export class UI {
     codeEl.onkeydown = (e) => {
       if (e.key === "Enter") submit();
     };
+  }
+
+  /**
+   * The friends list.
+   *
+   * Ordered by the server so that whoever can be played right now is at the
+   * top, because "who is around" is the question this screen exists to answer.
+   * The player's own code sits under the heading, since the most common reason
+   * to open this screen is to read it out to somebody.
+   */
+  showFriends(view: FriendsView): void {
+    this.hideAll();
+    this.friendsEl.classList.remove("hidden");
+    this.showWallet();
+    this.friendsEl.innerHTML = `
+      <div class="career-head">
+        <button class="select-back" type="button" data-menu-back></button>
+        <div>
+          <h2 class="career-title"></h2>
+          <p class="career-sub"></p>
+        </div>
+      </div>
+      <div class="friend-add">
+        <input id="friend-code" type="text" maxlength="8" autocomplete="off" spellcheck="false" autocapitalize="characters">
+        <button class="champion-buy" id="btn-friend-add" type="button"></button>
+      </div>
+      <p class="account-message hidden"></p>
+      <div class="career-list friend-list"></div>`;
+    const back = this.friendsEl.querySelector<HTMLButtonElement>(".select-back")!;
+    back.textContent = `← ${t("nav.back")}`;
+    back.onclick = () => view.onBack();
+    this.friendsEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
+      t("friends.title");
+    this.friendsEl.querySelector<HTMLParagraphElement>(".career-sub")!.textContent = tf(
+      "friends.yourCode",
+      { code: view.myCode }
+    );
+
+    const input = this.friendsEl.querySelector<HTMLInputElement>("#friend-code")!;
+    input.placeholder = t("friends.addHint");
+    const add = this.friendsEl.querySelector<HTMLButtonElement>("#btn-friend-add")!;
+    add.textContent = t("friends.add");
+    add.disabled = view.busy;
+    const submit = () => view.onAdd(input.value);
+    add.onclick = submit;
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") submit();
+    };
+
+    const message = this.friendsEl.querySelector<HTMLParagraphElement>(".account-message")!;
+    message.textContent = view.message ?? "";
+    message.classList.toggle("hidden", !view.message);
+
+    const list = this.friendsEl.querySelector<HTMLDivElement>(".friend-list")!;
+    if (view.rows.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "board-empty";
+      empty.textContent = t("friends.none");
+      list.appendChild(empty);
+      return;
+    }
+    for (const row of view.rows) {
+      const card = document.createElement("div");
+      card.className = row.online ? "friend-row online" : "friend-row";
+      card.dataset.friend = row.id;
+      card.innerHTML = `
+        <span class="friend-dot" aria-hidden="true"></span>
+        <div class="friend-who">
+          <span class="friend-name"></span>
+          <span class="friend-seen"></span>
+        </div>
+        <b class="friend-trophies"></b>
+        <button class="friend-remove" type="button" aria-label=""></button>`;
+      card.querySelector<HTMLSpanElement>(".friend-name")!.textContent = row.name;
+      card.querySelector<HTMLSpanElement>(".friend-seen")!.textContent = row.online
+        ? t("friends.online")
+        : row.seen;
+      card.querySelector<HTMLElement>(".friend-trophies")!.textContent = String(row.trophies);
+      const remove = card.querySelector<HTMLButtonElement>(".friend-remove")!;
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `${t("friends.remove")} ${row.name}`);
+      remove.disabled = view.busy;
+      remove.onclick = () => view.onRemove(row.id);
+      list.appendChild(card);
+    }
   }
 
   private selTab: ViewerKind = "character";

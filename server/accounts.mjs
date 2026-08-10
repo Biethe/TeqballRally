@@ -25,6 +25,7 @@
 
 import { randomBytes } from "node:crypto";
 import { NameTakenError } from "./store.mjs";
+import { isOnline } from "./presence.mjs";
 import {
   TOKEN_LENGTH,
   digestsMatch,
@@ -66,6 +67,14 @@ const NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} _-]{1,14}[\p{L}\p{N}]$/u;
 
 /** Shortest gap between two results from the same player. */
 export const MATCH_COOLDOWN_MS = 20_000;
+
+/**
+ * Most friends one player may hold.
+ *
+ * Generous, and a limit rather than none: the list is fetched whole and drawn
+ * as a screen, and a list nobody can scroll is a list nobody uses.
+ */
+export const MAX_FRIENDS = 100;
 
 const VALID_DIFFICULTY = new Set(["easy", "normal", "hard"]);
 const CHARACTER_IDS = new Set(CHARACTERS.map((c) => c.id));
@@ -120,7 +129,67 @@ export function publicProfile(player, rank = null) {
     tier: tierFor(player.career.trophies).label,
     matches: player.matches,
     rank,
+    online: isOnline(player.id),
+    lastSeen: player.lastSeen,
   };
+}
+
+/**
+ * Add a friend by the code on their card.
+ *
+ * Mutual immediately, with no request to accept. There is nothing to protect
+ * against: a player code is not published anywhere, so somebody adding you
+ * already had it from you. A request-and-accept flow would be two more screens
+ * and a notification system in exchange for a permission that was already
+ * given when the code was shared.
+ */
+export async function addFriend(store, player, rawCode) {
+  const code = typeof rawCode === "string" ? rawCode.trim().toUpperCase() : "";
+  if (code === player.id) throw new ValidationError("that is your own code");
+  const friend = await store.get(code);
+  if (!friend) throw new ValidationError("no player with that code", 404);
+  if ((player.friends ?? []).includes(friend.id)) return friend;
+  if ((player.friends ?? []).length >= MAX_FRIENDS) {
+    throw new ValidationError(`a friends list holds ${MAX_FRIENDS} players`, 409);
+  }
+  if ((friend.friends ?? []).length >= MAX_FRIENDS) {
+    throw new ValidationError("their friends list is full", 409);
+  }
+  player.friends = [...(player.friends ?? []), friend.id];
+  friend.friends = [...(friend.friends ?? []), player.id];
+  await store.save(player);
+  await store.save(friend);
+  return friend;
+}
+
+/** Remove a friend, from both lists. A friendship one side cannot see is a bug. */
+export async function removeFriend(store, player, rawId) {
+  const id = typeof rawId === "string" ? rawId.trim().toUpperCase() : "";
+  player.friends = (player.friends ?? []).filter((f) => f !== id);
+  await store.save(player);
+  const friend = await store.get(id);
+  if (friend) {
+    friend.friends = (friend.friends ?? []).filter((f) => f !== player.id);
+    await store.save(friend);
+  }
+}
+
+/**
+ * Everyone on a player's list, online first and then by trophies.
+ *
+ * Ordered here rather than in the screen because "who can I play right now"
+ * is the question the list exists to answer, and the answer should be at the
+ * top of it.
+ */
+export async function friendsOf(store, player) {
+  const ids = player.friends ?? [];
+  const found = await Promise.all(ids.map((id) => store.get(id)));
+  return found
+    .filter((f) => f !== null)
+    .map((f) => publicProfile(f))
+    .sort(
+      (a, b) => Number(b.online) - Number(a.online) || b.trophies - a.trophies
+    );
 }
 
 /** What the owner of the account may see, which is everything but the secrets. */
@@ -149,6 +218,7 @@ export async function register(store, rawName, now = new Date()) {
     lastSeen: now.getTime(),
     lastMatchAt: 0,
     matches: 0,
+    friends: [],
     career: freshCareer(dayKey(now)),
   };
   try {

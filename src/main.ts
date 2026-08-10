@@ -59,13 +59,18 @@ import {
 import { nextTier, tierFor, tierProgress } from "./league";
 import {
   ApiError,
+  addFriend,
   changeName,
+  fetchFriends,
   fetchLeaderboard,
   fetchMe,
+  lastSeenLabel,
   looksLikeCode,
+  looksLikePlayerCode,
   nameProblem,
   newRecoveryCode,
   readIdentity,
+  removeFriend,
   reportMatch,
   restore,
   signUp,
@@ -791,9 +796,67 @@ async function boot(): Promise<void> {
           (err: unknown) => showProfile(errorMessage(err))
         );
       },
+      onFriends: () => showFriends(),
       onLeaderboard: showLeaderboard,
       onBack: showTitle,
     });
+  };
+
+  /**
+   * The friends list.
+   *
+   * The list is fetched fresh every time rather than cached: presence is the
+   * whole point of the screen, and a cached list is a list that says somebody
+   * is online after they have gone.
+   */
+  const showFriends = (message: string | null = null, busy = false, rows?: Profile[]) => {
+    if (!identity) return showProfile();
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    refreshWallet();
+    const token = identity.token;
+    const myCode = identity.id;
+    const paint = (friends: Profile[], note: string | null, working: boolean) =>
+      ui.showFriends({
+        rows: friends.map((f) => ({
+          id: f.id,
+          name: f.name,
+          trophies: f.trophies,
+          tier: f.tier,
+          online: f.online,
+          seen: f.online ? "" : tr(`friends.seen.${lastSeenLabel(f.lastSeen)}`),
+        })),
+        myCode,
+        message: note,
+        busy: working,
+        onAdd: (code) => {
+          const typed = code.trim().toUpperCase();
+          if (typed === myCode) return showFriends(tr("friends.self"), false, friends);
+          if (!looksLikePlayerCode(typed)) {
+            return showFriends(tr("friends.badCode"), false, friends);
+          }
+          paint(friends, null, true);
+          void addFriend(token, typed).then(
+            (next) => showFriends(null, false, next),
+            (err: unknown) => showFriends(errorMessage(err), false, friends)
+          );
+        },
+        onRemove: (id) => {
+          paint(friends, null, true);
+          void removeFriend(token, id).then(
+            (next) => showFriends(null, false, next),
+            (err: unknown) => showFriends(errorMessage(err), false, friends)
+          );
+        },
+        onBack: () => showProfile(),
+      });
+
+    if (rows) return paint(rows, message, busy);
+    paint([], message, true);
+    void fetchFriends(token).then(
+      (friends) => paint(friends, message, false),
+      (err: unknown) => paint([], errorMessage(err), false)
+    );
   };
 
   /**
