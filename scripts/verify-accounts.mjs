@@ -108,6 +108,58 @@ await page.waitForTimeout(600);
 const chip = await page.locator("#btn-title-profile").textContent();
 check(chip?.trim() === NAME, `the profile chip wears the player's name (${chip?.trim()})`);
 
+console.log("\nfriends");
+{
+  // A second account to be friends with, made through the API rather than the
+  // UI: what is being checked is the list, not a second sign-up.
+  const other = await fetch(`http://localhost:${RELAY}/api/players`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: `Rival ${Math.random().toString(36).slice(2, 7)}` }),
+  }).then((r) => r.json());
+
+  await page.locator("#btn-title-profile").click();
+  await page.waitForTimeout(600);
+  await page.locator("#btn-profile-friends").click();
+  await page.waitForTimeout(1200);
+  check(await page.locator("#friend-code").isVisible(), "the friends screen takes a code");
+
+  await page.locator("#friend-code").fill("ZZZZZZZZ");
+  await page.locator("#btn-friend-add").click();
+  await page.waitForTimeout(1500);
+  const unknown = await page.locator("#friends-screen .account-message").textContent();
+  check(Boolean(unknown?.trim()), `a code nobody holds is refused (${unknown?.trim()})`);
+
+  await page.locator("#friend-code").fill(other.id);
+  await page.locator("#btn-friend-add").click();
+  const added = await page
+    .waitForFunction(() => document.querySelectorAll(".friend-row").length, null, {
+      timeout: 20000,
+      polling: 250,
+    })
+    .then((h) => h.jsonValue())
+    .catch(() => 0);
+  check(added === 1, `adding by code puts them on the list (${added})`);
+  check(
+    (await page.locator(".friend-row .friend-name").textContent())?.startsWith("Rival") === true,
+    "under their own name"
+  );
+
+  // …and it is mutual, without the other side having done anything.
+  const theirs = await fetch(`http://localhost:${RELAY}/api/players/me/friends`, {
+    headers: { authorization: `Bearer ${other.token}` },
+  }).then((r) => r.json());
+  check(theirs.friends?.length === 1, "and on theirs, without them lifting a finger");
+
+  await page.locator(".friend-remove").click();
+  await page.waitForTimeout(1500);
+  check((await page.locator(".friend-row").count()) === 0, "removing takes them off again");
+  await page.locator("#friends-screen .select-back").click();
+  await page.waitForTimeout(500);
+  await page.locator("#profile-screen .select-back").click();
+  await page.waitForTimeout(600);
+}
+
 console.log("\nrecovering onto another device");
 {
   // A different page with nothing in its storage is the closest this can get

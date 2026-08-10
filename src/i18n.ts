@@ -193,6 +193,23 @@ const EN = {
   "recovery.new": "NEW RECOVERY CODE",
   "recovery.replaced": "The old code no longer works.",
 
+  // — friends —
+  "friends.title": "FRIENDS",
+  "friends.sub": "{n} of them, {online} online",
+  "friends.none": "Nobody yet. Add someone by the code on their card.",
+  "friends.add": "ADD",
+  "friends.addHint": "Their player code",
+  "friends.remove": "REMOVE",
+  "friends.online": "ONLINE",
+  "friends.seen.now": "Just now",
+  "friends.seen.today": "Seen today",
+  "friends.seen.week": "Seen this week",
+  "friends.seen.long": "Not for a while",
+  "friends.self": "That is your own code.",
+  "friends.badCode": "A player code is eight characters.",
+  "friends.yourCode": "Your code is {code}",
+
+
 
   "challenge.matches": "Play {n} matches",
   "challenge.wins": "Win {n} matches",
@@ -395,6 +412,23 @@ const FR: Catalogue = {
   "recovery.new": "NOUVEAU CODE",
   "recovery.replaced": "L’ancien code ne fonctionne plus.",
 
+  // — friends —
+  "friends.title": "AMIS",
+  "friends.sub": "{n} au total, {online} en ligne",
+  "friends.none": "Personne pour l’instant. Ajoutez quelqu’un avec le code de sa carte.",
+  "friends.add": "AJOUTER",
+  "friends.addHint": "Son code joueur",
+  "friends.remove": "RETIRER",
+  "friends.online": "EN LIGNE",
+  "friends.seen.now": "À l’instant",
+  "friends.seen.today": "Vu aujourd’hui",
+  "friends.seen.week": "Vu cette semaine",
+  "friends.seen.long": "Pas depuis longtemps",
+  "friends.self": "C’est votre propre code.",
+  "friends.badCode": "Un code joueur fait huit caractères.",
+  "friends.yourCode": "Votre code est {code}",
+
+
 
   "challenge.matches": "Jouez {n} matchs",
   "challenge.wins": "Gagnez {n} matchs",
@@ -594,6 +628,23 @@ const ES: Catalogue = {
   "recovery.new": "CÓDIGO NUEVO",
   "recovery.replaced": "El código anterior ya no sirve.",
 
+  // — friends —
+  "friends.title": "AMIGOS",
+  "friends.sub": "{n} en total, {online} en línea",
+  "friends.none": "Nadie todavía. Añade a alguien con el código de su tarjeta.",
+  "friends.add": "AÑADIR",
+  "friends.addHint": "Su código de jugador",
+  "friends.remove": "QUITAR",
+  "friends.online": "EN LÍNEA",
+  "friends.seen.now": "Justo ahora",
+  "friends.seen.today": "Visto hoy",
+  "friends.seen.week": "Visto esta semana",
+  "friends.seen.long": "Hace tiempo",
+  "friends.self": "Ese es tu propio código.",
+  "friends.badCode": "Un código de jugador tiene ocho caracteres.",
+  "friends.yourCode": "Tu código es {code}",
+
+
 
   "challenge.matches": "Juega {n} partidos",
   "challenge.wins": "Gana {n} partidos",
@@ -792,6 +843,23 @@ const PT: Catalogue = {
   "recovery.badPlayer": "Um código de jogador tem oito caracteres.",
   "recovery.new": "CÓDIGO NOVO",
   "recovery.replaced": "O código antigo já não funciona.",
+
+  // — friends —
+  "friends.title": "AMIGOS",
+  "friends.sub": "{n} ao todo, {online} online",
+  "friends.none": "Ainda ninguém. Adiciona alguém com o código do cartão dele.",
+  "friends.add": "ADICIONAR",
+  "friends.addHint": "O código de jogador dele",
+  "friends.remove": "REMOVER",
+  "friends.online": "ONLINE",
+  "friends.seen.now": "Agora mesmo",
+  "friends.seen.today": "Visto hoje",
+  "friends.seen.week": "Visto esta semana",
+  "friends.seen.long": "Há algum tempo",
+  "friends.self": "Esse é o teu próprio código.",
+  "friends.badCode": "Um código de jogador tem oito caracteres.",
+  "friends.yourCode": "O teu código é {code}",
+
 
 
   "challenge.matches": "Joga {n} jogos",

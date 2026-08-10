@@ -10,8 +10,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JsonStore, type PlayerRecord } from "../server/store.mjs";
 import {
   MATCH_COOLDOWN_MS,
+  MAX_FRIENDS,
   MAX_TALLY,
   ValidationError,
+  addFriend,
   authenticate,
   claim,
   leaderboard,
@@ -19,14 +21,17 @@ import {
   privateProfile,
   publicProfile,
   recordMatch,
+  friendsOf,
   recover,
   regenerateRecovery,
   register,
+  removeFriend,
   rename,
   upgrade,
   validateResult,
 } from "../server/accounts.mjs";
 import { looksLikeRecovery, tidyRecovery } from "../server/secrets.mjs";
+import { arrived, reset as resetPresence } from "../server/presence.mjs";
 import { handleApi } from "../server/api.mjs";
 import { CHARACTERS, SETS_TO_WIN, WIN_SCORE } from "../src/config";
 import { dailyChallenges } from "../src/challenges";
@@ -62,6 +67,7 @@ async function player(name: string, now?: Date): Promise<PlayerRecord> {
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "teq-store-"));
   store = new JsonStore(join(dir, "players.json"));
+  resetPresence();
 });
 
 afterEach(async () => {
@@ -217,6 +223,104 @@ describe("recovery", () => {
     expect(fresh).not.toBe(issued.recoveryCode);
     await expect(recover(store, issued.player.id, issued.recoveryCode)).rejects.toThrow();
     await expect(recover(store, issued.player.id, fresh)).resolves.toBeTruthy();
+  });
+});
+
+describe("friends", () => {
+  it("is mutual the moment it is made", async () => {
+    // A player code is not published anywhere, so somebody adding you already
+    // had it from you. A request to accept would be two more screens for a
+    // permission that was given when the code was shared.
+    const ana = await player("Ana");
+    const bobby = await player("Bobby");
+
+    await addFriend(store, ana, bobby.id);
+
+    expect(ana.friends).toContain(bobby.id);
+    expect(bobby.friends).toContain(ana.id);
+  });
+
+  it("takes a code typed in any case", async () => {
+    const ana = await player("Ana");
+    const bobby = await player("Bobby");
+
+    await addFriend(store, ana, ` ${bobby.id.toLowerCase()} `);
+    expect(ana.friends).toContain(bobby.id);
+  });
+
+  it("adds nobody twice", async () => {
+    const ana = await player("Ana");
+    const bobby = await player("Bobby");
+
+    await addFriend(store, ana, bobby.id);
+    await addFriend(store, ana, bobby.id);
+
+    expect(ana.friends).toHaveLength(1);
+    expect(bobby.friends).toHaveLength(1);
+  });
+
+  it("refuses your own code, and one nobody holds", async () => {
+    const ana = await player("Ana");
+
+    await expect(addFriend(store, ana, ana.id)).rejects.toThrow(/your own/);
+    await expect(addFriend(store, ana, "ZZZZZZZZ")).rejects.toThrow(ValidationError);
+  });
+
+  it("stops at a list a screen can still show", async () => {
+    const ana = await player("Ana");
+    ana.friends = Array.from({ length: MAX_FRIENDS }, (_, i) => `FILLER${i}`);
+    const bobby = await player("Bobby");
+
+    await expect(addFriend(store, ana, bobby.id)).rejects.toThrow(ValidationError);
+  });
+
+  it("will not push somebody over their own limit either", async () => {
+    const ana = await player("Ana");
+    const bobby = await player("Bobby");
+    bobby.friends = Array.from({ length: MAX_FRIENDS }, (_, i) => `FILLER${i}`);
+
+    await expect(addFriend(store, ana, bobby.id)).rejects.toThrow(/their/);
+    expect(ana.friends).toHaveLength(0);
+  });
+
+  it("removes from both sides", async () => {
+    // A friendship one side can see and the other cannot is a bug that shows
+    // up as a message nobody receives.
+    const ana = await player("Ana");
+    const bobby = await player("Bobby");
+    await addFriend(store, ana, bobby.id);
+
+    await removeFriend(store, ana, bobby.id);
+
+    expect(ana.friends).toHaveLength(0);
+    expect(bobby.friends).toHaveLength(0);
+  });
+
+  it("puts whoever can be played right now at the top", async () => {
+    const ana = await player("Ana");
+    const quiet = await player("Quiet");
+    const busy = await player("Busy");
+    const away = await player("Away");
+    await addFriend(store, ana, quiet.id);
+    await addFriend(store, ana, busy.id);
+    await addFriend(store, ana, away.id);
+    quiet.career = { ...quiet.career, trophies: 900 };
+    arrived(busy.id);
+
+    const list = await friendsOf(store, ana);
+
+    // "Who can I play right now" is the question the list exists to answer.
+    expect(list[0].name).toBe("Busy");
+    expect(list[0].online).toBe(true);
+    expect(list[1].name).toBe("Quiet");
+    expect(list[1].online).toBe(false);
+  });
+
+  it("quietly drops a friend who is no longer in the store", async () => {
+    const ana = await player("Ana");
+    ana.friends = ["GONE0000"];
+
+    await expect(friendsOf(store, ana)).resolves.toEqual([]);
   });
 });
 
@@ -475,6 +579,9 @@ describe("the HTTP API", () => {
       ["GET", "/api/players/me"],
       ["POST", "/api/players/me/name"],
       ["POST", "/api/players/me/recovery"],
+      ["GET", "/api/players/me/friends"],
+      ["POST", "/api/players/me/friends"],
+      ["POST", "/api/players/me/friends/remove"],
       ["POST", "/api/players/me/matches"],
       ["POST", "/api/players/me/claim"],
       ["POST", "/api/players/me/upgrade"],
@@ -519,6 +626,52 @@ describe("the HTTP API", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBeTruthy();
+  });
+
+  it("adds and removes a friend over HTTP", async () => {
+    const ana = await call("POST", "/api/players", { body: { name: "Ana" } });
+    const bobby = await call("POST", "/api/players", { body: { name: "Bobby" } });
+
+    const added = await call("POST", "/api/players/me/friends", {
+      token: ana.body.token,
+      body: { code: bobby.body.id },
+    });
+    expect(added.status).toBe(200);
+    expect(added.body.friends).toHaveLength(1);
+    expect(added.body.friends[0].name).toBe("Bobby");
+
+    // …and from the other side, without them having done anything.
+    const theirs = await call("GET", "/api/players/me/friends", { token: bobby.body.token });
+    expect(theirs.body.friends[0].name).toBe("Ana");
+
+    const gone = await call("POST", "/api/players/me/friends/remove", {
+      token: ana.body.token,
+      body: { id: bobby.body.id },
+    });
+    expect(gone.body.friends).toHaveLength(0);
+  });
+
+  it("says so when a friend code is not a player", async () => {
+    const ana = await call("POST", "/api/players", { body: { name: "Ana" } });
+    const res = await call("POST", "/api/players/me/friends", {
+      token: ana.body.token,
+      body: { code: "ZZZZZZZZ" },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("never puts a secret on a friend's card", async () => {
+    const ana = await call("POST", "/api/players", { body: { name: "Ana" } });
+    const bobby = await call("POST", "/api/players", { body: { name: "Bobby" } });
+    await call("POST", "/api/players/me/friends", {
+      token: ana.body.token,
+      body: { code: bobby.body.id },
+    });
+
+    const list = await call("GET", "/api/players/me/friends", { token: ana.body.token });
+    expect(JSON.stringify(list.body)).not.toContain(bobby.body.token);
+    expect(JSON.stringify(list.body)).not.toContain("Hash");
   });
 
   it("shows a signed-in caller their own row on the leaderboard", async () => {

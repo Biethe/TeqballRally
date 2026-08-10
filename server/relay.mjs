@@ -20,6 +20,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { handleApi, sweepRateLimits } from "./api.mjs";
 import { authenticate, publicProfile } from "./accounts.mjs";
+import { arrived, left, onlineCount } from "./presence.mjs";
 import { openStore } from "./store.mjs";
 
 /**
@@ -112,7 +113,14 @@ async function identify(socket, msg) {
   // lookup and race to overwrite each other's answer.
   socket.identity = null;
   const player = await authenticate(store, msg?.token);
-  if (player) socket.identity = publicProfile(player, await store.rankOf(player.id));
+  if (!player) return;
+  socket.identity = publicProfile(player, await store.rankOf(player.id));
+  // A socket that closed while the lookup was in flight must not be counted
+  // as present, and its close handler has already run by then.
+  if (socket.readyState === socket.OPEN) {
+    socket.presenceId = player.id;
+    arrived(player.id);
+  }
 }
 
 async function handleQueue(socket, msg) {
@@ -156,6 +164,10 @@ function peerOf(room, socket) {
 }
 
 function releaseSeat(socket) {
+  if (socket.presenceId) {
+    left(socket.presenceId);
+    socket.presenceId = null;
+  }
   // A player who leaves while still waiting was never seated.
   dequeue(socket);
   const { room, code } = socket.teq ?? {};
@@ -206,7 +218,15 @@ const httpServer = createServer((req, res) => {
       .catch(() => null)
       .then((players) => {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, rooms: rooms.size, waiting: queue.length, players }));
+        res.end(
+          JSON.stringify({
+            ok: true,
+            rooms: rooms.size,
+            waiting: queue.length,
+            online: onlineCount(),
+            players,
+          })
+        );
       });
     return;
   }

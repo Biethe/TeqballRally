@@ -31,6 +31,10 @@ export interface Profile {
   tier: string;
   matches: number;
   rank: number | null;
+  /** A socket open right now, which is what "can I play them" really asks. */
+  online: boolean;
+  /** When they were last seen, for the ones who are not. */
+  lastSeen: number;
 }
 
 export interface LeaderboardRow extends Profile {
@@ -228,6 +232,30 @@ export async function fetchLeaderboard(token?: string): Promise<LeaderboardView>
   return request<LeaderboardView>("/api/leaderboard?limit=50", { token });
 }
 
+export async function fetchFriends(token: string): Promise<Profile[]> {
+  const body = await request<{ friends: Profile[] }>("/api/players/me/friends", { token });
+  return body.friends;
+}
+
+/** Add somebody by the code on their card. Mutual immediately. */
+export async function addFriend(token: string, code: string): Promise<Profile[]> {
+  const body = await request<{ friends: Profile[] }>("/api/players/me/friends", {
+    method: "POST",
+    body: { code: code.trim().toUpperCase() },
+    token,
+  });
+  return body.friends;
+}
+
+export async function removeFriend(token: string, id: string): Promise<Profile[]> {
+  const body = await request<{ friends: Profile[] }>("/api/players/me/friends/remove", {
+    method: "POST",
+    body: { id },
+    token,
+  });
+  return body.friends;
+}
+
 export async function lookUpPlayer(code: string): Promise<Profile> {
   return request<Profile>(`/api/players/${encodeURIComponent(code.trim().toUpperCase())}`);
 }
@@ -276,4 +304,24 @@ export function tidyCode(raw: string): string {
 /** True when a typed code is the right shape to be worth sending. */
 export function looksLikeCode(raw: string): boolean {
   return /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/.test(tidyCode(raw));
+}
+
+/** A player code is eight Crockford characters, and nothing else. */
+export function looksLikePlayerCode(raw: string): boolean {
+  return /^[0-9A-HJKMNP-TV-Z]{8}$/.test(raw.trim().toUpperCase());
+}
+
+/**
+ * How long ago somebody was last seen, in the roughest terms that are useful.
+ *
+ * Rough on purpose: a friends list is asking "recently or not", and reporting
+ * that somebody was here 43 minutes ago is both more precise than the answer
+ * needs and more than they agreed to share.
+ */
+export function lastSeenLabel(at: number, now = Date.now()): "now" | "today" | "week" | "long" {
+  const minutes = (now - at) / 60_000;
+  if (minutes < 10) return "now";
+  if (minutes < 60 * 24) return "today";
+  if (minutes < 60 * 24 * 7) return "week";
+  return "long";
 }

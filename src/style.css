@@ -3359,3 +3359,136 @@ button.pad-focus {
   word-break: break-word;
   user-select: all;
 }
+
+/* ---- friends ----
+   Ordered by the server so whoever can be played right now is at the top,
+   which is the question the screen exists to answer. */
+#friends-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: calc(max(10px, env(safe-area-inset-top)) + 46px) 16px 20px;
+  overflow: hidden;
+}
+
+#friends-screen.hidden {
+  display: none;
+}
+
+.friend-add {
+  display: flex;
+  gap: 8px;
+  width: min(720px, 100%);
+  margin: 0 auto 10px;
+}
+
+.friend-add input {
+  pointer-events: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 2px solid rgba(160, 200, 245, 0.4);
+  border-radius: 12px;
+  background: rgba(4, 16, 34, 0.6);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.friend-add input:focus {
+  outline: none;
+  border-color: var(--teq);
+}
+
+.friend-add .champion-buy {
+  border-radius: 12px;
+}
+
+#friends-screen .account-message {
+  width: min(720px, 100%);
+  margin: 0 auto 8px;
+}
+
+.friend-row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto 44px;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid rgba(160, 200, 245, 0.2);
+  border-radius: 13px;
+  background: rgba(9, 30, 58, 0.7);
+}
+
+/* The dot is the whole point of the row: green means you can play them now. */
+.friend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(160, 200, 245, 0.3);
+}
+
+.friend-row.online {
+  border-color: rgba(104, 237, 176, 0.5);
+}
+
+.friend-row.online .friend-dot {
+  background: var(--mint);
+  box-shadow: 0 0 8px rgba(104, 237, 176, 0.8);
+}
+
+.friend-who {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.friend-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.friend-seen {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.friend-row.online .friend-seen {
+  color: var(--mint);
+}
+
+.friend-trophies {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.friend-remove {
+  pointer-events: auto;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(160, 200, 245, 0.3);
+  border-radius: 11px;
+  background: rgba(4, 16, 34, 0.5);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.friend-remove:hover {
+  color: var(--text);
+  border-color: rgba(200, 226, 255, 0.6);
+}

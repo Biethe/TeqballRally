@@ -14,8 +14,10 @@
 
 import {
   ValidationError,
+  addFriend,
   authenticate,
   claim,
+  friendsOf,
   leaderboard,
   privateProfile,
   publicProfile,
@@ -23,6 +25,7 @@ import {
   recover,
   regenerateRecovery,
   register,
+  removeFriend,
   rename,
   upgrade,
 } from "./accounts.mjs";
@@ -164,6 +167,28 @@ export async function handleApi(store, req, res, now = new Date()) {
       // lost the slip of paper — or thinks somebody else has seen it.
       const player = await requirePlayer(store, req);
       sendJson(res, 200, { recoveryCode: await regenerateRecovery(store, player) });
+      return true;
+    }
+
+    if (path === "/api/players/me/friends" && req.method === "GET") {
+      const player = await requirePlayer(store, req);
+      sendJson(res, 200, { friends: await friendsOf(store, player) });
+      return true;
+    }
+
+    if (path === "/api/players/me/friends" && isPost) {
+      const player = await requirePlayer(store, req);
+      const body = await readBody(req);
+      const friend = await addFriend(store, player, body.code);
+      sendJson(res, 200, { added: publicProfile(friend), friends: await friendsOf(store, player) });
+      return true;
+    }
+
+    if (path === "/api/players/me/friends/remove" && isPost) {
+      const player = await requirePlayer(store, req);
+      const body = await readBody(req);
+      await removeFriend(store, player, body.id);
+      sendJson(res, 200, { friends: await friendsOf(store, player) });
       return true;
     }
 

@@ -5,6 +5,7 @@ import type { PlayerRecord, PlayerStore } from "./store.mjs";
 export declare const NAME_MIN: number;
 export declare const NAME_MAX: number;
 export declare const MATCH_COOLDOWN_MS: number;
+export declare const MAX_FRIENDS: number;
 export declare const MAX_TALLY: { points: number; sets: number; rallies: number };
 
 export declare class ValidationError extends Error {
@@ -20,6 +21,9 @@ export interface PublicProfile {
   tier: string;
   matches: number;
   rank: number | null;
+  /** A socket open right now, which is what "can I play them" really asks. */
+  online: boolean;
+  lastSeen: number;
 }
 
 /** A new or recovered account, with the two secrets that are only sent once. */
@@ -73,3 +77,17 @@ export declare function upgrade(
   championId: unknown
 ): Promise<Career>;
 export declare function leaderboard(store: PlayerStore, limit: number): Promise<PublicProfile[]>;
+export declare function addFriend(
+  store: PlayerStore,
+  player: PlayerRecord,
+  code: unknown
+): Promise<PlayerRecord>;
+export declare function removeFriend(
+  store: PlayerStore,
+  player: PlayerRecord,
+  id: unknown
+): Promise<void>;
+export declare function friendsOf(
+  store: PlayerStore,
+  player: PlayerRecord
+): Promise<PublicProfile[]>;

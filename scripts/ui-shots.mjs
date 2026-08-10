@@ -237,6 +237,27 @@ for (const dev of DEVICES) {
   });
   await page.waitForTimeout(400);
   await shot("restore");
+
+  // The friends list, with rows: the harness has no server, and an empty list
+  // lays out nothing like a full one.
+  await page.evaluate(() => {
+    window.__teqUi?.showFriends({
+      rows: [
+        { id: "AAAA1111", name: "Kwame", trophies: 1502, tier: "PRO II", online: true, seen: "" },
+        { id: "BBBB2222", name: "Léa", trophies: 980, tier: "JUNIOR II", online: true, seen: "" },
+        { id: "CCCC3333", name: "Marco_88", trophies: 640, tier: "JUNIOR I", online: false, seen: "Seen today" },
+        { id: "DDDD4444", name: "Yuki", trophies: 310, tier: "ROOKIE III", online: false, seen: "Not for a while" },
+      ],
+      myCode: "7Z9WYS4A",
+      message: null,
+      busy: false,
+      onAdd: () => {},
+      onRemove: () => {},
+      onBack: () => {},
+    });
+  });
+  await page.waitForTimeout(400);
+  await shot("friends");
   await page.goto(`http://localhost:${PORT}/?q=low&intro=0`, { waitUntil: "load" });
   await page.waitForTimeout(2500);
 

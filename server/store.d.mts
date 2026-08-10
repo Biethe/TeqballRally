@@ -20,6 +20,8 @@ export interface PlayerRecord {
   lastSeen: number;
   lastMatchAt: number;
   matches: number;
+  /** Player ids, mutual: a friendship one side cannot see is a bug. */
+  friends: string[];
   career: Career;
 }
 

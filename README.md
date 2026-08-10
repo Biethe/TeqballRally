@@ -320,6 +320,25 @@ drifted, and separately asserts that both copies score an identical match
 identically. A server settling matches by last month's rules is a leaderboard
 nobody can explain.
 
+**Friends by code.** Add somebody with the eight characters on their card and
+it is mutual immediately — no request to accept. There is nothing to protect
+against: a player code is published nowhere, so whoever adds you already had it
+from you, and a request-and-accept flow would be two screens and a notification
+system in exchange for a permission that was granted when the code was shared.
+Removing takes them off both lists, because a friendship one side can see and
+the other cannot is a bug that shows up as a message nobody receives.
+
+The list is ordered by the server, online first: "who can I play right now" is
+the question the screen exists to answer, so the answer is at the top of it.
+Presence is a count of open sockets in `server/presence.mjs`, written by the
+relay and read by the API — a count rather than a set, because a phone that
+reconnects before the old socket's close is noticed would otherwise mark itself
+offline on the way in. Anyone without a socket shows when they were last seen,
+rounded to *just now*, *today*, *this week* or *not for a while*: a friends
+list asks "recently or not", and reporting that somebody was here 43 minutes
+ago is both more precision than the answer needs and more than they agreed to
+share.
+
 **Names on the wire.** The relay looks up the account behind each socket from
 its token, and tells each side who the other actually is. Verified rather than
 announced: a name a client can choose for itself is a name that can be somebody
@@ -415,7 +434,8 @@ TITLE ── PLAY ───────┬── FRIENDLY ──── difficult
       │              └── ONLINE ────── quick / friend / code
       ├── CHAMPIONS ──── the roster, and what it costs to grow it
       ├── CHALLENGES ─── today's three
-      ├── PROFILE ────── your name and code ── LEADERBOARD
+      ├── PROFILE ────── your name and code ─┬─ FRIENDS
+      │                                       └─ LEADERBOARD
       └── SETTINGS ───── DISPLAY / GAMEPLAY / AUDIO
 ```
 
