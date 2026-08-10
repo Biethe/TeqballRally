@@ -267,6 +267,13 @@ export interface PeerMessage {
    * says they are. Null means they are playing without one.
    */
   who?: PeerIdentity | null;
+  /**
+   * The relay's name for this match, sent once both seats are filled.
+   *
+   * Both sides report their result against it, which is what lets the server
+   * check the two stories against each other instead of believing one.
+   */
+  match?: string | null;
 }
 
 export interface ErrorMessage {

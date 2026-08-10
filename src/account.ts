@@ -210,6 +210,33 @@ export async function reportMatch(
   return request("/api/players/me/matches", { method: "POST", body: report, token });
 }
 
+/** A finished online match, as the server scores it. */
+export interface OnlineReport {
+  matchId: string;
+  championId: string;
+  won: boolean;
+  points: number;
+  sets: number;
+  rallies: number;
+  /** The other side's sets, so the server can tell how far the match got. */
+  opponentSets: number;
+}
+
+/**
+ * Report an online result.
+ *
+ * Resolves `{ pending: true }` when the server is still waiting for the other
+ * side. That is not a failure and must not be shown as one — it means the
+ * trophies are real but not yet counted, and the next screen simply says
+ * nothing about a rank.
+ */
+export async function reportOnlineMatch(
+  token: string,
+  report: OnlineReport
+): Promise<{ career: Career; outcome: MatchOutcome; rank: number | null } | { pending: true }> {
+  return request("/api/players/me/online", { method: "POST", body: report, token });
+}
+
 export async function claimOnServer(token: string, challengeId: string): Promise<Career> {
   const body = await request<{ career: Career }>("/api/players/me/claim", {
     method: "POST",

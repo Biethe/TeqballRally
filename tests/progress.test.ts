@@ -78,9 +78,18 @@ describe("the trophy ladder", () => {
   });
 
   it("pays more for a win than a loss takes, at every difficulty", () => {
-    for (const d of ["easy", "normal", "hard"] as const) {
+    for (const d of ["easy", "normal", "hard", "online"] as const) {
       expect(trophyDelta(true, d, 500), d).toBeGreaterThan(-trophyDelta(false, d, 500));
     }
+  });
+
+  it("makes beating a person worth more than beating the machine", () => {
+    // The opponent was also trying, and it is the one difficulty a player
+    // cannot choose to make easier.
+    expect(trophyDelta(true, "online", 500)).toBeGreaterThan(trophyDelta(true, "hard", 500));
+    expect(coinsFor(true, "online", 500)).toBeGreaterThan(coinsFor(true, "hard", 500));
+    // …and costs more to lose, or the ladder would be farmed by playing up.
+    expect(trophyDelta(false, "online", 500)).toBeLessThan(trophyDelta(false, "hard", 500));
   });
 
   it("never puts a player into trophy debt", () => {

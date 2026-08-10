@@ -60,13 +60,22 @@ export function tierProgress(trophies: number): number {
   return Math.min(1, Math.max(0, (trophies - here.floor) / (next.floor - here.floor)));
 }
 
-export type Difficulty = "easy" | "normal" | "hard";
+/**
+ * What was played.
+ *
+ * "online" is a difficulty in the same sense the others are — it is what a
+ * result was worth — and it is the biggest, because the opponent was a person
+ * who was also trying. It is also the only one the player cannot choose to
+ * make easier.
+ */
+export type Difficulty = "easy" | "normal" | "hard" | "online";
 
 /** Trophies staked on a match, before the result decides the sign. */
 const STAKE: Record<Difficulty, { win: number; loss: number }> = {
   easy: { win: 12, loss: 10 },
   normal: { win: 20, loss: 12 },
   hard: { win: 30, loss: 14 },
+  online: { win: 34, loss: 18 },
 };
 
 /**
@@ -94,6 +103,7 @@ const PURSE: Record<Difficulty, { win: number; loss: number }> = {
   easy: { win: 40, loss: 12 },
   normal: { win: 70, loss: 20 },
   hard: { win: 110, loss: 30 },
+  online: { win: 130, loss: 40 },
 };
 
 /**

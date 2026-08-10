@@ -143,7 +143,8 @@ function tierProgress(trophies) {
 var STAKE = {
   easy: { win: 12, loss: 10 },
   normal: { win: 20, loss: 12 },
-  hard: { win: 30, loss: 14 }
+  hard: { win: 30, loss: 14 },
+  online: { win: 34, loss: 18 }
 };
 function trophyDelta(won, difficulty, trophies) {
   const stake = STAKE[difficulty];
@@ -154,7 +155,8 @@ function trophyDelta(won, difficulty, trophies) {
 var PURSE = {
   easy: { win: 40, loss: 12 },
   normal: { win: 70, loss: 20 },
-  hard: { win: 110, loss: 30 }
+  hard: { win: 110, loss: 30 },
+  online: { win: 130, loss: 40 }
 };
 function coinsFor(won, difficulty, trophies) {
   const purse = PURSE[difficulty];

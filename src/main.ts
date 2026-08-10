@@ -55,6 +55,7 @@ import {
   upgradeCost,
   withCareer,
   type Career,
+  type MatchOutcome,
 } from "./progress";
 import { nextTier, tierFor, tierProgress } from "./league";
 import {
@@ -72,6 +73,7 @@ import {
   readIdentity,
   removeFriend,
   reportMatch,
+  reportOnlineMatch,
   restore,
   signUp,
   storeIdentity,
@@ -927,6 +929,46 @@ async function boot(): Promise<void> {
     );
   };
 
+  /**
+   * Report an online result and show what it was worth.
+   *
+   * Both sides report; the server pays out when the two agree, or when the
+   * relay itself saw somebody leave. Until then it answers "pending", which is
+   * not a failure — the match happened, it is simply not counted yet — so the
+   * screen says nothing about a rank rather than something wrong about one.
+   */
+  const settleOnline = (won: boolean, championId: string) => {
+    const done = () => leaveMatch();
+    if (!identity || !onlineMatchId) {
+      // Playing without an account, or a match the relay never named. Nothing
+      // to settle; the result screen would have nothing true to put on it.
+      ui.showEnd(won ? "player" : "ai", done, done);
+      return;
+    }
+    const tally = matchTally();
+    input.setTouchControlsEnabled(false);
+    void reportOnlineMatch(identity.token, {
+      matchId: onlineMatchId,
+      championId,
+      won,
+      ...tally,
+      opponentSets: match?.sets.ai ?? 0,
+    }).then(
+      (result) => {
+        if ("pending" in result) {
+          ui.showEnd(won ? "player" : "ai", done, done);
+          return;
+        }
+        adoptServerCareer(result.career);
+        if (profile) profile = { ...profile, trophies: result.career.trophies, rank: result.rank };
+        showOutcome(won, result.outcome, done, null);
+      },
+      // Offline at the final whistle. The match was still played, and saying
+      // so is better than a screen that pretends it was not.
+      () => ui.showEnd(won ? "player" : "ai", done, done)
+    );
+  };
+
   /** What the match just played contributes to the daily challenges. */
   const matchTally = () => ({
     points: match?.tally.points.player ?? 0,
@@ -1005,7 +1047,18 @@ async function boot(): Promise<void> {
     onContinue: () => void,
     onRematch: (() => void) | null
   ) => {
-    const { next, outcome } = settleCareer(won, championId, difficulty);
+    const { outcome } = settleCareer(won, championId, difficulty);
+    showOutcome(won, outcome, onContinue, onRematch);
+  };
+
+  /** The card that says what a settled match was worth. */
+  const showOutcome = (
+    won: boolean,
+    outcome: MatchOutcome,
+    onContinue: () => void,
+    onRematch: (() => void) | null
+  ) => {
+    const next = career;
     const notes = [
       ...outcome.levelled.map((id) => {
         const def = CHARACTERS.find((c) => c.id === id);
@@ -1249,7 +1302,10 @@ async function boot(): Promise<void> {
     const launch = () => {
       if (launched || !mine || !theirs) return;
       launched = true;
-      const me = CHARACTERS.find((c) => c.id === mine!.character) ?? CHARACTERS[0];
+      const base = CHARACTERS.find((c) => c.id === mine!.character) ?? CHARACTERS[0];
+      // The character the career built, here as everywhere else: an upgrade
+      // that only works against the CPU is not an upgrade.
+      const me = withCareer(base, levelOf(career, base.id));
       const them = CHARACTERS.find((c) => c.id === theirs!.character) ?? CHARACTERS[0];
       const ballId = role === "host" ? mine.ball : theirs.ball;
       void startMatch(me, ballId, {
@@ -1258,9 +1314,7 @@ async function boot(): Promise<void> {
         online: { conn, role, private: isPrivate },
         // The name the relay verified, not one the peer announced for itself.
         labels: [tr("hud.you"), opponent?.name ?? "RIVAL"],
-        onEnd: (winner) => {
-          ui.showEnd(winner, () => leaveMatch(), () => leaveMatch());
-        },
+        onEnd: (winner) => settleOnline(winner === "player", me.id),
       });
     };
 
@@ -1295,6 +1349,8 @@ async function boot(): Promise<void> {
    * match is finally built.
    */
   let opponent: PeerIdentity | null = null;
+  /** The relay's name for the match, which both sides report against. */
+  let onlineMatchId: string | null = null;
 
   const quickMatch = () => {
     if (!onlineAvailable) return;
@@ -1305,8 +1361,10 @@ async function boot(): Promise<void> {
           ui.setLobbyDetail(
             ahead === 0 ? "Waiting for an opponent…" : `Waiting — ${ahead} ahead of you`
           ),
-        onPeer: (present, who) => {
-          if (present) opponent = who ?? null;
+        onPeer: (present, who, id) => {
+          if (!present) return;
+          opponent = who ?? null;
+          onlineMatchId = id ?? null;
         },
       },
       identity?.token
@@ -1333,9 +1391,11 @@ async function boot(): Promise<void> {
     const conn = new NetConnection(
       relayUrl(),
       {
-        onPeer: (present, who) => {
+        onPeer: (present, who, id) => {
           opponent = present ? (who ?? null) : null;
-          if (present) ui.setLobbyDetail(`${who?.name ?? "Opponent"} joined — starting…`);
+          if (!present) return;
+          onlineMatchId = id ?? null;
+          ui.setLobbyDetail(`${who?.name ?? "Opponent"} joined — starting…`);
         },
       },
       identity?.token
@@ -1351,9 +1411,10 @@ async function boot(): Promise<void> {
         // second seat before there is a match to start.
         return new Promise<{ role: PeerRole }>((resolve) => {
           conn.setHandlers({
-            onPeer: (present, who) => {
+            onPeer: (present, who, id) => {
               if (!present) return;
               opponent = who ?? null;
+              onlineMatchId = id ?? null;
               resolve({ role: "host" });
             },
           });
@@ -1384,7 +1445,12 @@ async function boot(): Promise<void> {
         }
         const conn = new NetConnection(
           relayUrl(),
-          { onPeer: (present, who) => (opponent = present ? (who ?? null) : null) },
+          {
+            onPeer: (present, who, id) => {
+              opponent = present ? (who ?? null) : null;
+              if (present) onlineMatchId = id ?? null;
+            },
+          },
           identity?.token
         );
         netConn = conn;
@@ -1396,9 +1462,10 @@ async function boot(): Promise<void> {
               // Seated, but alone: the host left between hosting and joining.
               ui.setLobbyDetail("Waiting for the host…");
               conn.setHandlers({
-                onPeer: (p, who) => {
+                onPeer: (p, who, id) => {
                   if (!p) return;
                   opponent = who ?? null;
+                  onlineMatchId = id ?? null;
                   startOnlineMatch(conn, role, true);
                 },
               });
@@ -1805,7 +1872,10 @@ async function boot(): Promise<void> {
         onOpponentReturned: () => ui.banner("OPPONENT RECONNECTED"),
         onOpponentForfeit: () => {
           ui.banner("OPPONENT LEFT", "Match awarded to you");
-          ui.showEnd("player", () => leaveMatch(), () => leaveMatch());
+          // Reported like any other win. The server decides whether it counts:
+          // it asks the relay whether that socket really went, and how far the
+          // match had got — a forfeit inside the first set is void for both.
+          settleOnline(true, playerDef.id);
         },
         onPauseState: (state, detail) => {
           switch (state) {
