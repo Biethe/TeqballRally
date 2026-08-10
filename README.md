@@ -245,10 +245,9 @@ on "play some matches" is one challenge wearing three hats. The day is local,
 because the day has to turn over while the player is asleep and whose midnight
 that is depends on where they are.
 
-Only friendly and competition matches settle a career. Practice pays nothing
-because it cannot be lost, and online pays nothing because the result is only
-as trustworthy as the far end of the connection — a ladder that can be climbed
-by disconnecting is not a ladder.
+Practice pays nothing, because it cannot be lost. Everything else does,
+including online — see below for how a result between two strangers is made
+trustworthy enough to count.
 
 ## Accounts and the backend
 
@@ -338,6 +337,36 @@ rounded to *just now*, *today*, *this week* or *not for a while*: a friends
 list asks "recently or not", and reporting that somebody was here 43 minutes
 ago is both more precision than the answer needs and more than they agreed to
 share.
+
+**Ranked online.** An online result is worth more than any match against the
+CPU — the opponent was also trying, and it is the one difficulty a player
+cannot choose to make easier — so it is also the one that most needs to be
+true.
+
+Both sides report their own view of the match against a `matchId` the relay
+minted when the two seats filled. A single report is *held*, not paid: the
+server answers `202 pending`, the client says nothing about a rank, and if the
+other side never reports then nobody gets anything. That is the right answer to
+an unexplained claim. When both arrive they must tell one story — exactly one
+winner, the winner holding the sets it takes to win — and disagreement pays
+nobody.
+
+The other way it settles is a walkover, and the deciding fact there is **not**
+the surviving player's word. The relay watched the socket close, so the relay
+is what gets asked (`server/matches.mjs`). Quit inside the opening set and the
+match is void for both — a train going into a tunnel on the first point is not
+rage-quitting, and punishing it would make the ladder a measure of signal
+strength. After that it is a forfeit: the leaver takes the loss, the stayer
+takes the win.
+
+A forfeit is the one result that is a win without having won the sets, so the
+coherence check `validateResult` normally applies is relaxed for it — and only
+when the relay has already confirmed the disconnect, which is what stops
+"they left, I won" being a free win for anybody who says it.
+
+None of this makes cheating impossible; that would mean running the simulation
+server-side, and it is a different project. It does mean a result requires two
+clients to agree, or a socket to have genuinely closed.
 
 **Names on the wire.** The relay looks up the account behind each socket from
 its token, and tells each side who the other actually is. Verified rather than

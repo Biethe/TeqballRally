@@ -47,7 +47,7 @@ export interface NetHandlers {
   onMessage?: (msg: GameMessage) => void;
   onStateChange?: (state: NetState, detail?: string) => void;
   /** The other player arrived (true) or left (false). */
-  onPeer?: (present: boolean, who?: PeerIdentity | null) => void;
+  onPeer?: (present: boolean, who?: PeerIdentity | null, matchId?: string | null) => void;
   /** Quick match only: still waiting, with this many players ahead. */
   onQueued?: (ahead: number) => void;
   /** Fatal: the room was refused, or the socket died. */
@@ -75,6 +75,8 @@ export class NetConnection {
   tick = 0;
   role: PeerRole | null = null;
   room: string | null = null;
+  /** The relay's name for the match, once both seats are filled. */
+  matchId: string | null = null;
   /** Smoothed round trip in ms, or null until the first pong. */
   rttMs: number | null = null;
 
@@ -247,7 +249,8 @@ export class NetConnection {
 
       case "peer":
         this.setState(msg.joined ? "ready" : "waiting");
-        this.handlers.onPeer?.(msg.joined, msg.who ?? null);
+        if (msg.match) this.matchId = msg.match;
+        this.handlers.onPeer?.(msg.joined, msg.who ?? null, this.matchId);
         return;
 
       // Answer the peer's clock probe. Their `sent` is echoed untouched so only

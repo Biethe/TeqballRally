@@ -26,6 +26,7 @@
 import { randomBytes } from "node:crypto";
 import { NameTakenError } from "./store.mjs";
 import { isOnline } from "./presence.mjs";
+import { get as getMatch, isPlayerIn, opponentOf } from "./matches.mjs";
 import {
   TOKEN_LENGTH,
   digestsMatch,
@@ -76,7 +77,7 @@ export const MATCH_COOLDOWN_MS = 20_000;
  */
 export const MAX_FRIENDS = 100;
 
-const VALID_DIFFICULTY = new Set(["easy", "normal", "hard"]);
+const VALID_DIFFICULTY = new Set(["easy", "normal", "hard", "online"]);
 const CHARACTER_IDS = new Set(CHARACTERS.map((c) => c.id));
 
 /** The most one match can possibly produce, used to reject impossible results. */
@@ -296,7 +297,7 @@ export async function authenticate(store, token) {
 }
 
 /** Check a posted result is something a match could actually have produced. */
-export function validateResult(body) {
+export function validateResult(body, opts = {}) {
   if (!body || typeof body !== "object") throw new ValidationError("a result is required");
   const { championId, difficulty, won, points, sets, rallies } = body;
   if (!CHARACTER_IDS.has(championId)) throw new ValidationError("unknown character");
@@ -314,16 +315,23 @@ export function validateResult(body) {
     sets: whole(sets, "sets", MAX_TALLY.sets),
     rallies: whole(rallies, "rallies", MAX_TALLY.rallies),
   };
-  // A win means winning the sets. Without this the cheapest cheat is to post a
-  // win with everything else zeroed, forever.
-  if (won && tally.sets < SETS_TO_WIN) {
-    throw new ValidationError("a win must have won the sets");
-  }
-  if (!won && tally.sets >= SETS_TO_WIN) {
-    throw new ValidationError("a loss cannot have won the sets");
-  }
   if (tally.points < tally.sets * WIN_SCORE) {
     throw new ValidationError("points cannot be fewer than the sets won require");
+  }
+  // A win means winning the sets. Without this the cheapest cheat is to post a
+  // win with everything else zeroed, forever.
+  //
+  // A walkover is the one exception, and a real one: the surviving player has
+  // won without having won the sets, which is the whole shape of a forfeit.
+  // What authorises it is not this report but the relay having watched the
+  // other socket close, so the check is relaxed rather than removed.
+  if (opts.walkover !== true) {
+    if (won && tally.sets < SETS_TO_WIN) {
+      throw new ValidationError("a win must have won the sets");
+    }
+    if (!won && tally.sets >= SETS_TO_WIN) {
+      throw new ValidationError("a loss cannot have won the sets");
+    }
   }
   return { championId, difficulty, tally };
 }
@@ -374,6 +382,121 @@ export async function upgrade(store, player, championId) {
   }
   await store.save(player);
   return player.career;
+}
+
+/**
+ * Sets that have to have been played before a disconnect counts as a loss.
+ *
+ * Quit in the opening set and the match is void for both: a train going into a
+ * tunnel on the first point is not rage-quitting, and punishing it would make
+ * the ladder a measure of signal strength. After that it is a forfeit.
+ */
+export const FORFEIT_AFTER_SETS = 1;
+
+/** Whether two reports of the same match, from opposite ends, tell one story. */
+function reportsAgree(mine, theirs) {
+  if (mine.won === theirs.won) return false;
+  const winner = mine.won ? mine : theirs;
+  const loser = mine.won ? theirs : mine;
+  if (winner.sets !== SETS_TO_WIN) return false;
+  if (loser.sets >= SETS_TO_WIN) return false;
+  return true;
+}
+
+/**
+ * Settle an online match.
+ *
+ * Both sides report their own view of it and the pay-out happens when the two
+ * agree — a leaderboard where one end of a connection decides the result is a
+ * leaderboard for whoever is willing to edit their client.
+ *
+ * The other way it settles is a walkover, and the deciding fact there is not
+ * the surviving player's word. The relay watched the socket close, so the
+ * relay is what gets asked. Anything else is a free win for anyone who claims
+ * one.
+ */
+export async function recordOnlineMatch(store, player, body, now = new Date()) {
+  const match = getMatch(body?.matchId);
+  if (!match) throw new ValidationError("that match is not one of ours", 404);
+  if (!isPlayerIn(match, player.id)) throw new ValidationError("that was not your match", 403);
+  if (match.reports.get(player.id)?.settled) throw new ValidationError("already settled", 409);
+
+  // Whether this can be a walkover is decided here, from what the relay saw,
+  // before the report is validated — a forfeit is a win that did not win the
+  // sets, and only the relay's word makes that a legitimate thing to claim.
+  const walkover = Boolean(match.left) && match.left !== player.id;
+  const { championId, tally } = validateResult({ ...body, difficulty: "online" }, { walkover });
+  const opponentSets = Number(body?.opponentSets ?? 0);
+  const setsPlayed = tally.sets + (Number.isInteger(opponentSets) ? opponentSets : 0);
+  match.reports.set(player.id, { ...tally, championId, setsPlayed, settled: false });
+
+  const opponentId = opponentOf(match, player.id);
+  const theirs = opponentId ? match.reports.get(opponentId) : null;
+
+  // The ordinary case: both ends reported, and they tell the same story.
+  if (theirs && !theirs.settled) {
+    if (!reportsAgree(tally, theirs)) {
+      throw new ValidationError("the two sides disagree about that match", 409);
+    }
+    const opponent = await store.get(opponentId);
+    const mine = await payOut(store, player, championId, tally, now);
+    match.reports.get(player.id).settled = true;
+    if (opponent) {
+      await payOut(store, opponent, theirs.championId, theirs, now, { skipCooldown: true });
+      match.reports.get(opponentId).settled = true;
+    }
+    return mine;
+  }
+
+  // The other case: the relay saw the opponent's socket go, and enough of the
+  // match had been played for that to be a forfeit rather than bad luck.
+  if (match.left && match.left !== player.id) {
+    if (setsPlayed < FORFEIT_AFTER_SETS) {
+      throw new ValidationError("they left too early for it to count", 409);
+    }
+    if (!tally.won) throw new ValidationError("a walkover is a win, not a loss", 409);
+    const mine = await payOut(store, player, championId, tally, now);
+    match.reports.get(player.id).settled = true;
+    const leaver = await store.get(match.left);
+    if (leaver) {
+      // The cooldown is skipped for the leaver: they are not making a request,
+      // and a forfeit they did not report must not be lost to a rate limit.
+      await payOut(
+        store,
+        leaver,
+        theirs?.championId ?? CHARACTERS[0].id,
+        { won: false, points: 0, sets: 0, rallies: 0 },
+        now,
+        { skipCooldown: true }
+      );
+    }
+    return mine;
+  }
+
+  // Reported alone, with nothing to corroborate it. Held rather than paid: the
+  // other side may still be about to report, and if they never do then nobody
+  // gets anything, which is the right answer to an unexplained claim.
+  return { pending: true };
+}
+
+/** Apply one settled result to one career. */
+async function payOut(store, player, championId, tally, now, opts = {}) {
+  if (!opts.skipCooldown) {
+    const since = now.getTime() - player.lastMatchAt;
+    if (since < MATCH_COOLDOWN_MS) {
+      throw new ValidationError(
+        `too soon — wait ${Math.ceil((MATCH_COOLDOWN_MS - since) / 1000)}s`,
+        429
+      );
+    }
+  }
+  const { career, outcome } = settleMatch(player.career, championId, "online", tally, now);
+  player.career = career;
+  player.lastMatchAt = now.getTime();
+  player.lastSeen = now.getTime();
+  player.matches++;
+  await store.save(player);
+  return { career, outcome };
 }
 
 export async function leaderboard(store, limit) {

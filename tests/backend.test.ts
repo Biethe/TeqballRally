@@ -207,6 +207,61 @@ describe("identity on the wire", () => {
     expect(seen.at(-1)).toBeNull();
   });
 
+  it("names the match, so both sides can report the same one", async () => {
+    // The id is what lets the server check two stories against each other
+    // instead of believing whichever arrived first.
+    const [a, b] = await Promise.all([
+      api("POST", "/api/players", { body: { name: "Reporter" } }),
+      api("POST", "/api/players", { body: { name: "Opponent" } }),
+    ]);
+    const seenA: (string | null)[] = [];
+    const seenB: (string | null)[] = [];
+    const host = track(
+      new NetConnection(WS, { onPeer: (p, _w, id) => p && seenA.push(id ?? null) }, a.body.token)
+    );
+    const guest = track(
+      new NetConnection(WS, { onPeer: (p, _w, id) => p && seenB.push(id ?? null) }, b.body.token)
+    );
+
+    await host.join("RANKED");
+    await guest.join("RANKED");
+    await settle(300);
+
+    expect(seenA.at(-1)).toBeTruthy();
+    expect(seenB.at(-1)).toBe(seenA.at(-1));
+
+    // One report alone is held, not paid.
+    const matchId = seenA.at(-1)!;
+    const win = {
+      matchId,
+      championId: CHARACTERS[0].id,
+      won: true,
+      points: WIN_SCORE * SETS_TO_WIN,
+      sets: SETS_TO_WIN,
+      rallies: 6,
+      opponentSets: 1,
+    };
+    const first = await api("POST", "/api/players/me/online", { token: a.body.token, body: win });
+    expect(first.status).toBe(202);
+    expect(first.body.pending).toBe(true);
+
+    const second = await api("POST", "/api/players/me/online", {
+      token: b.body.token,
+      body: {
+        ...win,
+        won: false,
+        points: WIN_SCORE + 1,
+        sets: 1,
+        opponentSets: SETS_TO_WIN,
+      },
+    });
+    expect(second.status).toBe(200);
+    expect(second.body.career.trophies).toBe(0); // the loser, floored at zero
+
+    const winner = await api("GET", "/api/players/me", { token: a.body.token });
+    expect(winner.body.trophies).toBeGreaterThan(0);
+  });
+
   it("still seats two players who have no accounts at all", async () => {
     const a = track(new NetConnection(WS));
     const b = track(new NetConnection(WS));

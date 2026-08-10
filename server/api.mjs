@@ -22,6 +22,7 @@ import {
   privateProfile,
   publicProfile,
   recordMatch,
+  recordOnlineMatch,
   recover,
   regenerateRecovery,
   register,
@@ -197,6 +198,20 @@ export async function handleApi(store, req, res, now = new Date()) {
       const body = await readBody(req);
       const { career, outcome } = await recordMatch(store, player, body, now);
       sendJson(res, 200, { career, outcome, rank: await store.rankOf(player.id) });
+      return true;
+    }
+
+    if (path === "/api/players/me/online" && isPost) {
+      const player = await requirePlayer(store, req);
+      const body = await readBody(req);
+      const result = await recordOnlineMatch(store, player, body, now);
+      // A lone report is held rather than paid; the client is told so plainly
+      // so it can leave the local career alone and say nothing about a rank.
+      if (result.pending) {
+        sendJson(res, 202, { pending: true });
+        return true;
+      }
+      sendJson(res, 200, { ...result, rank: await store.rankOf(player.id) });
       return true;
     }
 

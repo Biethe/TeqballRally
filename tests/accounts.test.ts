@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JsonStore, type PlayerRecord } from "../server/store.mjs";
 import {
   MATCH_COOLDOWN_MS,
+  FORFEIT_AFTER_SETS,
   MAX_FRIENDS,
   MAX_TALLY,
   ValidationError,
@@ -22,6 +23,7 @@ import {
   publicProfile,
   recordMatch,
   friendsOf,
+  recordOnlineMatch,
   recover,
   regenerateRecovery,
   register,
@@ -32,6 +34,7 @@ import {
 } from "../server/accounts.mjs";
 import { looksLikeRecovery, tidyRecovery } from "../server/secrets.mjs";
 import { arrived, reset as resetPresence } from "../server/presence.mjs";
+import { begin, departed, reset as resetMatches } from "../server/matches.mjs";
 import { handleApi } from "../server/api.mjs";
 import { CHARACTERS, SETS_TO_WIN, WIN_SCORE } from "../src/config";
 import { dailyChallenges } from "../src/challenges";
@@ -68,6 +71,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "teq-store-"));
   store = new JsonStore(join(dir, "players.json"));
   resetPresence();
+  resetMatches();
 });
 
 afterEach(async () => {
@@ -416,6 +420,143 @@ describe("challenges and upgrades on the server", () => {
     const p = await player("Ana");
     p.career = { ...p.career, coins: 999_999 };
     await expect(upgrade(store, p, CHARACTERS[3].id)).rejects.toThrow(ValidationError);
+  });
+});
+
+describe("ranked online", () => {
+  const WON = { won: true, points: WIN_SCORE * SETS_TO_WIN, sets: SETS_TO_WIN, rallies: 6 };
+  const LOST = { won: false, points: WIN_SCORE + 1, sets: 1, rallies: 6 };
+  const at = new Date(MATCH_COOLDOWN_MS * 10);
+
+  /** Two accounts and a match between them, as the relay would have opened it. */
+  async function pair() {
+    const home = await player("Home");
+    const away = await player("Away");
+    const matchId = begin(home.id, away.id);
+    const report = (side: "home" | "away", over: Record<string, unknown> = {}) => ({
+      matchId,
+      championId: CHARACTERS[0].id,
+      ...(side === "home" ? WON : LOST),
+      opponentSets: side === "home" ? LOST.sets : WON.sets,
+      ...over,
+    });
+    return { home, away, matchId, report };
+  }
+
+  it("holds a report that only one side has made", async () => {
+    // A leaderboard where one end of a connection decides the result is a
+    // leaderboard for whoever is willing to edit their client.
+    const { home, report } = await pair();
+
+    const res = await recordOnlineMatch(store, home, report("home"), at);
+
+    expect(res).toEqual({ pending: true });
+    expect(home.career.trophies).toBe(0);
+  });
+
+  it("pays both once the two ends agree", async () => {
+    const { home, away, report } = await pair();
+
+    await recordOnlineMatch(store, home, report("home"), at);
+    const settled = await recordOnlineMatch(store, away, report("away"), at);
+
+    expect("outcome" in settled).toBe(true);
+    expect(home.career.trophies).toBeGreaterThan(0);
+    expect(away.career.trophies).toBe(0); // lost, and cannot go below zero
+    expect(away.matches).toBe(1);
+    expect(home.matches).toBe(1);
+  });
+
+  it("pays nobody when the two ends disagree", async () => {
+    const { home, away, report } = await pair();
+    await recordOnlineMatch(store, home, report("home"), at);
+
+    // Both claiming the win is the disagreement worth catching.
+    await expect(recordOnlineMatch(store, away, report("away", WON), at)).rejects.toThrow(
+      /disagree/
+    );
+    expect(home.career.trophies).toBe(0);
+    expect(away.career.trophies).toBe(0);
+  });
+
+  it("settles a match only once", async () => {
+    const { home, away, report } = await pair();
+    await recordOnlineMatch(store, home, report("home"), at);
+    await recordOnlineMatch(store, away, report("away"), at);
+    const won = home.career.trophies;
+
+    await expect(recordOnlineMatch(store, home, report("home"), at)).rejects.toThrow(/settled/);
+    expect(home.career.trophies).toBe(won);
+  });
+
+  it("gives the win away when the relay saw them leave", async () => {
+    const { home, away, matchId, report } = await pair();
+    departed(matchId, away.id);
+
+    const res = await recordOnlineMatch(store, home, report("home"), at);
+
+    expect("outcome" in res).toBe(true);
+    expect(home.career.trophies).toBeGreaterThan(0);
+    expect(away.matches).toBe(1); // the forfeit counts against them
+  });
+
+  it("voids a match somebody left in the opening set", async () => {
+    // A train going into a tunnel on the first point is not rage-quitting, and
+    // punishing it makes the ladder a measure of signal strength.
+    const { home, away, matchId, report } = await pair();
+    departed(matchId, away.id);
+
+    await expect(
+      recordOnlineMatch(
+        store,
+        home,
+        report("home", { sets: FORFEIT_AFTER_SETS - 1, points: 1, opponentSets: 0 }),
+        at
+      )
+    ).rejects.toThrow(/too early/);
+    expect(home.career.trophies).toBe(0);
+  });
+
+  it("will not let the leaver claim the walkover", async () => {
+    const { away, matchId, report } = await pair();
+    departed(matchId, away.id);
+
+    // The one who left reporting a win of their own gets nothing: the relay
+    // knows which socket went.
+    const res = await recordOnlineMatch(store, away, report("away", WON), at);
+    expect(res).toEqual({ pending: true });
+    expect(away.career.trophies).toBe(0);
+  });
+
+  it("refuses a match that was never opened, or was somebody else's", async () => {
+    const { home, report } = await pair();
+    const stranger = await player("Stranger");
+
+    await expect(
+      recordOnlineMatch(store, home, { ...report("home"), matchId: "made-up" }, at)
+    ).rejects.toThrow(/not one of ours/);
+    await expect(recordOnlineMatch(store, stranger, report("home"), at)).rejects.toThrow(
+      /not your match/
+    );
+  });
+
+  it("still checks the result is one a match could produce", async () => {
+    const { home, report } = await pair();
+
+    await expect(
+      recordOnlineMatch(store, home, report("home", { points: 9999 }), at)
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("is worth more than any match against the machine", async () => {
+    const { home, away, report } = await pair();
+    const offline = await player("Offline");
+    await recordMatch(store, offline, { ...WIN, difficulty: "hard" }, at);
+
+    await recordOnlineMatch(store, home, report("home"), at);
+    await recordOnlineMatch(store, away, report("away"), at);
+
+    expect(home.career.trophies).toBeGreaterThan(offline.career.trophies);
   });
 });
 

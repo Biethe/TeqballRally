@@ -6,6 +6,7 @@ export declare const NAME_MIN: number;
 export declare const NAME_MAX: number;
 export declare const MATCH_COOLDOWN_MS: number;
 export declare const MAX_FRIENDS: number;
+export declare const FORFEIT_AFTER_SETS: number;
 export declare const MAX_TALLY: { points: number; sets: number; rallies: number };
 
 export declare class ValidationError extends Error {
@@ -91,3 +92,14 @@ export declare function friendsOf(
   store: PlayerStore,
   player: PlayerRecord
 ): Promise<PublicProfile[]>;
+/**
+ * Settle an online match from both sides' reports, or from a walkover the
+ * relay itself witnessed. Resolves `{ pending: true }` when one report has
+ * arrived with nothing to corroborate it.
+ */
+export declare function recordOnlineMatch(
+  store: PlayerStore,
+  player: PlayerRecord,
+  body: unknown,
+  now?: Date
+): Promise<{ career: Career; outcome: MatchOutcome } | { pending: true }>;

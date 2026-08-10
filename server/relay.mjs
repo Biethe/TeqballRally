@@ -21,6 +21,7 @@ import { WebSocketServer } from "ws";
 import { handleApi, sweepRateLimits } from "./api.mjs";
 import { authenticate, publicProfile } from "./accounts.mjs";
 import { arrived, left, onlineCount } from "./presence.mjs";
+import { begin, departed, sweepMatches } from "./matches.mjs";
 import { openStore } from "./store.mjs";
 
 /**
@@ -88,12 +89,13 @@ function pair(host, guest) {
   room.seats[1] = guest;
   host.teq = { room, code, role: "host" };
   guest.teq = { room, code, role: "guest" };
+  openMatch(host, guest);
   for (const [socket, peer, role] of [
     [host, guest, "host"],
     [guest, host, "guest"],
   ]) {
     send(socket, { t: "joined", room: code, role, ready: true });
-    send(socket, { t: "peer", joined: true, who: peer.identity ?? null });
+    send(socket, { t: "peer", joined: true, who: peer.identity ?? null, match: socket.matchId });
   }
   console.log(`[relay] paired two players into ${code} (${rooms.size} rooms)`);
 }
@@ -163,7 +165,25 @@ function peerOf(room, socket) {
   return room.seats.find((s) => s && s !== socket) ?? null;
 }
 
+/**
+ * Two seats are now a match.
+ *
+ * Its id goes to both sides so both can report the result against it, and the
+ * relay keeps it so that a claim of "they left" can be checked against what
+ * actually happened to the socket rather than taken on trust.
+ */
+function openMatch(a, b) {
+  const id = begin(a.presenceId ?? null, b.presenceId ?? null);
+  a.matchId = id;
+  b.matchId = id;
+}
+
 function releaseSeat(socket) {
+  // Before the presence release, so the match still knows who this was.
+  if (socket.matchId) {
+    departed(socket.matchId, socket.presenceId ?? null);
+    socket.matchId = null;
+  }
   if (socket.presenceId) {
     left(socket.presenceId);
     socket.presenceId = null;
@@ -201,9 +221,10 @@ async function handleJoin(socket, msg) {
   const peer = peerOf(room, socket);
   send(socket, { t: "joined", room: code, role: socket.teq.role, ready: Boolean(peer) });
   if (peer) {
+    openMatch(socket, peer);
     // Tell the peer someone arrived, and re-confirm its own seat is now live.
-    send(peer, { t: "peer", joined: true, who: socket.identity ?? null });
-    send(socket, { t: "peer", joined: true, who: peer.identity ?? null });
+    send(peer, { t: "peer", joined: true, who: socket.identity ?? null, match: peer.matchId });
+    send(socket, { t: "peer", joined: true, who: peer.identity ?? null, match: socket.matchId });
   }
   console.log(`[relay] ${socket.teq.role} joined ${code} (${rooms.size} rooms)`);
 }
@@ -309,6 +330,7 @@ const sweep = setInterval(() => {
     if (room.emptyAt !== null && now - room.emptyAt > EMPTY_ROOM_TTL_MS) rooms.delete(code);
   }
   sweepRateLimits(now);
+  sweepMatches(now);
 }, IDLE_TIMEOUT_MS / 3);
 sweep.unref?.();
 
