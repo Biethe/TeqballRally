@@ -17,6 +17,7 @@ import {
   encode,
   type GameMessage,
   type NetMessage,
+  type PeerIdentity,
   type PeerRole,
 } from "./protocol";
 
@@ -46,7 +47,7 @@ export interface NetHandlers {
   onMessage?: (msg: GameMessage) => void;
   onStateChange?: (state: NetState, detail?: string) => void;
   /** The other player arrived (true) or left (false). */
-  onPeer?: (present: boolean) => void;
+  onPeer?: (present: boolean, who?: PeerIdentity | null) => void;
   /** Quick match only: still waiting, with this many players ahead. */
   onQueued?: (ahead: number) => void;
   /** Fatal: the room was refused, or the socket died. */
@@ -77,9 +78,15 @@ export class NetConnection {
   /** Smoothed round trip in ms, or null until the first pong. */
   rttMs: number | null = null;
 
+  /**
+   * @param token The account this seat plays from, so the relay can tell the
+   * opponent who they are up against. Optional: a player without one is shown
+   * as a guest, which is the same game.
+   */
   constructor(
     private url: string,
-    handlers: NetHandlers = {}
+    handlers: NetHandlers = {},
+    private token?: string
   ) {
     this.handlers = handlers;
   }
@@ -121,7 +128,7 @@ export class NetConnection {
    * alone in the room.
    */
   join(room: string): Promise<{ role: PeerRole; ready: boolean }> {
-    return this.handshake({ t: "join", v: PROTOCOL_VERSION, room });
+    return this.handshake({ t: "join", v: PROTOCOL_VERSION, room, token: this.token });
   }
 
   /**
@@ -130,7 +137,10 @@ export class NetConnection {
    * position meanwhile so the UI can say something truthful.
    */
   quickMatch(): Promise<{ role: PeerRole; ready: boolean }> {
-    return this.handshake({ t: "queue", v: PROTOCOL_VERSION }, JOIN_TIMEOUT_MS_QUEUE);
+    return this.handshake(
+      { t: "queue", v: PROTOCOL_VERSION, token: this.token },
+      JOIN_TIMEOUT_MS_QUEUE
+    );
   }
 
   /** Stop waiting for a pairing, keeping the socket for another attempt. */
@@ -237,7 +247,7 @@ export class NetConnection {
 
       case "peer":
         this.setState(msg.joined ? "ready" : "waiting");
-        this.handlers.onPeer?.(msg.joined);
+        this.handlers.onPeer?.(msg.joined, msg.who ?? null);
         return;
 
       // Answer the peer's clock probe. Their `sent` is echoed untouched so only

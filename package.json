@@ -12,6 +12,7 @@
     "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug",
     "android:open": "cap open android",
     "relay": "node server/relay.mjs",
+    "rules": "node scripts/build-rules.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

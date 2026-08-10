@@ -18,6 +18,19 @@
 
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
+import { handleApi, sweepRateLimits } from "./api.mjs";
+import { authenticate, publicProfile } from "./accounts.mjs";
+import { defaultStore } from "./store.mjs";
+
+/**
+ * Accounts live beside the relay rather than in a service of their own: two
+ * deployments and two URLs to keep alive, in exchange for separating a
+ * websocket forwarder from a few hundred bytes of JSON, is not a trade worth
+ * making yet. The client already talks to one base URL, so moving it later
+ * costs a config change.
+ */
+const store = await defaultStore().load();
+console.log(`[relay] ${store.size} players loaded`);
 
 const PORT = Number(process.env.PORT ?? 8787);
 const PROTOCOL_VERSION = 1;
@@ -74,14 +87,29 @@ function pair(host, guest) {
   room.seats[1] = guest;
   host.teq = { room, code, role: "host" };
   guest.teq = { room, code, role: "guest" };
-  for (const [socket, role] of [
-    [host, "host"],
-    [guest, "guest"],
+  for (const [socket, peer, role] of [
+    [host, guest, "host"],
+    [guest, host, "guest"],
   ]) {
     send(socket, { t: "joined", room: code, role, ready: true });
-    send(socket, { t: "peer", joined: true });
+    send(socket, { t: "peer", joined: true, who: peer.identity ?? null });
   }
   console.log(`[relay] paired two players into ${code} (${rooms.size} rooms)`);
+}
+
+/**
+ * Attach the account behind a socket, if it presented a token.
+ *
+ * Verified here rather than taken from whatever the client says it is called:
+ * a name a peer can choose for itself is a name that can be somebody else's,
+ * and the whole point of the account is that the person across the net is who
+ * the card says they are. Anonymous play still works — the identity is simply
+ * absent, and the other side is shown a guest.
+ */
+function identify(socket, msg) {
+  if (socket.identity) return;
+  const player = authenticate(store, msg?.token);
+  socket.identity = player ? publicProfile(player, store.rankOf(player.id)) : null;
 }
 
 function handleQueue(socket, msg) {
@@ -89,6 +117,7 @@ function handleQueue(socket, msg) {
   if (msg.v !== PROTOCOL_VERSION) {
     return send(socket, { t: "error", reason: "version mismatch — update the app" });
   }
+  identify(socket, msg);
   if (queue.includes(socket)) return send(socket, { t: "queued", ahead: queue.indexOf(socket) });
 
   // Take the longest-waiting player, skipping any that went away without the
@@ -149,6 +178,7 @@ function handleJoin(socket, msg) {
   const seat = room.seats.indexOf(null);
   if (seat < 0) return send(socket, { t: "error", reason: "room is full" });
 
+  identify(socket, msg);
   room.seats[seat] = socket;
   socket.teq = { room, code, role: seat === 0 ? "host" : "guest" };
   socket.isAlive = true;
@@ -157,8 +187,8 @@ function handleJoin(socket, msg) {
   send(socket, { t: "joined", room: code, role: socket.teq.role, ready: Boolean(peer) });
   if (peer) {
     // Tell the peer someone arrived, and re-confirm its own seat is now live.
-    send(peer, { t: "peer", joined: true });
-    send(socket, { t: "peer", joined: true });
+    send(peer, { t: "peer", joined: true, who: socket.identity ?? null });
+    send(socket, { t: "peer", joined: true, who: peer.identity ?? null });
   }
   console.log(`[relay] ${socket.teq.role} joined ${code} (${rooms.size} rooms)`);
 }
@@ -166,10 +196,20 @@ function handleJoin(socket, msg) {
 const httpServer = createServer((req, res) => {
   if (req.url === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, rooms: rooms.size, waiting: queue.length }));
+    res.end(
+      JSON.stringify({ ok: true, rooms: rooms.size, waiting: queue.length, players: store.size })
+    );
     return;
   }
-  res.writeHead(404).end();
+  handleApi(store, req, res).then(
+    (handled) => {
+      if (!handled) res.writeHead(404).end();
+    },
+    (err) => {
+      console.error("[api] unhandled", err);
+      if (!res.headersSent) res.writeHead(500).end();
+    }
+  );
 });
 
 const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_FRAME_BYTES });
@@ -232,6 +272,7 @@ const sweep = setInterval(() => {
   for (const [code, room] of rooms) {
     if (room.emptyAt !== null && now - room.emptyAt > EMPTY_ROOM_TTL_MS) rooms.delete(code);
   }
+  sweepRateLimits(now);
 }, IDLE_TIMEOUT_MS / 3);
 sweep.unref?.();
 
@@ -240,6 +281,8 @@ httpServer.listen(PORT, () => console.log(`[relay] listening on :${PORT}`));
 const shutdown = () => {
   clearInterval(sweep);
   for (const socket of wss.clients) socket.close(1001, "server shutting down");
+  // The last few minutes of play are worth the two milliseconds this costs.
+  void store.flush();
   httpServer.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 };

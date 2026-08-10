@@ -19,5 +19,10 @@ test-results/
 # this the native build fails on a missing @mipmap/ic_launcher resource.
 !android/app/src/main/res/**/*.png
 
+# The accounts store, when the relay is run locally. Player records are not
+# something to commit, and DATA_DIR moves them somewhere real in production.
+data/
+server/data/
+
 # Windows download metadata accidentally copied with assets
 *:Zone.Identifier

@@ -51,3 +51,16 @@ export function looksReachable(url: string, isNativeApp: boolean): boolean {
 export function relayUrl(): string {
   return resolveRelayUrl(import.meta.env.VITE_RELAY_URL, window.location);
 }
+
+/**
+ * The accounts API's base URL, derived from the relay's.
+ *
+ * One address to configure, not two: the API is served by the same process on
+ * the same port, so deriving it means a deployment cannot end up with a relay
+ * and an API pointing at different places — which would show up as a player
+ * whose trophies exist but whose opponent is a stranger.
+ */
+export function apiBase(url: string = relayUrl()): string {
+  const http = url.replace(/^ws(s?):/i, "http$1:");
+  return http.replace(/\/+$/, "");
+}

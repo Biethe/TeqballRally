@@ -35,6 +35,7 @@ import {
   normalizeRoomCode,
   isValidRoomCode,
   isValidSetup,
+  type PeerIdentity,
   type PeerRole,
 } from "./net/protocol";
 import { ModelViewer } from "./viewer";
@@ -56,10 +57,33 @@ import {
   type Career,
 } from "./progress";
 import { nextTier, tierFor, tierProgress } from "./league";
+import {
+  ApiError,
+  changeName,
+  fetchLeaderboard,
+  fetchMe,
+  nameProblem,
+  readIdentity,
+  reportMatch,
+  signUp,
+  storeIdentity,
+  tidyName,
+  type Identity,
+  type Profile,
+} from "./account";
 import { RATING_KEYS, rating, totalPower } from "./ratings";
 import { dailyChallenges, isComplete, secondsUntilRollover } from "./challenges";
 import { LANGUAGES, detectLanguage, isLanguage, setLanguage, t as tr, tf } from "./i18n";
-import { BALLS, CHARACTERS, COURT, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
+import {
+  BALLS,
+  CHARACTERS,
+  COURT,
+  GROUND_Y,
+  SETS_TO_WIN,
+  SIM_DT,
+  type CameraMode,
+  type CharacterDef,
+} from "./config";
 
 /** Longest real frame the simulation will honour; beyond this, time is dropped. */
 const MAX_FRAME_DT = 1 / 20;
@@ -573,10 +597,55 @@ async function boot(): Promise<void> {
    */
   let career: Career = readCareer();
 
+  /**
+   * The account, if this device has one.
+   *
+   * Everything about it is optional. The career already works offline, and an
+   * account makes it the server's copy instead of the device's — which is what
+   * a leaderboard needs to mean anything. Nothing here may ever stand between
+   * a player and a match: every call is allowed to fail, and failing leaves
+   * the local career exactly as it was.
+   */
+  let identity: Identity | null = readIdentity();
+  let profile: Profile | null = null;
+
   const saveCareer = (next: Career) => {
     career = next;
     storeCareer(career);
     refreshWallet();
+  };
+
+  /**
+   * Adopt the career the server holds.
+   *
+   * The server scored the same match from the same rules, so the two normally
+   * agree; when they do not, the server is right by definition and this is
+   * where that is settled.
+   */
+  const adoptServerCareer = (next: Career) => {
+    saveCareer(next);
+  };
+
+  /** Catch up with the server in the background, if there is an account. */
+  const refreshProfile = async (): Promise<void> => {
+    if (!identity) return;
+    try {
+      const me = await fetchMe(identity.token);
+      profile = me;
+      if (me.name !== identity.name) {
+        identity = { ...identity, name: me.name };
+        storeIdentity(identity);
+      }
+      adoptServerCareer(me.career);
+    } catch (err) {
+      // Offline, or a server having a bad minute. The game does not care.
+      if (err instanceof ApiError && err.status === 401) {
+        // The account is gone from the server's side; stop pretending it is not.
+        identity = null;
+        profile = null;
+        storeIdentity(null);
+      }
+    }
   };
 
   const refreshWallet = () => {
@@ -604,6 +673,8 @@ async function boot(): Promise<void> {
       },
       onChampions: showChampions,
       onChallenges: showChallenges,
+      onProfile: () => showProfile(),
+      profileLabel: identity?.name ?? null,
       onSettings: () => showSettings(showTitle),
       challengeReady: rewardWaiting(),
     });
@@ -649,6 +720,102 @@ async function boot(): Promise<void> {
       },
       onBack: showTitle,
     });
+  };
+
+  /** The one place a name-validation problem becomes a sentence. */
+  const nameMessage = (raw: string): string | null => {
+    const problem = nameProblem(raw);
+    return problem === null ? null : tr(`name.${problem}`);
+  };
+
+  const showProfile = (message: string | null = null, busy = false) => {
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    refreshWallet();
+    ui.showProfile({
+      profile,
+      message,
+      // Adopting the server's career is what keeps the leaderboard honest, and
+      // it costs a player whatever they built offline. That is worth saying
+      // before they press the button, not after.
+      freshStart:
+        profile === null && career.trophies > 0
+          ? tf("profile.fresh", { n: career.trophies })
+          : null,
+      busy,
+      onCreate: (raw) => {
+        const problem = nameMessage(raw);
+        if (problem) return showProfile(problem);
+        showProfile(null, true);
+        void signUp(tidyName(raw)).then(
+          (created) => {
+            identity = created.identity;
+            profile = created.profile;
+            // A brand-new account starts from the server's empty career rather
+            // than adopting whatever this device had been playing offline:
+            // the alternative is a leaderboard whose top row is whoever
+            // played the longest before signing up.
+            adoptServerCareer(created.career);
+            showProfile();
+          },
+          (err: unknown) => showProfile(errorMessage(err))
+        );
+      },
+      onRename: (raw) => {
+        if (!identity) return;
+        const problem = nameMessage(raw);
+        if (problem) return showProfile(problem);
+        const token = identity.token;
+        showProfile(null, true);
+        void changeName(token, tidyName(raw)).then(
+          (updated) => {
+            profile = updated;
+            identity = { ...identity!, name: updated.name };
+            storeIdentity(identity);
+            adoptServerCareer(updated.career);
+            showProfile();
+          },
+          (err: unknown) => showProfile(errorMessage(err))
+        );
+      },
+      onLeaderboard: showLeaderboard,
+      onBack: showTitle,
+    });
+  };
+
+  /** A failed request, as something a screen can show. */
+  const errorMessage = (err: unknown): string =>
+    err instanceof ApiError && err.status !== 0 ? err.message : tr("profile.offline");
+
+  const showLeaderboard = () => {
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    refreshWallet();
+    const mine = identity?.id ?? null;
+    ui.showLeaderboard({ rows: [], total: 0, me: null, message: null, onBack: showProfile });
+    void fetchLeaderboard(identity?.token).then(
+      (board) => {
+        const row = (r: { rank: number; id: string; name: string; trophies: number; tier: string }) => ({
+          ...r,
+          isMe: r.id === mine,
+        });
+        ui.showLeaderboard({
+          rows: board.rows.map(row),
+          total: board.total,
+          me: board.me && board.me.rank !== null ? row({ ...board.me, rank: board.me.rank }) : null,
+          message: null,
+          onBack: showProfile,
+        });
+      },
+      (err: unknown) =>
+        ui.showLeaderboard({
+          rows: [],
+          total: 0,
+          me: null,
+          message: errorMessage(err),
+          onBack: showProfile,
+        })
+    );
   };
 
   /** What the match just played contributes to the daily challenges. */
@@ -700,11 +867,25 @@ async function boot(): Promise<void> {
    * ladder that can be climbed by disconnecting is not a ladder.
    */
   const settleCareer = (won: boolean, championId: string, difficulty: DifficultyLevel) => {
-    const { career: next, outcome } = settleMatch(career, championId, difficulty, {
-      won,
-      ...matchTally(),
-    });
+    const tally = matchTally();
+    const { career: next, outcome } = settleMatch(career, championId, difficulty, { won, ...tally });
     saveCareer(next);
+    // Tell the server, and take its answer over ours. It scored the same match
+    // from the same rules, so the two normally agree — but a leaderboard built
+    // from totals a client posts is a ranking of whoever edited their save
+    // file best, and this is the difference.
+    if (identity) {
+      void reportMatch(identity.token, { championId, difficulty, won, ...tally }).then(
+        (server) => {
+          adoptServerCareer(server.career);
+          if (profile) profile = { ...profile, trophies: server.career.trophies, rank: server.rank };
+        },
+        () => {
+          // Offline: the local career already has the result, and the next
+          // successful call brings the server's copy back into line.
+        }
+      );
+    }
     return { next, outcome };
   };
 
@@ -966,7 +1147,8 @@ async function boot(): Promise<void> {
         opponent: them,
         difficulty: "normal",
         online: { conn, role, private: isPrivate },
-        labels: [tr("hud.you"), "RIVAL"],
+        // The name the relay verified, not one the peer announced for itself.
+        labels: [tr("hud.you"), opponent?.name ?? "RIVAL"],
         onEnd: (winner) => {
           ui.showEnd(winner, () => leaveMatch(), () => leaveMatch());
         },
@@ -996,14 +1178,30 @@ async function boot(): Promise<void> {
     showModes();
   };
 
+  /**
+   * Who is on the other side, once the relay has said.
+   *
+   * Held here rather than passed along the lobby chain because the answer
+   * arrives on a socket event and is needed several screens later, when the
+   * match is finally built.
+   */
+  let opponent: PeerIdentity | null = null;
+
   const quickMatch = () => {
     if (!onlineAvailable) return;
-    const conn = new NetConnection(relayUrl(), {
-      onQueued: (ahead) =>
-        ui.setLobbyDetail(
-          ahead === 0 ? "Waiting for an opponent…" : `Waiting — ${ahead} ahead of you`
-        ),
-    });
+    const conn = new NetConnection(
+      relayUrl(),
+      {
+        onQueued: (ahead) =>
+          ui.setLobbyDetail(
+            ahead === 0 ? "Waiting for an opponent…" : `Waiting — ${ahead} ahead of you`
+          ),
+        onPeer: (present, who) => {
+          if (present) opponent = who ?? null;
+        },
+      },
+      identity?.token
+    );
     netConn = conn;
     ui.showLobbyStatus("QUICK MATCH", "Connecting…", null, abandonLobby);
     conn
@@ -1023,11 +1221,16 @@ async function boot(): Promise<void> {
   const hostPrivateGame = () => {
     if (!onlineAvailable) return;
     const code = makeRoomCode();
-    const conn = new NetConnection(relayUrl(), {
-      onPeer: (present) => {
-        if (present) ui.setLobbyDetail("Opponent joined — starting…");
+    const conn = new NetConnection(
+      relayUrl(),
+      {
+        onPeer: (present, who) => {
+          opponent = present ? (who ?? null) : null;
+          if (present) ui.setLobbyDetail(`${who?.name ?? "Opponent"} joined — starting…`);
+        },
       },
-    });
+      identity?.token
+    );
     netConn = conn;
     ui.showLobbyStatus("PLAY A FRIEND", "Connecting…", code, abandonLobby);
     conn
@@ -1039,8 +1242,10 @@ async function boot(): Promise<void> {
         // second seat before there is a match to start.
         return new Promise<{ role: PeerRole }>((resolve) => {
           conn.setHandlers({
-            onPeer: (present) => {
-              if (present) resolve({ role: "host" });
+            onPeer: (present, who) => {
+              if (!present) return;
+              opponent = who ?? null;
+              resolve({ role: "host" });
             },
           });
         });
@@ -1068,7 +1273,11 @@ async function boot(): Promise<void> {
           ui.showLobbyStatus("BAD CODE", "That is not a valid room code", null, showOnline);
           return;
         }
-        const conn = new NetConnection(relayUrl());
+        const conn = new NetConnection(
+          relayUrl(),
+          { onPeer: (present, who) => (opponent = present ? (who ?? null) : null) },
+          identity?.token
+        );
         netConn = conn;
         ui.showLobbyStatus("JOINING", "Connecting…", code, abandonLobby);
         conn
@@ -1077,7 +1286,13 @@ async function boot(): Promise<void> {
             if (!ready) {
               // Seated, but alone: the host left between hosting and joining.
               ui.setLobbyDetail("Waiting for the host…");
-              conn.setHandlers({ onPeer: (p) => p && startOnlineMatch(conn, role, true) });
+              conn.setHandlers({
+                onPeer: (p, who) => {
+                  if (!p) return;
+                  opponent = who ?? null;
+                  startOnlineMatch(conn, role, true);
+                },
+              });
               return;
             }
             startOnlineMatch(conn, role, true);
@@ -1266,8 +1481,11 @@ async function boot(): Promise<void> {
     const ra = rate(a) ** 2;
     const rb = rate(b) ** 2;
     const winA = Math.random() < ra / (ra + rb);
-    const loserSets = Math.random() < 0.45 ? 1 : 0;
-    return { winA, sets: winA ? [2, loserSets] : [loserSets, 2] };
+    const loserSets = Math.random() < 0.45 ? SETS_TO_WIN - 1 : 0;
+    return {
+      winA,
+      sets: winA ? [SETS_TO_WIN, loserSets] : [loserSets, SETS_TO_WIN],
+    };
   };
 
   const scoreline = (a: CharacterDef, b: CharacterDef, sets: [number, number]) =>
@@ -1550,6 +1768,14 @@ async function boot(): Promise<void> {
   ui.hideIntroClip();
 
   showTitle();
+  // Catch up with the server behind the title screen. It never blocks the
+  // first screen, and if it fails nothing about the game changes.
+  void refreshProfile().then(() => {
+    // Only if the player is still looking at it. A profile that resolves while
+    // they are three screens into picking a match must not drag them back.
+    const title = document.getElementById("title-screen");
+    if (identity && title && !title.classList.contains("hidden")) showTitle();
+  });
 }
 
 void boot();

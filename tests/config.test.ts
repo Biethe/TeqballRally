@@ -15,6 +15,7 @@ import {
   PLAYER_REACH,
   PLAY_BOX,
   SERVE_POWER,
+  SERVE_EVERY,
   SERVE_X,
   SETS_TO_WIN,
   SPAWN,
@@ -287,10 +288,13 @@ describe("court and match rules", () => {
     expect(visibleHalfWidth).toBeGreaterThan(needed);
   });
 
-  it("uses the FITEQ best-of-three scoring", () => {
-    expect(WIN_SCORE).toBe(12);
+  it("uses a short best-of-three, sized for a phone", () => {
+    expect(WIN_SCORE).toBe(3);
     expect(SETS_TO_WIN).toBe(2);
     expect(MAX_TOUCHES).toBe(3);
+    // The serve has to change hands inside a set, or whoever serves first
+    // serves the whole thing.
+    expect(SERVE_EVERY).toBeLessThan(WIN_SCORE);
   });
 
   it("keeps the net posts inside the table width", () => {

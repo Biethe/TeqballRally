@@ -3035,3 +3035,276 @@ button.pad-focus {
     font-size: 13px;
   }
 }
+
+/* ---------------- the account ----------------
+   Two screens on the same skeleton as the rest of the career: a header with
+   the way back, and one scrolling column. */
+
+#profile-screen,
+#board-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: calc(max(10px, env(safe-area-inset-top)) + 46px) 16px 20px;
+  overflow: hidden;
+}
+
+#profile-screen.hidden,
+#board-screen.hidden {
+  display: none;
+}
+
+.account-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(160, 200, 245, 0.26);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: var(--lip);
+}
+
+.account-pitch {
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+
+.account-why,
+.account-warning {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* The catch, said on the screen rather than in a help page: it is the one
+   thing a player will wish they had been told. */
+.account-warning {
+  padding: 9px 12px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 194, 51, 0.34);
+  background: rgba(255, 194, 51, 0.09);
+  color: var(--gold);
+}
+
+.account-field {
+  display: grid;
+  gap: 5px;
+}
+
+.account-field span {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.account-field input {
+  pointer-events: auto;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 2px solid rgba(160, 200, 245, 0.4);
+  border-radius: 12px;
+  background: rgba(4, 16, 34, 0.6);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.account-field input:focus {
+  outline: none;
+  border-color: var(--teq);
+}
+
+.account-message {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gold);
+}
+
+.account-message.hidden {
+  display: none;
+}
+
+/* The code is the thing every community feature will be built on, so it is
+   set big enough to read down a phone to somebody. */
+.account-code {
+  display: grid;
+  gap: 3px;
+  justify-items: center;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(4, 16, 34, 0.55);
+}
+
+.account-code-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+}
+
+.account-code-value {
+  font-size: clamp(24px, 6vw, 32px);
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.account-code-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.account-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.account-stats > div {
+  display: grid;
+  gap: 3px;
+  justify-items: center;
+  padding: 9px 6px;
+  border-radius: 12px;
+  background: rgba(6, 22, 46, 0.6);
+  text-align: center;
+}
+
+.account-stats span {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.account-stats b {
+  font-size: 17px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.account-card .big-btn {
+  width: 100%;
+  padding: 12px 18px;
+  font-size: 17px;
+}
+
+.account-card .ghost-btn {
+  margin-top: 0;
+}
+
+/* ---- the leaderboard ---- */
+.board-row {
+  display: grid;
+  grid-template-columns: 2.6em 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid rgba(160, 200, 245, 0.2);
+  border-radius: 13px;
+  background: rgba(9, 30, 58, 0.7);
+}
+
+/* Your own row, wherever it is. Orange because it is the one that answers the
+   question the screen was opened to ask. */
+.board-row.me {
+  border-color: var(--teq);
+  background: linear-gradient(180deg, rgba(255, 140, 24, 0.22) 0%, rgba(9, 30, 58, 0.8) 100%);
+}
+
+.board-rank {
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.board-row.me .board-rank {
+  color: var(--teq);
+}
+
+.board-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-tier {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.board-trophies {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.board-empty {
+  padding: 22px 8px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Pinned below the list rather than inside it: the caller's row has to stay
+   on screen however far down the table they are. */
+.board-pinned {
+  width: min(720px, 100%);
+  margin: 8px auto 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(160, 200, 245, 0.22);
+}
+
+.board-pinned.hidden {
+  display: none;
+}
+
+@media (max-height: 500px) {
+  #profile-screen,
+  #board-screen {
+    padding-top: 42px;
+  }
+
+  .account-card {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+
+  .account-code,
+  .account-stats,
+  .account-why,
+  .account-warning,
+  .account-card .big-btn {
+    grid-column: 1 / -1;
+  }
+}
+
+/* The two warnings on the sign-up card say different things and must not look
+   like the same sentence twice: the fresh-start one is about what this press
+   costs, so it is the one that reads as a caution. */
+.account-warning.fresh {
+  border-color: rgba(255, 106, 19, 0.55);
+  background: rgba(255, 106, 19, 0.12);
+  color: #ffb37a;
+}
+
+.account-warning.hidden {
+  display: none;
+}
