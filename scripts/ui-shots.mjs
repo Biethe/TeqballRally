@@ -221,6 +221,25 @@ for (const dev of DEVICES) {
   });
   await page.reload({ waitUntil: "load" });
   await page.waitForTimeout(3000);
+  // The recovery code, shown directly: reaching it needs a server the layout
+  // harness does not run, and what is being checked is the card.
+  await page.evaluate(() => {
+    window.__teqUi?.showRecoveryCode({
+      code: "T3QR-4LLY-9F2K-8B7M",
+      note: null,
+      onDone: () => {},
+    });
+  });
+  await page.waitForTimeout(400);
+  await shot("recovery-code");
+  await page.evaluate(() => {
+    window.__teqUi?.showRestore({ message: null, busy: false, onRestore: () => {}, onBack: () => {} });
+  });
+  await page.waitForTimeout(400);
+  await shot("restore");
+  await page.goto(`http://localhost:${PORT}/?q=low&intro=0`, { waitUntil: "load" });
+  await page.waitForTimeout(2500);
+
   await page.locator("#btn-title-champions").click();
   await page.waitForTimeout(400);
   await shot("champions");

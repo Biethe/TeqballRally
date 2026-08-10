@@ -3308,3 +3308,54 @@ button.pad-focus {
 .account-warning.hidden {
   display: none;
 }
+
+/* ---- the recovery code ----
+   No back button and no way past this except the acknowledgement: the server
+   kept only a salted digest and genuinely cannot show it again. */
+#recovery-screen,
+#restore-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: calc(max(10px, env(safe-area-inset-top)) + 20px) 16px 20px;
+  overflow-y: auto;
+}
+
+#recovery-screen.hidden,
+#restore-screen.hidden {
+  display: none;
+}
+
+#restore-screen {
+  justify-content: flex-start;
+  align-items: stretch;
+  padding-top: calc(max(10px, env(safe-area-inset-top)) + 46px);
+  overflow: hidden;
+}
+
+.recovery-card {
+  width: min(440px, 100%);
+  text-align: center;
+}
+
+.recovery-card .career-title {
+  color: var(--gold);
+}
+
+/* Big, spaced and monospaced-by-tabular-figures: this is going to be copied
+   onto paper by somebody squinting at a phone. */
+.recovery-code {
+  display: block;
+  padding: 16px 10px;
+  border: 2px dashed rgba(255, 194, 51, 0.6);
+  border-radius: 14px;
+  background: rgba(255, 194, 51, 0.08);
+  color: var(--gold);
+  font-size: clamp(19px, 5.2vw, 27px);
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+  user-select: all;
+}

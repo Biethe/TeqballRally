@@ -20,7 +20,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { handleApi, sweepRateLimits } from "./api.mjs";
 import { authenticate, publicProfile } from "./accounts.mjs";
-import { defaultStore } from "./store.mjs";
+import { openStore } from "./store.mjs";
 
 /**
  * Accounts live beside the relay rather than in a service of their own: two
@@ -29,8 +29,8 @@ import { defaultStore } from "./store.mjs";
  * making yet. The client already talks to one base URL, so moving it later
  * costs a config change.
  */
-const store = await defaultStore().load();
-console.log(`[relay] ${store.size} players loaded`);
+const store = await openStore();
+console.log(`[relay] store ready (${await store.size()} players)`);
 
 const PORT = Number(process.env.PORT ?? 8787);
 const PROTOCOL_VERSION = 1;
@@ -106,18 +106,21 @@ function pair(host, guest) {
  * the card says they are. Anonymous play still works — the identity is simply
  * absent, and the other side is shown a guest.
  */
-function identify(socket, msg) {
-  if (socket.identity) return;
-  const player = authenticate(store, msg?.token);
-  socket.identity = player ? publicProfile(player, store.rankOf(player.id)) : null;
+async function identify(socket, msg) {
+  if (socket.identity !== undefined) return;
+  // Claimed immediately so two frames arriving together cannot both start a
+  // lookup and race to overwrite each other's answer.
+  socket.identity = null;
+  const player = await authenticate(store, msg?.token);
+  if (player) socket.identity = publicProfile(player, await store.rankOf(player.id));
 }
 
-function handleQueue(socket, msg) {
+async function handleQueue(socket, msg) {
   if (socket.teq) return send(socket, { t: "error", reason: "already in a room" });
   if (msg.v !== PROTOCOL_VERSION) {
     return send(socket, { t: "error", reason: "version mismatch — update the app" });
   }
-  identify(socket, msg);
+  await identify(socket, msg);
   if (queue.includes(socket)) return send(socket, { t: "queued", ahead: queue.indexOf(socket) });
 
   // Take the longest-waiting player, skipping any that went away without the
@@ -165,7 +168,7 @@ function releaseSeat(socket) {
   console.log(`[relay] left ${code} (${rooms.size} rooms)`);
 }
 
-function handleJoin(socket, msg) {
+async function handleJoin(socket, msg) {
   if (socket.teq) return send(socket, { t: "error", reason: "already in a room" });
   if (msg.v !== PROTOCOL_VERSION) {
     // Both halves ship together, so a mismatch means one side is a stale build.
@@ -178,7 +181,7 @@ function handleJoin(socket, msg) {
   const seat = room.seats.indexOf(null);
   if (seat < 0) return send(socket, { t: "error", reason: "room is full" });
 
-  identify(socket, msg);
+  await identify(socket, msg);
   room.seats[seat] = socket;
   socket.teq = { room, code, role: seat === 0 ? "host" : "guest" };
   socket.isAlive = true;
@@ -195,10 +198,16 @@ function handleJoin(socket, msg) {
 
 const httpServer = createServer((req, res) => {
   if (req.url === "/healthz") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({ ok: true, rooms: rooms.size, waiting: queue.length, players: store.size })
-    );
+    // The player count is a store read now, so this answers asynchronously —
+    // and answers `ok` even when the store is unreachable, because a health
+    // check that fails on a slow query takes the whole service out.
+    void store
+      .size()
+      .catch(() => null)
+      .then((players) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, rooms: rooms.size, waiting: queue.length, players }));
+      });
     return;
   }
   handleApi(store, req, res).then(
@@ -242,9 +251,16 @@ wss.on("connection", (socket) => {
       } catch {
         return;
       }
-      if (type === "join") handleJoin(socket, msg);
-      else if (type === "queue") handleQueue(socket, msg);
-      else dequeue(socket);
+      if (type === "cancel") {
+        dequeue(socket);
+        return;
+      }
+      // The identity lookup behind these is a store read, so both are async.
+      // A socket that closed while one was in flight is handled downstream:
+      // `send` only writes to an open socket, and a closed one has already
+      // been released from its seat.
+      const seating = type === "join" ? handleJoin(socket, msg) : handleQueue(socket, msg);
+      void seating.catch((err) => console.error("[relay] seating failed", err));
       return;
     }
 

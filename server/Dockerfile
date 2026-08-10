@@ -12,17 +12,18 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-COPY relay.mjs api.mjs accounts.mjs store.mjs rules.mjs ./
+COPY relay.mjs api.mjs accounts.mjs secrets.mjs store.mjs firestore.mjs rules.mjs ./
 
-# Players are kept in a JSON file under DATA_DIR. Cloud Run's filesystem is
-# ephemeral, so a deployment that means to keep a community needs a volume
-# mounted here — or `store.mjs` swapped for a managed database, which is the
-# one file it was shaped to be.
-ENV DATA_DIR=/data
-VOLUME ["/data"]
+# Players live in Firestore when FIRESTORE_PROJECT is set, which is what a
+# deployment does — Cloud Run's filesystem is ephemeral, so the JSON store the
+# code falls back to would lose the community on every restart. Credentials
+# come from the service account; there is no key file to mount or leak.
+#
+#   FIRESTORE_PROJECT=teqopen-4c7ae
+#   FIRESTORE_DATABASE=(default)      # only when it is not the default one
+ENV NODE_ENV=production
 
 # Cloud Run injects PORT; the relay already prefers it over its 8787 default.
-ENV NODE_ENV=production
 EXPOSE 8787
 
 # Run as the image's unprivileged user rather than root.

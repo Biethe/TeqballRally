@@ -62,13 +62,18 @@ import {
   changeName,
   fetchLeaderboard,
   fetchMe,
+  looksLikeCode,
   nameProblem,
+  newRecoveryCode,
   readIdentity,
   reportMatch,
+  restore,
   signUp,
   storeIdentity,
+  tidyCode,
   tidyName,
   type Identity,
+  type Issued,
   type Profile,
 } from "./account";
 import { RATING_KEYS, rating, totalPower } from "./ratings";
@@ -748,16 +753,11 @@ async function boot(): Promise<void> {
         if (problem) return showProfile(problem);
         showProfile(null, true);
         void signUp(tidyName(raw)).then(
-          (created) => {
-            identity = created.identity;
-            profile = created.profile;
-            // A brand-new account starts from the server's empty career rather
-            // than adopting whatever this device had been playing offline:
-            // the alternative is a leaderboard whose top row is whoever
-            // played the longest before signing up.
-            adoptServerCareer(created.career);
-            showProfile();
-          },
+          // A brand-new account starts from the server's empty career rather
+          // than adopting whatever this device had been playing offline: the
+          // alternative is a leaderboard whose top row is whoever played the
+          // longest before signing up.
+          (created) => adopt(created, null),
           (err: unknown) => showProfile(errorMessage(err))
         );
       },
@@ -770,7 +770,7 @@ async function boot(): Promise<void> {
         void changeName(token, tidyName(raw)).then(
           (updated) => {
             profile = updated;
-            identity = { ...identity!, name: updated.name };
+            identity = { id: updated.id, name: updated.name, token };
             storeIdentity(identity);
             adoptServerCareer(updated.career);
             showProfile();
@@ -778,8 +778,54 @@ async function boot(): Promise<void> {
           (err: unknown) => showProfile(errorMessage(err))
         );
       },
+      onRestore: () => showRestore(),
+      onNewCode: () => {
+        if (!identity) return;
+        showProfile(null, true);
+        void newRecoveryCode(identity.token).then(
+          (code) => ui.showRecoveryCode({
+            code,
+            note: tr("recovery.replaced"),
+            onDone: () => showProfile(),
+          }),
+          (err: unknown) => showProfile(errorMessage(err))
+        );
+      },
       onLeaderboard: showLeaderboard,
       onBack: showTitle,
+    });
+  };
+
+  /**
+   * Take on an account the server just issued or handed back, then make the
+   * player look at the recovery code before anything else happens.
+   */
+  const adopt = (issued: Issued, note: string | null) => {
+    identity = issued.identity;
+    profile = issued.profile;
+    adoptServerCareer(issued.career);
+    ui.showRecoveryCode({ code: issued.recoveryCode, note, onDone: () => showProfile() });
+  };
+
+  const showRestore = (message: string | null = null, busy = false) => {
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    refreshWallet();
+    ui.showRestore({
+      message,
+      busy,
+      onRestore: (id, code) => {
+        // Checked here so an obvious typo does not cost a round trip; the
+        // server is the one that decides.
+        if (id.trim().length !== 8) return showRestore(tr("recovery.badPlayer"));
+        if (!looksLikeCode(code)) return showRestore(tr("recovery.badCode"));
+        showRestore(null, true);
+        void restore(id, tidyCode(code)).then(
+          (back) => adopt(back, tr("recovery.replaced")),
+          (err: unknown) => showRestore(errorMessage(err))
+        );
+      },
+      onBack: () => showProfile(),
     });
   };
 

@@ -10,9 +10,12 @@
  * Authentication is a bearer token minted at registration and stored on the
  * device. No password, no email, no reset flow: those are three screens and a
  * mail provider standing between a player and a game, and the thing being
- * protected is a trophy count. The trade is stated rather than hidden — lose
- * the device, lose the account — and it is the right trade until there is
- * something worth more than trophies behind it.
+ * protected is a trophy count.
+ *
+ * A phone still gets lost, though, so there is a recovery code — sixteen
+ * characters, shown once, written down — which takes the account over onto a
+ * new device and revokes the old one. Neither secret is stored as it was
+ * issued; see `secrets.mjs` for why.
  *
  * The server settles matches itself, from the same rules the client runs
  * (`server/rules.mjs`). A leaderboard built from totals the client posts is a
@@ -20,7 +23,18 @@
  * server scores is at least a ranking of people who played.
  */
 
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
+import { NameTakenError } from "./store.mjs";
+import {
+  TOKEN_LENGTH,
+  digestsMatch,
+  looksLikeRecovery,
+  mintRecovery,
+  mintToken,
+  recoveryHash,
+  tidyRecovery,
+  tokenHash,
+} from "./secrets.mjs";
 import {
   SETS_TO_WIN,
   WIN_SCORE,
@@ -73,12 +87,12 @@ export class ValidationError extends Error {
   }
 }
 
-function mintId(store) {
+async function mintId(store) {
   for (let attempt = 0; attempt < 60; attempt++) {
     const bytes = randomBytes(ID_LENGTH);
     let id = "";
     for (let i = 0; i < ID_LENGTH; i++) id += ID_ALPHABET[bytes[i] % ID_ALPHABET.length];
-    if (!store.get(id)) return id;
+    if (!(await store.get(id))) return id;
   }
   throw new ValidationError("could not allocate a player id, try again", 503);
 }
@@ -96,7 +110,7 @@ export function normaliseName(raw) {
   return name;
 }
 
-/** What anyone may see about a player. Never the token. */
+/** What anyone may see about a player. Never a secret. */
 export function publicProfile(player, rank = null) {
   return {
     id: player.id,
@@ -109,52 +123,106 @@ export function publicProfile(player, rank = null) {
   };
 }
 
-/** What the owner of the account may see, which is everything but the token. */
-export function privateProfile(store, player) {
-  return { ...publicProfile(player, store.rankOf(player.id)), career: player.career };
+/** What the owner of the account may see, which is everything but the secrets. */
+export async function privateProfile(store, player) {
+  return { ...publicProfile(player, await store.rankOf(player.id)), career: player.career };
 }
 
-export function register(store, rawName, now = new Date()) {
+/**
+ * Create an account.
+ *
+ * Returns the record together with the two secrets that can never be read back
+ * out of the store: the token, which the device keeps, and the recovery code,
+ * which the player has to write down. Only their digests are kept.
+ */
+export async function register(store, rawName, now = new Date()) {
   const name = normaliseName(rawName);
-  if (store.nameTaken(name)) throw new ValidationError("that name is taken", 409);
+  const token = mintToken();
+  const recovery = mintRecovery();
   const player = {
-    id: mintId(store),
+    id: await mintId(store),
     name,
-    token: randomBytes(24).toString("hex"),
+    tokenHash: tokenHash(token),
+    recoverySalt: recovery.salt,
+    recoveryHash: recovery.hash,
     created: now.getTime(),
     lastSeen: now.getTime(),
     lastMatchAt: 0,
     matches: 0,
     career: freshCareer(dayKey(now)),
   };
-  store.add(player);
+  try {
+    await store.create(player);
+  } catch (err) {
+    if (err instanceof NameTakenError) throw new ValidationError(err.message, 409);
+    throw err;
+  }
+  return { player, token, recoveryCode: recovery.code };
+}
+
+export async function rename(store, player, rawName) {
+  const name = normaliseName(rawName);
+  if (name === player.name) return player;
+  try {
+    await store.rename(player, name);
+  } catch (err) {
+    if (err instanceof NameTakenError) throw new ValidationError(err.message, 409);
+    throw err;
+  }
   return player;
 }
 
-export function rename(store, player, rawName) {
-  const name = normaliseName(rawName);
-  if (name === player.name) return player;
-  if (store.nameTaken(name, player.id)) throw new ValidationError("that name is taken", 409);
-  store.rename(player, name);
-  return player;
+/**
+ * Take an account over onto this device with its recovery code.
+ *
+ * The old token stops working, deliberately: recovery is what somebody does
+ * when a phone is gone, and an account that keeps answering to the phone it
+ * was recovered away from has not been recovered.
+ */
+export async function recover(store, rawId, rawCode) {
+  const id = typeof rawId === "string" ? rawId.trim().toUpperCase() : "";
+  const code = tidyRecovery(rawCode);
+  // One message for every kind of failure, so this cannot be used to discover
+  // which player codes exist.
+  const refuse = () => new ValidationError("that code and player do not match", 403);
+  if (!looksLikeRecovery(code)) throw refuse();
+  const player = await store.get(id);
+  if (!player?.recoveryHash) throw refuse();
+  if (!digestsMatch(player.recoveryHash, recoveryHash(code, player.recoverySalt))) throw refuse();
+
+  const previous = player.tokenHash;
+  const token = mintToken();
+  player.tokenHash = tokenHash(token);
+  // A used recovery code is spent, and the new device is handed a fresh one.
+  // Otherwise a slip of paper somebody else photographed keeps working.
+  const next = mintRecovery();
+  player.recoverySalt = next.salt;
+  player.recoveryHash = next.hash;
+  await store.save(player);
+  await store.revokeToken?.(previous);
+  return { player, token, recoveryCode: next.code };
+}
+
+/** Replace the recovery code, from a device that is already signed in. */
+export async function regenerateRecovery(store, player) {
+  const next = mintRecovery();
+  player.recoverySalt = next.salt;
+  player.recoveryHash = next.hash;
+  await store.save(player);
+  return next.code;
 }
 
 /**
  * Authenticate a bearer token.
  *
- * Compared in constant time. The token is a lookup key rather than a secret
- * being verified against a stored hash, so this is belt and braces — but a map
- * lookup leaking through timing is exactly the kind of thing nobody notices
- * until it is a headline, and the cost here is one comparison.
+ * The digest is the lookup key, so a wrong token finds nothing rather than
+ * finding a record and then failing a comparison against a secret held beside
+ * it. There is no stored secret to leak through the timing of that comparison
+ * because there is no such comparison.
  */
-export function authenticate(store, token) {
-  if (typeof token !== "string" || token.length !== 48) return null;
-  const player = store.byTokenValue(token);
-  if (!player) return null;
-  const a = Buffer.from(player.token);
-  const b = Buffer.from(token);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-  return player;
+export async function authenticate(store, token) {
+  if (typeof token !== "string" || token.length !== TOKEN_LENGTH) return null;
+  return store.byToken(tokenHash(token));
 }
 
 /** Check a posted result is something a match could actually have produced. */
@@ -198,7 +266,7 @@ export function validateResult(body) {
  * project — but it does mean a scripted climb takes as long as playing would,
  * which is enough to keep a leaderboard worth looking at.
  */
-export function recordMatch(store, player, body, now = new Date()) {
+export async function recordMatch(store, player, body, now = new Date()) {
   const { championId, difficulty, tally } = validateResult(body);
   const since = now.getTime() - player.lastMatchAt;
   if (since < MATCH_COOLDOWN_MS) {
@@ -212,33 +280,33 @@ export function recordMatch(store, player, body, now = new Date()) {
   player.lastMatchAt = now.getTime();
   player.lastSeen = now.getTime();
   player.matches++;
-  store.touch();
+  await store.save(player);
   return { career, outcome };
 }
 
-export function claim(store, player, challengeId, now = new Date()) {
+export async function claim(store, player, challengeId, now = new Date()) {
   player.career = rollOver(player.career, dayKey(now));
   const before = player.career.coins;
   player.career = claimChallenge(player.career, challengeId);
   if (player.career.coins === before) {
     throw new ValidationError("that challenge is not ready, or is already collected");
   }
-  store.touch();
+  await store.save(player);
   return player.career;
 }
 
-export function upgrade(store, player, championId) {
+export async function upgrade(store, player, championId) {
   if (!CHARACTER_IDS.has(championId)) throw new ValidationError("unknown character");
   const before = player.career.coins;
   player.career = buyUpgrade(player.career, championId);
   if (player.career.coins === before) {
     throw new ValidationError("cannot upgrade — locked, maxed out, or not enough coins");
   }
-  store.touch();
+  await store.save(player);
   return player.career;
 }
 
-export function leaderboard(store, limit) {
-  const rows = store.leaderboard(Math.max(1, Math.min(100, limit || 25)));
+export async function leaderboard(store, limit) {
+  const rows = await store.leaderboard(Math.max(1, Math.min(100, limit || 25)));
   return rows.map((player, i) => publicProfile(player, i + 1));
 }

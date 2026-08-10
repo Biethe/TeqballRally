@@ -20,6 +20,8 @@ import {
   privateProfile,
   publicProfile,
   recordMatch,
+  recover,
+  regenerateRecovery,
   register,
   rename,
   upgrade,
@@ -91,8 +93,8 @@ const bearer = (req) => {
   return header.startsWith("Bearer ") ? header.slice(7) : "";
 };
 
-function requirePlayer(store, req) {
-  const player = authenticate(store, bearer(req));
+async function requirePlayer(store, req) {
+  const player = await authenticate(store, bearer(req));
   if (!player) throw new ValidationError("sign in first", 401);
   return player;
 }
@@ -128,71 +130,86 @@ export async function handleApi(store, req, res, now = new Date()) {
 
     if (path === "/api/players" && isPost) {
       const body = await readBody(req);
-      const player = register(store, body.name, now);
-      // The only time the token is ever sent. The device keeps it or the
-      // account is gone, which the client says plainly before registering.
-      sendJson(res, 201, { ...privateProfile(store, player), token: player.token });
+      const { player, token, recoveryCode } = await register(store, body.name, now);
+      // The only time either secret is ever sent. The device keeps the token;
+      // the player has to keep the recovery code, and the screen says so.
+      sendJson(res, 201, { ...(await privateProfile(store, player)), token, recoveryCode });
+      return true;
+    }
+
+    if (path === "/api/players/recover" && isPost) {
+      const body = await readBody(req);
+      const { player, token, recoveryCode } = await recover(store, body.id, body.code);
+      sendJson(res, 200, { ...(await privateProfile(store, player)), token, recoveryCode });
       return true;
     }
 
     if (path === "/api/players/me" && req.method === "GET") {
-      const player = requirePlayer(store, req);
+      const player = await requirePlayer(store, req);
       player.lastSeen = now.getTime();
-      sendJson(res, 200, privateProfile(store, player));
+      sendJson(res, 200, await privateProfile(store, player));
       return true;
     }
 
     if (path === "/api/players/me/name" && isPost) {
-      const player = requirePlayer(store, req);
+      const player = await requirePlayer(store, req);
       const body = await readBody(req);
-      rename(store, player, body.name);
-      sendJson(res, 200, privateProfile(store, player));
+      await rename(store, player, body.name);
+      sendJson(res, 200, await privateProfile(store, player));
+      return true;
+    }
+
+    if (path === "/api/players/me/recovery" && isPost) {
+      // A new code from a device that is already signed in, for a player who
+      // lost the slip of paper — or thinks somebody else has seen it.
+      const player = await requirePlayer(store, req);
+      sendJson(res, 200, { recoveryCode: await regenerateRecovery(store, player) });
       return true;
     }
 
     if (path === "/api/players/me/matches" && isPost) {
-      const player = requirePlayer(store, req);
+      const player = await requirePlayer(store, req);
       const body = await readBody(req);
-      const { career, outcome } = recordMatch(store, player, body, now);
-      sendJson(res, 200, { career, outcome, rank: store.rankOf(player.id) });
+      const { career, outcome } = await recordMatch(store, player, body, now);
+      sendJson(res, 200, { career, outcome, rank: await store.rankOf(player.id) });
       return true;
     }
 
     if (path === "/api/players/me/claim" && isPost) {
-      const player = requirePlayer(store, req);
+      const player = await requirePlayer(store, req);
       const body = await readBody(req);
-      sendJson(res, 200, { career: claim(store, player, body.challengeId, now) });
+      sendJson(res, 200, { career: await claim(store, player, body.challengeId, now) });
       return true;
     }
 
     if (path === "/api/players/me/upgrade" && isPost) {
-      const player = requirePlayer(store, req);
+      const player = await requirePlayer(store, req);
       const body = await readBody(req);
-      sendJson(res, 200, { career: upgrade(store, player, body.championId) });
+      sendJson(res, 200, { career: await upgrade(store, player, body.championId) });
       return true;
     }
 
     if (path === "/api/leaderboard" && req.method === "GET") {
-      const rows = leaderboard(store, Number(url.searchParams.get("limit")));
+      const rows = await leaderboard(store, Number(url.searchParams.get("limit")));
       // A caller who is signed in gets their own row too, however far down it
       // is: a leaderboard that cannot show you yourself is a poster.
-      const me = authenticate(store, bearer(req));
+      const me = await authenticate(store, bearer(req));
       sendJson(res, 200, {
         rows,
-        total: store.size,
-        me: me ? publicProfile(me, store.rankOf(me.id)) : null,
+        total: await store.size(),
+        me: me ? publicProfile(me, await store.rankOf(me.id)) : null,
       });
       return true;
     }
 
-    const player = path.startsWith("/api/players/") ? path.slice("/api/players/".length) : null;
-    if (player && req.method === "GET" && !player.includes("/")) {
-      const found = store.get(player.toUpperCase());
+    const code = path.startsWith("/api/players/") ? path.slice("/api/players/".length) : null;
+    if (code && req.method === "GET" && !code.includes("/")) {
+      const found = await store.get(code.toUpperCase());
       if (!found) {
         sendJson(res, 404, { error: "no player with that code" });
         return true;
       }
-      sendJson(res, 200, publicProfile(found, store.rankOf(found.id)));
+      sendJson(res, 200, publicProfile(found, await store.rankOf(found.id)));
       return true;
     }
 

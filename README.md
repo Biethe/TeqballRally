@@ -127,8 +127,13 @@ allowed to read looks fine from either side alone:
 
 ```bash
 npm run relay                      # port 8787
-node scripts/verify-accounts.mjs   # sign up, read the board, keep the name
+node scripts/verify-accounts.mjs   # sign up, recover onto another device
 ```
+
+It signs up from a real browser, reads the leaderboard, then opens a second
+page with empty storage — the closest a script gets to a new phone — restores
+the account onto it with the recovery code, and checks the first page is signed
+out afterwards.
 
 `?ts=8` speeds up simulation time. `?q=medium|high` forces a graphics tier for
 the session, overriding both the remembered choice and auto-detection. `?q=low`
@@ -269,8 +274,26 @@ wanting to keep their trophies.
 **Authentication is a bearer token** minted at registration and kept on the
 device. No password, no email, no reset flow: those are three screens and a
 mail provider standing between a player and a game, and what is being protected
-is a trophy count. The trade — lose the device, lose the account — is on the
-profile screen in as many words rather than buried in a help page.
+is a trophy count.
+
+A phone still gets lost, so there is a **recovery code** — sixteen Crockford
+characters in four groups, shown once on a screen with no way past it but the
+acknowledgement. Entering it on a new device moves the account there and
+revokes the old one, which is the point: an account that keeps answering to the
+phone it was recovered away from has not been recovered. The code is spent when
+it is used and a fresh one issued, so a slip of paper somebody photographed
+stops working.
+
+Neither secret is stored as it was issued (`server/secrets.mjs`). The token is
+kept as a plain SHA-256 because it is also the lookup key and has 192 bits
+behind it; the recovery code is salted, because it is short enough for a person
+to type and therefore short enough to attack in a leaked table. A database
+snapshot that leaks should not hand anybody every account in the game.
+
+The typed code is forgiving about case, hyphens and spaces, and folds the three
+letters Crockford's own decoder folds — O to zero, I and L to one. Not Q: an
+earlier version folded Q to zero too, and `tests/accounts.test.ts` caught that
+every minted code containing a Q could never be typed back in.
 
 **The server scores matches; the client reports them.** A leaderboard built
 from totals the client posts is a ranking of whoever edited their save file
@@ -304,17 +327,42 @@ else's, and the whole point of an account is that the person across the net is
 who the card says they are. Playing without an account still works — the
 opponent is simply shown as a guest.
 
-**Storage is the honest limitation.** `store.mjs` is a JSON file written
-atomically, with debounced flushes; the whole dataset is a few hundred bytes
-per player. A container with an ephemeral filesystem loses it on restart, which
-is fine for a preview and not fine for a community — so the Docker image
-declares a `/data` volume, and the seam is one file to swap for Firestore,
-which the project already has in its stack.
+**Two stores, one interface.** Every method is async — including the ones a
+file could answer instantly — because the store this deploys onto is Firestore
+and an interface shaped around the in-memory case would have had to be torn up
+the day it moved.
 
 ```bash
-npm run relay                       # port 8787, data in ./data
-DATA_DIR=/var/teq npm run relay     # somewhere that survives
+npm run relay                                  # JSON file in ./data
+DATA_DIR=/var/teq npm run relay                # …somewhere that survives
+FIRESTORE_PROJECT=teqopen-4c7ae npm run relay  # what production runs
 ```
+
+`FirestoreStore` keeps three collections: `players/{id}`, and two index
+collections `names/{lowercase}` and `tokens/{digest}`. Firestore has no unique
+constraint and no cheap find-by-field — a document id *is* the index — so
+taking a name is a transaction over the index and the player together, rather
+than two writes with a race between them. Rank is two counting queries rather
+than a table scan, so it stays cheap at the size the game hopes to reach.
+
+`tests/firestore.test.ts` runs the store against a double that implements only
+the calls it makes and throws on anything else. That is not a claim it works
+against Google's Firestore — nothing short of pointing it at one proves that —
+but it does hold the part that is mine: the shape of every read and write, that
+the name index is taken *inside* the transaction, and that a recovered token
+replaces the old one rather than joining it.
+
+**Deploying.**
+
+```bash
+./server/deploy.sh                 # Cloud Run, europe-west1, Firestore
+VITE_RELAY_URL=wss://… npm run build
+```
+
+Credentials come from the Cloud Run service account: nothing to configure, no
+key file to leak. The script re-checks that `server/rules.mjs` is not stale
+before it pushes, because that is the last moment a server about to score
+matches by last month's rules can be caught.
 
 Nothing about an account is required to play. The career already works offline;
 signing in makes it the server's copy instead of the device's. Every request
