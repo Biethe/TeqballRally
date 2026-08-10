@@ -232,6 +232,15 @@ for (const dev of DEVICES) {
   await page.locator("#challenges-screen .select-back").click();
   await page.waitForTimeout(300);
 
+  // The account screens. The API is not running in this harness, so the
+  // signed-out state is what is captured — which is the state that has the
+  // form, the pitch and the warning on it, and the one worth checking.
+  await page.locator("#btn-title-profile").click();
+  await page.waitForTimeout(500);
+  await shot("profile");
+  await page.locator("#profile-screen .select-back").click();
+  await page.waitForTimeout(300);
+
   await page.locator("#btn-title-settings").click();
   await page.waitForTimeout(400);
   await shot("settings");
@@ -295,6 +304,28 @@ for (const dev of DEVICES) {
   });
   await page.waitForTimeout(1500);
   await shot("head-to-head");
+
+  // The leaderboard, with rows: the harness has no server, so it is shown
+  // directly. An empty table lays out nothing like a full one.
+  await page.evaluate(() => {
+    document.getElementById("hud")?.classList.add("hidden");
+    const rows = [
+      { rank: 1, id: "AAAA1111", name: "Ana Silva", trophies: 1840, tier: "PRO II", isMe: false },
+      { rank: 2, id: "BBBB2222", name: "Kwame", trophies: 1502, tier: "PRO II", isMe: false },
+      { rank: 3, id: "CCCC3333", name: "Léa", trophies: 980, tier: "JUNIOR II", isMe: false },
+      { rank: 4, id: "DDDD4444", name: "Marco_88", trophies: 640, tier: "JUNIOR I", isMe: false },
+      { rank: 5, id: "EEEE5555", name: "Yuki", trophies: 310, tier: "ROOKIE III", isMe: false },
+    ];
+    window.__teqUi?.showLeaderboard({
+      rows,
+      total: 218,
+      me: { rank: 42, id: "MEME0000", name: "You", trophies: 165, tier: "ROOKIE II", isMe: true },
+      message: null,
+      onBack: () => {},
+    });
+  });
+  await page.waitForTimeout(400);
+  await shot("leaderboard");
 
   await ctx.close();
   console.log(`captured ${dev.name}`);

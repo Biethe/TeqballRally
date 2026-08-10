@@ -121,6 +121,15 @@ node scripts/verify-build.mjs
 node scripts/verify-portrait.mjs   # the phone-upright control scheme
 ```
 
+The account flow needs a server as well as a page, because what it checks is
+the two of them reaching each other — a cross-origin reply the page is not
+allowed to read looks fine from either side alone:
+
+```bash
+npm run relay                      # port 8787
+node scripts/verify-accounts.mjs   # sign up, read the board, keep the name
+```
+
 `?ts=8` speeds up simulation time. `?q=medium|high` forces a graphics tier for
 the session, overriding both the remembered choice and auto-detection. `?q=low`
 and `?light=1` still parse, and now resolve to `medium`.
@@ -179,6 +188,21 @@ The match simulates at a fixed 60 Hz regardless of display rate (`SIM_DT` in
 `src/main.ts`), so a 30fps phone and a 120fps phone play the same game. Presses
 are latched between simulation steps — see `latchInput` in `src/input.ts`.
 
+## Scoring
+
+A set is **first to three points**; a match is **best of three sets**. Short on
+purpose: a rally here is a handful of touches and a phone match has to fit in
+the gap it is being played in — a queue, a train, an advert break. First to
+three makes every point a point that matters, and best of three keeps the shape
+of a real match around it, because losing a set and still winning is the thing
+that makes the second one worth playing.
+
+`WIN_SCORE` and `SETS_TO_WIN` in `src/config.ts`. Anything measured in points
+is sized against them — the daily challenge goals, the server's bounds on a
+posted result — and `tests/progress.test.ts` holds every goal to being
+reachable in a session, so shortening a set again cannot quietly turn a daily
+challenge into a weekly one.
+
 ## The career
 
 Everything a player keeps between matches lives in `localStorage` and nowhere
@@ -220,6 +244,82 @@ Only friendly and competition matches settle a career. Practice pays nothing
 because it cannot be lost, and online pays nothing because the result is only
 as trustworthy as the far end of the connection — a ladder that can be climbed
 by disconnecting is not a ladder.
+
+## Accounts and the backend
+
+`server/` is one process serving two things on one port: the match relay, and
+the accounts API the community features will be built on. One deployment, one
+URL to configure, and `apiBase()` derives the API's address from the relay's so
+they cannot end up pointing at different places.
+
+```
+server/relay.mjs      the websocket relay, and the HTTP server both share
+server/api.mjs        eight endpoints, no framework
+server/accounts.mjs   ids, names, tokens, and what a match is worth
+server/store.mjs      where players are kept
+server/rules.mjs      GENERATED — the game's own career rules
+```
+
+**The id is the point.** Eight Crockford base32 characters, minted once and the
+same next week and on the next phone. Every community feature — a friend list,
+a club, a rivalry, a shared replay — hangs off it. The name is a label on top,
+changeable, because people change their minds about names and never about
+wanting to keep their trophies.
+
+**Authentication is a bearer token** minted at registration and kept on the
+device. No password, no email, no reset flow: those are three screens and a
+mail provider standing between a player and a game, and what is being protected
+is a trophy count. The trade — lose the device, lose the account — is on the
+profile screen in as many words rather than buried in a help page.
+
+**The server scores matches; the client reports them.** A leaderboard built
+from totals the client posts is a ranking of whoever edited their save file
+best. So the client sends a *result* — who played, at what difficulty, won or
+lost, points, sets, rallies — and the server settles it with the same
+arithmetic the client just ran, then hands back the career it now holds. Every
+posted result is checked against what a match can physically produce, and there
+is a cooldown per player, so a scripted climb takes as long as playing would.
+That is not cheat-proof, which would mean running the simulation server-side
+and is a different project; it is enough to keep a leaderboard worth looking at.
+
+Both sides run the same arithmetic because there is only one copy of it.
+`src/rules.ts` re-exports the pure, environment-free pieces, and
+`scripts/build-rules.mjs` bundles them into `server/rules.mjs`:
+
+```bash
+npm run rules        # regenerate after touching league/challenges/progress
+```
+
+The bundle is committed because `server/Dockerfile` deliberately copies only
+the server directory — an image carrying the whole build toolchain to
+regenerate one file is a poor trade. `tests/rules.test.ts` fails if it has
+drifted, and separately asserts that both copies score an identical match
+identically. A server settling matches by last month's rules is a leaderboard
+nobody can explain.
+
+**Names on the wire.** The relay looks up the account behind each socket from
+its token, and tells each side who the other actually is. Verified rather than
+announced: a name a client can choose for itself is a name that can be somebody
+else's, and the whole point of an account is that the person across the net is
+who the card says they are. Playing without an account still works — the
+opponent is simply shown as a guest.
+
+**Storage is the honest limitation.** `store.mjs` is a JSON file written
+atomically, with debounced flushes; the whole dataset is a few hundred bytes
+per player. A container with an ephemeral filesystem loses it on restart, which
+is fine for a preview and not fine for a community — so the Docker image
+declares a `/data` volume, and the seam is one file to swap for Firestore,
+which the project already has in its stack.
+
+```bash
+npm run relay                       # port 8787, data in ./data
+DATA_DIR=/var/teq npm run relay     # somewhere that survives
+```
+
+Nothing about an account is required to play. The career already works offline;
+signing in makes it the server's copy instead of the device's. Every request
+has a six-second ceiling and every failure is a no-op, so a server having a bad
+minute costs a player a moment and never a match.
 
 ## Ratings
 
@@ -267,12 +367,13 @@ TITLE ── PLAY ───────┬── FRIENDLY ──── difficult
       │              └── ONLINE ────── quick / friend / code
       ├── CHAMPIONS ──── the roster, and what it costs to grow it
       ├── CHALLENGES ─── today's three
+      ├── PROFILE ────── your name and code ── LEADERBOARD
       └── SETTINGS ───── DISPLAY / GAMEPLAY / AUDIO
 ```
 
 Nothing is ever more than Home → Category → Choice deep, and every screen has
 its BACK control in the same place. The title screen carries one dominant
-action and three quiet ones: a player opening the game for the first time only
+action and four quiet ones: a player opening the game for the first time only
 has to recognise PLAY. The career doors are chips rather than cards for the
 same reason — the screen still has exactly one thing on it that looks like the
 thing to do. A finished challenge waiting to be collected puts an orange dot on

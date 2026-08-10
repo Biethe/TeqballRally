@@ -26,19 +26,32 @@ export interface Challenge {
  * The pool. Deliberately made of things a player does by playing rather than
  * by playing a particular way: a challenge that asks for a backflip finish
  * teaches them to farm backflips instead of to play the rally.
+ *
+ * Every goal is sized against what one match can actually produce. A set is
+ * first to three and a match is best of three sets, so a winning match yields
+ * six to eight points — a goal of forty would be a weekly challenge wearing a
+ * daily one's clothes.
  */
 const POOL: Challenge[] = [
   { id: "play3", kind: "matches", goal: 3, reward: 120 },
   { id: "play5", kind: "matches", goal: 5, reward: 200 },
   { id: "win1", kind: "wins", goal: 1, reward: 100 },
   { id: "win3", kind: "wins", goal: 3, reward: 250 },
-  { id: "points20", kind: "points", goal: 20, reward: 130 },
-  { id: "points40", kind: "points", goal: 40, reward: 220 },
-  { id: "rally6", kind: "rallies", goal: 6, reward: 160 },
-  { id: "rally12", kind: "rallies", goal: 12, reward: 260 },
+  { id: "points10", kind: "points", goal: 10, reward: 130 },
+  { id: "points20", kind: "points", goal: 20, reward: 220 },
+  { id: "rally5", kind: "rallies", goal: 5, reward: 160 },
+  { id: "rally10", kind: "rallies", goal: 10, reward: 260 },
   { id: "sets2", kind: "sets", goal: 2, reward: 140 },
   { id: "sets4", kind: "sets", goal: 4, reward: 240 },
 ];
+
+/**
+ * Every challenge that can ever be offered.
+ *
+ * Exported for the test that holds each goal to being reachable in a session:
+ * the goals are sized against the scoring, and the scoring has moved before.
+ */
+export const ALL_CHALLENGES: readonly Challenge[] = POOL;
 
 /** How many are offered at once. Three: enough to choose between, few enough to finish. */
 export const DAILY_COUNT = 3;

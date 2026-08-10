@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RELAY_PORT, looksReachable, resolveRelayUrl } from "../src/net/endpoint";
+import { DEFAULT_RELAY_PORT, apiBase, looksReachable, resolveRelayUrl } from "../src/net/endpoint";
 
 const page = (protocol: string, hostname: string) => ({ protocol, hostname });
 
@@ -58,5 +58,18 @@ describe("looksReachable", () => {
   it("does not mistake a hostname that merely contains localhost", () => {
     expect(looksReachable("wss://localhost.example.com", true)).toBe(true);
     expect(looksReachable("wss://notlocalhost", true)).toBe(true);
+  });
+});
+
+describe("apiBase", () => {
+  it("is the relay's own address, spoken over HTTP", () => {
+    // One address to configure, not two: a deployment cannot end up with a
+    // relay and an API pointing at different places.
+    expect(apiBase("wss://teq.example.com")).toBe("https://teq.example.com");
+    expect(apiBase("ws://192.168.1.4:8787")).toBe("http://192.168.1.4:8787");
+  });
+
+  it("does not leave a trailing slash for paths to double up on", () => {
+    expect(apiBase("wss://teq.example.com/")).toBe("https://teq.example.com");
   });
 });

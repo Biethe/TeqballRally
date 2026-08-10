@@ -209,6 +209,8 @@ export interface JoinMessage {
   t: "join";
   v: number;
   room: string;
+  /** The account this seat is played from, if there is one. */
+  token?: string;
 }
 
 /**
@@ -222,6 +224,7 @@ export interface JoinMessage {
 export interface QueueMessage {
   t: "queue";
   v: number;
+  token?: string;
 }
 
 /** Relay -> client: waiting for an opponent. `ahead` is the queue position. */
@@ -244,9 +247,26 @@ export interface JoinedMessage {
   ready: boolean;
 }
 
+/** A verified opponent, as the relay knows them. Absent for a guest. */
+export interface PeerIdentity {
+  id: string;
+  name: string;
+  trophies: number;
+  tier: string;
+}
+
 export interface PeerMessage {
   t: "peer";
   joined: boolean;
+  /**
+   * Who is on the other side, verified by the relay against their token.
+   *
+   * Verified rather than announced by the peer itself: a name a client can
+   * choose for itself is a name that can be somebody else's, and the whole
+   * point of an account is that the person across the net is who the card
+   * says they are. Null means they are playing without one.
+   */
+  who?: PeerIdentity | null;
 }
 
 export interface ErrorMessage {

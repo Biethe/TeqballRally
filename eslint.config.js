@@ -4,7 +4,16 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist/**", "node_modules/**", ".firebase/**", "assets/**"],
+    // server/rules.mjs is generated (scripts/build-rules.mjs) and bundles more
+    // of config.ts than the server reads — linting a bundle tells you about
+    // the bundler, not the code.
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      ".firebase/**",
+      "assets/**",
+      "server/rules.mjs",
+    ],
   },
 
   // Game and test sources: TypeScript, type-aware rules on.

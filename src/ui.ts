@@ -128,6 +128,50 @@ export interface ResultView {
   onRematch: (() => void) | null;
 }
 
+/** The account screen, in whichever of its two states applies. */
+export interface ProfileView {
+  /** Null while the player has no account yet. */
+  profile: {
+    id: string;
+    name: string;
+    trophies: number;
+    tier: string;
+    matches: number;
+    rank: number | null;
+  } | null;
+  /** Shown under the form: a validation message, or what the server said. */
+  message: string | null;
+  /**
+   * Said before signing up, when there is offline progress that will not come
+   * with them. Signing up adopts the server's career, and a player who finds
+   * that out afterwards has every right to be annoyed about it.
+   */
+  freshStart: string | null;
+  busy: boolean;
+  onCreate: (name: string) => void;
+  onRename: (name: string) => void;
+  onLeaderboard: () => void;
+  onBack: () => void;
+}
+
+export interface BoardRow {
+  rank: number;
+  id: string;
+  name: string;
+  trophies: number;
+  tier: string;
+  isMe: boolean;
+}
+
+export interface LeaderboardViewModel {
+  rows: BoardRow[];
+  total: number;
+  /** The caller's row when they are outside the visible top. */
+  me: BoardRow | null;
+  message: string | null;
+  onBack: () => void;
+}
+
 /** The focused, mid-rally coaching card used by the guided practice flow. */
 export interface TrainingPauseState {
   /** Short progress label, for example "2 / 5". */
@@ -173,6 +217,8 @@ export class UI {
   private championsEl: HTMLDivElement;
   private challengesEl: HTMLDivElement;
   private resultEl: HTMLDivElement;
+  private profileEl: HTMLDivElement;
+  private boardEl: HTMLDivElement;
   /** The coins/trophies strip drawn over the title screen. */
   private walletEl: HTMLDivElement;
   private bannerTimer: number | null = null;
@@ -246,6 +292,7 @@ export class UI {
         <nav class="title-hub" aria-label="Career">
           <button class="ghost-btn" id="btn-title-champions" type="button"></button>
           <button class="ghost-btn" id="btn-title-challenges" type="button"></button>
+          <button class="ghost-btn" id="btn-title-profile" type="button"></button>
           <button class="ghost-btn" id="btn-title-settings" type="button">SETTINGS</button>
         </nav>
       </main>`;
@@ -388,6 +435,8 @@ export class UI {
     this.championsEl = this.screen("champions-screen");
     this.challengesEl = this.screen("challenges-screen");
     this.resultEl = this.screen("result-screen");
+    this.profileEl = this.screen("profile-screen");
+    this.boardEl = this.screen("board-screen");
 
     // The wallet rides above the title screen rather than inside it: it is the
     // one thing that has to look the same on every screen that shows it.
@@ -423,6 +472,8 @@ export class UI {
       this.championsEl,
       this.challengesEl,
       this.resultEl,
+      this.profileEl,
+      this.boardEl,
     ]) {
       el.classList.add("hidden");
     }
@@ -863,7 +914,10 @@ export class UI {
     onPlay: () => void;
     onChampions: () => void;
     onChallenges: () => void;
+    onProfile: () => void;
     onSettings: () => void;
+    /** The player's name, when this device has an account. */
+    profileLabel?: string | null;
     /** True while a daily challenge is finished and its reward uncollected. */
     challengeReady?: boolean;
   }): void {
@@ -887,6 +941,9 @@ export class UI {
       "has-dot",
       actions.challengeReady === true
     );
+    // The profile chip wears the player's own name once they have one: it is
+    // the shortest way to say the account is real and it is theirs.
+    wire("#btn-title-profile", actions.profileLabel ?? t("profile.title"), actions.onProfile);
     wire("#btn-title-settings", t("title.settings"), actions.onSettings);
     this.titleEl.classList.remove("hidden");
   }
@@ -1134,6 +1191,164 @@ export class UI {
     go.textContent = t("result.continue");
     go.onclick = () => view.onContinue();
     btns.appendChild(go);
+  }
+
+  /**
+   * The account screen. Two states, one screen.
+   *
+   * Signed out it is a single field and a single button, with the reasons
+   * above it and the catch below it: the profile lives on this device and
+   * there is no password to get it back. That sentence is on the screen rather
+   * than in a help page because it is the one thing a player will wish they
+   * had been told.
+   *
+   * Signed in it is the code, big enough to read out loud, because the code is
+   * the thing every community feature will be built on.
+   */
+  showProfile(view: ProfileView): void {
+    this.hideAll();
+    this.profileEl.classList.remove("hidden");
+    this.showWallet();
+    const p = view.profile;
+    this.profileEl.innerHTML = `
+      <div class="career-head">
+        <button class="select-back" type="button" data-menu-back></button>
+        <div><h2 class="career-title"></h2></div>
+      </div>
+      <div class="career-list">
+        <div class="account-card"></div>
+      </div>`;
+    const back = this.profileEl.querySelector<HTMLButtonElement>(".select-back")!;
+    back.textContent = `← ${t("nav.back")}`;
+    back.onclick = () => view.onBack();
+    this.profileEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
+      p ? p.name : t("profile.title");
+
+    const card = this.profileEl.querySelector<HTMLDivElement>(".account-card")!;
+    const message = document.createElement("p");
+    message.className = "account-message";
+    message.textContent = view.message ?? "";
+    message.classList.toggle("hidden", !view.message);
+
+    if (!p) {
+      card.innerHTML = `
+        <h3 class="account-pitch"></h3>
+        <p class="account-why"></p>
+        <label class="account-field"><span></span><input id="profile-name" type="text" maxlength="16" autocomplete="off" spellcheck="false"></label>
+        <p class="account-warning fresh hidden"></p>
+        <button class="big-btn" id="btn-profile-create" type="button" data-menu-primary="true"></button>
+        <p class="account-warning"></p>`;
+      card.querySelector<HTMLHeadingElement>(".account-pitch")!.textContent = t("profile.signedOut");
+      card.querySelector<HTMLParagraphElement>(".account-why")!.textContent = t("profile.why");
+      card.querySelector<HTMLSpanElement>(".account-field span")!.textContent = t("profile.name");
+      const fresh = card.querySelector<HTMLParagraphElement>(".account-warning.fresh")!;
+      fresh.textContent = view.freshStart ?? "";
+      fresh.classList.toggle("hidden", !view.freshStart);
+      card.querySelectorAll<HTMLParagraphElement>(".account-warning")[1].textContent =
+        t("profile.warning");
+      const input = card.querySelector<HTMLInputElement>("#profile-name")!;
+      const create = card.querySelector<HTMLButtonElement>("#btn-profile-create")!;
+      create.textContent = view.busy ? t("profile.creating") : t("profile.create");
+      create.disabled = view.busy;
+      create.onclick = () => view.onCreate(input.value);
+      input.onkeydown = (e) => {
+        if (e.key === "Enter") view.onCreate(input.value);
+      };
+      card.insertBefore(message, fresh);
+      // Focus only on a screen with a keyboard: a phone popping its keyboard
+      // up the instant a screen opens hides half of what it says.
+      if (!("ontouchstart" in window)) input.focus();
+      return;
+    }
+
+    card.innerHTML = `
+      <div class="account-code">
+        <span class="account-code-label"></span>
+        <b class="account-code-value"></b>
+        <span class="account-code-hint"></span>
+      </div>
+      <div class="account-stats">
+        <div><span></span><b class="stat-rank"></b></div>
+        <div><span></span><b class="stat-trophies"></b></div>
+        <div><span></span><b class="stat-matches"></b></div>
+      </div>
+      <label class="account-field"><span></span><input id="profile-name" type="text" maxlength="16" autocomplete="off" spellcheck="false"></label>
+      <button class="ghost-btn" id="btn-profile-rename" type="button"></button>
+      <button class="big-btn" id="btn-profile-board" type="button" data-menu-primary="true"></button>`;
+    card.querySelector<HTMLSpanElement>(".account-code-label")!.textContent = t("profile.code");
+    card.querySelector<HTMLElement>(".account-code-value")!.textContent = p.id;
+    card.querySelector<HTMLSpanElement>(".account-code-hint")!.textContent = t("profile.codeHint");
+    const labels = card.querySelectorAll(".account-stats span");
+    labels[0].textContent = t("profile.rank");
+    labels[1].textContent = t("career.trophies");
+    labels[2].textContent = t("profile.matches");
+    card.querySelector<HTMLElement>(".stat-rank")!.textContent =
+      p.rank === null ? t("profile.unranked") : `#${p.rank}`;
+    card.querySelector<HTMLElement>(".stat-trophies")!.textContent = String(p.trophies);
+    card.querySelector<HTMLElement>(".stat-matches")!.textContent = String(p.matches);
+    card.querySelector<HTMLSpanElement>(".account-field span")!.textContent = t("profile.name");
+    const input = card.querySelector<HTMLInputElement>("#profile-name")!;
+    input.value = p.name;
+    const renameBtn = card.querySelector<HTMLButtonElement>("#btn-profile-rename")!;
+    renameBtn.textContent = t("profile.rename");
+    renameBtn.disabled = view.busy;
+    renameBtn.onclick = () => view.onRename(input.value);
+    const board = card.querySelector<HTMLButtonElement>("#btn-profile-board")!;
+    board.textContent = t("profile.leaderboard");
+    board.onclick = () => view.onLeaderboard();
+    card.insertBefore(message, renameBtn);
+  }
+
+  /** Everyone, in order. The caller's own row is pinned if it fell off the end. */
+  showLeaderboard(view: LeaderboardViewModel): void {
+    this.hideAll();
+    this.boardEl.classList.remove("hidden");
+    this.showWallet();
+    this.boardEl.innerHTML = `
+      <div class="career-head">
+        <button class="select-back" type="button" data-menu-back></button>
+        <div>
+          <h2 class="career-title"></h2>
+          <p class="career-sub"></p>
+        </div>
+      </div>
+      <div class="career-list board-list"></div>
+      <div class="board-pinned hidden"></div>`;
+    const back = this.boardEl.querySelector<HTMLButtonElement>(".select-back")!;
+    back.textContent = `← ${t("nav.back")}`;
+    back.onclick = () => view.onBack();
+    this.boardEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent = t("board.title");
+    this.boardEl.querySelector<HTMLParagraphElement>(".career-sub")!.textContent = view.message
+      ? view.message
+      : tf("board.sub", { n: view.total });
+
+    const list = this.boardEl.querySelector<HTMLDivElement>(".board-list")!;
+    if (view.rows.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "board-empty";
+      empty.textContent = view.message ?? t("board.empty");
+      list.appendChild(empty);
+    }
+    const rowEl = (row: BoardRow): HTMLDivElement => {
+      const el = document.createElement("div");
+      el.className = row.isMe ? "board-row me" : "board-row";
+      el.innerHTML = `<b class="board-rank"></b><span class="board-name"></span><span class="board-tier"></span><b class="board-trophies"></b>`;
+      el.querySelector<HTMLElement>(".board-rank")!.textContent = `${row.rank}`;
+      el.querySelector<HTMLSpanElement>(".board-name")!.textContent = row.name;
+      el.querySelector<HTMLSpanElement>(".board-tier")!.textContent = row.tier;
+      el.querySelector<HTMLElement>(".board-trophies")!.textContent = String(row.trophies);
+      if (row.isMe) el.setAttribute("aria-label", `${t("board.you")}: ${row.name}`);
+      return el;
+    };
+    for (const row of view.rows) list.appendChild(rowEl(row));
+
+    // A leaderboard that cannot show you yourself is a poster. If the caller
+    // is below the visible top, their row is pinned to the bottom of it.
+    const pinned = this.boardEl.querySelector<HTMLDivElement>(".board-pinned")!;
+    if (view.me && !view.rows.some((r) => r.isMe)) {
+      pinned.classList.remove("hidden");
+      pinned.appendChild(rowEl(view.me));
+    }
   }
 
   private selTab: ViewerKind = "character";

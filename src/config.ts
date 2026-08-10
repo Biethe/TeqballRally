@@ -177,8 +177,18 @@ export const MAX_TOUCHES = 3; // touches allowed per possession (reception, prep
 // Reach scales with the players, who scale with the table.
 export const PLAYER_REACH = 1.2 * TABLE_SCALE;
 export const AI_REACH = 1.2 * TABLE_SCALE;
-export const WIN_SCORE = 12; // points to win a set
-export const SETS_TO_WIN = 2; // sets to win the game (best of 3)
+/**
+ * Points to win a set, and sets to win the match.
+ *
+ * Short on purpose. A rally here is a handful of touches and a phone match has
+ * to fit in the gap it is being played in — a queue, a train, an advert break.
+ * First to three makes every point a point that matters, and best of three
+ * sets keeps the shape of a real match around it: you can lose a set and still
+ * win, which is the thing that makes the second one worth playing.
+ */
+export const WIN_SCORE = 3;
+export const SETS_TO_WIN = 2;
+/** Points between serve changes. */
 export const SERVE_EVERY = 2;
 
 /** Absolute world height of the table's playing surface at x (includes GROUND_Y). */

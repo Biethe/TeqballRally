@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ALL_CHALLENGES,
   DAILY_COUNT,
   creditFor,
   dailyChallenges,
@@ -31,7 +32,7 @@ import {
   upgradeCost,
   withCareer,
 } from "../src/progress";
-import { CHARACTERS } from "../src/config";
+import { CHARACTERS, SETS_TO_WIN, WIN_SCORE } from "../src/config";
 import { RATING_KEYS, rating, totalPower } from "../src/ratings";
 import { ALL_TIP_KEYS, randomTip } from "../src/tips";
 import { t } from "../src/i18n";
@@ -129,6 +130,25 @@ describe("daily challenges", () => {
     for (let d = 1; d <= 366; d++) {
       const day = `2027-${`${(d % 12) + 1}`.padStart(2, "0")}-${`${(d % 28) + 1}`.padStart(2, "0")}`;
       expect(dailyChallenges(day), day).toHaveLength(DAILY_COUNT);
+    }
+  });
+
+  // The goals are sized against what one match can produce, and the scoring
+  // has already been changed once. Without this, shortening a set again would
+  // quietly turn a daily challenge into a weekly one and nothing would fail.
+  it("keeps every goal reachable in a handful of matches", () => {
+    const bestCase: MatchTally = {
+      won: true,
+      // A winning match: SETS_TO_WIN sets at WIN_SCORE, plus a lost set.
+      points: WIN_SCORE * (SETS_TO_WIN + 1),
+      sets: SETS_TO_WIN,
+      rallies: WIN_SCORE * (SETS_TO_WIN + 1) * 2,
+    };
+    for (const challenge of ALL_CHALLENGES) {
+      const perMatch = creditFor(challenge.kind, bestCase);
+      expect(perMatch, challenge.id).toBeGreaterThan(0);
+      // Six matches is a long session; anything needing more is not daily.
+      expect(Math.ceil(challenge.goal / perMatch), challenge.id).toBeLessThanOrEqual(6);
     }
   });
 
