@@ -40,7 +40,25 @@ import {
 import { ModelViewer } from "./viewer";
 import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
 import { readPreferences, storePreferences, type Preferences } from "./settings";
-import { LANGUAGES, detectLanguage, isLanguage, setLanguage, t as tr } from "./i18n";
+import {
+  MAX_LEVEL,
+  UNLOCK_AT,
+  XP_PER_LEVEL,
+  buyUpgrade,
+  claimChallenge,
+  isUnlocked,
+  levelOf,
+  readCareer,
+  settleMatch,
+  storeCareer,
+  upgradeCost,
+  withCareer,
+  type Career,
+} from "./progress";
+import { nextTier, tierFor, tierProgress } from "./league";
+import { RATING_KEYS, rating, totalPower } from "./ratings";
+import { dailyChallenges, isComplete, secondsUntilRollover } from "./challenges";
+import { LANGUAGES, detectLanguage, isLanguage, setLanguage, t as tr, tf } from "./i18n";
 import { BALLS, CHARACTERS, COURT, GROUND_Y, SIM_DT, type CameraMode, type CharacterDef } from "./config";
 
 /** Longest real frame the simulation will honour; beyond this, time is dropped. */
@@ -64,6 +82,11 @@ async function boot(): Promise<void> {
   const ui = new UI(uiRoot);
   const audio = new AudioManager();
   const input = new Input(uiRoot);
+  // The browser harnesses in scripts/ drive screens that are otherwise only
+  // reachable by playing a match out — which, on a software renderer at a
+  // frame a second, they cannot do. Same reason __teq exposes the match.
+  (window as unknown as Record<string, unknown>).__teqUi = ui;
+  (window as unknown as Record<string, unknown>).__teqCharacters = CHARACTERS;
 
   // Browsers gate audio behind a user gesture.
   const unlock = () => {
@@ -538,9 +561,40 @@ async function boot(): Promise<void> {
     gs.scene.render();
   });
 
+  // ----------------------------------------------------------- the career
+
+  /**
+   * Everything the player keeps between matches, held in one place and written
+   * back the moment it changes.
+   *
+   * It is read once at boot rather than per screen: a career read fresh from
+   * storage on every navigation would quietly discard an upgrade bought a
+   * moment earlier if the write ever failed, and would hide that it had.
+   */
+  let career: Career = readCareer();
+
+  const saveCareer = (next: Career) => {
+    career = next;
+    storeCareer(career);
+    refreshWallet();
+  };
+
+  const refreshWallet = () => {
+    ui.setWallet(career.coins, career.trophies, tierFor(career.trophies).label);
+  };
+
+  /** True while a finished challenge is waiting to be collected. */
+  const rewardWaiting = () =>
+    dailyChallenges(career.day).some(
+      (c) => isComplete(c, career.progress[c.id] ?? 0) && !career.claimed.includes(c.id)
+    );
+
   const showTitle = () => {
-    ui.showTitle(
-      () => {
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    refreshWallet();
+    ui.showTitle({
+      onPlay: () => {
         audio.startMusic();
         // Prefetch the decorative gym only after the first screen is visible.
         // The model viewer and selection menus give it time to arrive without
@@ -548,8 +602,152 @@ async function boot(): Promise<void> {
         void gs.ensureArena();
         showModes();
       },
-      () => showSettings(showTitle)
-    );
+      onChampions: showChampions,
+      onChallenges: showChallenges,
+      onSettings: () => showSettings(showTitle),
+      challengeReady: rewardWaiting(),
+    });
+  };
+
+  /**
+   * The roster, and the two ways it grows: playing with a character levels it
+   * slowly and for free, and coins level it now.
+   */
+  const showChampions = () => {
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    refreshWallet();
+    ui.showChampions({
+      rows: CHARACTERS.map((def) => {
+        const unlocked = isUnlocked(career, def.id);
+        const level = levelOf(career, def.id);
+        const capped = level >= MAX_LEVEL;
+        const cost = capped ? null : upgradeCost(level);
+        // The character as this career has actually made it, so the bars show
+        // what a level bought rather than what the roster shipped with.
+        const trained = withCareer(def, level);
+        return {
+          id: def.id,
+          label: def.label,
+          level,
+          maxLevel: MAX_LEVEL,
+          unlocked,
+          unlockAt: UNLOCK_AT[def.id] ?? 0,
+          cost,
+          affordable: cost !== null && career.coins >= cost,
+          nextIn: capped ? null : XP_PER_LEVEL - (career.champions[def.id]?.xp ?? 0),
+          stats: RATING_KEYS.map((key) => ({
+            label: tr(`select.abilities.${key}`),
+            value: rating(trained, key),
+          })),
+          power: totalPower(trained),
+        };
+      }),
+      onUpgrade: (id) => {
+        saveCareer(buyUpgrade(career, id));
+        showChampions();
+      },
+      onBack: showTitle,
+    });
+  };
+
+  /** What the match just played contributes to the daily challenges. */
+  const matchTally = () => ({
+    points: match?.tally.points.player ?? 0,
+    sets: match?.sets.player ?? 0,
+    rallies: match?.tally.longRallies ?? 0,
+  });
+
+  /** How long is left of today, worded the way a countdown is read aloud. */
+  const untilMidnight = () => {
+    const secs = secondsUntilRollover(new Date());
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  };
+
+  const showChallenges = () => {
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    refreshWallet();
+    ui.showChallenges({
+      rows: dailyChallenges(career.day).map((c) => ({
+        id: c.id,
+        // "Win 1 matches" is the kind of thing a player notices immediately
+        // and never stops noticing, and it does not survive translation
+        // either — every language wants its own singular.
+        text: c.goal === 1 ? tr(`challenge.${c.kind}.one`) : tf(`challenge.${c.kind}`, { n: c.goal }),
+        progress: career.progress[c.id] ?? 0,
+        goal: c.goal,
+        reward: c.reward,
+        claimed: career.claimed.includes(c.id),
+      })),
+      resetsIn: untilMidnight(),
+      onClaim: (id) => {
+        saveCareer(claimChallenge(career, id));
+        showChallenges();
+      },
+      onBack: showTitle,
+    });
+  };
+
+  /**
+   * Settle a finished match and report what it was worth.
+   *
+   * Only friendly and competition matches come through here. Practice pays
+   * nothing because it cannot be lost, and online pays nothing because the
+   * result is only as trustworthy as the other end of the connection — a
+   * ladder that can be climbed by disconnecting is not a ladder.
+   */
+  const settleCareer = (won: boolean, championId: string, difficulty: DifficultyLevel) => {
+    const { career: next, outcome } = settleMatch(career, championId, difficulty, {
+      won,
+      ...matchTally(),
+    });
+    saveCareer(next);
+    return { next, outcome };
+  };
+
+  const settleAndShow = (
+    won: boolean,
+    championId: string,
+    difficulty: DifficultyLevel,
+    onContinue: () => void,
+    onRematch: (() => void) | null
+  ) => {
+    const { next, outcome } = settleCareer(won, championId, difficulty);
+    const notes = [
+      ...outcome.levelled.map((id) => {
+        const def = CHARACTERS.find((c) => c.id === id);
+        return `${tr("result.levelUp")} — ${def?.label ?? id} ${tr("career.level")} ${levelOf(next, id)}`;
+      }),
+      ...outcome.completed.map((id) => {
+        const c = dailyChallenges(next.day).find((x) => x.id === id);
+        if (!c) return tr("result.challengeDone");
+        const what =
+          c.goal === 1 ? tr(`challenge.${c.kind}.one`) : tf(`challenge.${c.kind}`, { n: c.goal });
+        return `${tr("result.challengeDone")} — ${what}`;
+      }),
+    ];
+    // The match controls come off the screen while the card is up: the touch
+    // layer covers the whole viewport during play, and leaving it armed under
+    // a dialog is how a tap lands on the court instead of on CONTINUE.
+    input.setTouchControlsEnabled(false);
+    const up = nextTier(next.trophies);
+    ui.showResult({
+      won,
+      trophies: outcome.trophies,
+      total: next.trophies,
+      coins: outcome.coins,
+      tier: tierFor(next.trophies).label,
+      nextTier: up?.label ?? null,
+      toNext: up ? up.floor - next.trophies : 0,
+      progress: tierProgress(next.trophies),
+      rank: outcome.rank,
+      notes,
+      onContinue,
+      onRematch,
+    });
   };
 
   // ------------------------------------------------------------- mode flow
@@ -925,7 +1123,11 @@ async function boot(): Promise<void> {
     // choosing their own player.
     scheduleAssetPrefetch("/models/characters/SpanishPlayer.glb", 700);
     showSelect(tr("select.title"), (charId, ballId) => {
-      const playerDef = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+      const base = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+      // Practice pays nothing — it cannot be lost — but the character is still
+      // the one the career has built, or the drill would be teaching a player
+      // the feel of somebody else.
+      const playerDef = withCareer(base, levelOf(career, base.id));
       const trainer =
         CHARACTERS.find((c) => c.id !== playerDef.id && c.id === "SpanishPlayer") ??
         CHARACTERS.find((c) => c.id !== playerDef.id) ??
@@ -951,7 +1153,11 @@ async function boot(): Promise<void> {
       (id) => {
         const diff = id.replace("btn-diff-", "") as DifficultyLevel;
         showSelect(tr("select.title"), (charId, ballId) => {
-          const playerDef = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+          const base = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+          // The level the career has this character at is applied here, at the
+          // one place a match is built, so an upgrade is felt in the next game
+          // rather than being a number on a card.
+          const playerDef = withCareer(base, levelOf(career, base.id));
           const others = CHARACTERS.filter((c) => c.id !== charId);
           const opponent = others[Math.floor(Math.random() * others.length)];
           void startMatch(playerDef, ballId, {
@@ -959,7 +1165,17 @@ async function boot(): Promise<void> {
             difficulty: diff,
             labels: [tr("hud.you"), opponent.label],
             onEnd: (winner) => {
-              ui.showEnd(winner, () => match?.reset(), () => leaveMatch());
+              settleAndShow(
+                winner === "player",
+                base.id,
+                diff,
+                () => leaveMatch(),
+                () => {
+                  input.setTouchControlsEnabled(true);
+                  ui.showHUD();
+                  match?.reset();
+                }
+              );
             },
           });
         }, showDifficulty);
@@ -998,7 +1214,10 @@ async function boot(): Promise<void> {
     // at idle priority while the selected character preview is being readied.
     scheduleAssetPrefetch(`/models/Ball_and_Table/${BALLS[0].id}.glb`, 900);
     ui.showSelect({
-      characters: CHARACTERS,
+      // Only what the career has unlocked. The locked ones are not hidden from
+      // the player — they are on the CHAMPIONS screen with the price on them,
+      // which is a reason to keep playing rather than a gap in a menu.
+      characters: CHARACTERS.filter((c) => isUnlocked(career, c.id)),
       balls: BALLS,
       venues: VENUE_IDS.map((id) => ({ id, label: venueFor(id).label })),
       venue: venueId,
@@ -1065,12 +1284,19 @@ async function boot(): Promise<void> {
       opponent,
       difficulty,
       labels: [tr("hud.you"), opponent.label],
-      onEnd: (winner, sets) => onEnd(winner === "player", sets),
+      onEnd: (winner, sets) => {
+        // Settled, but not reported here: a competition already has a screen
+        // that says what the match did, and a second one between every round
+        // would turn a cup run into a series of receipts.
+        settleCareer(winner === "player", human.id, difficulty);
+        onEnd(winner === "player", sets);
+      },
     });
   };
 
   const startCompetition = (format: "cup" | "league", charId: string, ballId: string) => {
-    const human = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+    const base = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+    const human = withCareer(base, levelOf(career, base.id));
     const others = CHARACTERS.filter((c) => c.id !== human.id).sort(() => Math.random() - 0.5);
     if (format === "cup") runCup(human, others, ballId);
     else runLeague(human, others, ballId);
@@ -1295,7 +1521,10 @@ async function boot(): Promise<void> {
     } else {
       introLeft = INTRO_SECONDS;
       simAccumulator = 0;
-      ui.showIntro(venueFor(venueId).label, opts.labels[0], opts.labels[1]);
+      ui.showIntro(venueFor(venueId).label, opts.labels[0], opts.labels[1], [
+        playerDef,
+        opts.opponent,
+      ]);
     }
     practiceCoach = opts.practice
       ? new PracticeCoach(

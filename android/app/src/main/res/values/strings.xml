@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">TeqRally</string>
-    <string name="title_activity_main">TeqRally</string>
+    <string name="app_name">TeqRallly</string>
+    <string name="title_activity_main">TeqRallly</string>
     <string name="package_name">com.biethe.teqopen</string>
     <string name="custom_url_scheme">com.biethe.teqopen</string>
 </resources>

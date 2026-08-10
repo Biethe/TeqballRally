@@ -1,6 +1,6 @@
-# TeqRally
+# TeqRallly
 
-TeqRally is a browser-based 3D teqball game built with Babylon.js, TypeScript,
+TeqRallly is a browser-based 3D teqball game built with Babylon.js, TypeScript,
 and Vite. Play solo against the CPU, learn in Practice, compete in a cup or
 league, or take someone on online.
 
@@ -179,6 +179,65 @@ The match simulates at a fixed 60 Hz regardless of display rate (`SIM_DT` in
 `src/main.ts`), so a 30fps phone and a 120fps phone play the same game. Presses
 are latched between simulation steps — see `latchInput` in `src/input.ts`.
 
+## The career
+
+Everything a player keeps between matches lives in `localStorage` and nowhere
+else. No account, no server, no sync — which is what lets it work on a plane,
+and what stops a game about kicking a ball opening with a login wall.
+
+```
+match result ──► trophies ──► league tier ──► coins per match
+             ├──► coins ─────► character levels ──► precision
+             └──► daily challenges ──► coins
+```
+
+**Trophies and the ladder** (`src/league.ts`). Nine rungs from BEGINNER to
+ELITE. The tier is *read off* the trophy count rather than stored, so there is
+no ladder state that can drift out of agreement with the trophies themselves. A
+win pays more than a loss takes at every difficulty — a ladder that gives back
+exactly what it takes leaves a player where they started after an evening, and
+that is the fastest way to make them stop — but a loss still costs something,
+or the rank means nothing. A loss also still *pays* coins: the twenty minutes
+were spent either way, and a game that pays nothing for a losing match teaches
+the player to quit as soon as they fall behind.
+
+**Characters** (`src/progress.ts`). Playing with a character levels it, win or
+lose; coins level it now. A level buys **precision**, which is what the kick
+spread divides by (`src/aim.ts`) — so an improved player is one whose hard
+kicks stay in, not one who kicks harder. That is what the spread was for. The
+roster unlocks against the *best* trophy count ever reached, so relegation
+never takes a character away from someone who already earned it.
+
+**Daily challenges** (`src/challenges.ts`). Three a day, drawn from a fixed
+pool by the date itself: the date is the seed and the seed is the whole
+synchronisation mechanism, so every device shows the same set on the same day
+with nothing asked of a server. Never two of the same kind — three variations
+on "play some matches" is one challenge wearing three hats. The day is local,
+because the day has to turn over while the player is asleep and whose midnight
+that is depends on where they are.
+
+Only friendly and competition matches settle a career. Practice pays nothing
+because it cannot be lost, and online pays nothing because the result is only
+as trustworthy as the far end of the connection — a ladder that can be climbed
+by disconnecting is not a ladder.
+
+## Ratings
+
+`src/ratings.ts` turns the balance values in `config.ts` — metres per second, a
+multiplier on a spread radius — into REACTIVITY / POWER / CONTROL on a 0–100
+scale, plus a TOTAL POWER that is just the three added up. The scale runs from
+the weakest any character starts at to the strongest any character can be
+trained to, so a fresh roster has nobody at 100: the top of the bar is a place
+to get to. The floor is 40, because none of these characters is bad at
+anything — they are differently good, and a bar reading zero says the opposite
+of what the roster means.
+
+The same numbers appear in three places: the picker, the roster cards, and the
+head-to-head on the card before the whistle. That last one is the only moment a
+player looks at both players at once, which makes it the cheapest place to
+teach what the traits mean — and the one place where learning the opponent is
+quicker actually matters, because they are about to play them.
+
 ## Scale
 
 `TABLE_SCALE` in `src/config.ts` sizes the table, and the ball, the players,
@@ -202,17 +261,28 @@ and the shot is narrowest in world units exactly where the near player stands.
 Every screen answers one question, and the title screen asks the easiest one.
 
 ```
-TITLE ── PLAY ──┬── FRIENDLY ──── difficulty ── pick ── match
-      │         ├── PRACTICE ──── pick ── match
-      │         ├── COMPETITION ─ cup / league ── pick ── run
-      │         └── ONLINE ────── quick / friend / code
-      └── SETTINGS ── DISPLAY / GAMEPLAY / AUDIO
+TITLE ── PLAY ───────┬── FRIENDLY ──── difficulty ── pick ── match ── result
+      │              ├── PRACTICE ──── pick ── match
+      │              ├── COMPETITION ─ cup / league ── pick ── run
+      │              └── ONLINE ────── quick / friend / code
+      ├── CHAMPIONS ──── the roster, and what it costs to grow it
+      ├── CHALLENGES ─── today's three
+      └── SETTINGS ───── DISPLAY / GAMEPLAY / AUDIO
 ```
 
 Nothing is ever more than Home → Category → Choice deep, and every screen has
 its BACK control in the same place. The title screen carries one dominant
-action and one quiet one: a player opening the game for the first time only has
-to recognise PLAY.
+action and three quiet ones: a player opening the game for the first time only
+has to recognise PLAY. The career doors are chips rather than cards for the
+same reason — the screen still has exactly one thing on it that looks like the
+thing to do. A finished challenge waiting to be collected puts an orange dot on
+CHALLENGES, which is the only thing on that screen allowed to compete with
+PLAY, and only as a dot.
+
+Coins, trophies and the current rank ride in a strip above every screen where
+those numbers are the reason the player is looking — and nowhere near a live
+match, where a currency counter over the court is one more thing moving while a
+ball is in the air.
 
 Settings sit on the title screen rather than in the play menu — a player who
 came to start a match should not have to read past a settings card to find one,
@@ -584,7 +654,7 @@ Everything below can be done from a mobile browser.
    `wss://` URL. Or skip this and type the URL each time in step 3.
 3. **Build.** GitHub → Actions → *Android APK* → **Run workflow**, optionally
    pasting the relay URL. The run summary prints which relay was baked in.
-4. **Install.** Download the `teqrally-debug-apk` artifact from the finished
+4. **Install.** Download the `teqrallly-debug-apk` artifact from the finished
    run, unzip, open the APK. Repeat on the second phone.
 
 A build with no relay configured still installs and plays; online is shown as
@@ -706,7 +776,7 @@ cleartext, so a shipped app must use `https://` and `wss://`.
 
 ## Deploy
 
-TeqRally is a static site; Firebase Hosting serves the built `dist/` folder.
+TeqRallly is a static site; Firebase Hosting serves the built `dist/` folder.
 
 ```bash
 npx firebase-tools login
@@ -737,6 +807,6 @@ groups.
 
 ## Codex and GPT-5.6
 
-I built and tested TeqRally in Codex with GPT-5.6. Codex helped implement and
+I built and tested TeqRallly in Codex with GPT-5.6. Codex helped implement and
 debug the animation, physics, match rules, AI, input, mobile, and
 hosting work. Product decisions and playtesting remained mine.

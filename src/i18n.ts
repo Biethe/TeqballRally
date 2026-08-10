@@ -122,6 +122,62 @@ const EN = {
   "pause.quit": "QUIT TO MENU",
   "end.rematch": "REMATCH",
   "end.change": "CHANGE SETUP",
+
+  // — career —
+  "career.coins": "COINS",
+  "career.trophies": "TROPHIES",
+  "career.champions": "CHAMPIONS",
+  "career.champions.sub": "Your roster, and what it takes to grow it",
+  "career.challenges": "CHALLENGES",
+  "career.challenges.sub": "Three a day. They reset at midnight.",
+  "career.level": "LEVEL",
+  "career.locked": "LOCKED",
+  "career.unlockAt": "Unlocks at {n} trophies",
+  "career.upgrade": "UPGRADE",
+  "career.maxLevel": "FULLY TRAINED",
+  "career.cannotAfford": "Not enough coins",
+  "career.nextLevel": "{n} more matches to the next level",
+  "career.precision": "PRECISION",
+  "career.power": "TOTAL POWER",
+  "career.selected": "SELECTED",
+  "career.resetsIn": "Resets in {t}",
+  "career.claim": "COLLECT",
+  "career.claimed": "COLLECTED",
+  "career.rank": "RANK",
+  "career.promoted": "PROMOTED",
+  "career.relegated": "RELEGATED",
+  "career.nextRank": "{n} to {tier}",
+  "career.topRank": "Top of the ladder",
+  "career.reward": "REWARD",
+  "career.empty": "Play a match to start your career.",
+  "challenge.matches": "Play {n} matches",
+  "challenge.wins": "Win {n} matches",
+  "challenge.points": "Score {n} points",
+  "challenge.rallies": "Play {n} long rallies",
+  "challenge.sets": "Win {n} sets",
+  "challenge.matches.one": "Play one match",
+  "challenge.wins.one": "Win a match",
+  "challenge.points.one": "Score a point",
+  "challenge.rallies.one": "Play a long rally",
+  "challenge.sets.one": "Win a set",
+
+  // — results —
+  "result.win": "MATCH WON",
+  "result.loss": "MATCH LOST",
+  "result.trophies": "TROPHIES",
+  "result.coins": "COINS",
+  "result.levelUp": "LEVEL UP",
+  "result.challengeDone": "CHALLENGE COMPLETE",
+  "result.continue": "CONTINUE",
+
+  // — loading tips —
+  "tip.power": "A slow swipe lifts the ball. A fast one drills it.",
+  "tip.setup": "Tap where you want the ball, not where you want to stand.",
+  "tip.deep": "Play the set-up deep and the finish opens up.",
+  "tip.reception": "Stand near the ball and the first touch takes itself.",
+  "tip.miss": "Hit it flat out and it will sometimes go long. That is the trade.",
+  "tip.serve": "Serve wide to pull them off the table.",
+
   "loading.court": "Building the court…",
   "loading.match": "Setting up the match…",
 } as const;
@@ -224,6 +280,62 @@ const FR: Catalogue = {
   "pause.quit": "QUITTER",
   "end.rematch": "REVANCHE",
   "end.change": "CHANGER D'ÉQUIPE",
+
+  // — career —
+  "career.coins": "PIÈCES",
+  "career.trophies": "TROPHÉES",
+  "career.champions": "CHAMPIONS",
+  "career.champions.sub": "Votre effectif, et comment le faire grandir",
+  "career.challenges": "DÉFIS",
+  "career.challenges.sub": "Trois par jour. Ils repartent à minuit.",
+  "career.level": "NIVEAU",
+  "career.locked": "VERROUILLÉ",
+  "career.unlockAt": "Débloqué à {n} trophées",
+  "career.upgrade": "AMÉLIORER",
+  "career.maxLevel": "AU SOMMET",
+  "career.cannotAfford": "Pas assez de pièces",
+  "career.nextLevel": "Encore {n} matchs avant le niveau suivant",
+  "career.precision": "PRÉCISION",
+  "career.power": "PUISSANCE TOTALE",
+  "career.selected": "SÉLECTIONNÉ",
+  "career.resetsIn": "Réinitialisation dans {t}",
+  "career.claim": "RÉCUPÉRER",
+  "career.claimed": "RÉCUPÉRÉ",
+  "career.rank": "RANG",
+  "career.promoted": "PROMU",
+  "career.relegated": "RELÉGUÉ",
+  "career.nextRank": "{n} pour {tier}",
+  "career.topRank": "Sommet du classement",
+  "career.reward": "RÉCOMPENSE",
+  "career.empty": "Jouez un match pour lancer votre carrière.",
+  "challenge.matches": "Jouez {n} matchs",
+  "challenge.wins": "Gagnez {n} matchs",
+  "challenge.points": "Marquez {n} points",
+  "challenge.rallies": "Jouez {n} longs échanges",
+  "challenge.sets": "Gagnez {n} sets",
+  "challenge.matches.one": "Jouez un match",
+  "challenge.wins.one": "Gagnez un match",
+  "challenge.points.one": "Marquez un point",
+  "challenge.rallies.one": "Jouez un long échange",
+  "challenge.sets.one": "Gagnez un set",
+
+  // — results —
+  "result.win": "MATCH GAGNÉ",
+  "result.loss": "MATCH PERDU",
+  "result.trophies": "TROPHÉES",
+  "result.coins": "PIÈCES",
+  "result.levelUp": "NIVEAU SUPÉRIEUR",
+  "result.challengeDone": "DÉFI RELEVÉ",
+  "result.continue": "CONTINUER",
+
+  // — loading tips —
+  "tip.power": "Un swipe lent lève la balle. Un swipe rapide la tend.",
+  "tip.setup": "Touchez où vous voulez la balle, pas où vous voulez être.",
+  "tip.deep": "Une remise profonde ouvre la finition.",
+  "tip.reception": "Restez près de la balle : la première touche se fait seule.",
+  "tip.miss": "Frappée à fond, elle sortira parfois. C'est le prix de la vitesse.",
+  "tip.serve": "Servez large pour l'écarter de la table.",
+
   "loading.court": "Préparation du terrain…",
   "loading.match": "Préparation du match…",
 };
@@ -323,6 +435,62 @@ const ES: Catalogue = {
   "pause.quit": "SALIR AL MENÚ",
   "end.rematch": "REVANCHA",
   "end.change": "CAMBIAR EQUIPO",
+
+  // — career —
+  "career.coins": "MONEDAS",
+  "career.trophies": "TROFEOS",
+  "career.champions": "CAMPEONES",
+  "career.champions.sub": "Tu plantilla, y cómo hacerla crecer",
+  "career.challenges": "DESAFÍOS",
+  "career.challenges.sub": "Tres al día. Se reinician a medianoche.",
+  "career.level": "NIVEL",
+  "career.locked": "BLOQUEADO",
+  "career.unlockAt": "Se desbloquea con {n} trofeos",
+  "career.upgrade": "MEJORAR",
+  "career.maxLevel": "AL MÁXIMO",
+  "career.cannotAfford": "No hay monedas suficientes",
+  "career.nextLevel": "{n} partidos más para el siguiente nivel",
+  "career.precision": "PRECISIÓN",
+  "career.power": "PODER TOTAL",
+  "career.selected": "SELECCIONADO",
+  "career.resetsIn": "Se reinicia en {t}",
+  "career.claim": "RECOGER",
+  "career.claimed": "RECOGIDO",
+  "career.rank": "RANGO",
+  "career.promoted": "ASCENDIDO",
+  "career.relegated": "DESCENDIDO",
+  "career.nextRank": "{n} para {tier}",
+  "career.topRank": "Cima de la clasificación",
+  "career.reward": "RECOMPENSA",
+  "career.empty": "Juega un partido para empezar tu carrera.",
+  "challenge.matches": "Juega {n} partidos",
+  "challenge.wins": "Gana {n} partidos",
+  "challenge.points": "Anota {n} puntos",
+  "challenge.rallies": "Juega {n} peloteos largos",
+  "challenge.sets": "Gana {n} sets",
+  "challenge.matches.one": "Juega un partido",
+  "challenge.wins.one": "Gana un partido",
+  "challenge.points.one": "Anota un punto",
+  "challenge.rallies.one": "Juega un peloteo largo",
+  "challenge.sets.one": "Gana un set",
+
+  // — results —
+  "result.win": "PARTIDO GANADO",
+  "result.loss": "PARTIDO PERDIDO",
+  "result.trophies": "TROFEOS",
+  "result.coins": "MONEDAS",
+  "result.levelUp": "SUBIDA DE NIVEL",
+  "result.challengeDone": "DESAFÍO COMPLETADO",
+  "result.continue": "CONTINUAR",
+
+  // — loading tips —
+  "tip.power": "Un deslizamiento lento eleva la pelota. Uno rápido la tensa.",
+  "tip.setup": "Toca donde quieres la pelota, no donde quieres estar tú.",
+  "tip.deep": "Una preparación profunda abre la definición.",
+  "tip.reception": "Quédate cerca de la pelota: el primer toque se hace solo.",
+  "tip.miss": "Golpeada a fondo, a veces se irá larga. Ese es el precio.",
+  "tip.serve": "Saca abierto para sacarlo de la mesa.",
+
   "loading.court": "Preparando la pista…",
   "loading.match": "Preparando el partido…",
 };
@@ -422,6 +590,62 @@ const PT: Catalogue = {
   "pause.quit": "SAIR PARA O MENU",
   "end.rematch": "REVANCHA",
   "end.change": "MUDAR EQUIPA",
+
+  // — career —
+  "career.coins": "MOEDAS",
+  "career.trophies": "TROFÉUS",
+  "career.champions": "CAMPEÕES",
+  "career.champions.sub": "O teu plantel, e como o fazer crescer",
+  "career.challenges": "DESAFIOS",
+  "career.challenges.sub": "Três por dia. Recomeçam à meia-noite.",
+  "career.level": "NÍVEL",
+  "career.locked": "BLOQUEADO",
+  "career.unlockAt": "Desbloqueia com {n} troféus",
+  "career.upgrade": "MELHORAR",
+  "career.maxLevel": "NO MÁXIMO",
+  "career.cannotAfford": "Moedas insuficientes",
+  "career.nextLevel": "Mais {n} jogos para o próximo nível",
+  "career.precision": "PRECISÃO",
+  "career.power": "PODER TOTAL",
+  "career.selected": "SELECIONADO",
+  "career.resetsIn": "Recomeça em {t}",
+  "career.claim": "RECEBER",
+  "career.claimed": "RECEBIDO",
+  "career.rank": "CLASSE",
+  "career.promoted": "PROMOVIDO",
+  "career.relegated": "DESPROMOVIDO",
+  "career.nextRank": "{n} para {tier}",
+  "career.topRank": "Topo da tabela",
+  "career.reward": "RECOMPENSA",
+  "career.empty": "Joga um jogo para começar a tua carreira.",
+  "challenge.matches": "Joga {n} jogos",
+  "challenge.wins": "Ganha {n} jogos",
+  "challenge.points": "Marca {n} pontos",
+  "challenge.rallies": "Joga {n} trocas longas",
+  "challenge.sets": "Ganha {n} sets",
+  "challenge.matches.one": "Joga um jogo",
+  "challenge.wins.one": "Ganha um jogo",
+  "challenge.points.one": "Marca um ponto",
+  "challenge.rallies.one": "Joga uma troca longa",
+  "challenge.sets.one": "Ganha um set",
+
+  // — results —
+  "result.win": "JOGO GANHO",
+  "result.loss": "JOGO PERDIDO",
+  "result.trophies": "TROFÉUS",
+  "result.coins": "MOEDAS",
+  "result.levelUp": "SUBIU DE NÍVEL",
+  "result.challengeDone": "DESAFIO CONCLUÍDO",
+  "result.continue": "CONTINUAR",
+
+  // — loading tips —
+  "tip.power": "Um deslize lento levanta a bola. Um rápido baixa-a.",
+  "tip.setup": "Toca onde queres a bola, não onde queres estar.",
+  "tip.deep": "Uma preparação funda abre a finalização.",
+  "tip.reception": "Fica perto da bola: o primeiro toque acontece sozinho.",
+  "tip.miss": "Batida com tudo, às vezes sai. É o preço da velocidade.",
+  "tip.serve": "Serve aberto para o tirar da mesa.",
+
   "loading.court": "A preparar o campo…",
   "loading.match": "A preparar a partida…",
 };
@@ -458,4 +682,17 @@ export function isLanguage(value: unknown): value is Language {
 /** Look up one string in the current language. */
 export function t(key: StringKey): string {
   return CATALOGUES[current][key] ?? EN[key];
+}
+
+/**
+ * A translated string with its placeholders filled in.
+ *
+ * Placeholders are named (`{n}`, `{tier}`) rather than positional because word
+ * order is the first thing a translation changes: "3 to ROOKIE II" and "3 pour
+ * ROOKIE II" happen to agree, but nothing guarantees the next language will.
+ */
+export function tf(key: StringKey, values: Record<string, string | number>): string {
+  return t(key).replace(/\{(\w+)\}/g, (whole, name: string) =>
+    name in values ? String(values[name]) : whole
+  );
 }

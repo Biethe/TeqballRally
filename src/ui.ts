@@ -1,7 +1,16 @@
 import type { Side } from "./ball";
 import type { CameraMode, CharacterDef } from "./config";
 import type { ViewerKind } from "./viewer";
-import { t } from "./i18n";
+import { t, tf } from "./i18n";
+import { randomTip } from "./tips";
+import { RATING_KEYS, rating, totalPower, type RatingKey } from "./ratings";
+
+/** One line of plain English per trait, for the tooltip on the picker. */
+const RATING_DETAIL: Record<RatingKey, string> = {
+  reactivity: "Response and court movement",
+  power: "Kick and serve power",
+  control: "Aim precision and placement",
+};
 
 export interface SelectItem {
   id: string;
@@ -56,6 +65,69 @@ export interface PracticePanelState {
   goal: string;
 }
 
+/** One roster card on the CHAMPIONS screen. */
+export interface ChampionRow {
+  id: string;
+  label: string;
+  level: number;
+  maxLevel: number;
+  unlocked: boolean;
+  /** Trophies that unlock this character, shown while it is still locked. */
+  unlockAt: number;
+  /** Coins the next level costs, or null once there is no next level. */
+  cost: number | null;
+  affordable: boolean;
+  /** Matches still to play before the level goes up on its own, null at the cap. */
+  nextIn: number | null;
+  /** The three traits, already scored, in the order they are shown. */
+  stats: { label: string; value: number }[];
+  /** The three added together: one number to hold two players up against. */
+  power: number;
+}
+
+export interface ChampionsView {
+  rows: ChampionRow[];
+  onUpgrade: (id: string) => void;
+  onBack: () => void;
+}
+
+/** One daily challenge, with where the player has got to on it. */
+export interface ChallengeRow {
+  id: string;
+  text: string;
+  progress: number;
+  goal: number;
+  reward: number;
+  claimed: boolean;
+}
+
+export interface ChallengesView {
+  rows: ChallengeRow[];
+  /** Time until the set rolls over, already formatted. */
+  resetsIn: string;
+  onClaim: (id: string) => void;
+  onBack: () => void;
+}
+
+/** What a finished match did to the career, for the screen that reports it. */
+export interface ResultView {
+  won: boolean;
+  /** Trophies gained or lost, and the total afterwards. */
+  trophies: number;
+  total: number;
+  coins: number;
+  tier: string;
+  /** The rung above and how far off it is, or null at the top of the ladder. */
+  nextTier: string | null;
+  toNext: number;
+  progress: number;
+  rank: "promoted" | "relegated" | null;
+  /** Level-ups and finished challenges, already worded. */
+  notes: string[];
+  onContinue: () => void;
+  onRematch: (() => void) | null;
+}
+
 /** The focused, mid-rally coaching card used by the guided practice flow. */
 export interface TrainingPauseState {
   /** Short progress label, for example "2 / 5". */
@@ -75,6 +147,7 @@ export class UI {
   private root: HTMLElement;
   private loadingEl: HTMLDivElement;
   private loadingText: HTMLDivElement;
+  private loadingTip: HTMLDivElement;
   private introClipEl: HTMLDivElement;
   private introClipVideo: HTMLVideoElement;
   /** Resolves the pending `playIntroClip()`; null when no clip is running. */
@@ -97,6 +170,11 @@ export class UI {
   private menuEl: HTMLDivElement;
   private settingsEl: HTMLDivElement;
   private standingsEl: HTMLDivElement;
+  private championsEl: HTMLDivElement;
+  private challengesEl: HTMLDivElement;
+  private resultEl: HTMLDivElement;
+  /** The coins/trophies strip drawn over the title screen. */
+  private walletEl: HTMLDivElement;
   private bannerTimer: number | null = null;
   private meterEl: HTMLDivElement;
   private meterFlashEl: HTMLDivElement;
@@ -116,7 +194,7 @@ export class UI {
 
     this.loadingEl = this.screen("loading-screen");
     this.loadingEl.innerHTML = `
-      <div class="logo">TeqRally</div>
+      <div class="logo">TeqRallly</div>
       <div class="teq-loader" aria-hidden="true">
         <span class="teq-loader-ball"></span>
         <span class="teq-loader-line"></span>
@@ -124,7 +202,9 @@ export class UI {
     this.loadingText = document.createElement("div");
     this.loadingText.className = "loading-text";
     this.loadingText.textContent = "Loading…";
-    this.loadingEl.appendChild(this.loadingText);
+    this.loadingTip = document.createElement("div");
+    this.loadingTip.className = "loading-tip";
+    this.loadingEl.append(this.loadingText, this.loadingTip);
 
     // Sits over the loading screen rather than replacing it, so a device that
     // cannot decode the clip is left looking at the loading screen instead of
@@ -158,12 +238,16 @@ export class UI {
           <span class="brand-orb" aria-hidden="true"></span>
           <div>
             <div class="brand-kicker" id="title-kicker">TABLE FOOTBALL</div>
-            <div class="logo">TeqRally</div>
+            <div class="logo">TeqRallly</div>
           </div>
         </div>
         <p class="title-tagline" id="title-tagline">Fast rallies on the curved table.</p>
         <button class="big-btn" id="btn-play" data-menu-primary="true">PLAY</button>
-        <button class="ghost-btn" id="btn-title-settings" type="button">SETTINGS</button>
+        <nav class="title-hub" aria-label="Career">
+          <button class="ghost-btn" id="btn-title-champions" type="button"></button>
+          <button class="ghost-btn" id="btn-title-challenges" type="button"></button>
+          <button class="ghost-btn" id="btn-title-settings" type="button">SETTINGS</button>
+        </nav>
       </main>`;
 
     // Select screen is a transparent overlay: the 3D model viewer renders behind it.
@@ -173,7 +257,7 @@ export class UI {
       <div class="select-top">
         <div class="select-bar">
           <button class="select-back" id="btn-select-back" type="button" data-menu-back>← ${t("nav.back")}</button>
-          <div class="select-brand">TeqRally</div>
+          <div class="select-brand">TeqRallly</div>
         </div>
         <div class="select-title">CHOOSE YOUR SETUP</div>
         <div class="tabs">
@@ -300,6 +384,18 @@ export class UI {
     // Competition standings (cup bracket / league table) between matches.
     this.standingsEl = this.screen("standings-screen");
 
+    // The career: the roster, today's challenges, and what a match did to both.
+    this.championsEl = this.screen("champions-screen");
+    this.challengesEl = this.screen("challenges-screen");
+    this.resultEl = this.screen("result-screen");
+
+    // The wallet rides above the title screen rather than inside it: it is the
+    // one thing that has to look the same on every screen that shows it.
+    this.walletEl = document.createElement("div");
+    this.walletEl.id = "wallet";
+    this.walletEl.className = "wallet hidden";
+    this.root.appendChild(this.walletEl);
+
     this.hideAll();
   }
 
@@ -324,9 +420,13 @@ export class UI {
       this.menuEl,
       this.standingsEl,
       this.settingsEl,
+      this.championsEl,
+      this.challengesEl,
+      this.resultEl,
     ]) {
       el.classList.add("hidden");
     }
+    this.walletEl.classList.add("hidden");
   }
 
   /** Full-screen menu; each option's `id` becomes the button's DOM id. */
@@ -343,7 +443,7 @@ export class UI {
     this.menuEl.innerHTML = `
       <main class="menu-shell">
         <header class="menu-header">
-          <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRally</div>
+          <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRallly</div>
           ${onBack ? `<button class="menu-back" id="btn-menu-back" type="button" data-menu-back>← ${t("nav.back")}</button>` : ""}
         </header>
         <section class="menu-heading">
@@ -513,7 +613,7 @@ export class UI {
     this.settingsEl.innerHTML = `
       <main class="menu-shell settings-shell">
         <header class="menu-header">
-          <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRally</div>
+          <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRallly</div>
           <button class="menu-back" id="btn-settings-back" type="button" data-menu-back>← ${t("nav.back")}</button>
         </header>
         <section class="menu-heading"><h1></h1></section>
@@ -660,6 +760,11 @@ export class UI {
   showLoading(text = "Loading…"): void {
     this.hideAll();
     this.loadingText.textContent = text;
+    // The one moment a player is looking at the game with nothing to do, and
+    // the cheapest place there is to teach them something. A fresh tip per
+    // load, not per frame: a line that changes while it is being read is worse
+    // than no line.
+    this.loadingTip.textContent = randomTip();
     this.loadingEl.classList.remove("hidden");
   }
 
@@ -754,17 +859,281 @@ export class UI {
    * A title screen that lists every mode is a dashboard, and a player opening a
    * game for the first time should only have to recognise PLAY.
    */
-  showTitle(onPlay: () => void, onSettings: () => void): void {
+  showTitle(actions: {
+    onPlay: () => void;
+    onChampions: () => void;
+    onChallenges: () => void;
+    onSettings: () => void;
+    /** True while a daily challenge is finished and its reward uncollected. */
+    challengeReady?: boolean;
+  }): void {
     this.hideAll();
+    this.showWallet();
     this.titleEl.querySelector<HTMLDivElement>("#title-kicker")!.textContent = t("title.kicker");
     this.titleEl.querySelector<HTMLParagraphElement>("#title-tagline")!.textContent = t("title.tagline");
     const btn = this.titleEl.querySelector<HTMLButtonElement>("#btn-play")!;
     btn.textContent = t("title.play");
-    btn.onclick = () => onPlay();
-    const settings = this.titleEl.querySelector<HTMLButtonElement>("#btn-title-settings")!;
-    settings.textContent = t("title.settings");
-    settings.onclick = () => onSettings();
+    btn.onclick = () => actions.onPlay();
+    const wire = (id: string, label: string, fn: () => void) => {
+      const el = this.titleEl.querySelector<HTMLButtonElement>(id)!;
+      el.textContent = label;
+      el.onclick = () => fn();
+      return el;
+    };
+    wire("#btn-title-champions", t("career.champions"), actions.onChampions);
+    // A reward waiting is the one thing on this screen allowed to compete with
+    // PLAY for attention, and only as a dot.
+    wire("#btn-title-challenges", t("career.challenges"), actions.onChallenges).classList.toggle(
+      "has-dot",
+      actions.challengeReady === true
+    );
+    wire("#btn-title-settings", t("title.settings"), actions.onSettings);
     this.titleEl.classList.remove("hidden");
+  }
+
+  /**
+   * The coins-and-trophies strip.
+   *
+   * Shown on the screens where those numbers are the reason the player is
+   * looking — the title, the roster, the challenges — and nowhere near a live
+   * match, where a currency counter over the court is just something else
+   * moving while a ball is in the air.
+   */
+  setWallet(coins: number, trophies: number, tier: string): void {
+    this.walletEl.innerHTML = `
+      <div class="wallet-chip"><span class="wallet-icon coin" aria-hidden="true"></span><b></b></div>
+      <div class="wallet-chip"><span class="wallet-icon cup" aria-hidden="true"></span><b></b></div>
+      <div class="wallet-rank"></div>`;
+    const values = this.walletEl.querySelectorAll("b");
+    values[0].textContent = coins.toLocaleString();
+    values[1].textContent = trophies.toLocaleString();
+    this.walletEl.querySelector<HTMLDivElement>(".wallet-rank")!.textContent = tier;
+    this.walletEl.setAttribute(
+      "aria-label",
+      `${t("career.coins")} ${coins}, ${t("career.trophies")} ${trophies}, ${t("career.rank")} ${tier}`
+    );
+  }
+
+  private showWallet(): void {
+    this.walletEl.classList.remove("hidden");
+  }
+
+  /**
+   * The roster.
+   *
+   * A locked card still shows who is behind it and what it costs to get them:
+   * a grid of question marks is a list of things the player cannot have, and a
+   * grid of named players two hundred trophies away is a reason to play.
+   */
+  showChampions(view: ChampionsView): void {
+    this.hideAll();
+    this.championsEl.classList.remove("hidden");
+    this.showWallet();
+    this.championsEl.innerHTML = `
+      <div class="career-head">
+        <button class="select-back" type="button" data-menu-back></button>
+        <div>
+          <h2 class="career-title"></h2>
+          <p class="career-sub"></p>
+        </div>
+      </div>
+      <div class="career-list champion-grid"></div>`;
+    const back = this.championsEl.querySelector<HTMLButtonElement>(".select-back")!;
+    back.textContent = `← ${t("nav.back")}`;
+    back.onclick = () => view.onBack();
+    this.championsEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
+      t("career.champions");
+    this.championsEl.querySelector<HTMLParagraphElement>(".career-sub")!.textContent =
+      t("career.champions.sub");
+
+    const grid = this.championsEl.querySelector<HTMLDivElement>(".champion-grid")!;
+    for (const row of view.rows) {
+      const card = document.createElement("div");
+      card.className = row.unlocked ? "champion-card" : "champion-card locked";
+      card.dataset.champion = row.id;
+      card.innerHTML = `
+        <div class="champion-top">
+          <span class="champion-name"></span>
+          <span class="champion-level"></span>
+        </div>
+        <div class="champion-power"><span></span><b></b></div>
+        <div class="champion-traits"></div>
+        <div class="champion-foot"></div>`;
+      card.querySelector<HTMLSpanElement>(".champion-name")!.textContent = row.label;
+      card.querySelector<HTMLSpanElement>(".champion-level")!.textContent = row.unlocked
+        ? `${t("career.level")} ${row.level}`
+        : t("career.locked");
+      card.querySelector<HTMLSpanElement>(".champion-power span")!.textContent = t("career.power");
+      card.querySelector<HTMLElement>(".champion-power b")!.textContent = String(row.power);
+      const traits = card.querySelector<HTMLDivElement>(".champion-traits")!;
+      for (const stat of row.stats) {
+        const line = document.createElement("div");
+        line.className = "champion-trait";
+        line.innerHTML = `<span class="champion-trait-label"></span><span class="bar"><i></i></span><b></b>`;
+        line.querySelector<HTMLSpanElement>(".champion-trait-label")!.textContent = stat.label;
+        line.querySelector<HTMLElement>(".bar i")!.style.width = `${stat.value}%`;
+        line.querySelector<HTMLElement>("b")!.textContent = String(stat.value);
+        traits.appendChild(line);
+      }
+
+      const foot = card.querySelector<HTMLDivElement>(".champion-foot")!;
+      if (!row.unlocked) {
+        const note = document.createElement("span");
+        note.className = "champion-note";
+        note.textContent = tf("career.unlockAt", { n: row.unlockAt });
+        foot.appendChild(note);
+      } else if (row.cost === null) {
+        const note = document.createElement("span");
+        note.className = "champion-note done";
+        note.textContent = t("career.maxLevel");
+        foot.appendChild(note);
+      } else {
+        const note = document.createElement("span");
+        note.className = "champion-note";
+        note.textContent =
+          row.nextIn === null ? "" : tf("career.nextLevel", { n: row.nextIn });
+        const buy = document.createElement("button");
+        buy.type = "button";
+        buy.className = "champion-buy";
+        buy.disabled = !row.affordable;
+        buy.textContent = `${t("career.upgrade")} · ${row.cost}`;
+        buy.onclick = () => view.onUpgrade(row.id);
+        foot.append(note, buy);
+      }
+      grid.appendChild(card);
+    }
+  }
+
+  /** Today's three, with a countdown that says plainly what "daily" means. */
+  showChallenges(view: ChallengesView): void {
+    this.hideAll();
+    this.challengesEl.classList.remove("hidden");
+    this.showWallet();
+    this.challengesEl.innerHTML = `
+      <div class="career-head">
+        <button class="select-back" type="button" data-menu-back></button>
+        <div>
+          <h2 class="career-title"></h2>
+          <p class="career-sub"></p>
+        </div>
+      </div>
+      <div class="career-list challenge-list"></div>`;
+    const back = this.challengesEl.querySelector<HTMLButtonElement>(".select-back")!;
+    back.textContent = `← ${t("nav.back")}`;
+    back.onclick = () => view.onBack();
+    this.challengesEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
+      t("career.challenges");
+    this.challengesEl.querySelector<HTMLParagraphElement>(".career-sub")!.textContent =
+      tf("career.resetsIn", { t: view.resetsIn });
+
+    const list = this.challengesEl.querySelector<HTMLDivElement>(".challenge-list")!;
+    for (const row of view.rows) {
+      const done = row.progress >= row.goal;
+      const card = document.createElement("div");
+      card.className = done ? "challenge-card done" : "challenge-card";
+      card.dataset.challenge = row.id;
+      card.innerHTML = `
+        <div class="challenge-top">
+          <span class="challenge-text"></span>
+          <span class="challenge-reward"></span>
+        </div>
+        <span class="bar"><i></i></span>
+        <div class="challenge-foot"><span class="challenge-count"></span></div>`;
+      card.querySelector<HTMLSpanElement>(".challenge-text")!.textContent = row.text;
+      card.querySelector<HTMLSpanElement>(".challenge-reward")!.textContent = `${row.reward} ●`;
+      card.querySelector<HTMLElement>(".bar i")!.style.width =
+        `${Math.round(Math.min(1, row.progress / row.goal) * 100)}%`;
+      card.querySelector<HTMLSpanElement>(".challenge-count")!.textContent =
+        `${Math.min(row.progress, row.goal)} / ${row.goal}`;
+      if (done) {
+        const claim = document.createElement("button");
+        claim.type = "button";
+        claim.className = "challenge-claim";
+        claim.disabled = row.claimed;
+        claim.textContent = row.claimed ? t("career.claimed") : t("career.claim");
+        claim.onclick = () => view.onClaim(row.id);
+        card.querySelector<HTMLDivElement>(".challenge-foot")!.appendChild(claim);
+      }
+      list.appendChild(card);
+    }
+  }
+
+  /**
+   * What the match was worth.
+   *
+   * The deltas are the headline and the totals are the small print: a player
+   * who has just finished a match wants to know what changed, and can read the
+   * standing total off the strip at the top whenever they care.
+   */
+  showResult(view: ResultView): void {
+    this.hideAll();
+    this.resultEl.classList.remove("hidden");
+    this.showWallet();
+    const sign = (n: number) => (n > 0 ? `+${n}` : `${n}`);
+    this.resultEl.innerHTML = `
+      <div class="result-card">
+        <div class="result-verdict"></div>
+        <div class="result-rank"></div>
+        <div class="result-rows">
+          <div class="result-row"><span></span><b class="result-trophies"></b></div>
+          <div class="result-row"><span></span><b class="result-coins"></b></div>
+        </div>
+        <div class="result-ladder">
+          <div class="result-tier"></div>
+          <span class="bar"><i></i></span>
+          <div class="result-next"></div>
+        </div>
+        <ul class="result-notes"></ul>
+        <div class="result-btns"></div>
+      </div>`;
+    const card = this.resultEl.querySelector<HTMLDivElement>(".result-card")!;
+    card.classList.toggle("won", view.won);
+    card.querySelector<HTMLDivElement>(".result-verdict")!.textContent = view.won
+      ? t("result.win")
+      : t("result.loss");
+
+    const rank = card.querySelector<HTMLDivElement>(".result-rank")!;
+    rank.textContent = view.rank === null ? "" : t(`career.${view.rank}`);
+    rank.className = view.rank === null ? "result-rank hidden" : `result-rank ${view.rank}`;
+
+    const labels = card.querySelectorAll(".result-row span");
+    labels[0].textContent = t("result.trophies");
+    labels[1].textContent = t("result.coins");
+    card.querySelector<HTMLElement>(".result-trophies")!.textContent = sign(view.trophies);
+    card.querySelector<HTMLElement>(".result-coins")!.textContent = sign(view.coins);
+
+    card.querySelector<HTMLDivElement>(".result-tier")!.textContent = view.tier;
+    card.querySelector<HTMLElement>(".result-ladder .bar i")!.style.width =
+      `${Math.round(view.progress * 100)}%`;
+    card.querySelector<HTMLDivElement>(".result-next")!.textContent = view.nextTier
+      ? tf("career.nextRank", { n: view.toNext, tier: view.nextTier })
+      : t("career.topRank");
+
+    const notes = card.querySelector<HTMLUListElement>(".result-notes")!;
+    for (const note of view.notes) {
+      const li = document.createElement("li");
+      li.textContent = note;
+      notes.appendChild(li);
+    }
+
+    const btns = card.querySelector<HTMLDivElement>(".result-btns")!;
+    if (view.onRematch) {
+      const again = document.createElement("button");
+      again.type = "button";
+      again.className = "big-btn alt";
+      again.id = "btn-result-rematch";
+      again.textContent = t("end.rematch");
+      again.onclick = () => view.onRematch?.();
+      btns.appendChild(again);
+    }
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "big-btn";
+    go.id = "btn-result-continue";
+    go.dataset.menuPrimary = "true";
+    go.textContent = t("result.continue");
+    go.onclick = () => view.onContinue();
+    btns.appendChild(go);
   }
 
   private selTab: ViewerKind = "character";
@@ -818,14 +1187,6 @@ export class UI {
     tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === this.selTab));
     const items = (): SelectItem[] => (this.selTab === "character" ? opts.characters : opts.balls);
 
-    const abilityScore = (value: number, get: (player: CharacterDef) => number): number => {
-      const values = opts.characters.map(get);
-      const min = Math.min(...values);
-      const max = Math.max(...values);
-      // Ratings deliberately use the full, familiar 100-point scale while
-      // still tracking the live balance values in config.ts.
-      return max === min ? 100 : Math.round(60 + ((value - min) / (max - min)) * 40);
-    };
     const footLabel = (foot: CharacterDef["strongFoot"]): string =>
       foot === "both" ? t("select.twoFooted") : foot === "left" ? t("select.left") : t("select.right");
     const renderProfile = (player: CharacterDef | null): void => {
@@ -835,26 +1196,15 @@ export class UI {
       }
       profileEl.classList.remove("hidden");
       profileStatsEl.replaceChildren();
-      const stats: Array<{ label: string; value: string; fill: number; detail: string }> = [
-        {
-          label: t("select.abilities.reactivity"),
-          value: String(abilityScore(player.speed, (p) => p.speed)),
-          fill: abilityScore(player.speed, (p) => p.speed) / 100,
-          detail: "Response and court movement",
-        },
-        {
-          label: t("select.abilities.power"),
-          value: String(abilityScore(player.power, (p) => p.power)),
-          fill: abilityScore(player.power, (p) => p.power) / 100,
-          detail: "Kick and serve power",
-        },
-        {
-          label: t("select.abilities.control"),
-          value: String(abilityScore(player.precision, (p) => p.precision)),
-          fill: abilityScore(player.precision, (p) => p.precision) / 100,
-          detail: "Aim precision and placement",
-        },
-      ];
+      const stats = RATING_KEYS.map((key) => {
+        const score = rating(player, key);
+        return {
+          label: t(`select.abilities.${key}`),
+          value: String(score),
+          fill: score / 100,
+          detail: RATING_DETAIL[key],
+        };
+      });
       for (const stat of stats) {
         const row = document.createElement("div");
         row.className = "profile-stat";
@@ -953,16 +1303,56 @@ export class UI {
   }
 
   /** Venue and line-up card, shown over the pre-match establishing shot. */
-  showIntro(venue: string, home: string, away: string): void {
+  /**
+   * The card before the whistle.
+   *
+   * With both characters known it is a head-to-head rather than a title: the
+   * same three traits down the middle, each side's number beside it, and an
+   * arrow on whoever leads. It is the one moment a player is looking at both
+   * players at once, which makes it the only place the comparison is free —
+   * and the place where learning that their opponent is quicker is worth
+   * something, because they are about to play them.
+   */
+  showIntro(venue: string, home: string, away: string, matchUp?: [CharacterDef, CharacterDef]): void {
     this.introEl.innerHTML = `
       <div class="intro-venue"></div>
       <div class="intro-vs"><span></span><em>VS</em><span></span></div>
+      <div class="intro-compare"></div>
       <div class="intro-skip">TAP TO SKIP</div>`;
     const [venueEl] = this.introEl.getElementsByClassName("intro-venue");
     venueEl.textContent = venue;
     const names = this.introEl.querySelectorAll(".intro-vs span");
     names[0].textContent = home;
     names[1].textContent = away;
+
+    const compare = this.introEl.querySelector<HTMLDivElement>(".intro-compare")!;
+    if (matchUp) {
+      const [mine, theirs] = matchUp;
+      const total = document.createElement("div");
+      total.className = "compare-row total";
+      total.innerHTML = `<b></b><span></span><b></b>`;
+      const totals = total.querySelectorAll("b");
+      totals[0].textContent = String(totalPower(mine));
+      totals[1].textContent = String(totalPower(theirs));
+      total.querySelector<HTMLSpanElement>("span")!.textContent = t("career.power");
+      compare.appendChild(total);
+      for (const key of RATING_KEYS) {
+        const a = rating(mine, key);
+        const b = rating(theirs, key);
+        const line = document.createElement("div");
+        line.className = "compare-row";
+        line.innerHTML = `<b></b><i class="compare-lead left"></i><span></span><i class="compare-lead right"></i><b></b>`;
+        const values = line.querySelectorAll("b");
+        values[0].textContent = String(a);
+        values[1].textContent = String(b);
+        line.querySelector<HTMLSpanElement>("span")!.textContent = t(`select.abilities.${key}`);
+        line.querySelector<HTMLElement>(".compare-lead.left")!.classList.toggle("on", a > b);
+        line.querySelector<HTMLElement>(".compare-lead.right")!.classList.toggle("on", b > a);
+        compare.appendChild(line);
+      }
+    } else {
+      compare.classList.add("hidden");
+    }
     this.introEl.classList.remove("hidden");
   }
 
