@@ -11,7 +11,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
  */
 const config: CapacitorConfig = {
   appId: "com.biethe.teqopen",
-  appName: "TeqRally",
+  appName: "TeqRallly",
   // Vite's build output. `npx cap sync` copies this into the native project,
   // so `npm run build` has to run first.
   webDir: "dist",

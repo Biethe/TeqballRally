@@ -219,6 +219,14 @@ const PRESS_BUFFER = 0.35;
 // flat or rolls (a contact every few ms) — same-side contacts within this
 // window count as the same bounce for the rules.
 const TABLE_BOUNCE_DEBOUNCE = 0.25;
+/**
+ * Touches in a point before it counts as a long rally.
+ *
+ * Six is two full possessions: the ball has crossed the net and come back,
+ * which is the smallest thing that is recognisably a rally rather than a serve
+ * and a mistake.
+ */
+const LONG_RALLY_TOUCHES = 6;
 // Guest-side character easing between the host's 20 Hz snapshots: run toward
 // the reported spot, snap if the gap is too big to be a run, and take the
 // position exactly once close, so the locomotion blend can reach idle.
@@ -245,6 +253,20 @@ export class MatchController {
   score: Record<Side, number> = { player: 0, ai: 0 };
   /** Sets won; first to SETS_TO_WIN takes the game. */
   sets: Record<Side, number> = { player: 0, ai: 0 };
+  /**
+   * Totals for the whole match, which the career is settled from.
+   *
+   * Separate from `score` because that one resets between sets: a challenge
+   * asking for forty points means forty points in the match, and reading them
+   * off a counter that goes back to zero twice would be wrong in a way nobody
+   * would notice until a player complained the challenge never finished.
+   */
+  tally: { points: Record<Side, number>; longRallies: number } = {
+    points: { player: 0, ai: 0 },
+    longRallies: 0,
+  };
+  /** Touches by both sides in the point being played, for the long-rally count. */
+  private pointTouches = 0;
   /**
    * Two-human mode: the "ai" side is driven by `versusInput` (court-space,
    * fed each frame by the app from the second controller) instead of the AI.
@@ -1136,6 +1158,7 @@ export class MatchController {
     this.lastHitter = side;
     this.strikeableSide = null;
     this.touchCount = 0;
+    this.pointTouches++;
     if (side === "player") {
       this.ui.hint(null);
       this.selfSetupSpot = null;
@@ -1272,6 +1295,7 @@ export class MatchController {
     }
 
     this.touchCount++;
+    this.pointTouches++;
     if (side === "player") this.ui.hint(null);
 
     // Pop the ball at the planned contact moment so it rises and comes down
@@ -1393,6 +1417,7 @@ export class MatchController {
         if (e.side === this.strikeableSide && this.bodyTouchCooldown <= 0) {
           this.bodyTouchCooldown = 0.3;
           this.touchCount++;
+          this.pointTouches++;
           if (this.touchCount > MAX_TOUCHES) {
             this.awardPoint(other(e.side), "Too many touches!");
           }
@@ -1433,6 +1458,10 @@ export class MatchController {
     this.lastTableSide = null;
     this.score[winner]++;
     this.totalPoints++;
+    this.tally.points[winner]++;
+    // A rally the players actually had, rather than a serve nobody returned.
+    if (this.pointTouches >= LONG_RALLY_TOUCHES) this.tally.longRallies++;
+    this.pointTouches = 0;
     this.emit({ type: "point-awarded", winner, reason });
     this.audio.playApplause();
     // The point winner celebrates after a short beat, while the banner shows
@@ -1512,6 +1541,8 @@ export class MatchController {
     this.tutorialFrozen = false;
     this.score = { player: 0, ai: 0 };
     this.sets = { player: 0, ai: 0 };
+    this.tally = { points: { player: 0, ai: 0 }, longRallies: 0 };
+    this.pointTouches = 0;
     this.totalPoints = 0;
     this.matchClock = 0;
     this.possessionHints = 0;

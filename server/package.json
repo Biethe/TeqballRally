@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Match relay for TeqRally online play",
+  "description": "Match relay for TeqRallly online play",
   "main": "relay.mjs",
   "scripts": {
     "start": "node relay.mjs"

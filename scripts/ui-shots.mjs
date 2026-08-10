@@ -198,6 +198,40 @@ for (const dev of DEVICES) {
   await page.waitForTimeout(300);
   await page.locator("#btn-menu-back").click();
   await page.waitForTimeout(400);
+  // The career screens, seeded so the cards have something on them: an empty
+  // roster and three untouched challenges lay out nothing like a career in
+  // progress, which is the state a layout defect would show up in.
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "teqopen.career",
+      JSON.stringify({
+        coins: 1487,
+        trophies: 365,
+        best: 365,
+        champions: {
+          BrazilianPlayer: { level: 3, xp: 1 },
+          EnglishPlayer: { level: 1, xp: 0 },
+          FrenchPlayer: { level: 6, xp: 0 },
+        },
+        day: new Date().toISOString().slice(0, 10),
+        progress: {},
+        claimed: [],
+      })
+    );
+  });
+  await page.reload({ waitUntil: "load" });
+  await page.waitForTimeout(3000);
+  await page.locator("#btn-title-champions").click();
+  await page.waitForTimeout(400);
+  await shot("champions");
+  await page.locator("#champions-screen .select-back").click();
+  await page.waitForTimeout(300);
+  await page.locator("#btn-title-challenges").click();
+  await page.waitForTimeout(400);
+  await shot("challenges");
+  await page.locator("#challenges-screen .select-back").click();
+  await page.waitForTimeout(300);
+
   await page.locator("#btn-title-settings").click();
   await page.waitForTimeout(400);
   await shot("settings");
@@ -224,6 +258,43 @@ for (const dev of DEVICES) {
   await page.locator("#btn-diff-normal").click();
   await page.waitForTimeout(12000);
   await shot("select");
+
+  // The results screen, shown directly. Playing a match out to reach it would
+  // take this browser several minutes, and what is being checked is the
+  // layout of a card, not the road to it.
+  await page.evaluate(() => {
+    window.__teqUi?.showResult({
+      won: true,
+      trophies: 20,
+      total: 385,
+      coins: 91,
+      tier: "ROOKIE III",
+      nextTier: "JUNIOR I",
+      toNext: 115,
+      progress: 0.42,
+      rank: "promoted",
+      notes: ["LEVEL UP — BRAZIL LEVEL 4", "CHALLENGE COMPLETE — Win 3 matches"],
+      onContinue: () => {},
+      onRematch: () => {},
+    });
+  });
+  await page.waitForTimeout(400);
+  await shot("result");
+
+  // The head-to-head card, likewise shown directly: it lives for a few seconds
+  // at the start of a match and is gone before this browser has drawn it.
+  await page.evaluate(() => {
+    // The card lives inside the HUD so the establishing camera move is never
+    // covered by a full-screen panel — which means the HUD has to be up, and
+    // the results card from the previous shot has to come down.
+    document.getElementById("result-screen")?.classList.add("hidden");
+    const ui = window.__teqUi;
+    ui?.showHUD();
+    const roster = window.__teqCharacters ?? [];
+    ui?.showIntro("SPORTS HALL", "YOU", "ENGLAND", [roster[0], roster[1]]);
+  });
+  await page.waitForTimeout(1500);
+  await shot("head-to-head");
 
   await ctx.close();
   console.log(`captured ${dev.name}`);

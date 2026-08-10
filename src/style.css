@@ -318,7 +318,7 @@ button.pad-focus {
   text-transform: uppercase;
 }
 
-/* ------- TeqRally welcome screen ------- */
+/* ------- TeqRallly welcome screen ------- */
 .title-content {
   display: flex;
   flex-direction: column;
@@ -2098,9 +2098,12 @@ button.pad-focus {
   animation: intro-rise 0.45s ease-out;
 }
 
+/* Starts visible, like every other entrance in here: on a phone slow enough
+   to miss the first frames of the animation, a card that begins at zero
+   opacity is a card the player never sees at all. */
 @keyframes intro-rise {
   from {
-    opacity: 0;
+    opacity: 0.35;
     transform: translate(-50%, 24px);
   }
   to {
@@ -2396,5 +2399,639 @@ button.pad-focus {
 
   .teq-loader {
     display: none;
+  }
+}
+
+/* ============================ the career ============================
+   The roster, the daily challenges and the screen that reports what a
+   match was worth. Three screens sharing one shape: a header with the way
+   back, and a single scrolling column of substantial cards.
+
+   Orange stays orange here too — it means selected, or go, or collect.
+   Coins and trophies are gold because they are the thing being counted,
+   which is the one exception the palette makes and the reason it is only
+   ever used on numbers. */
+
+.wallet {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  /* Above .screen, which paints a full-bleed arena background at z-index 10.
+     The strip rides over every screen it is shown on rather than being part
+     of any of them, so it has to clear that. */
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.wallet.hidden {
+  display: none;
+}
+
+.wallet-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 14px 5px 9px;
+  border: 1px solid rgba(160, 200, 245, 0.32);
+  border-radius: 999px;
+  background: rgba(6, 22, 46, 0.86);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.wallet-icon {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.wallet-icon.coin {
+  background: radial-gradient(circle at 34% 30%, #ffe08a 0%, var(--gold) 52%, #c98b06 100%);
+}
+
+/* A cup, drawn rather than imported: a bowl over a stem, in the same gold. */
+.wallet-icon.cup {
+  width: 13px;
+  height: 15px;
+  border-radius: 0 0 7px 7px;
+  background: linear-gradient(180deg, var(--gold) 0%, #d59a10 100%);
+  position: relative;
+}
+
+.wallet-icon.cup::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -3px;
+  width: 11px;
+  height: 3px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  background: #d59a10;
+}
+
+.wallet-rank {
+  /* "ROOKIE III" is two words the chip must not break across two lines. */
+  white-space: nowrap;
+  padding: 6px 13px;
+  border-radius: 999px;
+  background: rgba(47, 122, 201, 0.34);
+  border: 1px solid rgba(160, 200, 245, 0.32);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+/* The row of quiet doors under PLAY. They are chips, not cards: the title
+   screen still has exactly one thing on it that looks like the thing to do. */
+.title-hub {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.title-hub .ghost-btn {
+  margin-top: 0;
+  position: relative;
+}
+
+/* A reward waiting is the one thing allowed to compete with PLAY, and only
+   as a dot. */
+.ghost-btn.has-dot::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--teq);
+  box-shadow: 0 0 0 2px rgba(8, 26, 52, 0.9);
+}
+
+#champions-screen,
+#challenges-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: calc(max(10px, env(safe-area-inset-top)) + 46px) 16px 20px;
+  overflow: hidden;
+}
+
+#champions-screen.hidden,
+#challenges-screen.hidden,
+#result-screen.hidden {
+  display: none;
+}
+
+.career-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: min(720px, 100%);
+  margin: 0 auto 14px;
+}
+
+.career-title {
+  font-size: clamp(20px, 4vw, 30px);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: var(--text);
+}
+
+.career-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+/* The one scrolling region on each screen. Its own scroller, so the page
+   itself never moves and the header stays where the thumb expects it. */
+.career-list {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding-bottom: 8px;
+}
+
+.champion-grid {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.champion-card,
+.challenge-card {
+  padding: 13px 15px;
+  border: 1px solid rgba(160, 200, 245, 0.26);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: var(--lip);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* A locked card is dimmer, not hidden: the player is meant to read the name
+   and the price. */
+.champion-card.locked {
+  background: rgba(9, 30, 58, 0.72);
+  box-shadow: none;
+  opacity: 0.72;
+}
+
+.champion-top,
+.challenge-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.champion-name {
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  color: var(--text);
+}
+
+.champion-level {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--gold);
+}
+
+.champion-card.locked .champion-level {
+  color: var(--muted);
+}
+
+.champion-trait {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.champion-trait-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.bar {
+  display: block;
+  flex: 1 1 auto;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(3, 15, 33, 0.6);
+  overflow: hidden;
+}
+
+.bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--sky-lite), var(--teq));
+  transition: width 160ms cubic-bezier(0.22, 0.8, 0.3, 1);
+}
+
+/* No reserved height: a card with nothing to press should not hold open a
+   button-sized hole where the button would have been. The 44px minimum lives
+   on the controls themselves. */
+.champion-foot,
+.challenge-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.champion-note,
+.challenge-count {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.champion-note.done {
+  color: var(--gold);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.champion-buy,
+.challenge-claim {
+  pointer-events: auto;
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 13px;
+  background: linear-gradient(180deg, #ffc24a 0%, #ff8c18 46%, #ef6405 100%);
+  color: #fff;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  text-shadow: 0 2px 0 rgba(120, 44, 0, 0.55);
+  box-shadow: var(--lip);
+  transition: transform 0.1s ease, filter 0.16s ease, box-shadow 0.1s ease;
+}
+
+.champion-buy:active,
+.challenge-claim:active {
+  transform: translateY(3px);
+  box-shadow: var(--lip-press);
+}
+
+/* Unaffordable is not the same as broken: the control stays legible so the
+   price can still be read off it. */
+.champion-buy:disabled,
+.challenge-claim:disabled {
+  background: rgba(12, 37, 71, 0.9);
+  border-color: rgba(160, 200, 245, 0.3);
+  color: var(--muted);
+  text-shadow: none;
+  box-shadow: none;
+  cursor: default;
+}
+
+.challenge-text {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.challenge-reward {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: var(--gold);
+  flex: 0 0 auto;
+}
+
+.challenge-card.done {
+  border-color: rgba(255, 194, 51, 0.5);
+}
+
+/* --------- what the match was worth --------- */
+#result-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(4, 14, 30, 0.72);
+  overflow-y: auto;
+}
+
+.result-card {
+  width: min(440px, 100%);
+  padding: 22px;
+  border: 1px solid rgba(160, 200, 245, 0.3);
+  border-radius: 22px;
+  background: var(--panel-strong);
+  box-shadow: var(--lip);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+  pointer-events: auto;
+}
+
+.result-verdict {
+  font-size: clamp(22px, 5vw, 32px);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.result-card.won .result-verdict {
+  color: var(--text);
+}
+
+.result-rank {
+  align-self: center;
+  padding: 5px 16px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+}
+
+.result-rank.promoted {
+  background: linear-gradient(180deg, #ffc24a 0%, #ff8c18 100%);
+  color: #fff;
+}
+
+.result-rank.relegated {
+  background: rgba(12, 37, 71, 0.9);
+  border: 1px solid rgba(160, 200, 245, 0.35);
+  color: var(--muted);
+}
+
+.result-rank.hidden {
+  display: none;
+}
+
+.result-rows {
+  display: grid;
+  gap: 6px;
+}
+
+.result-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 9px 14px;
+  border-radius: 12px;
+  background: rgba(6, 22, 46, 0.6);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.result-row b {
+  font-size: 19px;
+  letter-spacing: 0.02em;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.result-ladder {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+}
+
+.result-tier {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  color: var(--text);
+}
+
+.result-next {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.result-notes {
+  list-style: none;
+  display: grid;
+  gap: 5px;
+}
+
+.result-notes li {
+  padding: 8px 12px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 194, 51, 0.4);
+  background: rgba(255, 194, 51, 0.1);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--gold);
+}
+
+.result-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 2px;
+}
+
+.result-btns .big-btn {
+  width: 100%;
+  padding: 12px 20px;
+  font-size: 17px;
+}
+
+.loading-tip {
+  margin-top: 10px;
+  max-width: 30ch;
+  font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  opacity: 0.85;
+  text-align: center;
+}
+
+/* Landscape phones: the wallet would sit on top of the brand lockup, and the
+   roster is better as one column than as two squeezed ones. */
+@media (max-height: 500px) {
+  .wallet {
+    top: 6px;
+    gap: 6px;
+  }
+
+  .wallet-chip,
+  .wallet-rank {
+    padding-block: 3px;
+    font-size: 11px;
+  }
+
+  #champions-screen,
+  #challenges-screen {
+    padding-top: 42px;
+  }
+
+  .loading-tip {
+    display: none;
+  }
+}
+
+/* ---- the trait block on a roster card ---- */
+.champion-power {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 6px 11px;
+  border-radius: 10px;
+  background: rgba(6, 22, 46, 0.55);
+}
+
+.champion-power span {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+
+.champion-power b {
+  font-size: 18px;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.champion-traits {
+  display: grid;
+  gap: 6px;
+}
+
+.champion-trait b {
+  flex: 0 0 auto;
+  min-width: 2.2em;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- the head-to-head on the pre-match card ----
+   Three rows, the trait named down the middle and each side's number on its
+   own side, so the card is read the way the court is laid out. */
+.intro-compare {
+  display: grid;
+  gap: 5px;
+  width: min(340px, 78vw);
+  margin-top: 4px;
+}
+
+.intro-compare.hidden {
+  display: none;
+}
+
+.compare-row {
+  display: grid;
+  grid-template-columns: 2.4em 12px 1fr 12px 2.4em;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 9px;
+  background: rgba(6, 22, 46, 0.5);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.compare-row span {
+  text-align: center;
+  font-weight: 800;
+}
+
+.compare-row b {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Both numbers hug the middle, so the lead arrow always sits right beside the
+   figure it is pointing at rather than drifting away from a short one. */
+.compare-row b:first-child {
+  text-align: right;
+}
+
+.compare-row b:last-child {
+  text-align: right;
+}
+
+.compare-row.total {
+  grid-template-columns: 2.8em 1fr 2.8em;
+  background: rgba(255, 194, 51, 0.12);
+  border: 1px solid rgba(255, 194, 51, 0.34);
+}
+
+.compare-row.total b {
+  color: var(--gold);
+  font-size: 17px;
+}
+
+/* The lead marker: a triangle pointing at whoever is ahead on that trait,
+   drawn only when somebody is. Orange, because it is the answer to the
+   question the row asks. */
+.compare-lead {
+  width: 0;
+  height: 0;
+  border-block: 5px solid transparent;
+  opacity: 0;
+}
+
+.compare-lead.left {
+  border-right: 7px solid var(--teq);
+}
+
+.compare-lead.right {
+  border-left: 7px solid var(--teq);
+}
+
+.compare-lead.on {
+  opacity: 1;
+}
+
+@media (max-height: 500px) {
+  .intro-compare {
+    gap: 3px;
+  }
+
+  .compare-row {
+    padding-block: 2px;
+    font-size: 10px;
+  }
+
+  .compare-row b {
+    font-size: 13px;
   }
 }
