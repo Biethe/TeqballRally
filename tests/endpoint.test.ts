@@ -5,7 +5,7 @@ const page = (protocol: string, hostname: string) => ({ protocol, hostname });
 
 describe("resolveRelayUrl", () => {
   it("uses a configured URL verbatim", () => {
-    const url = "wss://teqopen-relay-abc123.europe-west1.run.app";
+    const url = "wss://teqopen-relay-abc123.europe-west9.run.app";
     expect(resolveRelayUrl(url, page("https:", "teqopen.web.app"))).toBe(url);
   });
 

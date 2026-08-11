@@ -13,7 +13,10 @@
 set -euo pipefail
 
 PROJECT="${PROJECT:-teqopen-4c7ae}"
-REGION="${REGION:-europe-west1}"
+# Paris, because that is where this project's Firestore database is. The two
+# do not have to match, and every read pays for it when they do not — the
+# database is on the other side of every request the server serves.
+REGION="${REGION:-europe-west9}"
 SERVICE="${SERVICE:-teqrallly}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
