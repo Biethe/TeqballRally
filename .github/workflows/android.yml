@@ -15,6 +15,15 @@ on:
         description: "Match relay (blank = repo variable, then the default below)"
         required: false
         type: string
+  # Called by `deploy.yml` with the URL of the server it has just deployed, so
+  # the APK is built against that one rather than against whatever the
+  # repository variable was last set to.
+  workflow_call:
+    inputs:
+      relay_url:
+        description: "Match relay to bake into the build"
+        required: false
+        type: string
   push:
     branches: ["claude/**"]
     paths-ignore:
@@ -28,8 +37,11 @@ env:
   # -> Actions -> Variables to point every build somewhere else.
   DEFAULT_RELAY: wss://teqopen-relay.onrender.com
 
+# Scoped to the calling workflow as well as the branch: without that, a push
+# build would cancel the APK a deploy had just chained on the same branch, and
+# the deploy would report a failure for a build it never needed to lose.
 concurrency:
-  group: android-${{ github.ref }}
+  group: android-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -109,7 +121,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELAY: ${{ inputs.relay_url || vars.VITE_RELAY_URL || env.DEFAULT_RELAY }}
         run: |
+          # The run number belongs to whichever workflow is running, so a
+          # deploy-chained build and a push build can reach the same one. A
+          # duplicate tag would fail the release step — and so the deploy —
+          # after everything that mattered had already succeeded.
           tag="build-${{ github.run_number }}"
+          while gh release view "$tag" >/dev/null 2>&1; do
+            tag="${tag}b"
+          done
           cp android/app/build/outputs/apk/debug/app-debug.apk "teqrallly-${tag}.apk"
           gh release create "$tag" "teqrallly-${tag}.apk" \
             --title "TeqRallly debug ${tag}" \

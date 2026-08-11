@@ -402,10 +402,21 @@ replaces the old one rather than joining it.
 
 **Deploying.**
 
+From a machine with `gcloud` signed in:
+
 ```bash
 ./server/deploy.sh                 # Cloud Run, europe-west9, Firestore
 VITE_RELAY_URL=wss://… npm run build
 ```
+
+Or from the GitHub UI, with no machine and no local credentials: Actions ->
+**Deploy server** -> Run workflow. It runs the same script and then chains an
+APK build against the URL that came back, so the two cannot drift — a build
+carrying yesterday's relay address is a build with online play quietly pointed
+at nothing, which has happened here before. The one-time credential setup is
+written out at the top of `.github/workflows/deploy.yml`; the keyless route is
+worth the extra ten minutes, because the alternative is a JSON key that is
+valid until somebody remembers to rotate it.
 
 Credentials come from the Cloud Run service account: nothing to configure, no
 key file to leak. The script re-checks that `server/rules.mjs` is not stale
