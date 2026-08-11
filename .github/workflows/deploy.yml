@@ -1,0 +1,178 @@
+name: Deploy server
+
+# Deploys the relay and accounts API to Cloud Run, and then — unless you say
+# otherwise — builds an APK pointed at whatever URL the deploy came back with.
+#
+# The point of doing it here rather than from a laptop is that the credential
+# never leaves GitHub's secret store, and that the APK cannot end up pointed at
+# a relay that is not the one just deployed. Those two steps drifting apart is
+# the failure this repository has already had once: builds 22-24 shipped with
+# online play quietly disabled because nothing carried the address through.
+#
+# ---------------------------------------------------------------------------
+# Setting it up (once)
+#
+# 1. Make a service account in the `teqopen-4c7ae` project and grant it:
+#      roles/run.admin
+#      roles/cloudbuild.builds.editor
+#      roles/artifactregistry.admin
+#      roles/storage.admin
+#      roles/iam.serviceAccountUser
+#      roles/serviceusage.serviceUsageAdmin   (only for the first deploy —
+#                                              it enables the APIs)
+#    `roles/owner` covers all of it if you would rather not assemble the list.
+#
+# 2. Give this workflow a way to act as it, by either route:
+#
+#    Keyless (better, no secret to leak). Set up Workload Identity Federation
+#    for this repository, then add two repository *variables*:
+#      GCP_WORKLOAD_IDENTITY_PROVIDER   projects/…/workloadIdentityPools/…/providers/…
+#      GCP_SERVICE_ACCOUNT              deployer@teqopen-4c7ae.iam.gserviceaccount.com
+#
+#    Or a key (quicker). Download a JSON key for the service account and paste
+#    the whole file into a repository *secret* named GCP_CREDENTIALS. Delete
+#    the downloaded copy afterwards; the secret is the only one you need.
+#
+# Settings -> Secrets and variables -> Actions. Nothing else to configure —
+# the project and region come from `server/deploy.sh`.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_apk:
+        description: "Also build an APK pointed at the deployed relay"
+        required: false
+        default: true
+        type: boolean
+
+# Never cancel a deploy that is already running: a half-finished Cloud Run
+# rollout is a worse state than a queued one.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  # Required by the keyless route. Harmless when a JSON key is used instead.
+  id-token: write
+
+jobs:
+  deploy:
+    name: Cloud Run
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.deployed.outputs.url }}
+      wss: ${{ steps.deployed.outputs.wss }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check the credentials are there before anything slow runs
+        run: |
+          if [ -n "${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}" ]; then
+            echo "Authenticating by workload identity federation."
+          elif [ -n "${{ secrets.GCP_CREDENTIALS }}" ]; then
+            echo "Authenticating with a service account key."
+          else
+            echo "::error::No Google Cloud credentials configured. See the setup notes at the top of .github/workflows/deploy.yml."
+            exit 1
+          fi
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          # Exactly one of these pairs is set; the action takes whichever is
+          # non-empty. Keyless wins when both are configured.
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          credentials_json: ${{ !vars.GCP_WORKLOAD_IDENTITY_PROVIDER && secrets.GCP_CREDENTIALS || '' }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The rules bundle the server scores matches with is generated from the
+      # game's own source and committed. `server/deploy.sh` re-checks it, but
+      # failing here costs seconds instead of failing after a container build.
+      - name: Check the rules bundle is not stale
+        run: node scripts/build-rules.mjs --check
+
+      # First deploy only. Already-enabled services are a no-op, and the step
+      # is allowed to fail so a service account without serviceusage rights can
+      # still deploy onto a project where the APIs are already on.
+      - name: Enable the APIs the deploy needs
+        continue-on-error: true
+        run: |
+          gcloud services enable \
+            run.googleapis.com \
+            cloudbuild.googleapis.com \
+            artifactregistry.googleapis.com \
+            firestore.googleapis.com \
+            --project teqopen-4c7ae
+
+      # One definition of what a deploy is, shared with a laptop that runs the
+      # same script by hand.
+      - name: Deploy
+        run: ./server/deploy.sh
+
+      - id: deployed
+        name: Read back the URL that was deployed
+        run: |
+          url="$(gcloud run services describe teqrallly \
+            --project teqopen-4c7ae --region europe-west9 \
+            --format 'value(status.url)')"
+          if [ -z "$url" ]; then
+            echo "::error::Deploy reported success but the service has no URL."
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "wss=${url/https:/wss:}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Server deployed"
+            echo
+            echo "- API: \`$url\`"
+            echo "- Relay: \`${url/https:/wss:}\`"
+            echo "- Commit: \`${GITHUB_SHA:0:7}\`"
+            echo
+            echo "Set this once under Settings -> Secrets and variables ->"
+            echo "Actions -> Variables, so the APKs built on every push carry"
+            echo "it too and not just the ones chained to a deploy:"
+            echo
+            echo "    VITE_RELAY_URL = ${url/https:/wss:}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A deploy that returns a URL is not the same as a deploy that works.
+      # This is the cheapest thing that tells them apart, and it is the same
+      # check the container's own health probe answers.
+      - name: Check it actually answers
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if body="$(curl -fsS --max-time 10 "${{ steps.deployed.outputs.url }}/healthz")"; then
+              echo "healthz: $body"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "Health check: \`$body\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "not answering yet (attempt $attempt), waiting…"
+            sleep 10
+          done
+          echo "::error::Deployed, but /healthz never answered."
+          exit 1
+
+  # Chained rather than left to a separate dispatch, so the APK is built
+  # against the relay that was just deployed and cannot quietly carry the
+  # previous one.
+  apk:
+    name: APK
+    needs: deploy
+    if: ${{ inputs.build_apk }}
+    uses: ./.github/workflows/android.yml
+    with:
+      relay_url: ${{ needs.deploy.outputs.wss }}
