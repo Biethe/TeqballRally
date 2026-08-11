@@ -403,7 +403,7 @@ replaces the old one rather than joining it.
 **Deploying.**
 
 ```bash
-./server/deploy.sh                 # Cloud Run, europe-west1, Firestore
+./server/deploy.sh                 # Cloud Run, europe-west9, Firestore
 VITE_RELAY_URL=wss://… npm run build
 ```
 
@@ -411,6 +411,13 @@ Credentials come from the Cloud Run service account: nothing to configure, no
 key file to leak. The script re-checks that `server/rules.mjs` is not stale
 before it pushes, because that is the last moment a server about to score
 matches by last month's rules can be caught.
+
+`europe-west9` is Paris, and it is the region because that is where this
+project's Firestore database lives. Cloud Run and Firestore do not have to be
+in the same region, and every read pays for it when they are not: the database
+is behind every request the server serves, so a hop across Europe is added to
+all of them. A Firestore location cannot be changed after it is set, so it is
+the service that moves to the database, never the other way around.
 
 Nothing about an account is required to play. The career already works offline;
 signing in makes it the server's copy instead of the device's. Every request
@@ -876,7 +883,7 @@ Two things not to try:
 ```bash
 gcloud run deploy teqopen-relay \
   --source server \
-  --region europe-west1 \
+  --region europe-west9 \
   --allow-unauthenticated \
   --max-instances 1 \
   --min-instances 1 \
@@ -895,7 +902,7 @@ Then point the game at the deployed URL — builds cannot discover it, because a
 packaged app's own origin is `https://localhost`:
 
 ```bash
-VITE_RELAY_URL=wss://teqopen-relay-xxxxx.europe-west1.run.app npm run build
+VITE_RELAY_URL=wss://teqopen-relay-xxxxx.europe-west9.run.app npm run build
 ```
 
 `src/net/endpoint.ts` falls back to the page's own host on port 8787, which is
