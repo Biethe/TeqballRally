@@ -338,6 +338,31 @@ list asks "recently or not", and reporting that somebody was here 43 minutes
 ago is both more precision than the answer needs and more than they agreed to
 share.
 
+**Clubs.** Ten people, by invitation, with a board of their own. The size is
+the design rather than a tuning parameter: in a club of ten every name means
+something to everybody else, and being fourth is a fact about people you know.
+A club of five hundred is a chat room with a leaderboard attached, and the game
+already has a leaderboard.
+
+Invitation is a code, not a request-and-accept — the same reasoning as friends,
+and for the same reason. What that costs is a leaked code, and the answer to a
+leaked code is that the owner rotates it and removes whoever walked in, both
+one press. So a club carries two identifiers: an `id` that never changes and
+that `player.clubId` points at, and an `invite` that is meant to be thrown
+away. Rotating an invite that doubled as the id would orphan every member.
+
+The owner is the only one who can rename the club, replace the code or put
+somebody out, and the only one shown the code — everybody can share a club they
+are in, but one person should be deciding who is in it. An owner who leaves
+hands the club to the longest-serving member rather than closing it: nine
+people should not lose their club because one person moved on. The last member
+out does close it, and the name and the code come free with it, because an
+empty club holding a name is just a name nobody else can have.
+
+The board is ordered by trophies, and the owner is marked rather than pinned to
+the top. Being in charge is not the same as being top, and pretending otherwise
+would make the ranking a lie.
+
 **Ranked online.** An online result is worth more than any match against the
 CPU — the opponent was also trying, and it is the one difficulty a player
 cannot choose to make easier — so it is also the one that most needs to be

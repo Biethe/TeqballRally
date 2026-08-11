@@ -160,6 +160,10 @@ class FakeFirestore {
         this.log.push(`batch.set ${ref.__id}`);
         pending.push(() => ref.__docs.set(ref.__id, value));
       },
+      delete: (ref: { __docs: Map<string, Doc>; __id: string }) => {
+        this.log.push(`batch.delete ${ref.__id}`);
+        pending.push(() => ref.__docs.delete(ref.__id));
+      },
       commit: async () => {
         for (const apply of pending) apply();
       },
@@ -310,5 +314,109 @@ describe("the Firestore store", () => {
     expect(await store.get("NOBODY00")).toBeNull();
     expect(await store.byToken("nope")).toBeNull();
     expect(await store.rankOf("NOBODY00")).toBeNull();
+  });
+});
+
+describe("clubs in Firestore", () => {
+  const club = (over: Record<string, unknown> = {}) => ({
+    id: "CLUB0001",
+    name: "Rooftop Teq",
+    ownerId: "AAAA1111",
+    members: ["AAAA1111"],
+    invite: "Q7Z9WY",
+    created: 2000,
+    ...over,
+  });
+
+  it("writes the club and both its indexes in one transaction", async () => {
+    // The same reason as players: Firestore has no unique constraint, so the
+    // name index has to be taken inside the transaction or two clubs race for
+    // it and both win.
+    const { store, fake } = await openFake();
+    await store.createClub(club());
+
+    expect(fake.log).toContain("tx.get rooftop teq");
+    expect(fake.log).toContain("tx.set rooftop teq");
+    expect(fake.log).toContain("tx.set Q7Z9WY");
+    expect(fake.log).toContain("tx.set CLUB0001");
+    expect(fake.data.get("clubs")!.get("CLUB0001")).toBeTruthy();
+  });
+
+  it("refuses a name another club already holds", async () => {
+    const { store } = await openFake();
+    await store.createClub(club());
+    await expect(store.createClub(club({ id: "CLUB0002", invite: "AAAAAA" }))).rejects.toThrow(
+      NameTakenError
+    );
+  });
+
+  it("finds a club by its invite code in one read of the index", async () => {
+    const { store } = await openFake();
+    await store.createClub(club());
+
+    expect((await store.clubByInvite("Q7Z9WY"))?.id).toBe("CLUB0001");
+    expect(await store.clubByInvite("NOPE00")).toBeNull();
+  });
+
+  it("stops the old code resolving when the invite is rotated", async () => {
+    // A replaced invite that still lets people in has not been replaced, which
+    // is the entire point of being able to rotate one.
+    const { store } = await openFake();
+    const c = club();
+    await store.createClub(c);
+    const previous = c.invite;
+    c.invite = "NEW111";
+    await store.saveClub(c, { previousInvite: previous });
+
+    expect(await store.clubByInvite(previous)).toBeNull();
+    expect((await store.clubByInvite("NEW111"))?.id).toBe("CLUB0001");
+  });
+
+  it("leaves the code alone on an ordinary save", async () => {
+    const { store } = await openFake();
+    const c = club();
+    await store.createClub(c);
+    c.members = [...c.members, "BBBB2222"];
+    await store.saveClub(c);
+
+    expect((await store.clubByInvite("Q7Z9WY"))?.members).toHaveLength(2);
+  });
+
+  it("moves the name index when a club is renamed", async () => {
+    const { store } = await openFake();
+    const c = club();
+    await store.createClub(c);
+    await store.renameClub(c, "Cellar Teq");
+
+    expect((await store.getClub("CLUB0001"))?.name).toBe("Cellar Teq");
+    expect(c.name).toBe("Cellar Teq");
+    // The old name is free, and taking it is not blocked by a stale index.
+    await expect(
+      store.createClub(club({ id: "CLUB0002", name: "Rooftop Teq", invite: "AAAAAA" }))
+    ).resolves.toBeUndefined();
+  });
+
+  it("will not rename onto a name another club holds", async () => {
+    const { store } = await openFake();
+    const first = club();
+    await store.createClub(first);
+    await store.createClub(club({ id: "CLUB0002", name: "Cellar Teq", invite: "AAAAAA" }));
+
+    await expect(store.renameClub(first, "Cellar Teq")).rejects.toThrow(NameTakenError);
+  });
+
+  it("takes the record and both indexes away when a club is disbanded", async () => {
+    // A leftover index entry is a name nobody can have and a code that
+    // resolves to nothing.
+    const { store } = await openFake();
+    const c = club();
+    await store.createClub(c);
+    await store.deleteClub(c);
+
+    expect(await store.getClub("CLUB0001")).toBeNull();
+    expect(await store.clubByInvite("Q7Z9WY")).toBeNull();
+    await expect(
+      store.createClub(club({ id: "CLUB0002", invite: "AAAAAA" }))
+    ).resolves.toBeUndefined();
   });
 });

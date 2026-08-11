@@ -4,17 +4,20 @@ import { NameTakenError, nameKey } from "./store.mjs";
 /**
  * The store Cloud Run runs on.
  *
- * Same interface as `JsonStore`, three collections:
+ * Same interface as `JsonStore`, six collections:
  *
  *   players/{id}          the record
  *   names/{lowercase}     → { id }, so a name can only be held by one player
  *   tokens/{digest}       → { id }, so authenticating is one read, not a query
+ *   clubs/{id}            the club record
+ *   clubNames/{lowercase} → { id }, the same uniqueness rule for club names
+ *   clubInvites/{code}    → { id }, so joining is one read rather than a scan
  *
- * The two index collections exist because Firestore has no unique constraint
- * and no cheap "find by field" — a document id *is* the index. Writing them in
- * a transaction alongside the player is what makes "take this name" an
- * operation that either happens or does not, rather than two writes with a
- * race between them.
+ * The index collections exist because Firestore has no unique constraint and
+ * no cheap "find by field" — a document id *is* the index. Writing them in a
+ * transaction alongside the record is what makes "take this name" an operation
+ * that either happens or does not, rather than two writes with a race between
+ * them.
  *
  * Credentials come from the environment: on Cloud Run that is the service
  * account, with nothing to configure and no key file to leak.
@@ -23,6 +26,9 @@ import { NameTakenError, nameKey } from "./store.mjs";
 const PLAYERS = "players";
 const NAMES = "names";
 const TOKENS = "tokens";
+const CLUBS = "clubs";
+const CLUB_NAMES = "clubNames";
+const CLUB_INVITES = "clubInvites";
 
 export class FirestoreStore {
   /**
@@ -99,6 +105,70 @@ export class FirestoreStore {
   /** Point an old token digest at nothing, after a recovery replaced it. */
   async revokeToken(digest) {
     await this.db.collection(TOKENS).doc(digest).delete();
+  }
+
+  // ---- clubs ----
+  //
+  // Same shape as the players above and for the same reasons: the two index
+  // collections exist because Firestore has no unique constraint and no cheap
+  // find-by-field, and they are written inside the transaction so that taking
+  // a club name is one operation rather than a race.
+
+  async getClub(id) {
+    const doc = await this.db.collection(CLUBS).doc(id).get();
+    return doc.exists ? doc.data() : null;
+  }
+
+  async clubByInvite(code) {
+    const index = await this.db.collection(CLUB_INVITES).doc(code).get();
+    if (!index.exists) return null;
+    return this.getClub(index.data().id);
+  }
+
+  async createClub(club) {
+    const key = nameKey(club.name);
+    await this.db.runTransaction(async (tx) => {
+      const nameRef = this.db.collection(CLUB_NAMES).doc(key);
+      const held = await tx.get(nameRef);
+      if (held.exists && held.data().id !== club.id) throw new NameTakenError();
+      tx.set(nameRef, { id: club.id });
+      tx.set(this.db.collection(CLUB_INVITES).doc(club.invite), { id: club.id });
+      tx.set(this.db.collection(CLUBS).doc(club.id), club);
+    });
+  }
+
+  async saveClub(club, opts = {}) {
+    const batch = this.db.batch();
+    batch.set(this.db.collection(CLUBS).doc(club.id), club);
+    batch.set(this.db.collection(CLUB_INVITES).doc(club.invite), { id: club.id });
+    // A rotated invite has to stop resolving, or the code the owner just
+    // replaced still lets people in — which is the entire point of rotating.
+    if (opts.previousInvite && opts.previousInvite !== club.invite) {
+      batch.delete(this.db.collection(CLUB_INVITES).doc(opts.previousInvite));
+    }
+    await batch.commit();
+  }
+
+  async renameClub(club, name) {
+    const from = nameKey(club.name);
+    const to = nameKey(name);
+    await this.db.runTransaction(async (tx) => {
+      const toRef = this.db.collection(CLUB_NAMES).doc(to);
+      const held = await tx.get(toRef);
+      if (held.exists && held.data().id !== club.id) throw new NameTakenError();
+      if (from !== to) tx.delete(this.db.collection(CLUB_NAMES).doc(from));
+      tx.set(toRef, { id: club.id });
+      tx.update(this.db.collection(CLUBS).doc(club.id), { name });
+    });
+    club.name = name;
+  }
+
+  async deleteClub(club) {
+    const batch = this.db.batch();
+    batch.delete(this.db.collection(CLUBS).doc(club.id));
+    batch.delete(this.db.collection(CLUB_NAMES).doc(nameKey(club.name)));
+    batch.delete(this.db.collection(CLUB_INVITES).doc(club.invite));
+    await batch.commit();
   }
 
   async leaderboard(limit) {

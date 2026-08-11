@@ -160,6 +160,108 @@ console.log("\nfriends");
   await page.waitForTimeout(600);
 }
 
+console.log("\nclubs");
+{
+  await page.locator("#btn-title-profile").click();
+  await page.waitForTimeout(600);
+  await page.locator("#btn-profile-club").click();
+  await page.waitForTimeout(1500);
+  check(await page.locator("#club-name").isVisible(), "the club screen offers both doors");
+  check(await page.locator("#club-code").isVisible(), "start one, or join one");
+
+  // The client refuses a code of the wrong shape without a round trip.
+  await page.locator("#club-code").fill("ABC");
+  await page.locator("#btn-club-join").click();
+  await page.waitForTimeout(600);
+  const shortCode = await page.locator("#club-screen .account-message").textContent();
+  check(Boolean(shortCode?.trim()), `a code of the wrong length is refused locally (${shortCode?.trim()})`);
+
+  const clubName = `Probe Club ${Math.random().toString(36).slice(2, 6)}`;
+  await page.locator("#club-name").fill(clubName);
+  await page.locator("#btn-club-create").click();
+  const invite = await page
+    .waitForFunction(
+      () => document.querySelector("#club-screen .account-code-value")?.textContent?.trim() || null,
+      null,
+      { timeout: 20000, polling: 250 }
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  check(Boolean(invite), `creating a club shows the owner the invite code (${invite})`);
+  check((await page.locator(".club-row").count()) === 1, "with the founder as its only member");
+  check(
+    (await page.locator(".club-owner").count()) === 1,
+    "and the owner marked on the board"
+  );
+
+  // Somebody else joining, through the API: what is being checked here is that
+  // the board this browser is looking at is the one the server holds.
+  const recruit = await fetch(`http://localhost:${RELAY}/api/players`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: `Recruit ${Math.random().toString(36).slice(2, 7)}` }),
+  }).then((r) => r.json());
+  const joined = await fetch(`http://localhost:${RELAY}/api/clubs/join`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${recruit.token}` },
+    body: JSON.stringify({ code: invite }),
+  }).then((r) => r.json());
+  check(joined.club?.members?.length === 2, "the code lets somebody else in");
+  // …and they are not shown a code they have no business handing out.
+  check(joined.club?.invite === null, "who is not shown the code themselves");
+
+  await page.locator("#club-screen .select-back").click();
+  await page.waitForTimeout(500);
+  await page.locator("#btn-profile-club").click();
+  await page.waitForTimeout(1500);
+  check((await page.locator(".club-row").count()) === 2, "and the board shows them both");
+
+  // Rotating the code is the answer to one that got out.
+  const before = invite;
+  await page.locator("#btn-club-newcode").click();
+  await page.waitForFunction(
+    (old) => document.querySelector("#club-screen .account-code-value")?.textContent?.trim() !== old,
+    before,
+    { timeout: 20000, polling: 250 }
+  ).catch(() => null);
+  const rotated = await page.locator("#club-screen .account-code-value").textContent();
+  check(rotated?.trim() !== before, `a new code replaces the old one (${rotated?.trim()})`);
+  const stale = await fetch(`http://localhost:${RELAY}/api/clubs/join`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: before }),
+  });
+  check(stale.status !== 200, "and the old one stops working");
+
+  // The owner puts them out, and their pointer goes with them.
+  await page.locator(".club-row .friend-remove").first().click();
+  await page.waitForFunction(() => document.querySelectorAll(".club-row").length === 1, null, {
+    timeout: 20000,
+    polling: 250,
+  }).catch(() => null);
+  check((await page.locator(".club-row").count()) === 1, "the owner can put somebody out");
+  const orphan = await fetch(`http://localhost:${RELAY}/api/clubs/me`, {
+    headers: { authorization: `Bearer ${recruit.token}` },
+  }).then((r) => r.json());
+  check(orphan.club === null, "and they are told they have no club");
+
+  // Last one out closes it.
+  await page.locator("#btn-club-leave").click();
+  await page.waitForFunction(() => Boolean(document.querySelector("#club-name")), null, {
+    timeout: 20000,
+    polling: 250,
+  }).catch(() => null);
+  check(
+    await page.locator("#club-name").isVisible().catch(() => false),
+    "the last member out is back at the two doors"
+  );
+
+  await page.locator("#club-screen .select-back").click();
+  await page.waitForTimeout(500);
+  await page.locator("#profile-screen .select-back").click();
+  await page.waitForTimeout(600);
+}
+
 console.log("\nrecovering onto another device");
 {
   // A different page with nothing in its storage is the closest this can get

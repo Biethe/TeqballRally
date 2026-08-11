@@ -283,6 +283,117 @@ export async function removeFriend(token: string, id: string): Promise<Profile[]
   return body.friends;
 }
 
+/** A member of a club: a public profile, plus who is in charge. */
+export interface ClubMember extends Profile {
+  owner: boolean;
+}
+
+/** A club as its members see it. */
+export interface Club {
+  id: string;
+  name: string;
+  ownerId: string;
+  created: number;
+  /** Ordered by trophies. The owner is marked, not pinned. */
+  members: ClubMember[];
+  /** Every member's trophies added up. */
+  trophies: number;
+  online: number;
+  full: boolean;
+  /** The invite code — present for the owner, null for everybody else. */
+  invite: string | null;
+}
+
+/** Longest a club name may be. Longer than a player's; see the server. */
+export const CLUB_NAME_MIN = 3;
+export const CLUB_NAME_MAX = 20;
+/** Members a club holds. Shown on the screen, so it is not a secret constant. */
+export const MAX_CLUB_MEMBERS = 10;
+
+/** The club this player is in, or null. */
+export async function fetchClub(token: string): Promise<Club | null> {
+  const body = await request<{ club: Club | null }>("/api/clubs/me", { token });
+  return body.club;
+}
+
+export async function createClub(token: string, name: string): Promise<Club> {
+  const body = await request<{ club: Club }>("/api/clubs", {
+    method: "POST",
+    body: { name },
+    token,
+  });
+  return body.club;
+}
+
+export async function joinClub(token: string, code: string): Promise<Club> {
+  const body = await request<{ club: Club }>("/api/clubs/join", {
+    method: "POST",
+    body: { code: tidyInvite(code) },
+    token,
+  });
+  return body.club;
+}
+
+/** Leave. Resolves to null, which is also what the club becomes if you were last. */
+export async function leaveClub(token: string): Promise<null> {
+  await request<{ club: null }>("/api/clubs/leave", { method: "POST", token });
+  return null;
+}
+
+export async function renameClub(token: string, name: string): Promise<Club> {
+  const body = await request<{ club: Club }>("/api/clubs/me/name", {
+    method: "POST",
+    body: { name },
+    token,
+  });
+  return body.club;
+}
+
+/** A fresh invite code. The old one stops working — that is the point. */
+export async function newInviteCode(token: string): Promise<Club> {
+  const body = await request<{ club: Club }>("/api/clubs/me/invite", { method: "POST", token });
+  return body.club;
+}
+
+/** Owner only. Null when removing the last other member disbanded the club. */
+export async function removeMember(token: string, id: string): Promise<Club | null> {
+  const body = await request<{ club: Club | null }>("/api/clubs/me/remove", {
+    method: "POST",
+    body: { id },
+    token,
+  });
+  return body.club;
+}
+
+/**
+ * Tidy a typed invite code the way the server does.
+ *
+ * Deliberately in step with `tidyInvite` in `server/clubs.mjs`, which is the
+ * one that decides. Q is left alone: it is in the Crockford alphabet, and
+ * folding it would make any code containing one impossible to type back in.
+ */
+export function tidyInvite(raw: string): string {
+  return raw
+    .toUpperCase()
+    .replace(/[^0-9A-Z]/g, "")
+    .replace(/O/g, "0")
+    .replace(/[IL]/g, "1");
+}
+
+export function looksLikeInvite(raw: string): boolean {
+  return /^[0-9A-HJKMNP-TV-Z]{6}$/.test(tidyInvite(raw));
+}
+
+export function clubNameProblem(raw: string): "short" | "long" | "characters" | null {
+  const name = tidyName(raw);
+  if (name.length < CLUB_NAME_MIN) return "short";
+  if (name.length > CLUB_NAME_MAX) return "long";
+  if (!new RegExp(`^[\\p{L}\\p{N}][\\p{L}\\p{N} _-]{1,${CLUB_NAME_MAX - 2}}[\\p{L}\\p{N}]$`, "u").test(name)) {
+    return "characters";
+  }
+  return null;
+}
+
 export async function lookUpPlayer(code: string): Promise<Profile> {
   return request<Profile>(`/api/players/${encodeURIComponent(code.trim().toUpperCase())}`);
 }

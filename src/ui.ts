@@ -4,6 +4,7 @@ import type { ViewerKind } from "./viewer";
 import { t, tf } from "./i18n";
 import { randomTip } from "./tips";
 import { RATING_KEYS, rating, totalPower, type RatingKey } from "./ratings";
+import { MAX_CLUB_MEMBERS } from "./account";
 
 /** One line of plain English per trait, for the tooltip on the picker. */
 const RATING_DETAIL: Record<RatingKey, string> = {
@@ -172,6 +173,7 @@ export interface ProfileView {
   /** Replace the recovery code, for a player who lost the slip of paper. */
   onNewCode: () => void;
   onFriends: () => void;
+  onClub: () => void;
   onLeaderboard: () => void;
   onBack: () => void;
 }
@@ -232,6 +234,47 @@ export interface FriendsView {
   onBack: () => void;
 }
 
+export interface ClubMemberRow {
+  id: string;
+  name: string;
+  trophies: number;
+  tier: string;
+  online: boolean;
+  seen: string;
+  owner: boolean;
+  isMe: boolean;
+}
+
+/**
+ * The club screen, in whichever of its two states applies.
+ *
+ * `club` null is the state before joining one: a name field to start a club
+ * and a code field to join one, side by side, because the player arriving here
+ * has been told to do exactly one of those two things.
+ */
+export interface ClubView {
+  club: {
+    name: string;
+    /** The board, ordered by trophies. */
+    members: ClubMemberRow[];
+    trophies: number;
+    online: number;
+    full: boolean;
+    /** Shown only to the owner; null means "you are not the one who decides". */
+    invite: string | null;
+    isOwner: boolean;
+  } | null;
+  message: string | null;
+  busy: boolean;
+  onCreate: (name: string) => void;
+  onJoin: (code: string) => void;
+  onLeave: () => void;
+  onRename: (name: string) => void;
+  onNewInvite: () => void;
+  onRemove: (id: string) => void;
+  onBack: () => void;
+}
+
 /** The focused, mid-rally coaching card used by the guided practice flow. */
 export interface TrainingPauseState {
   /** Short progress label, for example "2 / 5". */
@@ -283,6 +326,7 @@ export class UI {
   private restoreEl: HTMLDivElement;
   private friendsEl: HTMLDivElement;
   private seasonEl: HTMLDivElement;
+  private clubEl: HTMLDivElement;
   /** The coins/trophies strip drawn over the title screen. */
   private walletEl: HTMLDivElement;
   private bannerTimer: number | null = null;
@@ -505,6 +549,7 @@ export class UI {
     this.restoreEl = this.screen("restore-screen");
     this.friendsEl = this.screen("friends-screen");
     this.seasonEl = this.screen("season-screen");
+    this.clubEl = this.screen("club-screen");
 
     // The wallet rides above the title screen rather than inside it: it is the
     // one thing that has to look the same on every screen that shows it.
@@ -546,6 +591,7 @@ export class UI {
       this.restoreEl,
       this.friendsEl,
       this.seasonEl,
+      this.clubEl,
     ]) {
       el.classList.add("hidden");
     }
@@ -1351,6 +1397,7 @@ export class UI {
       <label class="account-field"><span></span><input id="profile-name" type="text" maxlength="16" autocomplete="off" spellcheck="false"></label>
       <button class="ghost-btn" id="btn-profile-rename" type="button"></button>
       <button class="big-btn alt" id="btn-profile-friends" type="button"></button>
+      <button class="big-btn alt" id="btn-profile-club" type="button"></button>
       <button class="ghost-btn" id="btn-profile-newcode" type="button"></button>
       <button class="big-btn" id="btn-profile-board" type="button" data-menu-primary="true"></button>`;
     card.querySelector<HTMLSpanElement>(".account-code-label")!.textContent = t("profile.code");
@@ -1374,6 +1421,9 @@ export class UI {
     const friends = card.querySelector<HTMLButtonElement>("#btn-profile-friends")!;
     friends.textContent = t("friends.title");
     friends.onclick = () => view.onFriends();
+    const club = card.querySelector<HTMLButtonElement>("#btn-profile-club")!;
+    club.textContent = t("club.title");
+    club.onclick = () => view.onClub();
     const newCode = card.querySelector<HTMLButtonElement>("#btn-profile-newcode")!;
     newCode.textContent = t("recovery.new");
     newCode.disabled = view.busy;
@@ -1673,6 +1723,186 @@ export class UI {
       remove.onclick = () => view.onRemove(row.id);
       list.appendChild(card);
     }
+  }
+
+  /**
+   * The club: ten people and a board.
+   *
+   * Two states on one screen, the same as the account screen. Before joining
+   * one it is two fields — start a club, or join one with a code — because
+   * those are the only two things anybody arrives here to do. After joining it
+   * is the board, and the board is the point.
+   */
+  showClub(view: ClubView): void {
+    this.hideAll();
+    this.clubEl.classList.remove("hidden");
+    this.showWallet();
+    this.clubEl.innerHTML = `
+      <div class="career-head">
+        <button class="select-back" type="button" data-menu-back></button>
+        <div>
+          <h2 class="career-title"></h2>
+          <p class="career-sub"></p>
+        </div>
+      </div>
+      <p class="account-message hidden"></p>
+      <div class="career-list club-body"></div>`;
+    const back = this.clubEl.querySelector<HTMLButtonElement>(".select-back")!;
+    back.textContent = `← ${t("nav.back")}`;
+    back.onclick = () => view.onBack();
+
+    const message = this.clubEl.querySelector<HTMLParagraphElement>(".account-message")!;
+    message.textContent = view.message ?? "";
+    message.classList.toggle("hidden", !view.message);
+
+    const title = this.clubEl.querySelector<HTMLHeadingElement>(".career-title")!;
+    const sub = this.clubEl.querySelector<HTMLParagraphElement>(".career-sub")!;
+    const body = this.clubEl.querySelector<HTMLDivElement>(".club-body")!;
+
+    if (!view.club) {
+      title.textContent = t("club.title");
+      sub.textContent = t("club.pitch");
+      body.innerHTML = `
+        <div class="account-card club-start">
+          <h3 class="account-pitch"></h3>
+          <label class="account-field"><span></span><input id="club-name" type="text" maxlength="20" autocomplete="off" spellcheck="false"></label>
+          <button class="big-btn" id="btn-club-create" type="button" data-menu-primary="true"></button>
+        </div>
+        <div class="account-card club-join">
+          <h3 class="account-pitch"></h3>
+          <label class="account-field"><span></span><input id="club-code" type="text" maxlength="7" autocomplete="off" spellcheck="false" autocapitalize="characters"></label>
+          <button class="big-btn alt" id="btn-club-join" type="button"></button>
+        </div>`;
+      const start = body.querySelector<HTMLDivElement>(".club-start")!;
+      start.querySelector<HTMLHeadingElement>(".account-pitch")!.textContent = t("club.startTitle");
+      start.querySelector<HTMLSpanElement>("span")!.textContent = t("club.name");
+      const nameInput = start.querySelector<HTMLInputElement>("#club-name")!;
+      const create = start.querySelector<HTMLButtonElement>("#btn-club-create")!;
+      create.textContent = t("club.create");
+      create.disabled = view.busy;
+      create.onclick = () => view.onCreate(nameInput.value);
+      nameInput.onkeydown = (e) => {
+        if (e.key === "Enter") view.onCreate(nameInput.value);
+      };
+
+      const join = body.querySelector<HTMLDivElement>(".club-join")!;
+      join.querySelector<HTMLHeadingElement>(".account-pitch")!.textContent = t("club.joinTitle");
+      join.querySelector<HTMLSpanElement>("span")!.textContent = t("club.code");
+      const codeInput = join.querySelector<HTMLInputElement>("#club-code")!;
+      codeInput.placeholder = t("club.codeHint");
+      const joinBtn = join.querySelector<HTMLButtonElement>("#btn-club-join")!;
+      joinBtn.textContent = t("club.join");
+      joinBtn.disabled = view.busy;
+      joinBtn.onclick = () => view.onJoin(codeInput.value);
+      codeInput.onkeydown = (e) => {
+        if (e.key === "Enter") view.onJoin(codeInput.value);
+      };
+      return;
+    }
+
+    const club = view.club;
+    title.textContent = club.name;
+    sub.textContent = tf("club.sub", {
+      n: club.members.length,
+      max: MAX_CLUB_MEMBERS,
+      online: club.online,
+    });
+
+    // The owner's invite code first: it is the thing they came here to read
+    // out to somebody. A member sees the total instead, which is the thing
+    // they came here to look at.
+    const head = document.createElement("div");
+    head.className = "account-card club-head";
+    head.innerHTML = `
+      <div class="club-total"><span></span><b></b></div>
+      <div class="club-invite hidden">
+        <span class="account-code-label"></span>
+        <b class="account-code-value"></b>
+        <span class="account-code-hint"></span>
+      </div>`;
+    head.querySelector<HTMLSpanElement>(".club-total span")!.textContent = t("club.total");
+    head.querySelector<HTMLElement>(".club-total b")!.textContent = String(club.trophies);
+    if (club.invite) {
+      const invite = head.querySelector<HTMLDivElement>(".club-invite")!;
+      invite.classList.remove("hidden");
+      invite.querySelector<HTMLSpanElement>(".account-code-label")!.textContent = t("club.invite");
+      invite.querySelector<HTMLElement>(".account-code-value")!.textContent = club.invite;
+      invite.querySelector<HTMLSpanElement>(".account-code-hint")!.textContent = club.full
+        ? t("club.fullHint")
+        : t("club.inviteHint");
+    }
+    body.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "club-list";
+    for (const row of club.members) {
+      const card = document.createElement("div");
+      card.className = `club-row${row.online ? " online" : ""}${row.isMe ? " me" : ""}`;
+      card.innerHTML = `
+        <span class="friend-dot" aria-hidden="true"></span>
+        <div class="friend-who">
+          <span class="friend-name"></span>
+          <span class="friend-seen"></span>
+        </div>
+        <b class="friend-trophies"></b>`;
+      const name = card.querySelector<HTMLSpanElement>(".friend-name")!;
+      name.textContent = row.name;
+      if (row.owner) {
+        const crown = document.createElement("i");
+        crown.className = "club-owner";
+        crown.textContent = t("club.owner");
+        name.appendChild(crown);
+      }
+      card.querySelector<HTMLSpanElement>(".friend-seen")!.textContent = row.online
+        ? t("friends.online")
+        : row.seen;
+      card.querySelector<HTMLElement>(".friend-trophies")!.textContent = String(row.trophies);
+      // Only the owner can put somebody out, and never themselves — leaving is
+      // what that is for, and it is its own button below.
+      if (club.isOwner && !row.isMe) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "friend-remove";
+        remove.textContent = "×";
+        remove.setAttribute("aria-label", `${t("club.remove")} ${row.name}`);
+        remove.disabled = view.busy;
+        remove.onclick = () => view.onRemove(row.id);
+        card.appendChild(remove);
+      }
+      list.appendChild(card);
+    }
+    body.appendChild(list);
+
+    const actions = document.createElement("div");
+    actions.className = "account-card club-actions";
+    if (club.isOwner) {
+      actions.innerHTML = `
+        <label class="account-field"><span></span><input id="club-rename" type="text" maxlength="20" autocomplete="off" spellcheck="false"></label>
+        <button class="ghost-btn" id="btn-club-rename" type="button"></button>
+        <button class="ghost-btn" id="btn-club-newcode" type="button"></button>`;
+      actions.querySelector<HTMLSpanElement>("span")!.textContent = t("club.name");
+      const renameInput = actions.querySelector<HTMLInputElement>("#club-rename")!;
+      renameInput.value = club.name;
+      const rename = actions.querySelector<HTMLButtonElement>("#btn-club-rename")!;
+      rename.textContent = t("club.rename");
+      rename.disabled = view.busy;
+      rename.onclick = () => view.onRename(renameInput.value);
+      const newCode = actions.querySelector<HTMLButtonElement>("#btn-club-newcode")!;
+      newCode.textContent = t("club.newCode");
+      newCode.disabled = view.busy;
+      newCode.onclick = () => view.onNewInvite();
+    }
+    const leave = document.createElement("button");
+    leave.type = "button";
+    leave.className = "ghost-btn danger";
+    leave.id = "btn-club-leave";
+    // The last member out closes the club, and is told so before they press it
+    // rather than after.
+    leave.textContent = club.members.length === 1 ? t("club.disband") : t("club.leave");
+    leave.disabled = view.busy;
+    leave.onclick = () => view.onLeave();
+    actions.appendChild(leave);
+    body.appendChild(actions);
   }
 
   private selTab: ViewerKind = "character";
