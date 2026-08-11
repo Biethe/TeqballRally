@@ -128,6 +128,21 @@ export interface ResultView {
   onRematch: (() => void) | null;
 }
 
+/** The card that reports a season that ended while the player was away. */
+export interface SeasonView {
+  /** The season that ended, as `YYYY-MM`. */
+  season: string;
+  /** The tier reached in it — the thing being congratulated. */
+  tier: string;
+  /** The highest trophy count held during it. */
+  best: number;
+  coins: number;
+  /** Trophies before and after the halving. */
+  from: number;
+  to: number;
+  onDone: () => void;
+}
+
 /** The account screen, in whichever of its two states applies. */
 export interface ProfileView {
   /** Null while the player has no account yet. */
@@ -147,6 +162,8 @@ export interface ProfileView {
    * that out afterwards has every right to be annoyed about it.
    */
   freshStart: string | null;
+  /** Seasons already finished, oldest first. Empty until one has been. */
+  titles: { season: string; tier: string; best: number }[];
   busy: boolean;
   onCreate: (name: string) => void;
   onRename: (name: string) => void;
@@ -265,6 +282,7 @@ export class UI {
   private recoveryEl: HTMLDivElement;
   private restoreEl: HTMLDivElement;
   private friendsEl: HTMLDivElement;
+  private seasonEl: HTMLDivElement;
   /** The coins/trophies strip drawn over the title screen. */
   private walletEl: HTMLDivElement;
   private bannerTimer: number | null = null;
@@ -486,6 +504,7 @@ export class UI {
     this.recoveryEl = this.screen("recovery-screen");
     this.restoreEl = this.screen("restore-screen");
     this.friendsEl = this.screen("friends-screen");
+    this.seasonEl = this.screen("season-screen");
 
     // The wallet rides above the title screen rather than inside it: it is the
     // one thing that has to look the same on every screen that shows it.
@@ -526,6 +545,7 @@ export class UI {
       this.recoveryEl,
       this.restoreEl,
       this.friendsEl,
+      this.seasonEl,
     ]) {
       el.classList.add("hidden");
     }
@@ -1362,6 +1382,30 @@ export class UI {
     board.textContent = t("profile.leaderboard");
     board.onclick = () => view.onLeaderboard();
     card.insertBefore(message, renameBtn);
+
+    // Finished seasons, newest first — the case a shelf of them is for. Absent
+    // entirely for a player who has not finished one, rather than an empty box
+    // captioned with what they have not done yet.
+    if (view.titles.length) {
+      const shelf = document.createElement("div");
+      shelf.className = "season-shelf";
+      const heading = document.createElement("span");
+      heading.className = "season-shelf-head";
+      heading.textContent = t("season.titles");
+      shelf.appendChild(heading);
+      for (const title of [...view.titles].reverse()) {
+        const badge = document.createElement("div");
+        badge.className = "season-badge";
+        badge.innerHTML = `<b></b><span></span><i></i>`;
+        badge.querySelector("b")!.textContent = title.tier;
+        badge.querySelector("span")!.textContent = title.season;
+        badge.querySelector("i")!.textContent = `${title.best}`;
+        shelf.appendChild(badge);
+      }
+      // Above the name field, so the screen reads code, record, seasons — and
+      // the name and the buttons that change it stay together at the bottom.
+      card.insertBefore(shelf, card.querySelector(".account-field"));
+    }
   }
 
   /** Everyone, in order. The caller's own row is pinned if it fell off the end. */
@@ -1456,6 +1500,50 @@ export class UI {
     };
     const done = card.querySelector<HTMLButtonElement>("#btn-recovery-done")!;
     done.textContent = t("recovery.saved");
+    done.onclick = () => view.onDone();
+  }
+
+  /**
+   * What a finished season was worth.
+   *
+   * Shown once, on the first boot of a new month, and it leads with the tier
+   * rather than the halving. Both facts are on the card, but a player who was
+   * PRO II in August is being congratulated, not fined — and the number they
+   * carry into September is the second line for that reason.
+   */
+  showSeason(view: SeasonView): void {
+    this.hideAll();
+    this.seasonEl.classList.remove("hidden");
+    this.showWallet();
+    this.seasonEl.innerHTML = `
+      <div class="account-card season-card">
+        <div class="season-when"></div>
+        <h2 class="career-title"></h2>
+        <div class="season-tier"></div>
+        <div class="result-rows">
+          <div class="result-row"><span></span><b class="season-best"></b></div>
+          <div class="result-row"><span></span><b class="season-coins"></b></div>
+          <div class="result-row"><span></span><b class="season-carry"></b></div>
+        </div>
+        <p class="account-why"></p>
+        <button class="big-btn" id="btn-season-done" type="button" data-menu-primary="true"></button>
+      </div>`;
+    const card = this.seasonEl.querySelector<HTMLDivElement>(".season-card")!;
+    card.querySelector<HTMLDivElement>(".season-when")!.textContent = view.season;
+    card.querySelector<HTMLHeadingElement>(".career-title")!.textContent = t("season.title");
+    card.querySelector<HTMLDivElement>(".season-tier")!.textContent = view.tier;
+
+    const labels = card.querySelectorAll(".result-row span");
+    labels[0].textContent = t("season.best");
+    labels[1].textContent = t("result.coins");
+    labels[2].textContent = t("season.carried");
+    card.querySelector<HTMLElement>(".season-best")!.textContent = `${view.best}`;
+    card.querySelector<HTMLElement>(".season-coins")!.textContent = `+${view.coins}`;
+    card.querySelector<HTMLElement>(".season-carry")!.textContent = `${view.from} → ${view.to}`;
+    card.querySelector<HTMLParagraphElement>(".account-why")!.textContent = t("season.why");
+
+    const done = card.querySelector<HTMLButtonElement>("#btn-season-done")!;
+    done.textContent = t("season.start");
     done.onclick = () => view.onDone();
   }
 

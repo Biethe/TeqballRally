@@ -45,10 +45,22 @@ export {
 } from "./league";
 
 export {
+  seasonKey,
+  seasonReward,
+  seasonTier,
+  seasonTierId,
+  softReset,
+  type SeasonEnd,
+  type Title,
+} from "./season";
+
+export {
   MAX_LEVEL,
+  MAX_TITLES,
   STARTING_CHAMPION,
   UNLOCK_AT,
   XP_PER_LEVEL,
+  applySeason,
   buyUpgrade,
   claimChallenge,
   freshCareer,

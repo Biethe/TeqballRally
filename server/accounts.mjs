@@ -41,11 +41,13 @@ import {
   SETS_TO_WIN,
   WIN_SCORE,
   CHARACTERS,
+  applySeason,
   buyUpgrade,
   claimChallenge,
   dayKey,
   freshCareer,
   rollOver,
+  seasonKey,
   settleMatch,
   tierFor,
 } from "./rules.mjs";
@@ -118,6 +120,32 @@ export function normaliseName(raw) {
     throw new ValidationError("name may use letters, digits, spaces, - and _");
   }
   return name;
+}
+
+/**
+ * Bring a player's career up to the current season, and write it back if that
+ * changed anything.
+ *
+ * Lazy, on touch, rather than a job that walks the table at midnight. The
+ * rollover is pure and deterministic, so applying it the moment a record is
+ * next looked at gives the same answer a sweep would have given — without a
+ * scheduler, and without a million writes landing in the same minute.
+ *
+ * The cost is that a player who has not been seen since last season still
+ * shows last season's trophies until something touches them. `leaderboard`
+ * settles that for the rows it is about to show, which is where it is visible.
+ */
+export async function freshen(store, player, now = new Date()) {
+  const { career, ended } = applySeason(player.career, now);
+  if (career === player.career) return null;
+  player.career = career;
+  await store.save(player);
+  return ended;
+}
+
+/** True when this record has not caught up with the current season yet. */
+function seasonStale(player, now) {
+  return player.career?.season !== seasonKey(now);
 }
 
 /** What anyone may see about a player. Never a secret. */
@@ -194,7 +222,8 @@ export async function friendsOf(store, player) {
 }
 
 /** What the owner of the account may see, which is everything but the secrets. */
-export async function privateProfile(store, player) {
+export async function privateProfile(store, player, now = new Date()) {
+  await freshen(store, player, now);
   return { ...publicProfile(player, await store.rankOf(player.id)), career: player.career };
 }
 
@@ -363,6 +392,7 @@ export async function recordMatch(store, player, body, now = new Date()) {
 }
 
 export async function claim(store, player, challengeId, now = new Date()) {
+  await freshen(store, player, now);
   player.career = rollOver(player.career, dayKey(now));
   const before = player.career.coins;
   player.career = claimChallenge(player.career, challengeId);
@@ -373,8 +403,9 @@ export async function claim(store, player, challengeId, now = new Date()) {
   return player.career;
 }
 
-export async function upgrade(store, player, championId) {
+export async function upgrade(store, player, championId, now = new Date()) {
   if (!CHARACTER_IDS.has(championId)) throw new ValidationError("unknown character");
+  await freshen(store, player, now);
   const before = player.career.coins;
   player.career = buyUpgrade(player.career, championId);
   if (player.career.coins === before) {
@@ -499,7 +530,32 @@ async function payOut(store, player, championId, tally, now, opts = {}) {
   return { career, outcome };
 }
 
-export async function leaderboard(store, limit) {
-  const rows = await store.leaderboard(Math.max(1, Math.min(100, limit || 25)));
-  return rows.map((player, i) => publicProfile(player, i + 1));
+/**
+ * How much wider than the page to look when the season has just turned.
+ *
+ * The store orders by stored trophies, which for a player who has not been
+ * back yet are last season's. Those sort too high, so a page of exactly the
+ * asked-for size would be a page of absent players. Fetching a multiple, then
+ * settling and re-sorting, pushes them down to where they belong.
+ */
+const STALE_OVERFETCH = 3;
+
+/**
+ * The top of the board, this season's.
+ *
+ * Rows that have not caught up with the season are settled here and written
+ * back — the halving is what makes a new month a new board, and a board that
+ * still shows last month's totals until everybody happens to log in is not a
+ * season at all. The work shrinks to nothing within days of the turn, because
+ * every row it fixes stays fixed.
+ */
+export async function leaderboard(store, limit, now = new Date()) {
+  const want = Math.max(1, Math.min(100, limit || 25));
+  const fetched = await store.leaderboard(want * STALE_OVERFETCH);
+  const stale = fetched.filter((p) => seasonStale(p, now));
+  if (stale.length) {
+    for (const player of stale) await freshen(store, player, now);
+    fetched.sort((a, b) => b.career.trophies - a.career.trophies || a.created - b.created);
+  }
+  return fetched.slice(0, want).map((player, i) => publicProfile(player, i + 1));
 }
