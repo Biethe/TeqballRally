@@ -193,6 +193,14 @@ const EN = {
   "recovery.new": "NEW RECOVERY CODE",
   "recovery.replaced": "The old code no longer works.",
 
+  // — seasons —
+  "season.title": "SEASON OVER",
+  "season.best": "Best this season",
+  "season.carried": "Carried forward",
+  "season.why": "Half your trophies carry into the new season. Everyone drops together, so the ladder stays the same shape.",
+  "season.start": "START THE NEW SEASON",
+  "season.titles": "SEASONS FINISHED",
+
   // — friends —
   "friends.title": "FRIENDS",
   "friends.sub": "{n} of them, {online} online",
@@ -412,6 +420,14 @@ const FR: Catalogue = {
   "recovery.new": "NOUVEAU CODE",
   "recovery.replaced": "L’ancien code ne fonctionne plus.",
 
+  // — saisons —
+  "season.title": "SAISON TERMINÉE",
+  "season.best": "Meilleur de la saison",
+  "season.carried": "Reporté",
+  "season.why": "La moitié de vos trophées passe à la nouvelle saison. Tout le monde baisse ensemble, le classement garde donc la même forme.",
+  "season.start": "COMMENCER LA SAISON",
+  "season.titles": "SAISONS TERMINÉES",
+
   // — friends —
   "friends.title": "AMIS",
   "friends.sub": "{n} au total, {online} en ligne",
@@ -628,6 +644,14 @@ const ES: Catalogue = {
   "recovery.new": "CÓDIGO NUEVO",
   "recovery.replaced": "El código anterior ya no sirve.",
 
+  // — temporadas —
+  "season.title": "TEMPORADA TERMINADA",
+  "season.best": "Mejor de la temporada",
+  "season.carried": "Se conserva",
+  "season.why": "La mitad de tus trofeos pasa a la nueva temporada. Todos bajan a la vez, así que la clasificación mantiene su forma.",
+  "season.start": "EMPEZAR LA TEMPORADA",
+  "season.titles": "TEMPORADAS TERMINADAS",
+
   // — friends —
   "friends.title": "AMIGOS",
   "friends.sub": "{n} en total, {online} en línea",
@@ -843,6 +867,14 @@ const PT: Catalogue = {
   "recovery.badPlayer": "Um código de jogador tem oito caracteres.",
   "recovery.new": "CÓDIGO NOVO",
   "recovery.replaced": "O código antigo já não funciona.",
+
+  // — temporadas —
+  "season.title": "TEMPORADA TERMINADA",
+  "season.best": "Melhor da temporada",
+  "season.carried": "Transitado",
+  "season.why": "Metade dos teus troféus passa para a nova temporada. Todos descem ao mesmo tempo, por isso a classificação mantém a forma.",
+  "season.start": "COMEÇAR A TEMPORADA",
+  "season.titles": "TEMPORADAS TERMINADAS",
 
   // — friends —
   "friends.title": "AMIGOS",

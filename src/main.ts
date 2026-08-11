@@ -49,7 +49,7 @@ import {
   claimChallenge,
   isUnlocked,
   levelOf,
-  readCareer,
+  openCareer,
   settleMatch,
   storeCareer,
   upgradeCost,
@@ -57,6 +57,7 @@ import {
   type Career,
   type MatchOutcome,
 } from "./progress";
+import type { SeasonEnd } from "./season";
 import { nextTier, tierFor, tierProgress } from "./league";
 import {
   ApiError,
@@ -607,7 +608,14 @@ async function boot(): Promise<void> {
    * storage on every navigation would quietly discard an upgrade bought a
    * moment earlier if the write ever failed, and would hide that it had.
    */
-  let career: Career = readCareer();
+  const opened = openCareer();
+  let career: Career = opened.career;
+  /**
+   * A season that ended between the last session and this one, waiting to be
+   * reported. Read once at boot: `openCareer` has already applied and written
+   * the rollover, so this is the only chance to say so.
+   */
+  const endedSeason: SeasonEnd | null = opened.ended;
 
   /**
    * The account, if this device has one.
@@ -754,6 +762,7 @@ async function boot(): Promise<void> {
         profile === null && career.trophies > 0
           ? tf("profile.fresh", { n: career.trophies })
           : null,
+      titles: career.titles,
       busy,
       onCreate: (raw) => {
         const problem = nameMessage(raw);
@@ -1051,6 +1060,22 @@ async function boot(): Promise<void> {
     showOutcome(won, outcome, onContinue, onRematch);
   };
 
+  /** The card that reports a finished season, then carries on to wherever. */
+  const showSeasonEnd = (ended: SeasonEnd, then: () => void) => {
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    refreshWallet();
+    ui.showSeason({
+      season: ended.title.season,
+      tier: ended.title.tier,
+      best: ended.title.best,
+      coins: ended.coins,
+      from: ended.from,
+      to: ended.to,
+      onDone: then,
+    });
+  };
+
   /** The card that says what a settled match was worth. */
   const showOutcome = (
     won: boolean,
@@ -1058,6 +1083,13 @@ async function boot(): Promise<void> {
     onContinue: () => void,
     onRematch: (() => void) | null
   ) => {
+    // A month can turn with the app still open, so a match can be the thing
+    // that rolls the season over. Rare, and it still has to be said — after
+    // the result rather than before it, since the result is what they were
+    // waiting for.
+    const after = outcome.season
+      ? () => showSeasonEnd(outcome.season!, onContinue)
+      : onContinue;
     const next = career;
     const notes = [
       ...outcome.levelled.map((id) => {
@@ -1088,7 +1120,7 @@ async function boot(): Promise<void> {
       progress: tierProgress(next.trophies),
       rank: outcome.rank,
       notes,
-      onContinue,
+      onContinue: after,
       onRematch,
     });
   };
@@ -1946,7 +1978,11 @@ async function boot(): Promise<void> {
   await Promise.race([preload, new Promise((r) => setTimeout(r, 4000))]);
   ui.hideIntroClip();
 
-  showTitle();
+  // A season that ended while they were away is the first thing they see —
+  // before the title screen, because the trophy count on it is already the
+  // reset one and a player deserves to be told why.
+  if (endedSeason) showSeasonEnd(endedSeason, showTitle);
+  else showTitle();
   // Catch up with the server behind the title screen. It never blocks the
   // first screen, and if it fails nothing about the game changes.
   void refreshProfile().then(() => {

@@ -170,9 +170,29 @@ function rankChange(before, after) {
   return to.floor > from.floor ? "promoted" : "relegated";
 }
 
+// src/season.ts
+function seasonKey(now) {
+  return `${now.getFullYear()}-${`${now.getMonth() + 1}`.padStart(2, "0")}`;
+}
+function softReset(trophies) {
+  return Math.max(0, Math.round(trophies / 2));
+}
+function seasonReward(tierId) {
+  const index = TIERS.findIndex((t) => t.id === tierId);
+  if (index <= 0) return 0;
+  return index * 250;
+}
+function seasonTier(seasonBest) {
+  return tierFor(seasonBest).label;
+}
+function seasonTierId(seasonBest) {
+  return tierFor(seasonBest).id;
+}
+
 // src/progress.ts
 var STARTING_CHAMPION = CHARACTERS[0].id;
-function freshCareer(day) {
+var MAX_TITLES = 36;
+function freshCareer(day, season = day.slice(0, 7)) {
   return {
     coins: 0,
     trophies: 0,
@@ -181,7 +201,10 @@ function freshCareer(day) {
     champions: { [STARTING_CHAMPION]: { level: 1, xp: 0 } },
     day,
     progress: {},
-    claimed: []
+    claimed: [],
+    season,
+    seasonBest: 0,
+    titles: []
   };
 }
 var UNLOCK_AT = {
@@ -210,8 +233,30 @@ function rollOver(career, today) {
   if (career.day === today) return career;
   return { ...career, day: today, progress: {}, claimed: [] };
 }
+function applySeason(career, now = /* @__PURE__ */ new Date()) {
+  const key = seasonKey(now);
+  if (career.season === key) return { career, ended: null };
+  const from = career.trophies;
+  const to = softReset(from);
+  const rolled = { ...career, season: key, trophies: to, seasonBest: to };
+  if (career.seasonBest <= 0) return { career: rolled, ended: null };
+  const title = {
+    season: career.season,
+    tier: seasonTier(career.seasonBest),
+    best: career.seasonBest
+  };
+  const coins = seasonReward(seasonTierId(career.seasonBest));
+  return {
+    career: {
+      ...rolled,
+      coins: rolled.coins + coins,
+      titles: [...rolled.titles, title].slice(-MAX_TITLES)
+    },
+    ended: { title, coins, from, to }
+  };
+}
 function settleMatch(career, championId, difficulty, tally, now = /* @__PURE__ */ new Date()) {
-  const rolled = rollOver(career, dayKey(now));
+  const { career: rolled, ended } = applySeason(rollOver(career, dayKey(now)), now);
   const trophies = trophyDelta(tally.won, difficulty, rolled.trophies);
   const coins = coinsFor(tally.won, difficulty, rolled.trophies);
   const after = Math.max(0, rolled.trophies + trophies);
@@ -240,10 +285,18 @@ function settleMatch(career, championId, difficulty, tally, now = /* @__PURE__ *
       coins: rolled.coins + coins,
       trophies: after,
       best: Math.max(rolled.best, after),
+      seasonBest: Math.max(rolled.seasonBest, after),
       champions,
       progress
     },
-    outcome: { trophies, coins, rank: rankChange(rolled.trophies, after), levelled, completed }
+    outcome: {
+      trophies,
+      coins,
+      rank: rankChange(rolled.trophies, after),
+      levelled,
+      completed,
+      season: ended
+    }
   };
 }
 function claimChallenge(career, id) {
@@ -270,6 +323,7 @@ export {
   CHARACTERS,
   DAILY_COUNT,
   MAX_LEVEL,
+  MAX_TITLES,
   MAX_TOUCHES,
   SETS_TO_WIN,
   STARTING_CHAMPION,
@@ -277,6 +331,7 @@ export {
   UNLOCK_AT,
   WIN_SCORE,
   XP_PER_LEVEL,
+  applySeason,
   buyUpgrade,
   claimChallenge,
   coinsFor,
@@ -290,8 +345,13 @@ export {
   nextTier,
   rankChange,
   rollOver,
+  seasonKey,
+  seasonReward,
+  seasonTier,
+  seasonTierId,
   secondsUntilRollover,
   settleMatch,
+  softReset,
   tierFor,
   tierProgress,
   trophyDelta,

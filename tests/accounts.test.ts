@@ -22,6 +22,7 @@ import {
   privateProfile,
   publicProfile,
   recordMatch,
+  freshen,
   friendsOf,
   recordOnlineMatch,
   recover,
@@ -39,6 +40,7 @@ import { handleApi } from "../server/api.mjs";
 import { CHARACTERS, SETS_TO_WIN, WIN_SCORE } from "../src/config";
 import { dailyChallenges } from "../src/challenges";
 import { upgradeCost } from "../src/progress";
+import { seasonKey } from "../src/season";
 
 /* The fake request/response and the JSON bodies coming back out of the API are
    deliberately untyped: this suite checks what the wire actually carries, and
@@ -584,6 +586,89 @@ describe("the leaderboard", () => {
 
     expect(board).not.toContain(issued.token);
     expect(board).not.toContain("Hash");
+  });
+});
+
+describe("seasons on the server", () => {
+  const AUG = new Date(2026, 7, 20);
+  const SEP = new Date(2026, 8, 2);
+
+  /** A player who finished August with some trophies to their name. */
+  async function veteran(name: string, trophies: number): Promise<PlayerRecord> {
+    const p = await player(name, AUG);
+    p.career = { ...p.career, trophies, best: trophies, seasonBest: trophies };
+    await store.save(p);
+    return p;
+  }
+
+  it("rolls a career over the moment it is next touched", async () => {
+    const ana = await veteran("Ana", 400);
+    const ended = await freshen(store, ana, SEP);
+
+    expect(ended?.from).toBe(400);
+    expect(ana.career.trophies).toBe(200);
+    // And written back, so the next boot does not pay for the season again.
+    expect((await store.get(ana.id))!.career.trophies).toBe(200);
+  });
+
+  it("pays the season reward once, however often it is asked", async () => {
+    const ana = await veteran("Ana", 400);
+    await freshen(store, ana, SEP);
+    const coins = ana.career.coins;
+    await freshen(store, ana, SEP);
+    await privateProfile(store, ana, SEP);
+
+    expect(ana.career.coins).toBe(coins);
+    expect(ana.career.titles).toHaveLength(1);
+  });
+
+  it("shows the profile this season's numbers, not last season's", async () => {
+    const ana = await veteran("Ana", 400);
+    const view = await privateProfile(store, ana, SEP);
+
+    expect(view.trophies).toBe(200);
+    expect(view.career.season).toBe(seasonKey(SEP));
+  });
+
+  it("settles a match against the reset total", async () => {
+    const ana = await veteran("Ana", 400);
+    const { career } = await recordMatch(store, ana, WIN, SEP);
+
+    expect(career.trophies).toBeGreaterThan(200);
+    expect(career.trophies).toBeLessThan(400);
+  });
+
+  it("resets the board itself rather than waiting for everyone to log in", async () => {
+    // The point of a season. A board still showing August in September is not
+    // a new season, it is the old one with a different name.
+    await veteran("Ana", 400);
+    await veteran("Bobby", 300);
+    const rows = await leaderboard(store, 10, SEP);
+
+    expect(rows.map((r) => r.trophies)).toEqual([200, 150]);
+    expect(rows.map((r) => r.name)).toEqual(["Ana", "Bobby"]);
+  });
+
+  it("does not let a player who has not been back outrank one who has", async () => {
+    // Absent players carry last season's inflated total in the store, so the
+    // query returns them too high. Settling the page is what fixes the order.
+    const away = await veteran("Away", 300);
+    const back = await veteran("Back", 400);
+    await freshen(store, back, SEP);
+
+    expect(away.career.trophies).toBe(300);
+    expect(back.career.trophies).toBe(200);
+    const rows = await leaderboard(store, 10, SEP);
+    expect(rows.map((r) => r.name)).toEqual(["Back", "Away"]);
+    expect(rows.map((r) => r.trophies)).toEqual([200, 150]);
+  });
+
+  it("leaves everyone alone inside a season", async () => {
+    const ana = await veteran("Ana", 400);
+    const rows = await leaderboard(store, 10, AUG);
+
+    expect(rows[0].trophies).toBe(400);
+    expect(ana.career.titles).toHaveLength(0);
   });
 });
 

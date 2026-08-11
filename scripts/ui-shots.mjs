@@ -367,6 +367,53 @@ for (const dev of DEVICES) {
   await page.waitForTimeout(400);
   await shot("leaderboard");
 
+  // The season card, shown directly: reaching it takes a month.
+  await page.evaluate(() => {
+    window.__teqUi?.showSeason({
+      season: "2026-08",
+      tier: "PRO II",
+      best: 1840,
+      coins: 1500,
+      from: 1780,
+      to: 890,
+      onDone: () => {},
+    });
+  });
+  await page.waitForTimeout(400);
+  await shot("season");
+
+  // The profile with a shelf of finished seasons on it, which is the state the
+  // signed-out capture above cannot reach.
+  await page.evaluate(() => {
+    window.__teqUi?.showProfile({
+      profile: {
+        id: "7Z9WYS4A",
+        name: "Ana Silva",
+        trophies: 890,
+        tier: "JUNIOR II",
+        matches: 214,
+        rank: 12,
+      },
+      message: null,
+      freshStart: null,
+      titles: [
+        { season: "2026-06", tier: "JUNIOR I", best: 720 },
+        { season: "2026-07", tier: "JUNIOR III", best: 1180 },
+        { season: "2026-08", tier: "PRO II", best: 1840 },
+      ],
+      busy: false,
+      onCreate: () => {},
+      onRename: () => {},
+      onRestore: () => {},
+      onNewCode: () => {},
+      onFriends: () => {},
+      onLeaderboard: () => {},
+      onBack: () => {},
+    });
+  });
+  await page.waitForTimeout(400);
+  await shot("profile-titles");
+
   await ctx.close();
   console.log(`captured ${dev.name}`);
 }

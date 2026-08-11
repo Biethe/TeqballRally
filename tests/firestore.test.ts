@@ -187,7 +187,18 @@ const record = (over: Record<string, unknown> = {}) => ({
   lastMatchAt: 0,
   matches: 0,
   friends: [],
-  career: { coins: 0, trophies: 0, best: 0, champions: {}, day: "2026-08-10", progress: {}, claimed: [] },
+  career: {
+    coins: 0,
+    trophies: 0,
+    best: 0,
+    champions: {},
+    day: "2026-08-10",
+    progress: {},
+    claimed: [],
+    season: "2026-08",
+    seasonBest: 0,
+    titles: [],
+  },
   ...over,
 });
 

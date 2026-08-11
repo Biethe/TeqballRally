@@ -1,5 +1,6 @@
 /** Types for the accounts module. See the note in `store.d.mts`. */
 import type { Career, MatchOutcome } from "../src/progress";
+import type { SeasonEnd } from "../src/season";
 import type { PlayerRecord, PlayerStore } from "./store.mjs";
 
 export declare const NAME_MIN: number;
@@ -38,8 +39,15 @@ export declare function normaliseName(raw: unknown): string;
 export declare function publicProfile(player: PlayerRecord, rank?: number | null): PublicProfile;
 export declare function privateProfile(
   store: PlayerStore,
-  player: PlayerRecord
+  player: PlayerRecord,
+  now?: Date
 ): Promise<PublicProfile & { career: Career }>;
+/** Bring a career up to the current season, saving if that changed anything. */
+export declare function freshen(
+  store: PlayerStore,
+  player: PlayerRecord,
+  now?: Date
+): Promise<SeasonEnd | null>;
 export declare function register(store: PlayerStore, name: unknown, now?: Date): Promise<Issued>;
 export declare function rename(
   store: PlayerStore,
@@ -75,9 +83,14 @@ export declare function claim(
 export declare function upgrade(
   store: PlayerStore,
   player: PlayerRecord,
-  championId: unknown
+  championId: unknown,
+  now?: Date
 ): Promise<Career>;
-export declare function leaderboard(store: PlayerStore, limit: number): Promise<PublicProfile[]>;
+export declare function leaderboard(
+  store: PlayerStore,
+  limit: number,
+  now?: Date
+): Promise<PublicProfile[]>;
 export declare function addFriend(
   store: PlayerStore,
   player: PlayerRecord,

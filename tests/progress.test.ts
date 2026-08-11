@@ -20,7 +20,9 @@ import {
 } from "../src/league";
 import {
   MAX_LEVEL,
+  MAX_TITLES,
   UNLOCK_AT,
+  applySeason,
   XP_PER_LEVEL,
   buyUpgrade,
   claimChallenge,
@@ -31,7 +33,9 @@ import {
   settleMatch,
   upgradeCost,
   withCareer,
+  type Career,
 } from "../src/progress";
+import { seasonKey, seasonReward, seasonTier, seasonTierId, softReset } from "../src/season";
 import { CHARACTERS, SETS_TO_WIN, WIN_SCORE } from "../src/config";
 import { RATING_KEYS, rating, totalPower } from "../src/ratings";
 import { ALL_TIP_KEYS, randomTip } from "../src/tips";
@@ -385,5 +389,140 @@ describe("loading tips", () => {
     // Math.random() is documented as [0, 1), but a stubbed or unusual source
     // is not, and an out-of-range index here would show a blank loading line.
     expect(randomTip(() => 1)).toBeTruthy();
+  });
+});
+
+describe("seasons", () => {
+  const AUG = new Date(2026, 7, 20);
+  const SEP = new Date(2026, 8, 2);
+  const climbed = (trophies: number, over: Partial<Career> = {}): Career => ({
+    ...freshCareer(DAY),
+    trophies,
+    best: trophies,
+    seasonBest: trophies,
+    ...over,
+  });
+
+  it("dates a season the way the day is dated, so the two never disagree", () => {
+    // `freshCareer` derives the season from the day key. If those two ever
+    // stopped lining up, every new career would start one season adrift.
+    for (const when of [AUG, SEP, new Date(2027, 0, 1), new Date(2026, 11, 31)]) {
+      expect(dayKey(when).slice(0, 7)).toBe(seasonKey(when));
+      expect(freshCareer(dayKey(when)).season).toBe(seasonKey(when));
+    }
+  });
+
+  it("leaves a career alone inside its own season", () => {
+    const career = climbed(400);
+    const { career: after, ended } = applySeason(career, AUG);
+
+    expect(after).toBe(career);
+    expect(ended).toBeNull();
+  });
+
+  it("halves the trophies when the month turns, and says so", () => {
+    const { career, ended } = applySeason(climbed(401), SEP);
+
+    expect(career.trophies).toBe(201);
+    expect(career.season).toBe("2026-09");
+    expect(ended?.from).toBe(401);
+    expect(ended?.to).toBe(201);
+    // The month that ended, not the one that started.
+    expect(ended?.title.season).toBe("2026-08");
+  });
+
+  it("keeps the ladder in the same order it was in", () => {
+    // The whole case for halving over any cleverer curve: everybody lands in
+    // the same sequence, so nobody is overtaken by the reset itself.
+    const before = [0, 5, 61, 62, 300, 301, 1200];
+    const after = before.map(softReset);
+
+    for (let i = 1; i < after.length; i++) expect(after[i]).toBeGreaterThanOrEqual(after[i - 1]);
+    expect(after.every((n) => n >= 0)).toBe(true);
+  });
+
+  it("judges the season on the best held, not the total left at the end", () => {
+    // Reached PRO territory, then had a bad week. The title is the peak.
+    const { ended } = applySeason(climbed(40, { seasonBest: 600 }), SEP);
+
+    expect(ended?.title.best).toBe(600);
+    expect(ended?.title.tier).toBe(seasonTier(600));
+    expect(ended?.coins).toBe(seasonReward(seasonTierId(600)));
+    expect(ended?.coins).toBeGreaterThan(0);
+  });
+
+  it("starts the new season from what was carried into it", () => {
+    const { career } = applySeason(climbed(500), SEP);
+
+    expect(career.seasonBest).toBe(career.trophies);
+  });
+
+  it("closes a season nobody played without a title or a card", () => {
+    const { career, ended } = applySeason(freshCareer(DAY), SEP);
+
+    expect(ended).toBeNull();
+    expect(career.season).toBe("2026-09");
+    expect(career.titles).toHaveLength(0);
+    expect(career.coins).toBe(0);
+  });
+
+  it("charges the halving once for an absence, not once a month", () => {
+    // Away since April. A holiday must not cost more than a bad run.
+    const away = climbed(800, { season: "2026-04" });
+    const { career, ended } = applySeason(away, SEP);
+
+    expect(career.trophies).toBe(400);
+    expect(career.titles).toHaveLength(1);
+    expect(ended?.title.season).toBe("2026-04");
+  });
+
+  it("keeps the shelf of finished seasons, newest last and bounded", () => {
+    let career = climbed(300);
+    for (let month = 0; month < MAX_TITLES + 5; month++) {
+      const when = new Date(2026, 8 + month, 2);
+      career = { ...applySeason(career, when).career, seasonBest: 300, trophies: 300 };
+    }
+
+    expect(career.titles).toHaveLength(MAX_TITLES);
+    // Trimmed from the front: what falls off is the oldest.
+    expect(career.titles[career.titles.length - 1].season > career.titles[0].season).toBe(true);
+  });
+
+  it("pays a season reward that grows with the tier reached", () => {
+    expect(seasonReward(TIERS[0].id)).toBe(0);
+    for (let i = 2; i < TIERS.length; i++) {
+      expect(seasonReward(TIERS[i].id)).toBeGreaterThan(seasonReward(TIERS[i - 1].id));
+    }
+    // An id that is not a tier pays nothing rather than throwing.
+    expect(seasonReward("not-a-tier")).toBe(0);
+  });
+
+  it("rolls the season over before it settles a match played in the new one", () => {
+    const { career, outcome } = settleMatch(climbed(400), CHARACTERS[0].id, "normal", tally(), SEP);
+
+    // The win is paid on top of the halved total, not the old one.
+    expect(career.trophies).toBe(200 + outcome.trophies);
+    expect(outcome.season?.from).toBe(400);
+    expect(career.season).toBe("2026-09");
+  });
+
+  it("says nothing about a season on an ordinary match", () => {
+    const { outcome } = settleMatch(climbed(400), CHARACTERS[0].id, "normal", tally(), AUG);
+
+    expect(outcome.season).toBeNull();
+  });
+
+  it("tracks the season best as trophies are won", () => {
+    let career = freshCareer(DAY);
+    for (let i = 0; i < 4; i++) {
+      career = settleMatch(career, CHARACTERS[0].id, "hard", tally(), AUG).career;
+    }
+    const peak = career.seasonBest;
+    for (let i = 0; i < 6; i++) {
+      career = settleMatch(career, CHARACTERS[0].id, "hard", tally({ won: false }), AUG).career;
+    }
+
+    expect(career.trophies).toBeLessThan(peak);
+    expect(career.seasonBest).toBe(peak);
   });
 });

@@ -3291,6 +3291,7 @@ button.pad-focus {
   .account-stats,
   .account-why,
   .account-warning,
+  .season-shelf,
   .account-card .big-btn {
     grid-column: 1 / -1;
   }
@@ -3358,6 +3359,128 @@ button.pad-focus {
   font-variant-numeric: tabular-nums;
   word-break: break-word;
   user-select: all;
+}
+
+/* ---- seasons ----
+   The first screen of a new month, and the shelf of finished ones on the
+   profile. Gold throughout, because the tier reached is the thing being
+   reported and the halving underneath it is the small print. */
+#season-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Not `justify-content: center`: a flex item taller than a scrolling box
+     centred that way has its top cut off and cannot be scrolled back to. The
+     auto margin below centres it when it fits and gives up when it does not. */
+  justify-content: flex-start;
+  padding: calc(max(10px, env(safe-area-inset-top)) + 20px) 16px 20px;
+  overflow-y: auto;
+}
+
+#season-screen.hidden {
+  display: none;
+}
+
+.season-card {
+  width: min(440px, 100%);
+  margin: auto;
+  text-align: center;
+}
+
+.season-card .career-title {
+  color: var(--gold);
+}
+
+.season-when {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The tier is the headline. Everything else on the card is arithmetic. */
+.season-tier {
+  padding: 12px 10px;
+  border: 2px solid rgba(255, 194, 51, 0.55);
+  border-radius: 14px;
+  background: rgba(255, 194, 51, 0.1);
+  color: var(--gold);
+  font-size: clamp(20px, 5.4vw, 28px);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.season-card .account-why {
+  font-size: 13px;
+}
+
+/* Held sideways the card inherits the two-column account layout, which suits
+   it — the tier on one side and the arithmetic on the other. What it needs is
+   for the two headings to stay full width and for the card to use the width a
+   landscape phone actually has. */
+@media (max-height: 500px) {
+  #season-screen {
+    padding-top: 42px;
+  }
+
+  .season-card {
+    width: min(680px, 100%);
+  }
+
+  .season-when,
+  .season-card .career-title,
+  .season-card .account-why {
+    grid-column: 1 / -1;
+  }
+
+  .season-tier {
+    align-self: center;
+  }
+}
+
+.season-shelf {
+  display: grid;
+  gap: 8px;
+}
+
+.season-shelf-head {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.season-badge {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 194, 51, 0.28);
+  border-radius: 12px;
+  background: rgba(255, 194, 51, 0.06);
+}
+
+.season-badge b {
+  color: var(--gold);
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.season-badge span {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.season-badge i {
+  color: var(--text);
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---- friends ----
