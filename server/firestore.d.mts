@@ -1,5 +1,5 @@
 /** Types for the Firestore store. See the note in `store.d.mts`. */
-import type { PlayerRecord, PlayerStore } from "./store.mjs";
+import type { ClubRecord, PlayerRecord, PlayerStore } from "./store.mjs";
 
 export declare class FirestoreStore implements PlayerStore {
   /** Takes a Firestore client rather than building one, so it can be doubled. */
@@ -12,6 +12,12 @@ export declare class FirestoreStore implements PlayerStore {
   rename(player: PlayerRecord, name: string): Promise<void>;
   save(player: PlayerRecord): Promise<void>;
   revokeToken(digest: string): Promise<void>;
+  getClub(id: string): Promise<ClubRecord | null>;
+  clubByInvite(code: string): Promise<ClubRecord | null>;
+  createClub(club: ClubRecord): Promise<void>;
+  saveClub(club: ClubRecord, opts?: { previousInvite?: string }): Promise<void>;
+  renameClub(club: ClubRecord, name: string): Promise<void>;
+  deleteClub(club: ClubRecord): Promise<void>;
   leaderboard(limit: number): Promise<PlayerRecord[]>;
   rankOf(id: string): Promise<number | null>;
   size(): Promise<number>;

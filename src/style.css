@@ -3483,6 +3483,142 @@ button.pad-focus {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- clubs ----
+   Ten people and a board. Borrows the friends row wholesale — same shape, same
+   dot, same trophy column — because they are the same thing seen twice, and
+   two lists that look almost alike is worse than two that look identical. */
+#club-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: calc(max(10px, env(safe-area-inset-top)) + 46px) 16px 20px;
+  overflow: hidden;
+}
+
+#club-screen.hidden {
+  display: none;
+}
+
+.club-body {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.club-head {
+  gap: 10px;
+}
+
+.club-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.club-total span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.club-total b {
+  color: var(--gold);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The owner's copy of the invite code, sized to be read out over a table. */
+.club-invite {
+  display: grid;
+  gap: 4px;
+  padding: 12px 10px;
+  border: 2px dashed rgba(255, 194, 51, 0.55);
+  border-radius: 14px;
+  background: rgba(255, 194, 51, 0.08);
+  text-align: center;
+}
+
+.club-invite.hidden {
+  display: none;
+}
+
+.club-list {
+  display: grid;
+  gap: 8px;
+}
+
+.club-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid rgba(160, 200, 245, 0.24);
+  border-radius: 12px;
+  background: rgba(9, 30, 58, 0.55);
+}
+
+/* Your own row, so a board of ten names has one you can find at a glance. */
+.club-row.me {
+  border-color: rgba(255, 194, 51, 0.5);
+  background: rgba(255, 194, 51, 0.08);
+}
+
+.club-owner {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(255, 194, 51, 0.18);
+  color: var(--gold);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  vertical-align: middle;
+}
+
+.club-actions {
+  gap: 10px;
+}
+
+/* Held sideways there is barely a screen's worth of height, and the board is
+   what the screen is for. The invite card gives up its size first: it is read
+   once and then shared, while the roster is the thing being looked at. */
+@media (max-height: 500px) {
+  #club-screen {
+    padding-top: 42px;
+  }
+
+  .club-invite {
+    padding: 6px 10px;
+  }
+
+  .club-invite .account-code-value {
+    font-size: clamp(15px, 3vw, 20px);
+  }
+
+  .club-invite .account-code-hint {
+    display: none;
+  }
+
+  .club-total b {
+    font-size: 17px;
+  }
+
+  .club-row {
+    padding: 6px 12px;
+  }
+}
+
+/* Leaving is not an accident anybody should have; it does not look like the
+   buttons around it. */
+.ghost-btn.danger {
+  border-color: rgba(255, 106, 19, 0.5);
+  color: #ffb37a;
+}
+
 /* ---- friends ----
    Ordered by the server so whoever can be played right now is at the top,
    which is the question the screen exists to answer. */
@@ -3555,11 +3691,13 @@ button.pad-focus {
   background: rgba(160, 200, 245, 0.3);
 }
 
-.friend-row.online {
+.friend-row.online,
+.club-row.online {
   border-color: rgba(104, 237, 176, 0.5);
 }
 
-.friend-row.online .friend-dot {
+.friend-row.online .friend-dot,
+.club-row.online .friend-dot {
   background: var(--mint);
   box-shadow: 0 0 8px rgba(104, 237, 176, 0.8);
 }

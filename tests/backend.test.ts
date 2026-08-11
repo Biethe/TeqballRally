@@ -167,6 +167,83 @@ describe("the server, end to end", () => {
   }, 25_000);
 });
 
+describe("clubs over HTTP", () => {
+  it("makes one, lets somebody in with the code, and boots them out again", async () => {
+    // The whole loop, over the wire, because what this catches is the wiring:
+    // a route not mounted, an owner check that never runs, a reply the screen
+    // cannot use.
+    const [a, b] = await Promise.all([
+      api("POST", "/api/players", { body: { name: "Founder" } }),
+      api("POST", "/api/players", { body: { name: "Recruit" } }),
+    ]);
+
+    const made = await api("POST", "/api/clubs", {
+      token: a.body.token,
+      body: { name: "Rooftop Teq" },
+    });
+    expect(made.status).toBe(201);
+    expect(made.body.club.name).toBe("Rooftop Teq");
+    // The owner is shown the code, because they are the one who shares it.
+    const invite = made.body.club.invite;
+    expect(typeof invite).toBe("string");
+
+    const joined = await api("POST", "/api/clubs/join", {
+      token: b.body.token,
+      body: { code: invite },
+    });
+    expect(joined.status).toBe(200);
+    expect(joined.body.club.members).toHaveLength(2);
+    // …and is shown nothing, because they are not the one who decides.
+    expect(joined.body.club.invite).toBeNull();
+
+    const kicked = await api("POST", "/api/clubs/me/remove", {
+      token: a.body.token,
+      body: { id: b.body.id },
+    });
+    expect(kicked.status).toBe(200);
+    expect(kicked.body.club.members).toHaveLength(1);
+
+    const orphaned = await api("GET", "/api/clubs/me", { token: b.body.token });
+    expect(orphaned.body.club).toBeNull();
+  });
+
+  it("will not let a member run the club", async () => {
+    const [a, b] = await Promise.all([
+      api("POST", "/api/players", { body: { name: "Chief" } }),
+      api("POST", "/api/players", { body: { name: "Member" } }),
+    ]);
+    const made = await api("POST", "/api/clubs", {
+      token: a.body.token,
+      body: { name: "Cellar Teq" },
+    });
+    await api("POST", "/api/clubs/join", {
+      token: b.body.token,
+      body: { code: made.body.club.invite },
+    });
+
+    const grab = await api("POST", "/api/clubs/me/name", {
+      token: b.body.token,
+      body: { name: "Mine Now" },
+    });
+    expect(grab.status).toBe(403);
+    const still = await api("GET", "/api/clubs/me", { token: a.body.token });
+    expect(still.body.club.name).toBe("Cellar Teq");
+  });
+
+  it("answers with no club for somebody who is not in one", async () => {
+    const solo = await api("POST", "/api/players", { body: { name: "Solo" } });
+    const mine = await api("GET", "/api/clubs/me", { token: solo.body.token });
+
+    expect(mine.status).toBe(200);
+    expect(mine.body.club).toBeNull();
+  });
+
+  it("needs a signed-in player, like everything that owns something", async () => {
+    const anon = await api("POST", "/api/clubs", { body: { name: "Nobody's Club" } });
+    expect(anon.status).toBe(401);
+  });
+});
+
 describe("identity on the wire", () => {
   it("tells each side who the other actually is", async () => {
     const [a, b] = await Promise.all([

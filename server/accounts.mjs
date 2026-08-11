@@ -68,6 +68,24 @@ export const NAME_MAX = 16;
  */
 const NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} _-]{1,14}[\p{L}\p{N}]$/u;
 
+/**
+ * The same shape at other lengths, for club names.
+ *
+ * Built from the bounds rather than written out twice: the interior repeat
+ * count and the length check have to agree, and two hand-written regexes that
+ * disagree by one is a rule nobody can see.
+ */
+const shapes = new Map();
+function nameShape(min, max) {
+  const key = `${min}-${max}`;
+  let re = shapes.get(key);
+  if (!re) {
+    re = new RegExp(`^[\\p{L}\\p{N}][\\p{L}\\p{N} _-]{${min - 2},${max - 2}}[\\p{L}\\p{N}]$`, "u");
+    shapes.set(key, re);
+  }
+  return re;
+}
+
 /** Shortest gap between two results from the same player. */
 export const MATCH_COOLDOWN_MS = 20_000;
 
@@ -110,14 +128,18 @@ async function mintId(store) {
 }
 
 /** Trim, collapse runs of whitespace, and check it is something a card can show. */
-export function normaliseName(raw) {
-  if (typeof raw !== "string") throw new ValidationError("name is required");
+export function normaliseName(raw, opts = {}) {
+  const min = opts.min ?? NAME_MIN;
+  const max = opts.max ?? NAME_MAX;
+  const what = opts.what ?? "name";
+  if (typeof raw !== "string") throw new ValidationError(`${what} is required`);
   const name = raw.trim().replace(/\s+/g, " ");
-  if (name.length < NAME_MIN || name.length > NAME_MAX) {
-    throw new ValidationError(`name must be ${NAME_MIN}-${NAME_MAX} characters`);
+  if (name.length < min || name.length > max) {
+    throw new ValidationError(`${what} must be ${min}-${max} characters`);
   }
-  if (!NAME_RE.test(name)) {
-    throw new ValidationError("name may use letters, digits, spaces, - and _");
+  const shape = min === NAME_MIN && max === NAME_MAX ? NAME_RE : nameShape(min, max);
+  if (!shape.test(name)) {
+    throw new ValidationError(`${what} may use letters, digits, spaces, - and _`);
   }
   return name;
 }
@@ -249,6 +271,8 @@ export async function register(store, rawName, now = new Date()) {
     lastMatchAt: 0,
     matches: 0,
     friends: [],
+    /** The club they are in, or null. One at a time — see `clubs.mjs`. */
+    clubId: null,
     career: freshCareer(dayKey(now)),
   };
   try {

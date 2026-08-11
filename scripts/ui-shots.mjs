@@ -407,12 +407,74 @@ for (const dev of DEVICES) {
       onRestore: () => {},
       onNewCode: () => {},
       onFriends: () => {},
+      onClub: () => {},
       onLeaderboard: () => {},
       onBack: () => {},
     });
   });
   await page.waitForTimeout(400);
   await shot("profile-titles");
+
+  // The club, in both of its states: the two-field start screen that somebody
+  // with no club sees, and then a full board. The harness has no server, so
+  // both are shown directly.
+  await page.evaluate(() => {
+    window.__teqUi?.showClub({
+      club: null,
+      message: null,
+      busy: false,
+      onCreate: () => {},
+      onJoin: () => {},
+      onLeave: () => {},
+      onRename: () => {},
+      onNewInvite: () => {},
+      onRemove: () => {},
+      onBack: () => {},
+    });
+  });
+  await page.waitForTimeout(400);
+  await shot("club-empty");
+
+  await page.evaluate(() => {
+    const member = (name, trophies, online, owner, isMe) => ({
+      id: name.toUpperCase().padEnd(8, "0").slice(0, 8),
+      name,
+      trophies,
+      tier: "PRO II",
+      online,
+      seen: online ? "" : "Seen today",
+      owner,
+      isMe,
+    });
+    window.__teqUi?.showClub({
+      club: {
+        name: "Paris Rooftop Teq",
+        members: [
+          member("Kwame", 1840, true, false, false),
+          member("Ana Silva", 1502, false, true, true),
+          member("Léa", 1180, true, false, false),
+          member("Marco_88", 940, false, false, false),
+          member("Yuki", 610, false, false, false),
+        ],
+        trophies: 6072,
+        online: 2,
+        full: false,
+        invite: "Q7Z9WY",
+        isOwner: true,
+      },
+      message: null,
+      busy: false,
+      onCreate: () => {},
+      onJoin: () => {},
+      onLeave: () => {},
+      onRename: () => {},
+      onNewInvite: () => {},
+      onRemove: () => {},
+      onBack: () => {},
+    });
+  });
+  await page.waitForTimeout(400);
+  await shot("club-board");
 
   await ctx.close();
   console.log(`captured ${dev.name}`);

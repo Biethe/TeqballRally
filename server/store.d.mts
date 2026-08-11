@@ -22,7 +22,20 @@ export interface PlayerRecord {
   matches: number;
   /** Player ids, mutual: a friendship one side cannot see is a bug. */
   friends: string[];
+  /** The club they are in, or null. One at a time. */
+  clubId?: string | null;
   career: Career;
+}
+
+export interface ClubRecord {
+  id: string;
+  name: string;
+  ownerId: string;
+  /** Player ids in join order, owner first. Decides who inherits the club. */
+  members: string[];
+  /** The code that is shared to invite people, and that the owner can rotate. */
+  invite: string;
+  created: number;
 }
 
 /** Every store speaks this. Async throughout, because Firestore is. */
@@ -39,6 +52,14 @@ export interface PlayerStore {
   save(player: PlayerRecord): Promise<void>;
   /** Stop an old token digest working, after a recovery replaced it. */
   revokeToken?(digest: string): Promise<void>;
+  getClub(id: string): Promise<ClubRecord | null>;
+  clubByInvite(code: string): Promise<ClubRecord | null>;
+  /** Add a club, or throw NameTakenError if the name went to someone else. */
+  createClub(club: ClubRecord): Promise<void>;
+  /** Persist a club; pass the old invite when it was rotated, so it stops working. */
+  saveClub(club: ClubRecord, opts?: { previousInvite?: string }): Promise<void>;
+  renameClub(club: ClubRecord, name: string): Promise<void>;
+  deleteClub(club: ClubRecord): Promise<void>;
   leaderboard(limit: number): Promise<PlayerRecord[]>;
   rankOf(id: string): Promise<number | null>;
   size(): Promise<number>;
@@ -62,6 +83,12 @@ export declare class JsonStore implements PlayerStore {
   create(player: PlayerRecord): Promise<void>;
   rename(player: PlayerRecord, name: string): Promise<void>;
   save(player: PlayerRecord): Promise<void>;
+  getClub(id: string): Promise<ClubRecord | null>;
+  clubByInvite(code: string): Promise<ClubRecord | null>;
+  createClub(club: ClubRecord): Promise<void>;
+  saveClub(club: ClubRecord, opts?: { previousInvite?: string }): Promise<void>;
+  renameClub(club: ClubRecord, name: string): Promise<void>;
+  deleteClub(club: ClubRecord): Promise<void>;
   leaderboard(limit: number): Promise<PlayerRecord[]>;
   rankOf(id: string): Promise<number | null>;
   size(): Promise<number>;

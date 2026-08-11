@@ -35,7 +35,10 @@ export interface Issued {
   recoveryCode: string;
 }
 
-export declare function normaliseName(raw: unknown): string;
+export declare function normaliseName(
+  raw: unknown,
+  opts?: { min?: number; max?: number; what?: string }
+): string;
 export declare function publicProfile(player: PlayerRecord, rank?: number | null): PublicProfile;
 export declare function privateProfile(
   store: PlayerStore,

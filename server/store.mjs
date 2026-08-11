@@ -49,6 +49,12 @@ export class JsonStore {
     this.names = new Map();
     /** @type {Map<string, string>} token digest → id */
     this.tokens = new Map();
+    /** @type {Map<string, any>} id → club record */
+    this.clubs = new Map();
+    /** @type {Map<string, string>} lowercased club name → club id */
+    this.clubNames = new Map();
+    /** @type {Map<string, string>} invite code → club id */
+    this.invites = new Map();
     this.dirty = false;
     this.flushTimer = null;
     this.firstDirtyAt = 0;
@@ -60,6 +66,7 @@ export class JsonStore {
       const raw = await readFile(this.file, "utf8");
       const parsed = JSON.parse(raw);
       for (const player of parsed.players ?? []) this.index(player);
+      for (const club of parsed.clubs ?? []) this.indexClub(club);
     } catch (err) {
       // A missing file is a first run, not a failure. Anything else is worth
       // saying out loud before the server carries on with an empty store —
@@ -76,6 +83,12 @@ export class JsonStore {
     this.players.set(player.id, player);
     this.names.set(nameKey(player.name), player.id);
     this.tokens.set(player.tokenHash, player.id);
+  }
+
+  indexClub(club) {
+    this.clubs.set(club.id, club);
+    this.clubNames.set(nameKey(club.name), club.id);
+    this.invites.set(club.invite, club.id);
   }
 
   async get(id) {
@@ -142,7 +155,10 @@ export class JsonStore {
     if (!this.dirty) return;
     this.dirty = false;
     this.firstDirtyAt = 0;
-    const snapshot = JSON.stringify({ players: [...this.players.values()] });
+    const snapshot = JSON.stringify({
+      players: [...this.players.values()],
+      clubs: [...this.clubs.values()],
+    });
     this.writing = (async () => {
       try {
         await mkdir(dirname(this.file), { recursive: true });
@@ -159,6 +175,55 @@ export class JsonStore {
       }
     })();
     return this.writing;
+  }
+
+  // ---- clubs ----
+
+  async getClub(id) {
+    return this.clubs.get(id) ?? null;
+  }
+
+  async clubByInvite(code) {
+    const id = this.invites.get(code);
+    return id ? (this.clubs.get(id) ?? null) : null;
+  }
+
+  async createClub(club) {
+    if (this.clubNames.has(nameKey(club.name))) throw new NameTakenError();
+    this.indexClub(club);
+    this.touch();
+  }
+
+  /**
+   * Persist a club the caller already holds.
+   *
+   * `previousInvite` is passed when the code was rotated, so the old one stops
+   * resolving — an invite that still works after being replaced has not been
+   * replaced.
+   */
+  async saveClub(club, opts = {}) {
+    if (opts.previousInvite && opts.previousInvite !== club.invite) {
+      this.invites.delete(opts.previousInvite);
+    }
+    this.indexClub(club);
+    this.touch();
+  }
+
+  async renameClub(club, name) {
+    const key = nameKey(name);
+    const owner = this.clubNames.get(key);
+    if (owner !== undefined && owner !== club.id) throw new NameTakenError();
+    this.clubNames.delete(nameKey(club.name));
+    club.name = name;
+    this.clubNames.set(key, club.id);
+    this.touch();
+  }
+
+  async deleteClub(club) {
+    this.clubs.delete(club.id);
+    this.clubNames.delete(nameKey(club.name));
+    this.invites.delete(club.invite);
+    this.touch();
   }
 
   /** Highest trophy counts first, ties settled by who got there first. */

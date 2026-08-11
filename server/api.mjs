@@ -30,6 +30,16 @@ import {
   rename,
   upgrade,
 } from "./accounts.mjs";
+import {
+  clubOf,
+  clubView,
+  createClub,
+  joinClub,
+  leaveClub,
+  removeMember,
+  renameClub,
+  rotateInvite,
+} from "./clubs.mjs";
 
 /** Requests bigger than this are not a player finishing a match. */
 const MAX_BODY_BYTES = 4 * 1024;
@@ -190,6 +200,66 @@ export async function handleApi(store, req, res, now = new Date()) {
       const body = await readBody(req);
       await removeFriend(store, player, body.id);
       sendJson(res, 200, { friends: await friendsOf(store, player) });
+      return true;
+    }
+
+    // ---- clubs ----
+    //
+    // Every one of these answers with the same club view, so the screen never
+    // has to assemble state from a reply plus what it remembered. A club that
+    // has just been disbanded answers with `club: null`, which is the honest
+    // reply and the one the screen already knows how to draw.
+
+    if (path === "/api/clubs/me" && req.method === "GET") {
+      const player = await requirePlayer(store, req);
+      const club = await clubOf(store, player);
+      sendJson(res, 200, { club: club ? await clubView(store, club, player.id) : null });
+      return true;
+    }
+
+    if (path === "/api/clubs" && isPost) {
+      const player = await requirePlayer(store, req);
+      const body = await readBody(req);
+      const club = await createClub(store, player, body.name, now);
+      sendJson(res, 201, { club: await clubView(store, club, player.id) });
+      return true;
+    }
+
+    if (path === "/api/clubs/join" && isPost) {
+      const player = await requirePlayer(store, req);
+      const body = await readBody(req);
+      const club = await joinClub(store, player, body.code);
+      sendJson(res, 200, { club: await clubView(store, club, player.id) });
+      return true;
+    }
+
+    if (path === "/api/clubs/leave" && isPost) {
+      const player = await requirePlayer(store, req);
+      await leaveClub(store, player);
+      sendJson(res, 200, { club: null });
+      return true;
+    }
+
+    if (path === "/api/clubs/me/name" && isPost) {
+      const player = await requirePlayer(store, req);
+      const body = await readBody(req);
+      const club = await renameClub(store, player, body.name);
+      sendJson(res, 200, { club: await clubView(store, club, player.id) });
+      return true;
+    }
+
+    if (path === "/api/clubs/me/invite" && isPost) {
+      const player = await requirePlayer(store, req);
+      const club = await rotateInvite(store, player);
+      sendJson(res, 200, { club: await clubView(store, club, player.id) });
+      return true;
+    }
+
+    if (path === "/api/clubs/me/remove" && isPost) {
+      const player = await requirePlayer(store, req);
+      const body = await readBody(req);
+      const club = await removeMember(store, player, body.id);
+      sendJson(res, 200, { club: club ? await clubView(store, club, player.id) : null });
       return true;
     }
 

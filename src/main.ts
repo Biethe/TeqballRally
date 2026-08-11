@@ -63,16 +63,25 @@ import {
   ApiError,
   addFriend,
   changeName,
+  clubNameProblem,
+  createClub,
+  fetchClub,
   fetchFriends,
   fetchLeaderboard,
   fetchMe,
+  joinClub,
   lastSeenLabel,
+  leaveClub,
   looksLikeCode,
+  looksLikeInvite,
   looksLikePlayerCode,
   nameProblem,
+  newInviteCode,
   newRecoveryCode,
   readIdentity,
   removeFriend,
+  removeMember,
+  renameClub,
   reportMatch,
   reportOnlineMatch,
   restore,
@@ -80,6 +89,7 @@ import {
   storeIdentity,
   tidyCode,
   tidyName,
+  type Club,
   type Identity,
   type Issued,
   type Profile,
@@ -748,6 +758,12 @@ async function boot(): Promise<void> {
     return problem === null ? null : tr(`name.${problem}`);
   };
 
+  /** The same, for a club name, which is allowed to be longer. */
+  const clubNameMessage = (raw: string): string | null => {
+    const problem = clubNameProblem(raw);
+    return problem === null ? null : tr(`name.${problem}`);
+  };
+
   const showProfile = (message: string | null = null, busy = false) => {
     viewer.deactivate();
     input.setTouchControlsEnabled(false);
@@ -808,9 +824,107 @@ async function boot(): Promise<void> {
         );
       },
       onFriends: () => showFriends(),
+      onClub: () => showClub(),
       onLeaderboard: showLeaderboard,
       onBack: showTitle,
     });
+  };
+
+  /**
+   * The club.
+   *
+   * Fetched fresh on every visit, for the same reason the friends list is:
+   * the board is other people, and other people move while you are not
+   * looking. The screen holds no state of its own — every action answers with
+   * the whole club, so there is nothing to reconcile.
+   */
+  const showClub = (message: string | null = null, busy = false, club?: Club | null): void => {
+    if (!identity) return showProfile(tr("club.needAccount"));
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    refreshWallet();
+    const token = identity.token;
+    const me = identity.id;
+    const paint = (current: Club | null, note: string | null, working: boolean): void =>
+      ui.showClub({
+        club: current && {
+          name: current.name,
+          members: current.members.map((m) => ({
+            id: m.id,
+            name: m.name,
+            trophies: m.trophies,
+            tier: m.tier,
+            online: m.online,
+            seen: m.online ? "" : tr(`friends.seen.${lastSeenLabel(m.lastSeen)}`),
+            owner: m.owner,
+            isMe: m.id === me,
+          })),
+          trophies: current.trophies,
+          online: current.online,
+          full: current.full,
+          invite: current.invite,
+          isOwner: current.ownerId === me,
+        },
+        message: note,
+        busy: working,
+        onCreate: (name) => {
+          const problem = clubNameMessage(name);
+          if (problem) return showClub(problem, false, current);
+          paint(current, null, true);
+          void createClub(token, tidyName(name)).then(
+            (made) => showClub(null, false, made),
+            (err: unknown) => showClub(errorMessage(err), false, current)
+          );
+        },
+        onJoin: (code) => {
+          if (!looksLikeInvite(code)) return showClub(tr("club.badCode"), false, current);
+          paint(current, null, true);
+          void joinClub(token, code).then(
+            (joined) => showClub(null, false, joined),
+            (err: unknown) => showClub(errorMessage(err), false, current)
+          );
+        },
+        onLeave: () => {
+          paint(current, null, true);
+          void leaveClub(token).then(
+            () => showClub(null, false, null),
+            (err: unknown) => showClub(errorMessage(err), false, current)
+          );
+        },
+        onRename: (name) => {
+          const problem = clubNameMessage(name);
+          if (problem) return showClub(problem, false, current);
+          paint(current, null, true);
+          void renameClub(token, tidyName(name)).then(
+            (next) => showClub(null, false, next),
+            (err: unknown) => showClub(errorMessage(err), false, current)
+          );
+        },
+        onNewInvite: () => {
+          paint(current, null, true);
+          void newInviteCode(token).then(
+            (next) => showClub(tr("club.newCodeDone"), false, next),
+            (err: unknown) => showClub(errorMessage(err), false, current)
+          );
+        },
+        onRemove: (id) => {
+          paint(current, null, true);
+          void removeMember(token, id).then(
+            (next) => showClub(null, false, next),
+            (err: unknown) => showClub(errorMessage(err), false, current)
+          );
+        },
+        onBack: () => showProfile(),
+      });
+
+    // `undefined` means nothing is known yet and the server has to be asked;
+    // `null` is the answer "no club", which is a state to draw, not to fetch.
+    if (club !== undefined) return paint(club, message, busy);
+    paint(null, message, true);
+    void fetchClub(token).then(
+      (found) => paint(found, message, false),
+      (err: unknown) => paint(null, errorMessage(err), false)
+    );
   };
 
   /**

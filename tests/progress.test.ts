@@ -42,6 +42,15 @@ import { ALL_TIP_KEYS, randomTip } from "../src/tips";
 import { t } from "../src/i18n";
 
 const DAY = "2026-08-10";
+/**
+ * A moment on `DAY`.
+ *
+ * `settleMatch` defaults to the real clock, and a career dated `DAY` rolls
+ * over to whatever today happens to be — which quietly swapped the challenges
+ * out from under a test that had looked up `DAY`'s. Anything that cares which
+ * day it is says so.
+ */
+const ON_DAY = new Date(2026, 7, 10, 12, 0, 0);
 const tally = (over: Partial<MatchTally> = {}): MatchTally => ({
   won: true,
   points: 12,
@@ -199,7 +208,13 @@ describe("a career", () => {
   });
 
   it("pays out a win in trophies and coins", () => {
-    const { career, outcome } = settleMatch(freshCareer(DAY), CHARACTERS[0].id, "normal", tally());
+    const { career, outcome } = settleMatch(
+      freshCareer(DAY),
+      CHARACTERS[0].id,
+      "normal",
+      tally(),
+      ON_DAY
+    );
 
     expect(outcome.trophies).toBeGreaterThan(0);
     expect(outcome.coins).toBeGreaterThan(0);
@@ -212,11 +227,11 @@ describe("a career", () => {
     // character away from a player who already had it.
     let career = freshCareer(DAY);
     for (let i = 0; i < 8; i++) {
-      career = settleMatch(career, CHARACTERS[0].id, "hard", tally()).career;
+      career = settleMatch(career, CHARACTERS[0].id, "hard", tally(), ON_DAY).career;
     }
     const peak = career.trophies;
     for (let i = 0; i < 20; i++) {
-      career = settleMatch(career, CHARACTERS[0].id, "hard", tally({ won: false })).career;
+      career = settleMatch(career, CHARACTERS[0].id, "hard", tally({ won: false }), ON_DAY).career;
     }
 
     expect(career.trophies).toBeLessThan(peak);
@@ -226,7 +241,7 @@ describe("a career", () => {
   it("levels a character up for playing with it, win or lose", () => {
     let career = freshCareer(DAY);
     for (let i = 0; i < XP_PER_LEVEL; i++) {
-      career = settleMatch(career, CHARACTERS[0].id, "normal", tally({ won: false })).career;
+      career = settleMatch(career, CHARACTERS[0].id, "normal", tally({ won: false }), ON_DAY).career;
     }
 
     expect(levelOf(career, CHARACTERS[0].id)).toBe(2);
@@ -235,7 +250,7 @@ describe("a career", () => {
   it("stops levelling at the cap", () => {
     let career = freshCareer(DAY);
     for (let i = 0; i < XP_PER_LEVEL * (MAX_LEVEL + 4); i++) {
-      career = settleMatch(career, CHARACTERS[0].id, "normal", tally()).career;
+      career = settleMatch(career, CHARACTERS[0].id, "normal", tally(), ON_DAY).career;
     }
 
     expect(levelOf(career, CHARACTERS[0].id)).toBe(MAX_LEVEL);
@@ -266,7 +281,7 @@ describe("a career", () => {
   it("moves every unfinished challenge a match touches", () => {
     const career = freshCareer(DAY);
     const ids = dailyChallenges(DAY).map((c) => c.id);
-    const { career: after } = settleMatch(career, CHARACTERS[0].id, "normal", tally());
+    const { career: after } = settleMatch(career, CHARACTERS[0].id, "normal", tally(), ON_DAY);
 
     for (const id of ids) expect(after.progress[id], id).toBeGreaterThan(0);
   });
