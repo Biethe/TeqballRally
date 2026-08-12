@@ -1,32 +1,72 @@
 # Source animations
 
-Mixamo FBX clips waiting to be retargeted onto the player rig. Nothing in this
-folder is loaded at runtime — the game only ever reads the GLBs in
-`assets/models/characters/`, which carry their animation groups baked in.
+Mixamo FBX exports waiting to be turned into something the game can play.
+Nothing here is loaded at runtime — these are the inputs to an offline
+pipeline, and they live in the repository because the uploads that carried
+them were not going to survive the session.
 
-These are here because the upload that carried them was ephemeral and the
-retargeting needs a tool this repository does not have.
+## `crowd/` — spectators
 
-| File | What it is | Intended use |
-| --- | --- | --- |
-| `Idle.fbx` | A calmer standing idle | Replace or alternate with the current `Idle` |
-| `Bored.fbx` | Weight shift, looking around | Between points, after a long wait |
-| `Pouting.fbx` | Frustration | After losing a point |
-| `Male_Standing_Pose_3.fbx` | Static pose | Menu / character select stance |
-| `Male_Standing_Pose_4.fbx` | Static pose | Menu / character select stance |
+| File | What it is |
+| --- | --- |
+| `Idle.fbx` | Standing, doing nothing much |
+| `Bored.fbx` | Weight shift, looking around |
+| `Pouting.fbx` | Unimpressed |
+| `Male_Standing_Pose_3.fbx` | A static standing pose |
+| `Male_Standing_Pose_4.fbx` | A static standing pose |
 
-## Getting one into the game
+These answer a real problem with the current crowd, which is that everybody in
+it is celebrating all of the time. `CROWD_FIGURES` in `src/crowdclips.ts` gives
+each of the five figures a different motion — cheering, fist pump, two sitting
+claps — and that stops them being a chorus line, but it does not stop them all
+being *delighted*, permanently, including between points and while nothing is
+happening. A stand where some people are bored and one is sulking reads as a
+crowd; a stand where two hundred people cheer without pause reads as wallpaper.
 
-1. Import the character GLB into Blender, then import the FBX with **Automatic
-   Bone Orientation** on.
-2. Retarget onto the character's armature. All four players share the Mixamo
-   rig, so one retarget maps to all of them.
-3. Name the action exactly what the code will ask for — the animation group's
-   name is the lookup key (see `CLIPS` in `src/config.ts`).
-4. Export GLB with animations, overwriting the file in
-   `assets/models/characters/`.
-5. Add the clip's frame count to `Animation.txt` **and** to `CLIPS` in
-   `src/config.ts`. `tests/config.test.ts` parses `Animation.txt` and fails if
-   the two disagree, which is the guard that keeps them in step.
+### The pipeline
 
-A clip with no ball contact has `contactFrame: -1`; these idles all do.
+The crowd is not skinned at runtime. Every figure is one drawable mesh whose
+animation is baked into a vertex animation texture (`.vat`), which is what lets
+a few hundred spectators cost almost nothing on a phone. Three stages:
+
+1. **FBX → glTF.** The extractor reads glTF, not FBX, so convert first
+   (Blender, or FBX2glTF). One directory, one subdirectory per clip.
+
+2. **Retarget to rotation deltas.**
+
+   ```bash
+   node scripts/extract-mixamo-clips.mjs <gltf-dir> assets/models/Crowd/clips.json 48
+   ```
+
+   Read the header of that script before changing anything in it. It transfers
+   *world-space rotation deltas* rather than local rotations, because Mixamo
+   rests in a T-pose and these crowd figures rest mid-cheer with different bone
+   axes — mapping locals tore every figure apart. `clips.json` is an
+   intermediate and is deliberately not committed.
+
+3. **Bake to textures.**
+
+   ```bash
+   npm run dev -- --port 5178 --strictPort
+   CHROMIUM_PATH=... node scripts/bake-crowd.mjs
+   ```
+
+   Writes `assets/models/Crowd/*.vat`. It renders one frame per baked frame
+   under software rendering, so it is slow; it is a one-off.
+
+Then add or repoint an entry in `CROWD_FIGURES`. The clip name there has to
+match the folder name the conversion produced.
+
+### Two things to decide before baking
+
+**48 frames, always.** `CROWD_FRAMES` is the height of every texture and every
+clip is resampled to it, whatever its recorded length. A two-second idle and a
+six-second bored loop both become 48 frames, so the idle plays slow and the
+bored one fast. At crowd distance that has been fine, and it is what keeps
+every texture the same shape — but these clips are longer and calmer than the
+cheers already in there, so check what the resampling does to them before
+committing a bake.
+
+**The two standing poses may be single-frame.** If they are, baking them into
+48 identical rows is a waste of texture; a still figure needs no `.vat` at all
+and could be drawn as a plain mesh. Worth checking rather than assuming.
