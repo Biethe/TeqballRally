@@ -759,7 +759,16 @@ export function pickStrikeClip(
    * Driven at the top of the range, floated at the bottom — the animation has
    * to agree with the ball that comes off it, or the shot reads as a bug.
    */
-  power = 0.6
+  power = 0.6,
+  /**
+   * Whether the player is close enough to the middle line for the hard shots.
+   *
+   * The foot volley is a smash, and a smash from the back of the court is not
+   * a shot that exists — there is no angle through which it clears the net and
+   * lands. From deep the same ball is played as an inner-foot lob instead, so
+   * the animation still agrees with the flight that comes off it.
+   */
+  nearMiddle = true
 ): string {
   const rel = ballY / height; // normalised contact height
   const side = pickSide(lateral, strongFoot);
@@ -770,8 +779,9 @@ export function pickStrikeClip(
   }
   if (rel > 0.62) return driven ? `${side}HeadKick` : "ChestKick";
   if (rel > 0.45) return driven ? "ChestKick" : `${side}KneeReception`;
-  // Low ball: a driven foot volley, or an inner-foot touch played as a slow lob.
-  return driven ? `${side}FootKick` : `Inner${side}FootReception`;
+  // Low ball: a driven foot volley from up at the table, or an inner-foot
+  // touch played as a slow lob from anywhere.
+  return driven && nearMiddle ? `${side}FootKick` : `Inner${side}FootReception`;
 }
 
 /** Pick a control-touch (reception/prep) clip from the ball's height and lateral offset. */

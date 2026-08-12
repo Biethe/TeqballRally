@@ -77,7 +77,47 @@ export function scatter(target: Vector3, radius: number, rand: () => number): Ve
  */
 export function loftFor(power: number): number {
   const p = Math.min(1, Math.max(0, power));
-  return 1.5 - 0.95 * p;
+  // A wide spread on purpose: in portrait the swipe's speed is the only thing
+  // the gesture says about the shot, so the difference between a flicked ball
+  // and a driven one has to be visible in the arc, not just in the numbers.
+  return 1.7 - 1.25 * p;
+}
+
+/**
+ * How close to the middle line a player has to be for the flat, hard shots.
+ *
+ * Level with the end of the table. Standing there is a decision — the ball is
+ * normally received well behind it — and that is the point: attacking means
+ * coming forward, and coming forward means less time to get back.
+ */
+export const SMASH_RANGE = TABLE.halfLen;
+
+/**
+ * The least loft a kick from this far out is allowed, as a multiplier.
+ *
+ * A hard limit rather than a nudge. From deep there is no angle through which
+ * a flat ball clears the net and still comes down on the table, so a player
+ * who swipes as fast as they can from the back gets a fast *lob*, not a
+ * missile. Zero inside the smash range: there the shot is unconstrained and
+ * the swipe decides everything.
+ *
+ * Ramped rather than switched, so stepping forward makes the ball flatten
+ * continuously and a player can feel where the line is without being told.
+ */
+export function loftFloor(fromMiddle: number): number {
+  const past = Math.max(0, Math.abs(fromMiddle) - SMASH_RANGE);
+  if (past <= 0) return 0;
+  // The ramp starts exactly where the flattest kick already is, so crossing
+  // the line changes nothing and walking back from it changes the shot
+  // smoothly. Writing the start as `loftFor(1)` rather than as its value is
+  // what keeps that true when the swipe curve is retuned — a literal here
+  // would silently become a step the day loftFor changed.
+  return Math.min(1.6, loftFor(1) + past * 0.55);
+}
+
+/** Whether the hard clips — foot volleys and backflips — are on from here. */
+export function canSmashFrom(x: number): boolean {
+  return Math.abs(x) <= SMASH_RANGE;
 }
 
 /**

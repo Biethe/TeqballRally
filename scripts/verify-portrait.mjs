@@ -301,6 +301,41 @@ console.log("\nportrait: the screen is the controller");
   });
   check(noStray, "a stored destination is dropped when the auto-run takes over");
 
+  // The camera has to hold the player wherever the court lets them go. The
+  // half now runs to the middle line, so they cover far more of it than the
+  // fixed shot was framed for — and the portrait lens is pinned horizontally,
+  // which makes the frame narrowest exactly where they stand deepest.
+  const framing = await page.evaluate(() => {
+    const m = window.__teq.match;
+    const { engine, camera } = window.__teq;
+    const c = m.chars.player;
+    const width = engine.getRenderWidth();
+    const height = engine.getRenderHeight();
+    const worst = [];
+    // Corners of the area a rally can actually take them to, plus the middle.
+    const spots = [
+      [-0.5, 0], [-0.5, 1.6], [-0.5, -1.6],
+      [-3.3, 0], [-3.3, 2.2], [-3.3, -2.2],
+      [-5.5, 0], [-5.5, 2.4], [-5.5, -2.4],
+    ];
+    for (const [x, z] of spots) {
+      c.position.x = x;
+      c.position.z = z;
+      // Settle the smoothed follow rather than sampling it mid-slide.
+      for (let i = 0; i < 240; i++) m.updateCamera(camera, "court");
+      const p = window.__teq.project(x, c.position.y + c.height * 0.5, z);
+      const inside = p.x > 0 && p.x < width && p.y > 0 && p.y < height;
+      if (!inside) worst.push({ x, z, px: Math.round(p.x), py: Math.round(p.y) });
+    }
+    return { worst, width, height };
+  });
+  check(
+    framing.worst.length === 0,
+    `the player stays in frame across the whole half${
+      framing.worst.length ? ` (off screen at ${JSON.stringify(framing.worst)})` : ""
+    }`
+  );
+
   await page.close();
 }
 
