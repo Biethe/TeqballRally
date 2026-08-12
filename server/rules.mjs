@@ -18,12 +18,6 @@ var PLAY_BOX = {
   halfWid: TABLE.halfWid + 0.32
 };
 var BALL_RADIUS = 0.08095 * TABLE_SCALE;
-var COURT = {
-  minX: TABLE.halfLen + 0.06,
-  // players stay behind the table end
-  maxX: 6.8,
-  maxZ: 4.6
-};
 var SPAWN = {
   x: 2.64 * TABLE_SCALE,
   // distance from the net along the table axis

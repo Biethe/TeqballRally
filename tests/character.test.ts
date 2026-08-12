@@ -8,6 +8,7 @@ import {
   SERVE_TOSS_HAND,
   approachVelocity,
   backflipAllowed,
+  backflipFoot,
   clipFoot,
   footFactor,
   pickReceptionClip,
@@ -107,6 +108,49 @@ describe("footFactor", () => {
       const expected = clipFoot(clip) === "left" ? FOOT_FACTOR.strong : FOOT_FACTOR.weak;
       expect(footFactor(lefty, clip), clip).toEqual(expected);
     }
+  });
+});
+
+describe("backflipFoot", () => {
+  /**
+   * The foot follows the *stance*, not the ball. A backflip is a whole-body
+   * rotation already committed to, and the leg that comes over is the one on
+   * the outside of the court — which is what a player watching it expects and
+   * what the old ball-relative choice got wrong.
+   */
+  const both = player({ backflips: "both", strongFoot: "both" });
+
+  it("flips off the right foot on the right of the court, and the left on the left", () => {
+    expect(backflipFoot(1.2, both)).toBe("right");
+    expect(backflipFoot(-1.2, both)).toBe("left");
+  });
+
+  it("is signed in the player's own frame, so both ends agree", () => {
+    // `stance` is positive to the player's right, exactly like the `lateral`
+    // handed to pickStrikeClip. The AI faces the other way and its stance is
+    // mirrored before it gets here, so the same sign means the same side.
+    expect(backflipFoot(0.4, both)).toBe("right");
+    expect(backflipFoot(-0.4, both)).toBe("left");
+  });
+
+  it("lets a one-footed flipper use their foot from the middle", () => {
+    const righty = player({ backflips: "strong", strongFoot: "right" });
+
+    // Standing on their left, where the natural foot would be the left one.
+    expect(backflipFoot(-0.2, righty)).toBe("right");
+  });
+
+  it("will not contort them from the far side of the court", () => {
+    const righty = player({ backflips: "strong", strongFoot: "right" });
+
+    expect(backflipFoot(-1.5, righty)).toBeNull();
+  });
+
+  it("gives nothing to a player who does not flip", () => {
+    const grounded = player({ backflips: "none", strongFoot: "right" });
+
+    expect(backflipFoot(1, grounded)).toBeNull();
+    expect(backflipFoot(-1, grounded)).toBeNull();
   });
 });
 

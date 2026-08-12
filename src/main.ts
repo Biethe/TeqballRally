@@ -101,6 +101,7 @@ import {
   BALLS,
   CHARACTERS,
   COURT,
+  clearTable,
   GROUND_Y,
   SETS_TO_WIN,
   SIM_DT,
@@ -342,11 +343,13 @@ async function boot(): Promise<void> {
     const t = (GROUND_Y - origin.y) / direction.y;
     if (t <= 0) return null;
     const hit = origin.add(direction.scale(t));
-    return new Vector3(
+    // The player's half now reaches the middle line, with the table as a hole
+    // in it: a tap on the table sends them to the nearest spot beside it.
+    const clear = clearTable(
       Math.min(-COURT.minX, Math.max(-COURT.maxX, hit.x)),
-      GROUND_Y,
       Math.max(-COURT.maxZ, Math.min(COURT.maxZ, hit.z))
     );
+    return new Vector3(clear.x, GROUND_Y, clear.z);
   };
 
   // Fixed-step simulation state. The accumulator only ever grows on frames

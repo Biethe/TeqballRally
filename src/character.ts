@@ -9,6 +9,7 @@ import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTextur
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import {
+  clearTable,
   contactFraction,
   CHARACTER_SCALE,
   COURT,
@@ -482,12 +483,17 @@ export class Character {
     this.clampToCourt();
   }
 
-  /** Keep the root inside this character's half of the court. */
+  /** Keep the root inside this character's half of the court, and off the table. */
   private clampToCourt(): void {
     const p = this.position;
     const sideSign = this.faceDir === -1 ? -1 : 1;
     p.x = sideSign * Math.min(COURT.maxX, Math.max(COURT.minX, sideSign * p.x));
     p.z = Math.max(-COURT.maxZ, Math.min(COURT.maxZ, p.z));
+    // The half is open all the way to the middle line; the table is a hole in
+    // it rather than a wall across it.
+    const clear = clearTable(p.x, p.z);
+    p.x = clear.x;
+    p.z = clear.z;
   }
 
   /** Move toward a target point; returns remaining distance. */
@@ -682,6 +688,33 @@ export function footFactor(def: CharacterDef, clip: string): { power: number; sp
   const foot = clipFoot(clip);
   if (!foot || def.strongFoot === "both") return { power: 1, spray: 1 };
   return foot === def.strongFoot ? FOOT_FACTOR.strong : FOOT_FACTOR.weak;
+}
+
+/**
+ * Which foot a backflip swings.
+ *
+ * From where the player is *standing*, not from where the ball is — which is
+ * the one place this differs from every other clip choice. An ordinary kick
+ * reaches for the ball, so the near foot is the one that gets there. A
+ * backflip is a whole-body rotation the player has already committed to, and
+ * the leg that comes over is the one on the outside of the court: standing on
+ * your right, you flip off your right foot.
+ *
+ * `stance` is the player's lateral position in their own frame — positive to
+ * their right — so it is signed the same way as the `lateral` passed to
+ * `pickStrikeClip`, and the two cannot drift apart.
+ *
+ * Returns null when neither foot is allowed by the character's traits, which
+ * is how a player who cannot flip at all falls back to an ordinary kick.
+ */
+export function backflipFoot(stance: number, def: CharacterDef): Foot | null {
+  const natural: Foot = stance >= 0 ? "right" : "left";
+  if (backflipAllowed(def, natural)) return natural;
+  // A player barred from their natural side can still flip off the other foot
+  // when they are near enough to the middle for it not to look wrong.
+  const off: Foot = natural === "right" ? "left" : "right";
+  if (backflipAllowed(def, off) && Math.abs(stance) < 0.45) return off;
+  return null;
 }
 
 /** Whether this player may finish with a backflip off the given foot. */

@@ -14,7 +14,7 @@ import {
   type Side,
 } from "./ball";
 import {
-  backflipAllowed,
+  backflipFoot,
   Character,
   footFactor,
   pickReceptionClip,
@@ -34,6 +34,8 @@ import {
   BALL_RADIUS,
   CAMERA,
   COURT,
+  clearTable,
+  onTableFootprint,
   GRAVITY,
   GROUND_Y,
   KICK_LOFT,
@@ -415,7 +417,10 @@ export class MatchController {
     const sideSign = char.faceDir === -1 ? -1 : 1;
     const tx = sideSign * Math.min(COURT.maxX, Math.max(COURT.minX, sideSign * (char.position.x + dx)));
     const tz = Math.max(-COURT.maxZ, Math.min(COURT.maxZ, char.position.z + dz));
-    return new Vector3(tx, char.position.y, tz);
+    // The half runs to the middle line now, so a lunge has to be steered
+    // around the table rather than stopped short of its end.
+    const clear = clearTable(tx, tz);
+    return new Vector3(clear.x, char.position.y, clear.z);
   }
 
   /**
@@ -464,16 +469,17 @@ export class MatchController {
     }
     for (const s of samples) {
       if (s.grounded) break; // past a floor bounce the ball is dead
-      const offTable = sgn * s.pos.x > COURT.minX || Math.abs(s.pos.z) > 0.95;
+      // A ball still over the table is about to bounce, not to be received.
+      const offTable = !onTableFootprint(s.pos.x, s.pos.z);
       const h = s.pos.y - GROUND_Y;
       if (offTable && sgn * s.pos.x > 0 && h < 1.15 && h > 0.3) {
         // Slightly behind the arrival point, so the assist parks the player
         // beside the flight path (in reach) rather than chest-first into it.
-        return new Vector3(
+        const clear = clearTable(
           sgn * Math.min(COURT.maxX, Math.max(COURT.minX, sgn * s.pos.x + 0.3)),
-          GROUND_Y,
           Math.max(-COURT.maxZ, Math.min(COURT.maxZ, s.pos.z))
         );
+        return new Vector3(clear.x, GROUND_Y, clear.z);
       }
     }
     return null;
@@ -1178,11 +1184,11 @@ export class MatchController {
     // barred but the other one qualifies, a near-centre ball can still be
     // flipped with it.
     if (popped && ballHeight > c.height * 0.7 && Math.random() < 0.65) {
-      const natural = lateral >= 0 ? "right" : "left";
-      const off = natural === "right" ? "left" : "right";
-      let foot: typeof natural | null = null;
-      if (backflipAllowed(c.def, natural)) foot = natural;
-      else if (backflipAllowed(c.def, off) && Math.abs(lateral) < 0.45) foot = off;
+      // Which foot comes over is decided by where the player is standing, not
+      // by where the ball is: see `backflipFoot`. The stance is signed in the
+      // player's own frame, the same way `lateral` above is.
+      const stance = c.position.z * (side === "player" ? -1 : 1);
+      const foot = backflipFoot(stance, c.def);
       if (foot) {
         const flip = foot === "right" ? "BackflipRightFoot" : "BackflipLeftFoot";
         if (c.groups.has(flip)) clip = flip;

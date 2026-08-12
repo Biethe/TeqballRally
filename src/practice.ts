@@ -8,7 +8,7 @@ export const PRACTICE_DIFFICULTY: AIDifficulty = {
   speed: 0.5,
   aimError: 0.28,
   reactionTime: 0.12,
-  whiffChance: 0,
+  misjudge: 0,
   popChance: 0.18,
   maxPopTouches: 1,
 };
