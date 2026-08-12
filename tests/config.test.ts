@@ -138,7 +138,7 @@ describe("CLIPS mirrors Animation.txt", () => {
   }
 
   it("parses every documented clip", () => {
-    expect(documented.size).toBe(27);
+    expect(documented.size).toBe(31);
   });
 
   it("has the same clip names in both files", () => {

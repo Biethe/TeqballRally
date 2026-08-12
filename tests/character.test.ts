@@ -545,40 +545,41 @@ describe("the traits that decide a rally", () => {
 });
 
 describe("locomotion blending", () => {
-  const total = (w: LocoWeights) =>
-    w.Idle + w.JogForward + w.jogBackward + w.JogStrafeLeft + w.JogStrafeRight;
+  /** Sideways weight, whichever gait is carrying it. */
+  const side = (w: LocoWeights) =>
+    w.JogStrafeLeftInPlace + w.JogStrafeRightInPlace +
+    w.WalkStrafeLeftInPlace + w.WalkStrafeRightInPlace;
+  const total = (w: LocoWeights) => w.Idle + w.JogForward + w.jogBackward + side(w);
 
   it("stands still below the walking threshold", () => {
     const w = locoBlend(0, 0, 0);
 
     expect(w.Idle).toBe(1);
     expect(w.JogForward).toBe(0);
-    expect(w.JogStrafeLeft).toBe(0);
-    expect(w.JogStrafeRight).toBe(0);
+    expect(side(w)).toBe(0);
   });
 
   it("carries a sideways run on the strafe clips, not the forward one", () => {
-    // Pure lateral movement: the old winner-takes-all picked one clip too, so
-    // this is the case that already worked. It is here to stay working.
     const right = locoBlend(0, 4, 4);
     const left = locoBlend(0, -4, 4);
 
-    expect(right.JogStrafeRight).toBeCloseTo(1);
-    expect(right.JogStrafeLeft).toBe(0);
+    expect(side(right)).toBeCloseTo(1);
     expect(right.JogForward).toBe(0);
-    expect(left.JogStrafeLeft).toBeCloseTo(1);
-    expect(left.JogStrafeRight).toBe(0);
+    expect(right.JogStrafeRightInPlace + right.WalkStrafeRightInPlace).toBeCloseTo(1);
+    expect(left.JogStrafeLeftInPlace + left.WalkStrafeLeftInPlace).toBeCloseTo(1);
   });
 
   it("splits a diagonal run across both clips instead of picking a winner", () => {
-    // The regression that made the player slide: running 45° forward-and-right
-    // used to play a pure forward cycle while the body travelled sideways.
+    // The regression that made the player slide: running 45 degrees
+    // forward-and-right used to play a pure forward cycle while the body
+    // travelled sideways.
     const w = locoBlend(3, 3, Math.hypot(3, 3));
 
     expect(w.JogForward).toBeCloseTo(0.5);
-    expect(w.JogStrafeRight).toBeCloseTo(0.5);
+    expect(side(w)).toBeCloseTo(0.5);
     expect(w.jogBackward).toBe(0);
-    expect(w.JogStrafeLeft).toBe(0);
+    expect(w.JogStrafeLeftInPlace).toBe(0);
+    expect(w.WalkStrafeLeftInPlace).toBe(0);
   });
 
   it("keeps the weights summing to one at every angle", () => {
@@ -592,14 +593,35 @@ describe("locomotion blending", () => {
   });
 
   it("fades out of standing across a band rather than snapping", () => {
-    // A slow adjusting step used to switch a full-weight jog on and off.
     const creep = locoBlend(0.6, 0, 0.6);
 
     expect(creep.Idle).toBeGreaterThan(0);
     expect(creep.Idle).toBeLessThan(1);
     expect(creep.JogForward).toBeGreaterThan(0);
-    expect(creep.JogForward).toBeLessThan(1);
     expect(total(creep)).toBeCloseTo(1);
+  });
+
+  it("walks sideways for a ball that is nearly on you", () => {
+    // A slow sideways adjustment is a half-step, not a run.
+    const w = locoBlend(0, 0.9, 0.9);
+
+    expect(w.WalkStrafeRightInPlace).toBeGreaterThan(0);
+    expect(w.JogStrafeRightInPlace).toBe(0);
+  });
+
+  it("runs sideways for one you have to cover ground for", () => {
+    const w = locoBlend(0, 4, 4);
+
+    expect(w.JogStrafeRightInPlace).toBeCloseTo(1);
+    expect(w.WalkStrafeRightInPlace).toBe(0);
+  });
+
+  it("changes gait across a band, so the legs never swap clip mid-stride", () => {
+    const mid = locoBlend(0, 1.8, 1.8);
+
+    expect(mid.WalkStrafeRightInPlace).toBeGreaterThan(0);
+    expect(mid.JogStrafeRightInPlace).toBeGreaterThan(0);
+    expect(total(mid)).toBeCloseTo(1);
   });
 
   it("drives a sideways cycle faster than a forward one at the same speed", () => {

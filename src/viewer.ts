@@ -16,7 +16,7 @@ import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import { GLTFLoaderAnimationStartMode } from "@babylonjs/loaders/glTF/glTFFileLoader";
 import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent";
 import { importBall, brightenKit, fixMetallicMaterials } from "./scene";
-import { maskJerseyPlaceholder, trimIdleTail } from "./character";
+import { trimIdleTail } from "./character";
 import { CHARACTER_SCALE, CHARACTERS } from "./config";
 
 export type ViewerKind = "character" | "ball";
@@ -243,7 +243,6 @@ export class ModelViewer {
     // skin textures nearly black without an environment map.
     fixMetallicMaterials(res.meshes);
     brightenKit(res.meshes);
-    await maskJerseyPlaceholder(res.meshes, id);
 
     // Menu display clip: one of the MenuPose* clips picked at random each
     // launch (models load once per session), falling back to Idle.

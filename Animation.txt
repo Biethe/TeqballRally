@@ -2,6 +2,12 @@
 #
 # Frames are Blender frame numbers. `contactFrame` is the ball-contact frame;
 # `ballLeaveHand` is used for serves. The runtime copy lives in src/config.ts.
+#
+# "InPlace" clips keep the feet under the rig instead of travelling. Movement
+# here is kinematic — the character's position is integrated from its velocity
+# — so a clip that also translates the root would move it twice and drift it
+# away from where the game thinks it is. Locomotion therefore uses the InPlace
+# strafes; the travelling JogStrafeLeft/Right are kept for reference.
 
 ## Regular animations
 
@@ -23,6 +29,10 @@
 | JogForward | — | 72 |
 | JogStrafeLeft | — | 41 |
 | JogStrafeRight | — | 40 |
+| JogStrafeLeftInPlace | — | 30 |
+| JogStrafeRightInPlace | — | 34 |
+| WalkStrafeLeftInPlace | — | 56 |
+| WalkStrafeRightInPlace | — | 58 |
 | LeftFootKick | 40 | 85 |
 | LeftHeadKick | 24 | 52 |
 | LeftKneeReception | 53 | 69 |

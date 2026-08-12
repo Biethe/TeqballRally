@@ -346,6 +346,13 @@ export const CLIPS: Record<string, ClipInfo> = {
   JogForward: { contact: -1, frames: 72 },
   JogStrafeLeft: { contact: -1, frames: 41 },
   JogStrafeRight: { contact: -1, frames: 40 },
+  // See the note at the top of Animation.txt: locomotion uses the InPlace
+  // strafes because movement is integrated from velocity, and a clip that
+  // travels as well would move the character twice.
+  JogStrafeLeftInPlace: { contact: -1, frames: 30 },
+  JogStrafeRightInPlace: { contact: -1, frames: 34 },
+  WalkStrafeLeftInPlace: { contact: -1, frames: 56 },
+  WalkStrafeRightInPlace: { contact: -1, frames: 58 },
   LeftFootKick: { contact: 40, frames: 85 },
   LeftHeadKick: { contact: 24, frames: 52 },
   LeftKneeReception: { contact: 53, frames: 69 },
@@ -465,6 +472,27 @@ export const KICK_LOFT: Record<string, number> = {
   InnerRightFootReception: 1.55,
   InnerLeftFootReception: 1.55,
 };
+
+/**
+ * Frames at the head of a clip that must never play.
+ *
+ * ServeRightFoot's first 20 frames contain movement that reads as a twitch
+ * before the serve begins. Skipping them is preferable to re-cutting the clip:
+ * the toss (frame 44) and the contact (92) both sit well after the skip, so
+ * every fraction derived from the full clip stays correct and the ball is
+ * still launched on the frame the foot meets it.
+ */
+export const CLIP_SKIP_FRAMES: Record<string, number> = {
+  ServeRightFoot: 20,
+};
+
+/** The earliest fraction of `name` that is safe to start playing from. */
+export function clipStartFraction(name: string): number {
+  const skip = CLIP_SKIP_FRAMES[name];
+  const info = CLIPS[name];
+  if (!skip || !info) return 0;
+  return skip / info.frames;
+}
 
 export function contactFraction(name: string): number {
   const c = CLIPS[name];
