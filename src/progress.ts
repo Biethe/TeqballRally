@@ -107,7 +107,18 @@ export const MAX_LEVEL = 6;
  */
 export function withCareer(def: CharacterDef, level: number): CharacterDef {
   const steps = Math.max(0, Math.min(MAX_LEVEL, level) - 1);
-  return { ...def, precision: def.precision * (1 + 0.09 * steps) };
+  return {
+    ...def,
+    precision: def.precision * (1 + 0.09 * steps),
+    // Training also buys the two traits that are about *effort* rather than
+    // technique: how quickly you get moving and how long you keep it up. They
+    // rise more slowly than precision, because a levelled player should still
+    // be recognisably the character that was picked — the point of the roster
+    // is that they are differently good, and levelling everything at the same
+    // rate flattens four characters into one.
+    agility: def.agility * (1 + 0.045 * steps),
+    stamina: def.stamina * (1 + 0.05 * steps),
+  };
 }
 
 /** The level a career has this character at, or 1 if it has never been used. */

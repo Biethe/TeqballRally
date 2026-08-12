@@ -36,10 +36,66 @@ var AI_REACH = 1.2 * TABLE_SCALE;
 var WIN_SCORE = 3;
 var SETS_TO_WIN = 2;
 var CHARACTERS = [
-  { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 5.4, power: 1, precision: 1.1, backflips: "both" },
-  { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.5, power: 1.7, precision: 0.9, backflips: "none" },
-  { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5, power: 1.05, precision: 1, backflips: "strong" },
-  { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 4.9, power: 0.95, precision: 1.2, backflips: "strong" }
+  // The acrobat. Quick and springy, and runs out of legs first.
+  {
+    id: "BrazilianPlayer",
+    label: "BRAZIL",
+    height: 1.76,
+    strongFoot: "right",
+    speed: 5.4,
+    power: 1,
+    precision: 1.1,
+    backflips: "both",
+    stamina: 0.85,
+    serve: 0.95,
+    agility: 1.35,
+    volley: 1.2
+  },
+  // The powerhouse. A hammer and a serve, slow to get going, lasts all day.
+  {
+    id: "EnglishPlayer",
+    label: "ENGLAND",
+    height: 1.86,
+    strongFoot: "right",
+    speed: 4.5,
+    power: 1.7,
+    precision: 0.9,
+    backflips: "none",
+    stamina: 1.3,
+    serve: 1.35,
+    agility: 0.7,
+    volley: 0.85
+  },
+  // The all-rounder. Nothing to hide behind and nothing that lets him down.
+  {
+    id: "FrenchPlayer",
+    label: "FRANCE",
+    height: 1.8,
+    strongFoot: "left",
+    speed: 5,
+    power: 1.05,
+    precision: 1,
+    backflips: "strong",
+    stamina: 1.05,
+    serve: 1.05,
+    agility: 1,
+    volley: 1
+  },
+  // The technician. Takes everything early and precisely, hits it softest.
+  {
+    id: "SpanishPlayer",
+    label: "SPAIN",
+    height: 1.72,
+    strongFoot: "both",
+    speed: 4.9,
+    power: 0.95,
+    precision: 1.2,
+    backflips: "strong",
+    stamina: 1,
+    serve: 0.8,
+    agility: 1.05,
+    volley: 1.35
+  }
 ];
 
 // src/challenges.ts
@@ -214,7 +270,18 @@ function upgradeCost(level) {
 var MAX_LEVEL = 6;
 function withCareer(def, level) {
   const steps = Math.max(0, Math.min(MAX_LEVEL, level) - 1);
-  return { ...def, precision: def.precision * (1 + 0.09 * steps) };
+  return {
+    ...def,
+    precision: def.precision * (1 + 0.09 * steps),
+    // Training also buys the two traits that are about *effort* rather than
+    // technique: how quickly you get moving and how long you keep it up. They
+    // rise more slowly than precision, because a levelled player should still
+    // be recognisably the character that was picked — the point of the roster
+    // is that they are differently good, and levelling everything at the same
+    // rate flattens four characters into one.
+    agility: def.agility * (1 + 0.045 * steps),
+    stamina: def.stamina * (1 + 0.05 * steps)
+  };
 }
 function levelOf(career, id) {
   return career.champions[id]?.level ?? 1;

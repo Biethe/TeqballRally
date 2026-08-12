@@ -420,6 +420,38 @@ export const KICK_SPEED_CAP_DEFAULT = 10;
  */
 export const BALL_PACE = 1.12;
 
+/**
+ * How much the players' kit is lifted above the source models. See
+ * `brightenKit` in `scene.ts` for what each one does.
+ *
+ * Small numbers on purpose: this is the difference between a kit that reads on
+ * a phone in daylight and one that looks like safety wear.
+ */
+/**
+ * The ripple that acknowledges a tap.
+ *
+ * Portrait is played entirely by tapping the ground, and a press that shows
+ * nothing reads as a press that was missed — which is exactly why the same tap
+ * gets made twice. Short-lived: this is a receipt, not decoration.
+ */
+export const TAP_PING = {
+  /** Seconds from finger down to gone. */
+  life: 0.42,
+  from: 0.55,
+  to: 1.5,
+  alpha: 0.75,
+};
+
+export const KIT = {
+  /** Albedo multiplier. Brightens without shifting hue. */
+  lift: 1.16,
+  /** Dim self-illumination from the kit's own texture, so shadow keeps colour. */
+  glow: 0.11,
+  /** Roughness taken off, for the sheen a real shirt has. */
+  sheen: 0.12,
+  minRoughness: 0.28,
+};
+
 // Per-clip arc multiplier on a kick's flight time: >1 floats a slow lob over
 // the net, <1 drills the ball flat (flat kicks also skim the net closer).
 // Combines with KICK_POWER: loft shapes the arc, power scales the speed.
@@ -488,6 +520,38 @@ export interface CharacterDef {
   precision: number;
   /** Backflip finishes: none, strong foot only, or both feet (weak-foot flips still hit softer). */
   backflips: "none" | "strong" | "both";
+  /**
+   * How long they keep their legs, 0.6–1.4.
+   *
+   * Long rallies drain a reserve; what it costs is *recovery*, not reach — a
+   * tired player accelerates and turns more slowly, but never becomes unable
+   * to get to a ball they were standing next to. That distinction matters more
+   * since attacking means coming forward to the middle line and getting back
+   * again: a stamina model that took away reach would turn one aggressive
+   * point into a lost game.
+   */
+  stamina: number;
+  /**
+   * The serve, 0.6–1.4. Scales the pace of the opening ball and tightens how
+   * near the line it can be aimed.
+   */
+  serve: number;
+  /**
+   * Acceleration and lunge, 0.6–1.4.
+   *
+   * Distinct from `speed`, which is a top speed. Agility is how fast that
+   * speed arrives and how far a player can stretch for a ball at the edge of
+   * reach — the trait that decides short, sharp exchanges rather than long
+   * chases.
+   */
+  agility: number;
+  /**
+   * Taking the ball early, 0.6–1.4.
+   *
+   * Widens the window in which a ball can be struck before it drops, which is
+   * what makes a player able to attack a high ball instead of waiting for it.
+   */
+  volley: number;
 }
 
 // Per-player identities:
@@ -496,11 +560,21 @@ export interface CharacterDef {
 // FRANCE — the lefty all-rounder: flips off the strong (left) foot only.
 // SPAIN — the technician: two-footed and the most precise, softest ball, strong-foot-rule
 //         flips (two-footed, so either foot qualifies).
+// Every character is above average at something and below at something else:
+// the four new traits are what stop the roster being one axis of "better".
 export const CHARACTERS: CharacterDef[] = [
-  { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 5.4, power: 1.0, precision: 1.1, backflips: "both" },
-  { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.5, power: 1.7, precision: 0.9, backflips: "none" },
-  { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5.0, power: 1.05, precision: 1.0, backflips: "strong" },
-  { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 4.9, power: 0.95, precision: 1.2, backflips: "strong" },
+  // The acrobat. Quick and springy, and runs out of legs first.
+  { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 5.4, power: 1.0, precision: 1.1, backflips: "both",
+    stamina: 0.85, serve: 0.95, agility: 1.35, volley: 1.2 },
+  // The powerhouse. A hammer and a serve, slow to get going, lasts all day.
+  { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.5, power: 1.7, precision: 0.9, backflips: "none",
+    stamina: 1.3, serve: 1.35, agility: 0.7, volley: 0.85 },
+  // The all-rounder. Nothing to hide behind and nothing that lets him down.
+  { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5.0, power: 1.05, precision: 1.0, backflips: "strong",
+    stamina: 1.05, serve: 1.05, agility: 1.0, volley: 1.0 },
+  // The technician. Takes everything early and precisely, hits it softest.
+  { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 4.9, power: 0.95, precision: 1.2, backflips: "strong",
+    stamina: 1.0, serve: 0.8, agility: 1.05, volley: 1.35 },
 ];
 
 // Strong/weak-foot modifiers, applied to any clip that uses a specific foot

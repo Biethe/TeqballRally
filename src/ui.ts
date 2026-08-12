@@ -11,6 +11,10 @@ const RATING_DETAIL: Record<RatingKey, string> = {
   reactivity: "Response and court movement",
   power: "Kick and serve power",
   control: "Aim precision and placement",
+  agility: "Acceleration and how far they stretch",
+  volley: "Taking the ball early, before it drops",
+  serve: "Pace and placement of the opening ball",
+  stamina: "How long the legs last in a long rally",
 };
 
 export interface SelectItem {

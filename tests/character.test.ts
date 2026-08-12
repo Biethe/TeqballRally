@@ -7,6 +7,7 @@ import {
   SERVE_CLIPS,
   SERVE_TOSS_HAND,
   approachVelocity,
+  MIN_EFFORT,
   backflipAllowed,
   backflipFoot,
   clipFoot,
@@ -16,6 +17,7 @@ import {
   serveClipForAim,
   serveContactOffset,
 } from "../src/character";
+import { MAX_LEVEL, withCareer } from "../src/progress";
 import { CHARACTERS, CLIPS, FOOT_FACTOR, type CharacterDef, type Foot } from "../src/config";
 
 /** Replace Math.random with a fixed sequence so clip choices are deterministic. */
@@ -33,6 +35,10 @@ const player = (over: Partial<CharacterDef> = {}): CharacterDef => ({
   power: 1,
   precision: 1,
   backflips: "both",
+  stamina: 1,
+  serve: 1,
+  agility: 1,
+  volley: 1,
   ...over,
 });
 
@@ -463,5 +469,74 @@ describe("approachVelocity", () => {
   it("snaps when a frame is longer than the time constant", () => {
     // A stalled frame must not leave the velocity behind by an arbitrary amount.
     expect(approachVelocity(0, 5, MOVE_TAU * 4)).toBe(5);
+  });
+});
+
+describe("the traits that decide a rally", () => {
+  /**
+   * Four attributes that had to change how a match plays rather than only how
+   * a card reads. Each is checked where it actually bites.
+   */
+
+  it("gives every character all of them", () => {
+    for (const def of CHARACTERS) {
+      for (const key of ["stamina", "serve", "agility", "volley"] as const) {
+        expect(def[key], `${def.label} ${key}`).toBeGreaterThan(0.5);
+        expect(def[key], `${def.label} ${key}`).toBeLessThan(1.5);
+      }
+    }
+  });
+
+  it("makes nobody best at everything", () => {
+    // The roster's whole job: differently good, not better and worse. A
+    // character that led every column would make the other three decorative.
+    const keys = ["speed", "power", "precision", "stamina", "serve", "agility", "volley"] as const;
+    for (const def of CHARACTERS) {
+      const behind = keys.filter((k) => CHARACTERS.some((other) => other[k] > def[k]));
+      expect(behind.length, `${def.label} leads everything`).toBeGreaterThan(0);
+    }
+  });
+
+  it("starts a run faster for an agile player", () => {
+    // Agility is acceleration, not top speed: the same request, reached sooner.
+    const quick = approachVelocity(0, 5, 1 / 60, MOVE_TAU / 1.35);
+    const heavy = approachVelocity(0, 5, 1 / 60, MOVE_TAU / 0.7);
+
+    expect(quick).toBeGreaterThan(heavy);
+  });
+
+  it("never lets tiredness stop a player moving at all", () => {
+    // The floor matters more than the drain. Attacking means running to the
+    // middle line and back, so a punishing stamina model would make one brave
+    // point cost the game.
+    expect(MIN_EFFORT).toBeGreaterThan(0.5);
+    const spent = approachVelocity(0, 5, 1 / 60, MOVE_TAU / MIN_EFFORT);
+    expect(spent).toBeGreaterThan(0);
+  });
+
+  it("trains effort without erasing the character that was picked", () => {
+    const brazil = CHARACTERS.find((c) => c.label === "BRAZIL")!;
+    const england = CHARACTERS.find((c) => c.label === "ENGLAND")!;
+    const trainedBrazil = withCareer(brazil, MAX_LEVEL);
+    const trainedEngland = withCareer(england, MAX_LEVEL);
+
+    // Levelling lifts them…
+    expect(trainedBrazil.agility).toBeGreaterThan(brazil.agility);
+    expect(trainedBrazil.stamina).toBeGreaterThan(brazil.stamina);
+    // …and the acrobat is still quicker than the powerhouse, and the
+    // powerhouse still lasts longer, after both have trained to the cap.
+    expect(trainedBrazil.agility).toBeGreaterThan(trainedEngland.agility);
+    expect(trainedEngland.stamina).toBeGreaterThan(trainedBrazil.stamina);
+  });
+
+  it("leaves the traits that are technique alone when levelling", () => {
+    // Serve and volley are things you can do, not effort you can put in.
+    const def = CHARACTERS[0];
+    const trained = withCareer(def, MAX_LEVEL);
+
+    expect(trained.serve).toBe(def.serve);
+    expect(trained.volley).toBe(def.volley);
+    expect(trained.power).toBe(def.power);
+    expect(trained.speed).toBe(def.speed);
   });
 });

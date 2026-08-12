@@ -17,7 +17,7 @@ import {
   type CharacterDef,
   type Foot,
 } from "./config";
-import { fixMetallicMaterials } from "./scene";
+import { brightenKit, fixMetallicMaterials } from "./scene";
 
 const LOCO_CLIPS = ["Idle", "JogForward", "jogBackward", "JogStrafeLeft", "JogStrafeRight"] as const;
 /** Ground speed the jog clips look natural at; playback scales around it. */
@@ -37,9 +37,25 @@ export const MOVE_TAU = 0.055;
  * gameplay, not presentation, and the same function has to run identically on
  * both peers of a networked match.
  */
-export function approachVelocity(current: number, desired: number, dt: number): number {
-  return current + (desired - current) * Math.min(1, dt / MOVE_TAU);
+export function approachVelocity(
+  current: number,
+  desired: number,
+  dt: number,
+  tau: number = MOVE_TAU
+): number {
+  return current + (desired - current) * Math.min(1, dt / Math.max(1e-4, tau));
 }
+
+/**
+ * The least of their legs a player can be left with, as a multiplier on how
+ * quickly they get moving.
+ *
+ * Not zero, and not close to it. Stamina is meant to make a long rally hurt,
+ * not to strand somebody next to a ball they can see — and since attacking now
+ * means running to the middle line and back, a punishing floor would turn one
+ * brave point into a lost game.
+ */
+export const MIN_EFFORT = 0.62;
 type LocoClip = (typeof LOCO_CLIPS)[number];
 
 // The source kits are real shirt textures whose back panel contains a literal
@@ -301,6 +317,14 @@ export class Character {
   /** Active contact lunge: glides the root while an action clip plays. */
   private lungeState: { from: Vector3; to: Vector3; dur: number; t: number } | null = null;
 
+  /**
+   * What is left in the legs, from 1 (fresh) down to `MIN_EFFORT`.
+   *
+   * Owned by the match, which drains and restores it — a character on the
+   * selection carousel has no rally behind it and is always fresh.
+   */
+  effort = 1;
+
   private constructor(root: TransformNode, height: number, def: CharacterDef) {
     this.root = root;
     this.height = height;
@@ -333,6 +357,7 @@ export class Character {
     // Same exporter quirk as the balls: defaulted metallic renders the skin
     // textures nearly black without an environment map.
     fixMetallicMaterials(res.meshes);
+    brightenKit(res.meshes);
     await maskJerseyPlaceholder(res.meshes, file);
     for (const g of res.animationGroups) {
       g.stop();
@@ -474,8 +499,15 @@ export class Character {
       dirX /= len;
       dirZ /= len;
     }
-    this.velocity.x = approachVelocity(this.velocity.x, dirX * speed, dt);
-    this.velocity.z = approachVelocity(this.velocity.z, dirZ * speed, dt);
+    // Agility is how quickly the run reaches the speed it was asked for, and
+    // fatigue is how much of that is left. Both are applied here rather than
+    // to the top speed, so a tired or heavy-footed player is slow to start and
+    // slow to turn — not incapable of covering ground. Taking reach away
+    // instead would make one aggressive point cost a whole game, and the sharp
+    // shots now need coming forward and getting back.
+    const tau = MOVE_TAU / (this.def.agility * this.effort);
+    this.velocity.x = approachVelocity(this.velocity.x, dirX * speed, dt, tau);
+    this.velocity.z = approachVelocity(this.velocity.z, dirZ * speed, dt, tau);
     this.velocity.y = 0;
     const p = this.position;
     p.x += this.velocity.x * dt;

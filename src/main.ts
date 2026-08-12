@@ -2,6 +2,9 @@ import "./style.css";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { TrailMesh } from "@babylonjs/core/Meshes/trailMesh";
 import { createGameScene, loadBall, type GameScene } from "./scene";
 import {
   QUALITY_TIERS,
@@ -100,6 +103,7 @@ import { LANGUAGES, detectLanguage, isLanguage, setLanguage, t as tr, tf } from 
 import {
   BALLS,
   CHARACTERS,
+  BALL_RADIUS,
   COURT,
   clearTable,
   GROUND_Y,
@@ -110,6 +114,17 @@ import {
 } from "./config";
 
 /** Longest real frame the simulation will honour; beyond this, time is dropped. */
+/**
+ * Ball speeds, in m/s, between which the streak behind the ball fades in.
+ *
+ * Speed rather than a kick event, so it reads as physics instead of as an
+ * effect: a smash streaks, a set-up touch shows nothing, and no rule has to
+ * remember to switch it on.
+ */
+const TRAIL_FROM = 6;
+const TRAIL_FULL = 15;
+const TRAIL_ALPHA = 0.5;
+
 const MAX_FRAME_DT = 1 / 20;
 
 /** How one match should be set up and what to do when it ends. */
@@ -218,6 +233,17 @@ async function boot(): Promise<void> {
   const ball = new Ball();
   let ballMesh: AbstractMesh | null = null;
   let ballMeshId: string | null = null;
+  /**
+   * The streak behind a struck ball.
+   *
+   * Tied to speed rather than to a kick event, which is what makes it read as
+   * physics instead of as an effect: it appears when the ball is genuinely
+   * quick, thickens with a smash and is simply absent during a gentle set-up
+   * touch. That also means it needs no wiring into the rules — nothing has to
+   * remember to turn it on.
+   */
+  let ballTrail: TrailMesh | null = null;
+  let trailMat: StandardMaterial | null = null;
 
   let match: MatchController | null = null;
   let aiCtl: AIController | null = null;
@@ -574,7 +600,12 @@ async function boot(): Promise<void> {
       if (placement && !freecam) {
         // The match decides what the tap meant: somewhere to stand, or which
         // way to set up a reception that is already due.
-        match.tapAt(courtPointAt(placement.x, placement.y));
+        const spot = courtPointAt(placement.x, placement.y);
+        match.tapAt(spot);
+        // Acknowledged wherever it landed, whichever of the two it turned out
+        // to mean. A press that shows nothing reads as a press that was
+        // missed, and gets made again.
+        if (spot) gs.pingTap(spot.x, spot.z);
       }
       latchInput(latchedP1, inp);
       // Step the match in fixed SIM_DT slices, consuming whatever real time
@@ -604,6 +635,19 @@ async function boot(): Promise<void> {
       // pause) drops the remainder instead of trying to catch up forever.
       if (steps >= maxSimSteps) simAccumulator = 0;
       if (!freecam) match.updateCamera(gs.camera, cameraMode);
+    }
+    // Presentation, on wall-clock time and outside the fixed step: neither may
+    // consume a simulation slice, and neither may differ between two peers
+    // running the same match at different frame rates.
+    gs.stepTapMarker(dt);
+    if (ballTrail && trailMat) {
+      // Visible in proportion to how fast the ball is actually travelling, so
+      // a smash streaks and a set-up touch shows nothing. No rule has to
+      // remember to switch it on.
+      const speed = ball.state.vel.length();
+      const want = Math.min(1, Math.max(0, (speed - TRAIL_FROM) / (TRAIL_FULL - TRAIL_FROM)));
+      trailMat.alpha += (want * TRAIL_ALPHA - trailMat.alpha) * Math.min(1, dt * 12);
+      ballTrail.setEnabled(trailMat.alpha > 0.01);
     }
     // Scenery runs on wall-clock time and outside the simulation: it must not
     // consume simulation steps, and it keeps moving through a menu sitting
@@ -1977,6 +2021,15 @@ async function boot(): Promise<void> {
       gs.shadows?.addShadowCaster(ballMesh, true);
       ball.mesh = ballMesh;
       ball.place(ball.state.pos);
+      ballTrail?.dispose();
+      trailMat?.dispose();
+      trailMat = new StandardMaterial("ball-trail", gs.scene);
+      trailMat.emissiveColor = new Color3(1, 0.72, 0.32);
+      trailMat.disableLighting = true;
+      trailMat.alpha = 0;
+      ballTrail = new TrailMesh("ball-trail", ballMesh, gs.scene, BALL_RADIUS * 0.62, 24, true);
+      ballTrail.material = trailMat;
+      ballTrail.isPickable = false;
     }
     for (const c of [playerChar, aiChar]) {
       for (const m of c.meshes) {
