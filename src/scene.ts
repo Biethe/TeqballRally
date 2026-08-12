@@ -24,7 +24,17 @@ import "@babylonjs/core/Materials/Textures/Loaders/envTextureLoader";
 // 2.0 binary); pulling the barrel entry would also bundle the glTF 1.0 loader,
 // which nothing here can ever use.
 import "@babylonjs/loaders/glTF/2.0";
-import { BALL_RADIUS, CAMERA, GROUND_Y, SERVE_X, SPAWN, TABLE, TABLE_VISUAL } from "./config";
+import {
+  BALL_RADIUS,
+  CAMERA,
+  GROUND_Y,
+  KIT,
+  SERVE_X,
+  TAP_PING,
+  SPAWN,
+  TABLE,
+  TABLE_VISUAL,
+} from "./config";
 import type { QualitySettings } from "./quality";
 import { VENUES, type ArenaModel, type CourtStyle, type Rgb, type Venue } from "./venue";
 import { buildEnvironment } from "./environment";
@@ -64,6 +74,10 @@ export interface GameScene {
   aimMarker: Mesh;
   /** Glowing X showing where the airborne ball will first come down. */
   landingMarker: Mesh;
+  /** Show a ripple on the ground where a tap landed. */
+  pingTap: (x: number, z: number) => void;
+  /** Advance that ripple. Wall-clock seconds; presentation, not simulation. */
+  stepTapMarker: (dt: number) => void;
 }
 
 function mat(scene: Scene, name: string, color: Color3, specular = 0.05): StandardMaterial {
@@ -258,6 +272,49 @@ export async function createGameScene(
   landingMarker.isPickable = false;
   landingMarker.setEnabled(false);
 
+  /**
+   * The ring that appears where a tap landed.
+   *
+   * Portrait plays entirely by tapping the ground, and until now a tap
+   * produced no acknowledgement at all — the player started walking a moment
+   * later and you were left inferring that the game had heard you. A press
+   * that shows nothing reads as a press that was missed, which is why the same
+   * tap tends to get made twice.
+   *
+   * It expands and fades over its lifetime rather than blinking, so it reads
+   * as a ripple leaving the finger rather than as a UI element switching on.
+   */
+  const tapMarker = MeshBuilder.CreateTorus(
+    "tap-marker",
+    { diameter: 0.3, thickness: 0.022, tessellation: 28 },
+    scene
+  );
+  const tapMat = new StandardMaterial("tapMat", scene);
+  tapMat.emissiveColor = new Color3(0.35, 0.85, 1);
+  tapMat.disableLighting = true;
+  tapMat.alpha = 0;
+  tapMarker.material = tapMat;
+  tapMarker.isPickable = false;
+  tapMarker.setEnabled(false);
+  let tapAge = TAP_PING.life;
+
+  const pingTap = (x: number, z: number): void => {
+    tapMarker.position.set(x, GROUND_Y + 0.02, z);
+    tapAge = 0;
+    tapMarker.setEnabled(true);
+  };
+
+  const stepTapMarker = (dt: number): void => {
+    if (tapAge >= TAP_PING.life) return;
+    tapAge += dt;
+    const t = Math.min(1, tapAge / TAP_PING.life);
+    // Fast at first and slowing, the way a ripple actually spreads.
+    const grow = 1 - (1 - t) * (1 - t);
+    tapMarker.scaling.setAll(TAP_PING.from + (TAP_PING.to - TAP_PING.from) * grow);
+    tapMat.alpha = (1 - t) * TAP_PING.alpha;
+    if (t >= 1) tapMarker.setEnabled(false);
+  };
+
   // A portrait viewport is narrow, and Babylon's default lens is fixed
   // vertically: keeping the same vertical angle on a tall screen crops the
   // court's width down to a sliver. Portrait therefore pins the field of view
@@ -289,6 +346,8 @@ export async function createGameScene(
     currentVenue: () => built,
     aimMarker,
     landingMarker,
+    pingTap,
+    stepTapMarker,
   };
 }
 
@@ -558,6 +617,45 @@ export function fixMetallicMaterials(meshes: AbstractMesh[]): void {
     }
   }
 }
+
+/**
+ * Lift the kit so the players read as a sports broadcast rather than a
+ * training session.
+ *
+ * The source models are photographic and shot for a neutral studio: correct,
+ * and muted on a phone held at arm's length in a bright room. Three small
+ * changes, applied only to the clothing materials so skin and hair keep their
+ * real values:
+ *
+ * - the albedo is scaled up, which brightens without shifting hue;
+ * - the kit's own texture is fed back as a *dim* emissive, which is what stops
+ *   the shaded side of a player going grey — the colour survives into shadow
+ *   instead of being crushed out of it;
+ * - roughness comes down slightly, for the sheen a real shirt has.
+ *
+ * Deliberately restrained. Pushed further this stops looking like a kit and
+ * starts looking like a highlighter, and the emissive in particular is a lie
+ * about the lighting that only stays convincing while it is small.
+ */
+export function brightenKit(meshes: AbstractMesh[]): void {
+  const seen = new Set<PBRMaterial>();
+  for (const mesh of meshes) {
+    const mat = mesh.material;
+    if (!(mat instanceof PBRMaterial)) continue;
+    if (!KIT_MATERIAL.test(mat.name)) continue;
+    if (seen.has(mat)) continue;
+    seen.add(mat);
+    mat.albedoColor = mat.albedoColor.scale(KIT.lift);
+    if (mat.albedoTexture) {
+      mat.emissiveTexture = mat.albedoTexture;
+      mat.emissiveColor = new Color3(KIT.glow, KIT.glow, KIT.glow);
+    }
+    mat.roughness = Math.max(KIT.minRoughness, (mat.roughness ?? 1) - KIT.sheen);
+  }
+}
+
+/** Which materials count as kit. Skin, hair and boots keep their real values. */
+const KIT_MATERIAL = /shirt|short|sock|jersey|kit/i;
 
 /** Load a ball model, normalised to the regulation ball diameter and centred on its origin. */
 export async function loadBall(scene: Scene, file: string): Promise<AbstractMesh> {

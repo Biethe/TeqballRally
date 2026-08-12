@@ -15,7 +15,7 @@ import { GlowLayer } from "@babylonjs/core/Layers/glowLayer";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import { GLTFLoaderAnimationStartMode } from "@babylonjs/loaders/glTF/glTFFileLoader";
 import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent";
-import { importBall, fixMetallicMaterials } from "./scene";
+import { importBall, brightenKit, fixMetallicMaterials } from "./scene";
 import { maskJerseyPlaceholder, trimIdleTail } from "./character";
 import { CHARACTER_SCALE, CHARACTERS } from "./config";
 
@@ -242,6 +242,7 @@ export class ModelViewer {
     // Same exporter quirk as the match loader: defaulted metallic renders the
     // skin textures nearly black without an environment map.
     fixMetallicMaterials(res.meshes);
+    brightenKit(res.meshes);
     await maskJerseyPlaceholder(res.meshes, id);
 
     // Menu display clip: one of the MenuPose* clips picked at random each

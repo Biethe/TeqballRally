@@ -15,14 +15,33 @@ import { MAX_LEVEL, withCareer } from "./progress";
  * anybody sitting at 100: the top of the bar is a place to get to.
  */
 
-export type RatingKey = "reactivity" | "power" | "control";
+export type RatingKey =
+  | "reactivity"
+  | "power"
+  | "control"
+  | "stamina"
+  | "serve"
+  | "agility"
+  | "volley";
 
-export const RATING_KEYS: RatingKey[] = ["reactivity", "power", "control"];
+export const RATING_KEYS: RatingKey[] = [
+  "reactivity",
+  "power",
+  "control",
+  "agility",
+  "volley",
+  "serve",
+  "stamina",
+];
 
 const READ: Record<RatingKey, (def: CharacterDef) => number> = {
   reactivity: (d) => d.speed,
   power: (d) => d.power,
   control: (d) => d.precision,
+  stamina: (d) => d.stamina,
+  serve: (d) => d.serve,
+  agility: (d) => d.agility,
+  volley: (d) => d.volley,
 };
 
 /** The weakest start and the strongest finish, per trait, across the roster. */

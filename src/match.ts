@@ -16,6 +16,7 @@ import {
 import {
   backflipFoot,
   Character,
+  MIN_EFFORT,
   footFactor,
   pickReceptionClip,
   pickStrikeClip,
@@ -153,6 +154,16 @@ const POP_SPEED = 1.25;
 const CONTACT_WINDOW = { min: 0.1, max: 0.4 };
 // Furthest the character may glide during a wind-up to reach the ball (m).
 const LUNGE_MAX = 1.0 * TABLE_SCALE;
+
+/**
+ * How fast the legs empty and fill, per second at a flat run.
+ *
+ * Tuned so a short exchange costs almost nothing and a long, wide rally is
+ * felt — and so the gap between points hands most of it back, because a game
+ * where the third set is played by two exhausted players is a worse game, not
+ * a more realistic one.
+ */
+const EFFORT = { drain: 0.11, rest: 0.05, restBetweenPoints: 0.55 };
 // Final polish only: nudge the ball at most this far onto the limb at the
 // contact frame (covers prediction drift). Bigger misses stay visible.
 const CONTACT_SNAP = 0.18 * TABLE_SCALE;
@@ -373,14 +384,20 @@ export class MatchController {
     const cp = char.clipContactPoint(clip);
     const contactY = cp ? cp.y : char.position.y + char.height * 0.5;
     // The clip can't wind up longer than its pre-contact frames allow.
-    const maxLead = Math.min(CONTACT_WINDOW.max, contactDelaySeconds(clip, speed, 0));
+    // Volley is how early a ball can be taken: it widens the window in which a
+    // strike may be planned, which is what lets a player attack a high ball
+    // instead of waiting for it to drop into reach.
+    const window = CONTACT_WINDOW.max * char.def.volley;
+    const maxLead = Math.min(window, contactDelaySeconds(clip, speed, 0));
     let best = flight[0];
     let bestCost = Infinity;
     for (const s of flight) {
       // Never schedule the contact on a ball that already bounced on the
       // floor — the touch must happen before the ball touches down.
       if (s.t > maxLead || s.grounded) break;
-      const overreach = cp ? Math.max(0, Math.hypot(s.pos.x - cp.x, s.pos.z - cp.z) - LUNGE_MAX) : 0;
+      const overreach = cp
+        ? Math.max(0, Math.hypot(s.pos.x - cp.x, s.pos.z - cp.z) - LUNGE_MAX * char.def.agility)
+        : 0;
       const cost =
         Math.abs(s.pos.y - contactY) + 1.5 * overreach + (s.t < CONTACT_WINDOW.min ? 0.5 : 0);
       if (cost < bestCost) {
@@ -414,9 +431,11 @@ export class MatchController {
     let dx = point.x - cp.x;
     let dz = point.z - cp.z;
     const d = Math.hypot(dx, dz);
-    if (d > LUNGE_MAX) {
-      dx *= LUNGE_MAX / d;
-      dz *= LUNGE_MAX / d;
+    // Agility is how far a player can stretch for a ball at the edge of reach.
+    const reach = LUNGE_MAX * char.def.agility;
+    if (d > reach) {
+      dx *= reach / d;
+      dz *= reach / d;
     }
     const sideSign = char.faceDir === -1 ? -1 : 1;
     const tx = sideSign * Math.min(COURT.maxX, Math.max(COURT.minX, sideSign * (char.position.x + dx)));
@@ -990,13 +1009,16 @@ export class MatchController {
     const aim = this.serveAim;
     const tx = sign(recv) * Math.min(1.4, Math.max(0.35, 0.85 + aim.fwd * 0.5));
     const ff = footFactor(server.def, this.serveClip);
-    const sprayAmp = (0.25 * ff.spray) / server.def.precision;
+    // The serve trait does both halves of a good serve: it tightens where the
+    // ball can be put and it puts pace on it. A strong server can go near the
+    // line at speed; a weak one has to choose.
+    const sprayAmp = (0.25 * ff.spray) / (server.def.precision * server.def.serve);
     const spray = (Math.random() - 0.5) * sprayAmp * (1 - 0.7 * Math.min(1, Math.abs(aim.lat)));
     const tz = Math.max(-0.62, Math.min(0.62, aim.lat * 0.62 + spray));
     const target = new Vector3(tx, tableSurfaceY(tx) + 0.02, tz);
     const dist = Vector3.Distance(this.ball.state.pos, target);
     // Foot serves fly faster and flatter than head serves.
-    const power = (SERVE_POWER[this.serveClip] ?? 1) * server.def.power * ff.power;
+    const power = (SERVE_POWER[this.serveClip] ?? 1) * server.def.power * ff.power * server.def.serve;
     const v = solveLaunchClearingNet(
       this.ball.state.pos,
       target,
@@ -1519,6 +1541,32 @@ export class MatchController {
     c.playAction(clip, { speed, onEnd });
   }
 
+  /**
+   * Drain and restore both players' legs.
+   *
+   * Running costs, standing recovers, and the gap between points recovers
+   * faster still — which is why a long rally is felt in the *next* one rather
+   * than only in itself. Stamina scales how slowly the reserve empties, so the
+   * fit player is the one still accelerating in the third set.
+   *
+   * What it takes away is deliberately only acceleration (see `Character.move`
+   * and `MIN_EFFORT`): a tired player is slow to start and slow to turn, never
+   * unable to reach a ball. Attacking now means running to the middle line and
+   * getting back, and a model that took away reach would make one brave point
+   * cost the game.
+   */
+  private stepEffort(dt: number): void {
+    for (const side of ["player", "ai"] as Side[]) {
+      const c = this.chars[side];
+      const running = Math.hypot(c.velocity.x, c.velocity.z);
+      const resting = this.state !== "rally";
+      const drain = (running / Math.max(0.1, c.def.speed)) * EFFORT.drain * dt;
+      const gain = (resting ? EFFORT.restBetweenPoints : EFFORT.rest) * dt;
+      const next = c.effort - drain / Math.max(0.2, c.def.stamina) + gain;
+      c.effort = Math.max(MIN_EFFORT, Math.min(1, next));
+    }
+  }
+
   private finishPoint(): void {
     if (this.practice) {
       this.serveOwner = "player";
@@ -1574,6 +1622,9 @@ export class MatchController {
     this.initialServer = this.practice ? "player" : Math.random() < 0.5 ? "player" : "ai";
     this.serveOwner = this.initialServer;
     this.pointWinner = null;
+    // A new match starts both players fresh, whatever the last one cost them.
+    this.chars.player.effort = 1;
+    this.chars.ai.effort = 1;
     this.chars.player.stopAction();
     this.chars.ai.stopAction();
     this.ui.setScore(0, 0, this.serveOwner, 0, 0);
@@ -1593,6 +1644,7 @@ export class MatchController {
     this.matchClock += dt;
     const player = this.chars.player;
     const ai = this.chars.ai;
+    this.stepEffort(dt);
 
     // Committed rally touch: release the ball on the planned-contact countdown
     // (frame-exact, unlike the animation callback which can lag and let the
