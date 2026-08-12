@@ -12,6 +12,9 @@ import {
   backflipFoot,
   clipFoot,
   footFactor,
+  locoBlend,
+  locoStride,
+  type LocoWeights,
   pickReceptionClip,
   pickStrikeClip,
   serveClipForAim,
@@ -538,5 +541,79 @@ describe("the traits that decide a rally", () => {
     expect(trained.volley).toBe(def.volley);
     expect(trained.power).toBe(def.power);
     expect(trained.speed).toBe(def.speed);
+  });
+});
+
+describe("locomotion blending", () => {
+  const total = (w: LocoWeights) =>
+    w.Idle + w.JogForward + w.jogBackward + w.JogStrafeLeft + w.JogStrafeRight;
+
+  it("stands still below the walking threshold", () => {
+    const w = locoBlend(0, 0, 0);
+
+    expect(w.Idle).toBe(1);
+    expect(w.JogForward).toBe(0);
+    expect(w.JogStrafeLeft).toBe(0);
+    expect(w.JogStrafeRight).toBe(0);
+  });
+
+  it("carries a sideways run on the strafe clips, not the forward one", () => {
+    // Pure lateral movement: the old winner-takes-all picked one clip too, so
+    // this is the case that already worked. It is here to stay working.
+    const right = locoBlend(0, 4, 4);
+    const left = locoBlend(0, -4, 4);
+
+    expect(right.JogStrafeRight).toBeCloseTo(1);
+    expect(right.JogStrafeLeft).toBe(0);
+    expect(right.JogForward).toBe(0);
+    expect(left.JogStrafeLeft).toBeCloseTo(1);
+    expect(left.JogStrafeRight).toBe(0);
+  });
+
+  it("splits a diagonal run across both clips instead of picking a winner", () => {
+    // The regression that made the player slide: running 45° forward-and-right
+    // used to play a pure forward cycle while the body travelled sideways.
+    const w = locoBlend(3, 3, Math.hypot(3, 3));
+
+    expect(w.JogForward).toBeCloseTo(0.5);
+    expect(w.JogStrafeRight).toBeCloseTo(0.5);
+    expect(w.jogBackward).toBe(0);
+    expect(w.JogStrafeLeft).toBe(0);
+  });
+
+  it("keeps the weights summing to one at every angle", () => {
+    // An L2 split would bloom to ~1.41x on the diagonal, over-driving the rig.
+    for (let deg = 0; deg < 360; deg += 15) {
+      const rad = (deg * Math.PI) / 180;
+      const w = locoBlend(Math.cos(rad) * 4, Math.sin(rad) * 4, 4);
+
+      expect(total(w)).toBeCloseTo(1);
+    }
+  });
+
+  it("fades out of standing across a band rather than snapping", () => {
+    // A slow adjusting step used to switch a full-weight jog on and off.
+    const creep = locoBlend(0.6, 0, 0.6);
+
+    expect(creep.Idle).toBeGreaterThan(0);
+    expect(creep.Idle).toBeLessThan(1);
+    expect(creep.JogForward).toBeGreaterThan(0);
+    expect(creep.JogForward).toBeLessThan(1);
+    expect(total(creep)).toBeCloseTo(1);
+  });
+
+  it("drives a sideways cycle faster than a forward one at the same speed", () => {
+    // A strafe covers less ground per cycle, so holding it to the forward
+    // reference speed is what leaves the feet shuffling under a sliding body.
+    const speed = 3;
+    const forward = locoStride(locoBlend(speed, 0, speed), speed);
+    const sideways = locoStride(locoBlend(0, speed, speed), speed);
+
+    expect(sideways).toBeGreaterThan(forward);
+  });
+
+  it("never drives the legs slower than the floor or past the ceiling", () => {
+    expect(locoStride(locoBlend(0.5, 0, 0.5), 0.5)).toBeGreaterThanOrEqual(0.55);
+    expect(locoStride(locoBlend(99, 0, 99), 99)).toBeLessThanOrEqual(1.6);
   });
 });

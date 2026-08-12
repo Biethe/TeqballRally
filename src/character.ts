@@ -24,6 +24,94 @@ const LOCO_CLIPS = ["Idle", "JogForward", "jogBackward", "JogStrafeLeft", "JogSt
 const LOCO_SPEED = 4.5 * CHARACTER_SCALE;
 
 /**
+ * How much ground a sideways cycle covers next to a forward one, as a fraction.
+ *
+ * A strafe is a shuffle: the feet cross less distance per cycle than a run
+ * does. Driving both off the same reference speed therefore under-cranks the
+ * strafe clips — the body slides out from under feet that are still shuffling.
+ * Calibrated by eye against a real browser; lower it if sideways runs still
+ * skate, raise it if the feet look like they are running on the spot.
+ */
+const STRAFE_STRIDE_RATIO = 0.62;
+
+/** Below this the character is standing; above JOG_SPEED the jog carries full weight. */
+const IDLE_SPEED = 0.4;
+const JOG_SPEED = 1.35;
+
+/**
+ * Playback rate bounds for the jog clips. The floor exists so a crawl does not
+ * turn into slow motion, but it is deliberately below 1: anything higher makes
+ * the feet cycle faster than the body travels, which is its own kind of slide.
+ */
+const STRIDE_MIN = 0.55;
+const STRIDE_MAX = 1.6;
+
+export type LocoClip = (typeof LOCO_CLIPS)[number];
+export type LocoWeights = Record<LocoClip, number>;
+
+/**
+ * Goal weights for the locomotion clips, from a run velocity already expressed
+ * in the character's own frame (`fwd` along its facing, `lat` to its right).
+ *
+ * Pure and exported for the same reason `approachVelocity` is: this is the
+ * whole read of how a player moves, and it deserves to be testable without a
+ * scene behind it.
+ *
+ * Every jog clip can carry weight at once. Choosing a single winner is what
+ * made a diagonal run — by far the commonest way anyone moves here, since you
+ * are always cutting across to meet the ball — play a pure forward cycle while
+ * the body travelled sideways. Feet pushing one way while the body goes
+ * another is exactly what reads as sliding.
+ */
+export function locoBlend(fwd: number, lat: number, speed: number): LocoWeights {
+  const w: LocoWeights = {
+    Idle: 0,
+    JogForward: 0,
+    jogBackward: 0,
+    JogStrafeLeft: 0,
+    JogStrafeRight: 0,
+  };
+  // Cross-fade out of standing across a band rather than switching at a single
+  // threshold: a small adjusting step used to snap a full-weight jog on and
+  // straight back off, which is the pop this band removes.
+  const moving = Math.min(1, Math.max(0, (speed - IDLE_SPEED) / (JOG_SPEED - IDLE_SPEED)));
+  const ax = Math.abs(fwd);
+  const az = Math.abs(lat);
+  const sum = ax + az;
+  if (moving <= 0 || sum <= 1e-6) {
+    w.Idle = 1;
+    return w;
+  }
+  w.Idle = 1 - moving;
+  // Split on the L1 norm, not the Euclidean one, so the jog weights always add
+  // up to `moving`. Splitting by length would give a 45° run about 1.41x the
+  // total animation weight of a straight one, and it would visibly bloom.
+  const f = (ax / sum) * moving;
+  const s = (az / sum) * moving;
+  if (fwd >= 0) w.JogForward = f;
+  else w.jogBackward = f;
+  if (lat >= 0) w.JogStrafeRight = s;
+  else w.JogStrafeLeft = s;
+  return w;
+}
+
+/**
+ * One playback rate for every blended clip, so their cycles stay in step with
+ * each other — per-clip rates put the feet of two half-weight clips visibly out
+ * of phase. The reference speed is weighted by the same forward/sideways split
+ * as the blend, which is what stops a strafe being driven as though it covered
+ * a full running stride.
+ */
+export function locoStride(weights: LocoWeights, speed: number): number {
+  const run = weights.JogForward + weights.jogBackward;
+  const side = weights.JogStrafeLeft + weights.JogStrafeRight;
+  const total = run + side;
+  if (total <= 1e-6) return 1;
+  const reference = LOCO_SPEED * ((run + side * STRAFE_STRIDE_RATIO) / total);
+  return Math.min(STRIDE_MAX, Math.max(STRIDE_MIN, speed / reference));
+}
+
+/**
  * Time constant for the run's acceleration and braking, in seconds. Roughly
  * 95% of the requested speed inside 0.15 s: enough weight to see, short enough
  * that a shift still starts on the frame it was asked for.
@@ -56,7 +144,6 @@ export function approachVelocity(
  * brave point into a lost game.
  */
 export const MIN_EFFORT = 0.62;
-type LocoClip = (typeof LOCO_CLIPS)[number];
 
 // The source kits are real shirt textures whose back panel contains a literal
 // "NAME" placeholder. It is baked into the albedo map rather than being a
@@ -658,20 +745,19 @@ export class Character {
     const fwd = Vector3.Dot(this.velocity, this.forward);
     const lat = this.velocity.z * (this.faceDir === -1 ? -1 : 1); // + = to the character's right
     const speed = this.velocity.length();
+    const goals = locoBlend(fwd, lat, speed);
+    // `currentLoco` is what gets restored to full weight when an action ends,
+    // so it has to be the clip the blend is actually leaning on.
     let target: LocoClip = "Idle";
-    if (speed > 0.4) {
-      if (Math.abs(fwd) >= Math.abs(lat)) target = fwd > 0 ? "JogForward" : "jogBackward";
-      else target = lat > 0 ? "JogStrafeRight" : "JogStrafeLeft";
+    for (const name of LOCO_CLIPS) {
+      if (goals[name] > goals[target]) target = name;
     }
     this.currentLoco = target;
-    // The jog clips were authored for roughly LOCO_SPEED. Playing them at a
-    // fixed rate while the character travels faster is what reads as skating,
-    // so the playback rate follows the actual ground speed instead.
-    const stride = Math.min(1.6, Math.max(0.7, speed / LOCO_SPEED));
+    const stride = locoStride(goals, speed);
     const rate = dt / 0.12;
     for (const name of LOCO_CLIPS) {
       const cur = this.locoWeights.get(name) ?? 0;
-      const goal = name === target ? 1 : 0;
+      const goal = goals[name];
       const next = cur + Math.sign(goal - cur) * Math.min(rate, Math.abs(goal - cur));
       if (next !== cur) this.setLocoWeight(name, next);
       const g = this.groups.get(name);
