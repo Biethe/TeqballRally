@@ -137,18 +137,81 @@ export async function loadRiggedFigures(scene: Scene): Promise<RiggedFigure[]> {
   return loaded.filter((f): f is RiggedFigure => f !== null);
 }
 
+/** How long the stand stays up after a point. */
+const CHEER_SECONDS = 4.5;
 /**
- * Advance every figure's clock once per frame.
+ * Seconds spent slowing to a halt at the end of a cheer.
+ *
+ * Without it the crowd stops on the frame the timer expires, and two hundred
+ * people freezing on the same frame is more obviously mechanical than the
+ * unbroken celebrating this replaces.
+ */
+const CHEER_SETTLE = 1.2;
+
+/**
+ * Seconds of celebration still owed to the crowd.
+ *
+ * Module state because a scene has exactly one crowd, and the alternative —
+ * threading a handle out through buildEnvironment, whose contract is the meshes
+ * it built — would run plumbing through four files to deliver one callback.
+ */
+let cheerRemaining = 0;
+
+/**
+ * Bring the crowd to its feet.
+ *
+ * Called when a point is awarded. Repeated calls extend rather than restart, so
+ * a point during a cheer keeps the stand up instead of resetting its settle.
+ */
+export function cheerCrowd(seconds: number = CHEER_SECONDS): void {
+  cheerRemaining = Math.max(cheerRemaining, seconds);
+}
+
+/** Drop the crowd back to stillness immediately — a new match, or a venue swap. */
+export function stopCrowdCheer(): void {
+  cheerRemaining = 0;
+}
+
+/**
+ * One step of the crowd's clock: how much celebration is left, and how much of
+ * this frame's time the figures should actually advance by.
+ *
+ * Pure and exported so the settle can be tested without a scene. `advance` is
+ * scaled rather than switched off, so the stand slows to a halt instead of
+ * every spectator stopping dead on the same frame.
+ */
+export function crowdClockStep(
+  remaining: number,
+  dt: number
+): { remaining: number; advance: number } {
+  if (remaining <= 0) return { remaining: 0, advance: 0 };
+  const left = Math.max(0, remaining - dt);
+  const settle = Math.min(1, Math.max(0, left / CHEER_SETTLE));
+  return { remaining: left, advance: dt * settle };
+}
+
+/**
+ * Advance every figure's clock once per frame, while there is a reason to.
  *
  * One observer for the whole crowd: the clock is per figure type, not per
  * spectator, and each copy's place in the loop comes from its own instance
  * data.
+ *
+ * The clock only runs while the crowd is celebrating. A stand where everybody
+ * cheers without pause — between points, during a serve, while nothing at all
+ * is happening — reads as wallpaper rather than as people. Holding still and
+ * then erupting is what makes the eruption worth anything. Each spectator holds
+ * a different frame, because their offsets differ, so a still crowd is still a
+ * crowd of individuals rather than one pose repeated.
  */
 export function driveCrowdClocks(scene: Scene, figures: RiggedFigure[]): void {
   if (figures.length === 0) return;
   scene.onBeforeRenderObservable.add(() => {
+    if (cheerRemaining <= 0) return;
     const dt = scene.getEngine().getDeltaTime() / 1000;
-    for (const figure of figures) figure.manager.time += dt;
+    const step = crowdClockStep(cheerRemaining, dt);
+    cheerRemaining = step.remaining;
+    for (const figure of figures) figure.manager.time += step.advance;
   });
 }
 

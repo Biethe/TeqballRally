@@ -15,6 +15,7 @@ import {
   storeTier,
 } from "./quality";
 import { VENUE_IDS, resolveVenue, storeVenue, venueFor } from "./venue";
+import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
 import { INTRO_SECONDS, introPose } from "./intro";
 import { Ball, type Side } from "./ball";
 import { Character } from "./character";
@@ -2075,6 +2076,13 @@ async function boot(): Promise<void> {
         window.setTimeout(() => opts.onEnd(winner, sets), 1800);
       },
     }, audio);
+    // The crowd is still between points; a point is what brings it up. A match
+    // starts from stillness, so a cheer still running when the last one ended
+    // does not carry into the first serve of this one.
+    stopCrowdCheer();
+    controller.subscribe((event) => {
+      if (event.type === "point-awarded") cheerCrowd();
+    });
     controller.aimMarker = gs.aimMarker;
     controller.landingMarker = gs.landingMarker;
     controller.practice = opts.practice === true;
