@@ -2082,7 +2082,28 @@ async function boot(): Promise<void> {
         )
       : null;
     practiceCoach?.start();
-    (window as unknown as Record<string, unknown>).__teq = { match, ball, engine: gs.engine };
+    (window as unknown as Record<string, unknown>).__teq = {
+      match,
+      ball,
+      engine: gs.engine,
+      camera: gs.camera,
+      /**
+       * World point to pixels, for the layout harness.
+       *
+       * Exposed because "is the player on screen" is a question only the real
+       * projection can answer, and the alternative — re-deriving the camera
+       * maths in the test — checks a copy of the code rather than the code.
+       */
+      project: (x: number, y: number, z: number) => {
+        const p = Vector3.Project(
+          new Vector3(x, y, z),
+          Matrix.Identity(),
+          gs.scene.getTransformMatrix(),
+          gs.camera.viewport.toGlobal(gs.engine.getRenderWidth(), gs.engine.getRenderHeight())
+        );
+        return { x: p.x, y: p.y };
+      },
+    };
   };
 
   // Everything above is ready; what is still owed is the clip's running time

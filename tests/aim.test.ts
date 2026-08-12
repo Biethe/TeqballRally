@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import {
+  SMASH_RANGE,
+  canSmashFrom,
   clampToCourt,
   clampToPlay,
+  loftFloor,
   loftFor,
   onTableHalf,
   rangeFor,
@@ -164,5 +167,88 @@ describe("court geometry", () => {
     for (const p of [deep, short, left, tableTarget(-1, 0.5, -0.5)]) {
       expect(onTableHalf(p, Math.sign(p.x))).toBe(true);
     }
+  });
+});
+
+describe("where you stand decides what you can hit", () => {
+  /**
+   * The rule: the flat, hard shots belong to the middle line.
+   *
+   * From the back of the court there is no angle through which a driven ball
+   * clears the net and still comes down on the table, so swiping as fast as
+   * possible from deep has to produce a fast *lob* rather than a missile.
+   * Attacking therefore means coming forward, and coming forward costs the
+   * time it takes to get back.
+   */
+
+  it("puts no floor under a kick taken up at the table", () => {
+    expect(loftFloor(0)).toBe(0);
+    expect(loftFloor(SMASH_RANGE)).toBe(0);
+    expect(canSmashFrom(SMASH_RANGE)).toBe(true);
+  });
+
+  it("forces the ball up from behind it, more the further back you are", () => {
+    const near = loftFloor(SMASH_RANGE + 0.5);
+    const deep = loftFloor(SMASH_RANGE + 2);
+
+    expect(near).toBeGreaterThan(0);
+    expect(deep).toBeGreaterThan(near);
+    expect(canSmashFrom(SMASH_RANGE + 0.5)).toBe(false);
+  });
+
+  it("ramps rather than switching, so the line can be felt", () => {
+    // A cliff would make one step back change the shot completely, which reads
+    // as a bug rather than as a rule. Measured on the loft a full-power swipe
+    // actually gets, since that is what a player feels — the floor's own value
+    // is allowed to jump from nothing to the point where it starts binding.
+    const effective = (x: number) => Math.max(loftFor(1), loftFloor(x));
+    let previous = effective(SMASH_RANGE - 0.5);
+    for (let past = -0.5; past <= 2; past += 0.05) {
+      const now = effective(SMASH_RANGE + past);
+      expect(now - previous, `at ${past.toFixed(2)}m past the line`).toBeLessThan(0.06);
+      previous = now;
+    }
+  });
+
+  it("starts binding exactly where the flattest kick already was", () => {
+    // So that crossing the line costs nothing and the cost grows from there.
+    expect(loftFloor(SMASH_RANGE + 0.0001)).toBeCloseTo(loftFor(1), 3);
+  });
+
+  it("never forces so much loft that the ball goes straight up", () => {
+    expect(loftFloor(100)).toBeLessThanOrEqual(1.6);
+  });
+
+  it("is symmetric, so it reads the same from either end", () => {
+    expect(loftFloor(-(SMASH_RANGE + 1))).toBe(loftFloor(SMASH_RANGE + 1));
+    expect(canSmashFrom(-SMASH_RANGE)).toBe(true);
+  });
+
+  it("beats a full-power swipe from the back", () => {
+    // The floor has to actually bind: a hard kick from deep is the exact shot
+    // this exists to prevent.
+    expect(loftFloor(SMASH_RANGE + 1.4)).toBeGreaterThan(loftFor(1));
+  });
+
+  it("leaves a full-power swipe from the table alone", () => {
+    expect(loftFloor(SMASH_RANGE)).toBeLessThanOrEqual(loftFor(1));
+  });
+});
+
+describe("swipe speed and arc", () => {
+  it("floats a slow swipe and drills a fast one", () => {
+    expect(loftFor(0)).toBeGreaterThan(loftFor(0.5));
+    expect(loftFor(0.5)).toBeGreaterThan(loftFor(1));
+  });
+
+  it("spreads the two far enough apart to see", () => {
+    // In portrait the swipe's speed is the only thing the gesture says about
+    // the shot, so the difference has to show up in the arc.
+    expect(loftFor(0) / loftFor(1)).toBeGreaterThan(3);
+  });
+
+  it("clamps a swipe that overran the range", () => {
+    expect(loftFor(-1)).toBe(loftFor(0));
+    expect(loftFor(2)).toBe(loftFor(1));
   });
 });

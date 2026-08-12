@@ -25,6 +25,7 @@ import {
   clearTable,
   contactDelaySeconds,
   onTableFootprint,
+  portraitCameraShot,
   contactFraction,
   tableSurfaceY,
   tossFraction,
@@ -391,5 +392,88 @@ describe("BALLS", () => {
   it("has unique ids and labels", () => {
     expect(new Set(BALLS.map((b) => b.id)).size).toBe(BALLS.length);
     expect(new Set(BALLS.map((b) => b.label)).size).toBe(BALLS.length);
+  });
+});
+
+describe("the portrait camera follows the player", () => {
+  /**
+   * Why this exists: the portrait lens is pinned horizontally, so the visible
+   * width is proportional to the distance from the camera and the shot narrows
+   * towards the near end. A player deep in their own half is about a metre
+   * from either edge of frame — and since the half now runs all the way to the
+   * middle line, they cover far more of it than a fixed camera can hold.
+   *
+   * Two movements, and both are needed. Panning keeps the player in shot;
+   * dollying back keeps the court in it. Panning alone cannot do the second,
+   * because at the back of the half the whole frame is narrower than the table.
+   */
+  const baseX = -SPAWN.x - CAMERA.portrait.back;
+  const spawn = -SPAWN.x;
+  const halfWidthAt = (playerX: number, camX: number) =>
+    Math.abs(playerX - camX) * Math.tan(CAMERA.portrait.fov / 2);
+
+  it("stays put while the player is comfortably in shot", () => {
+    expect(portraitCameraShot(spawn, 0, baseX)).toEqual({ x: baseX, z: 0 });
+    expect(portraitCameraShot(spawn, 0.4, baseX).z).toBe(0);
+  });
+
+  it("slides only as far as it must to bring them back in", () => {
+    // A camera welded to the player slides the world under a figure that never
+    // moves, which is harder to read and worse to look at.
+    const { z } = portraitCameraShot(spawn, 3, baseX);
+
+    expect(z).toBeGreaterThan(0);
+    expect(z).toBeLessThan(3);
+  });
+
+  it("keeps the player in frame anywhere on the half", () => {
+    // The case that was actually broken, and swept over the *whole* half
+    // rather than the play area: a player can walk anywhere their side of the
+    // court allows, and an earlier version of this test that only checked
+    // where the ball goes passed while the browser showed them off screen.
+    for (let x = -COURT.maxX; x <= -COURT.minX; x += 0.2) {
+      for (let z = -COURT.maxZ; z <= COURT.maxZ; z += 0.2) {
+        const shot = portraitCameraShot(x, z, baseX);
+        const fromCentre = Math.abs(z - shot.z);
+        expect(fromCentre, `player at (${x.toFixed(2)}, ${z.toFixed(2)})`).toBeLessThanOrEqual(
+          halfWidthAt(x, shot.x)
+        );
+      }
+    }
+  });
+
+  it("never loses the table either, from anywhere on the half", () => {
+    // Both at once, which is the whole reason the camera dollies rather than
+    // only panning: at the back of the half the frame is barely three metres
+    // across, so catching a wide player by sliding sideways would push the
+    // court out of the opposite edge.
+    for (let x = -COURT.maxX; x <= -COURT.minX; x += 0.2) {
+      for (let z = -COURT.maxZ; z <= COURT.maxZ; z += 0.4) {
+        const shot = portraitCameraShot(x, z, baseX);
+        const edge = Math.abs(shot.z) + TABLE.halfWid;
+        expect(edge, `player at (${x.toFixed(2)}, ${z})`).toBeLessThanOrEqual(
+          halfWidthAt(x, shot.x) + 1e-9
+        );
+      }
+    }
+  });
+
+  it("pulls back rather than only panning when the player comes close", () => {
+    const deep = portraitCameraShot(-COURT.maxX, 0, baseX);
+    const forward = portraitCameraShot(-COURT.minX, 0, baseX);
+
+    expect(deep.x).toBeLessThan(baseX);
+    // Up at the middle line there is depth to spare, so the shot is untouched.
+    expect(forward.x).toBe(baseX);
+  });
+
+  it("never pushes the camera closer than its resting distance", () => {
+    for (let x = -COURT.maxX; x <= -COURT.minX; x += 0.1) {
+      expect(portraitCameraShot(x, 0, baseX).x).toBeLessThanOrEqual(baseX);
+    }
+  });
+
+  it("is symmetric", () => {
+    expect(portraitCameraShot(spawn, -3, baseX).z).toBe(-portraitCameraShot(spawn, 3, baseX).z);
   });
 });

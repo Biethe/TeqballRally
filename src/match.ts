@@ -36,8 +36,10 @@ import {
   COURT,
   clearTable,
   onTableFootprint,
+  portraitCameraShot,
   GRAVITY,
   GROUND_Y,
+  BALL_PACE,
   KICK_LOFT,
   KICK_POWER,
   KICK_SPEED_CAP,
@@ -61,6 +63,8 @@ import type { AudioManager } from "./audio";
 import { reconcile } from "./net/reconcile";
 import {
   clampToPlay,
+  canSmashFrom,
+  loftFloor,
   loftFor,
   onTableHalf,
   rangeFor,
@@ -1178,12 +1182,15 @@ export class MatchController {
     const probe = flightAt(flight, STRIKE_LEAD);
     const lateral = (probe.z - c.position.z) * (side === "player" ? -1 : 1);
     const ballHeight = probe.y - GROUND_Y; // height above the ground plane
-    let clip = pickStrikeClip(ballHeight, lateral, c.height, c.def.strongFoot, power);
+    // Where they are standing decides which shots are even on the menu: the
+    // hard ones need the middle line. See `canSmashFrom`.
+    const nearMiddle = canSmashFrom(c.position.x);
+    let clip = pickStrikeClip(ballHeight, lateral, c.height, c.def.strongFoot, power, nearMiddle);
     // Backflip finish: only reachable off a pop-up that left the ball high,
     // and only with a foot this player's traits allow. If the natural foot is
     // barred but the other one qualifies, a near-centre ball can still be
     // flipped with it.
-    if (popped && ballHeight > c.height * 0.7 && Math.random() < 0.65) {
+    if (nearMiddle && popped && ballHeight > c.height * 0.7 && Math.random() < 0.65) {
       // Which foot comes over is decided by where the player is standing, not
       // by where the ball is: see `backflipFoot`. The stance is signed in the
       // player's own frame, the same way `lateral` above is.
@@ -1240,20 +1247,32 @@ export class MatchController {
       const prox = Math.min(1, Math.max(0, (Math.abs(this.ball.state.pos.x) - TABLE.halfLen) / 2.2));
       let loft =
         loftFor(power) * Math.min(1.1, Math.max(0.35, 1.25 - relH)) * clipLoft * (0.78 + 0.32 * prox);
+      // The rule the whole shot selection hangs off: from behind the smash
+      // range the ball has to go up, however hard it was asked for. Applied
+      // to the arc rather than to the input, so a player who swipes flat out
+      // from the back still gets their pace — as a lob.
+      loft = Math.max(loft, loftFloor(c.position.x));
       // The smash: a foot volley or backflip taken while the ball is still
       // high, or a header right at the table, flies near-flat and straight and
       // only skims the net.
       const smash =
+        nearMiddle &&
         power > 0.7 &&
         (((clip.includes("FootKick") || clip.startsWith("Backflip")) && relH > 0.55) ||
           (clip.includes("HeadKick") && relH > 0.75 && prox < 0.35));
       if (smash) loft = Math.min(loft, 0.42);
+      // A backflip is struck above the head and comes down steeply, and the
+      // higher it is met the steeper it gets. This is the one shot in the game
+      // that should look unanswerable when it is set up properly.
+      if (clip.startsWith("Backflip")) {
+        loft = Math.min(loft, 0.34 - 0.12 * Math.min(1, Math.max(0, relH - 0.7) / 0.4));
+      }
       const clearance = smash ? 0.02 : relH > 0.7 ? 0.05 : clipLoft < 1 ? 0.08 : 0.14;
       // Floor the flight time so the launch stays under this clip's speed cap:
       // headers are quick but human, only foot smashes and backflips get the
       // full whip (a clamped launch would also sag below the net clearance).
-      const cap = KICK_SPEED_CAP[clip] ?? KICK_SPEED_CAP_DEFAULT;
-      const flight = Math.max(((0.5 + dist * 0.055) * loft) / kickPower, dist / cap);
+      const cap = (KICK_SPEED_CAP[clip] ?? KICK_SPEED_CAP_DEFAULT) * BALL_PACE;
+      const flight = Math.max(((0.5 + dist * 0.055) * loft) / (kickPower * BALL_PACE), dist / cap);
       // How close the ball actually came to where it was sent, for the HUD.
       if (side === "player" && !this.versus) {
         this.ui.meterResult?.(Math.max(0, 1 - Vector3.Distance(wanted, aim.target) / SPREAD.max));
@@ -1890,6 +1909,19 @@ export class MatchController {
     }
   }
 
+  /**
+   * Where the portrait camera currently sits laterally, and the frame time it
+   * is being smoothed over.
+   *
+   * Wall-clock rather than simulation time on purpose: this is presentation,
+   * it must not consume a fixed step, and it must not differ between two peers
+   * running the same match at different frame rates.
+   */
+  private cameraZ = 0;
+  private cameraX = -SPAWN.x - CAMERA.portrait.back;
+  private cameraDt = 1 / 60;
+  private cameraLast = 0;
+
   private updateCameraForSide(camera: TargetCamera, side: Side, mode: CameraMode): void {
     const playerOne = side === "player";
     const mirror = playerOne ? -1 : 1;
@@ -1905,8 +1937,29 @@ export class MatchController {
       if (playerOne) {
         // Portrait plays from closer in, so the players read at phone size.
         const shot = portrait && !this.versus ? CAMERA.portrait : CAMERA;
-        const target = new Vector3(0, GROUND_Y + shot.lookY, 0);
-        camera.position.set(-SPAWN.x - shot.back, GROUND_Y + shot.height, 0);
+        const baseX = -SPAWN.x - shot.back;
+        // Portrait follows the player, because portrait is where it has to:
+        // the lens is pinned horizontally, so the frame narrows towards the
+        // near end and a player deep in their own half is barely a metre from
+        // either edge of it. Landscape stays locked off.
+        let camX = baseX;
+        if (portrait && !this.versus) {
+          const c = this.chars.player;
+          const want = portraitCameraShot(c.position.x, c.position.z, baseX);
+          const k = Math.min(1, this.cameraDt / CAMERA.portrait.tau);
+          this.cameraZ += (want.z - this.cameraZ) * k;
+          this.cameraX += (want.x - this.cameraX) * k;
+          camX = this.cameraX;
+        } else {
+          this.cameraZ = 0;
+          this.cameraX = baseX;
+          camX = baseX;
+        }
+        // The camera and what it looks at slide together, so the court is
+        // panned across rather than swivelled at — a swivel from this close
+        // reads as the whole arena leaning.
+        const target = new Vector3(0, GROUND_Y + shot.lookY, this.cameraZ);
+        camera.position.set(camX, GROUND_Y + shot.height, this.cameraZ);
         camera.setTarget(target);
         // Match the scene's responsive default in solo play, while retaining
         // the deliberately wider half-width lens in local versus. This also
@@ -1950,8 +2003,13 @@ export class MatchController {
     camera.setTarget(target);
   }
 
-  /** Fixed match camera. */
+  /** The match camera, once a frame. */
   updateCamera(camera: TargetCamera, mode: CameraMode = "court"): void {
+    const now = performance.now();
+    // Clamped: a tab that was in the background for a minute must not snap the
+    // camera, and a first frame has no previous one to measure against.
+    this.cameraDt = this.cameraLast ? Math.min(0.1, (now - this.cameraLast) / 1000) : 1 / 60;
+    this.cameraLast = now;
     this.updateCameraForSide(camera, "player", mode);
   }
 }

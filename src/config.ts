@@ -67,6 +67,61 @@ export const COURT = {
  */
 export const TABLE_CLEARANCE = 0.28;
 
+/**
+ * Where the portrait camera should sit laterally to keep the player in shot.
+ *
+ * Pure, and the whole of the follow: it answers "how far sideways does the
+ * camera have to be" and nothing else, so it can be reasoned about without a
+ * scene. Zero means centred, which is where it stays while the player is
+ * comfortably inside the frame.
+ *
+ * The shot is a triangle from the camera, so how much room a player has
+ * depends on how far down the court they are: deep in their own half they are
+ * close to the lens and only about a metre from either edge. That is why a
+ * fixed camera loses them there and nowhere else.
+ */
+export function portraitCameraShot(
+  playerX: number,
+  playerZ: number,
+  baseCameraX: number,
+  fov: number = CAMERA.portrait.fov,
+  safe: number = CAMERA.portrait.safe
+): { x: number; z: number } {
+  const spread = Math.tan(fov / 2);
+  const restDistance = Math.abs(playerX - baseCameraX);
+
+  // The still shot, while it holds everything. A camera that reacts to every
+  // step slides the world under a figure that never moves, which is both
+  // harder to read and worse to look at.
+  //
+  // Both conditions matter, and the second is easy to forget: a player standing
+  // dead centre can still be close enough to the lens that the *table* no
+  // longer fits, because the frame narrows towards the near end.
+  const restHalfWidth = restDistance * spread;
+  if (
+    Math.abs(playerZ) <= restHalfWidth * safe &&
+    restHalfWidth >= TABLE.halfWid + CAMERA.portrait.margin
+  ) {
+    return { x: baseCameraX, z: 0 };
+  }
+
+  // Otherwise: frame the table and the player *together*, and take whatever
+  // distance that needs. Panning alone cannot do it — deep in the half the
+  // whole shot is barely three metres across, so sliding sideways to catch a
+  // wide player pushes the court out the other edge. The only thing that makes
+  // room for two objects is backing away from both.
+  const lo = Math.min(-TABLE.halfWid, playerZ);
+  const hi = Math.max(TABLE.halfWid, playerZ);
+  const z = (lo + hi) / 2;
+  const need = (hi - lo) / 2 + CAMERA.portrait.margin;
+  const distance = Math.max(restDistance, need / (spread * safe));
+  // The camera lives behind the player's own baseline, which is the negative
+  // end of the axis, so further back is always further negative — and never
+  // nearer than where it rests, or walking forward would shove the lens into
+  // the court.
+  return { x: Math.min(baseCameraX, playerX - distance), z };
+}
+
 /** True when a player standing here would be inside the table. */
 export function onTableFootprint(x: number, z: number): boolean {
   return (
@@ -169,6 +224,32 @@ export const CAMERA = {
     height: 3.9,
     lookY: 0.95,
     fov: 0.88,
+    /**
+     * How much of the visible half-width the player may use before the camera
+     * starts to follow them.
+     *
+     * A deadzone, not a lock: inside this band the shot is still, and the
+     * camera slides only as far as it must to bring them back inside it. A
+     * camera welded to the player makes the world slide under a figure that
+     * never moves, which is both harder to read and worse to look at.
+     *
+     * It has to exist at all because the shot narrows towards the near end.
+     * The lens is pinned horizontally, so the visible width is proportional to
+     * the distance from the camera — and a player at the back of their half is
+     * only about a metre from either edge of frame. Now that the half runs all
+     * the way to the middle line, they cover far more of it than they used to.
+     */
+    safe: 0.55,
+    /** Seconds for the follow to catch up. Long enough to read as camera work. */
+    tau: 0.22,
+    /**
+     * Room kept beside the table when the camera pulls back.
+     *
+     * The camera dollies out as the player comes towards it so the frame never
+     * gets narrower than the court; this is how much more than the bare table
+     * width it holds, so the sidelines are not flush against the edge.
+     */
+    margin: 0.7,
   },
   // P2 cannot use the mirrored P1 position: it lands outside the imported
   // gym. This keeps the view inside, matches P1's player scale, and gives it
@@ -328,6 +409,16 @@ export const KICK_SPEED_CAP: Record<string, number> = {
   InnerLeftFootReception: 9,
 };
 export const KICK_SPEED_CAP_DEFAULT = 10;
+
+/**
+ * Global tempo of the ball. One knob, applied to every launch.
+ *
+ * Here rather than spread across the per-clip tables because "the game feels a
+ * bit slow" is a judgement about the whole thing, and answering it by nudging
+ * fifteen clip constants is how the clips stop agreeing with each other. Raise
+ * it to quicken everything and keep their relative pace intact.
+ */
+export const BALL_PACE = 1.12;
 
 // Per-clip arc multiplier on a kick's flight time: >1 floats a slow lob over
 // the net, <1 drills the ball flat (flat kicks also skim the net closer).
