@@ -14,6 +14,7 @@
 //
 // Set CHROMIUM_PATH if playwright-core cannot find a browser on its own.
 import { chromium } from "playwright-core";
+import { asReturningPlayer } from "./returning-player.mjs";
 
 const PORT = Number(process.env.PORT ?? 5199);
 const RELAY = Number(process.env.RELAY_PORT ?? 8787);
@@ -42,6 +43,7 @@ const browser = await chromium.launch({
   args: ["--use-gl=angle", "--use-angle=swiftshader", "--no-sandbox", "--no-proxy-server"],
 });
 const page = await browser.newPage({ viewport: { width: 390, height: 780 }, hasTouch: true });
+await asReturningPlayer(page);
 page.on("pageerror", (e) => failures.push(`page error: ${e.message}`));
 
 console.log("\nsigning up from the game");
@@ -267,6 +269,7 @@ console.log("\nrecovering onto another device");
   // A different page with nothing in its storage is the closest this can get
   // to a new phone, which is exactly the case recovery exists for.
   const fresh = await browser.newPage({ viewport: { width: 390, height: 780 }, hasTouch: true });
+  await asReturningPlayer(fresh);
   fresh.on("pageerror", (e) => failures.push(`page error: ${e.message}`));
   await fresh.goto(`${BASE}?q=medium&intro=0`, { waitUntil: "load" });
   await fresh.waitForTimeout(2500);

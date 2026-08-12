@@ -2,8 +2,39 @@ import type { AIDifficulty } from "./ai";
 import type { InputState } from "./input";
 import type { MatchController, MatchEvent } from "./match";
 import type { PracticePanelState, TrainingPauseState } from "./ui";
+import { canSmashFrom } from "./aim";
+import { t, type StringKey } from "./i18n";
 
-/** A forgiving partner that keeps the lesson moving without handing out rallies. */
+/**
+ * Practice.
+ *
+ * Not a match with the scoring switched off — a lesson. There is no score, no
+ * set, no serve rotation and no result screen, because every one of those
+ * turns "am I learning this" into "am I winning", and a player who is losing a
+ * tutorial stops listening to it.
+ *
+ * The shape is two chapters, in the order they matter:
+ *
+ *   DEFENDING   read where the ball is going, and be there before it is.
+ *   ATTACKING   take the pace away from them — hit it from close, or hit it
+ *               early, so they have less time than you did.
+ *
+ * The opponent is the coach. Everything said in a lesson is said by the player
+ * on the other side of the table, which is both cheaper than inventing a
+ * narrator and truer to how anybody actually learns this game.
+ *
+ * The world freezes while the coach talks. That is the whole reason the
+ * lessons can be short: nothing is moving, so nothing is missed, and the
+ * instruction can be one sentence instead of a paragraph racing a live ball.
+ */
+
+/**
+ * The coach.
+ *
+ * Deliberately not weak. A partner that misses the ball teaches nothing and
+ * makes the lesson wait, so this one reads the ball perfectly (`misjudge: 0`)
+ * and simply plays gently.
+ */
 export const PRACTICE_DIFFICULTY: AIDifficulty = {
   speed: 0.5,
   aimError: 0.28,
@@ -19,32 +50,45 @@ interface PracticeUI {
   hideTrainingPause(): void;
 }
 
-type DrillStep = "serve" | "position" | "return" | "pop" | "finish" | "free";
+/**
+ * The lesson, in order.
+ *
+ * `watch` and `chase` are the defending half — anticipation, then covering the
+ * ground. `stepIn`, `strike` and `early` are the attacking half, and they are
+ * deliberately the three things that actually win a point in this game: get
+ * close enough to hit it flat, hit it hard, take it before it drops.
+ */
+const STEPS = [
+  "serve",
+  "watch",
+  "chase",
+  "stepIn",
+  "strike",
+  "early",
+  "free",
+] as const;
+export type DrillStep = (typeof STEPS)[number];
 
-interface DrillInfo {
-  progress: string;
-  title: string;
-  action: string;
-}
-
-const STEPS: Record<DrillStep, DrillInfo> = {
-  serve: { progress: "1 / 5", title: "SERVE", action: "Aim, then STRIKE." },
-  position: { progress: "2 / 5", title: "MOVE", action: "Move to the X." },
-  return: { progress: "3 / 5", title: "RETURN", action: "Wait for it, then kick." },
-  pop: { progress: "4 / 5", title: "MAKE A RECEPTION", action: "Make a reception, then get ready." },
-  finish: { progress: "5 / 5", title: "FINISH", action: "Aim, then kick it in." },
-  free: { progress: "FREE", title: "FREE PLAY", action: "Play your way." },
+/** Which chapter a step belongs to, for the heading above it. */
+const CHAPTER: Record<DrillStep, "defend" | "attack" | null> = {
+  serve: null,
+  watch: "defend",
+  chase: "defend",
+  stepIn: "attack",
+  strike: "attack",
+  early: "attack",
+  free: null,
 };
 
-/**
- * A deliberately sparse, event-driven coach. It stops only when there is one
- * clear next action, then gets out of the player's way again.
- */
+/** Steps that stop the world and say something. `free` never does. */
+const COACHED: readonly DrillStep[] = STEPS.filter((s) => s !== "free");
+
 export class PracticeCoach {
   private step: DrillStep = "serve";
   private paused = false;
   private resumeGuardFrames = 0;
   private moveTime = 0;
+  private struckFromClose = false;
   private unsubscribe: () => void;
 
   constructor(
@@ -62,6 +106,11 @@ export class PracticeCoach {
     return this.paused;
   }
 
+  /** True once the lesson is over and the player is just knocking up. */
+  get isFinished(): boolean {
+    return this.step === "free";
+  }
+
   start(): void {
     this.refreshPanel();
   }
@@ -72,6 +121,7 @@ export class PracticeCoach {
     this.resumeGuardFrames = 0;
     this.step = "serve";
     this.moveTime = 0;
+    this.struckFromClose = false;
     this.ui.hideTrainingPause();
     this.refreshPanel();
   }
@@ -96,18 +146,17 @@ export class PracticeCoach {
   update(dt: number, input: InputState): void {
     if (this.paused) return;
 
-    // After the player has actually moved, stop once more and make the return
-    // action explicit before the same rally continues.
-    if (
-      this.step === "position" &&
-      this.match.state === "rally" &&
-      this.match.strikeableSide === "player"
-    ) {
+    // Defending: once they have actually covered some ground, the lesson has
+    // been done rather than merely described.
+    if (this.step === "chase" && this.match.state === "rally") {
       if (Math.hypot(input.moveX, input.moveZ) > 0.25) this.moveTime += dt;
-      if (this.moveTime >= 0.18) {
-        this.step = "return";
-        this.pause(this.returnPrompt());
-      }
+      if (this.moveTime >= 0.35) this.advance();
+    }
+
+    // Attacking: stepping into smash range is the lesson, so it completes the
+    // moment they are standing there rather than when they hit something.
+    if (this.step === "stepIn" && canSmashFrom(this.match.chars.player.position.x)) {
+      this.advance();
     }
 
     this.refreshPanel();
@@ -116,55 +165,50 @@ export class PracticeCoach {
   private onMatchEvent(event: MatchEvent): void {
     switch (event.type) {
       case "serve-ready":
-        if (event.side === "player" && this.step === "serve") this.pause(this.servePrompt());
+        if (event.side === "player" && this.step === "serve") this.pause();
         break;
 
       case "serve-committed":
-        if (event.side === "player" && this.step === "serve") this.step = "position";
+        if (event.side === "player" && this.step === "serve") this.advance();
         break;
 
       case "possession-start":
         if (event.side !== "player") break;
         this.moveTime = 0;
-        if (this.step === "position") this.pause(this.positionPrompt());
-        else if (this.step === "return") this.pause(this.returnPrompt());
-        else if (this.step === "pop") this.pause(this.popPrompt());
+        // Every coached step announces itself the moment the ball becomes
+        // this player's problem, which is when the advice is worth having.
+        if (this.step !== "free" && this.step !== "serve") this.pause();
         break;
 
-      case "touch-committed":
-        if (event.side !== "player") break;
-        if (event.action === "pop") {
-          if (this.step === "pop") {
-            this.step = "finish";
-            this.pause(this.finishPrompt());
-          }
-          break;
-        }
-
-        if (this.step === "position" || this.step === "return") {
-          this.step = "pop";
-        } else if (this.step === "finish" && event.afterSetup) {
-          this.step = "free";
+      case "touch-committed": {
+        if (event.side !== "player" || event.action !== "strike") break;
+        const close = canSmashFrom(this.match.chars.player.position.x);
+        if (this.step === "strike" && close) {
+          this.struckFromClose = true;
+          this.advance();
+        } else if (this.step === "early") {
+          this.advance();
         }
         break;
-
-      case "point-awarded":
-        // A finish only makes sense after a setup. If the setup rally ends,
-        // simply offer a reception again on the next player-side ball.
-        if (this.step === "finish") this.step = "pop";
-        break;
+      }
     }
 
     this.refreshPanel();
   }
 
-  private pause(prompt: TrainingPauseState): void {
-    if (this.paused) return;
+  private advance(): void {
+    const at = STEPS.indexOf(this.step);
+    this.step = STEPS[Math.min(STEPS.length - 1, at + 1)];
+    this.moveTime = 0;
+  }
+
+  private pause(): void {
+    if (this.paused || this.step === "free") return;
     this.paused = true;
     this.resumeGuardFrames = 2;
     this.match.setTutorialFrozen(true);
     this.ui.practicePanel(null);
-    this.ui.showTrainingPause(prompt, () => this.resume());
+    this.ui.showTrainingPause(this.prompt(), () => this.resume());
   }
 
   private resume(): void {
@@ -172,42 +216,43 @@ export class PracticeCoach {
     this.paused = false;
     this.resumeGuardFrames = 0;
     this.match.setTutorialFrozen(false);
-    this.ui.hideTrainingPause();
     this.refreshPanel();
+    this.ui.hideTrainingPause();
   }
 
-  private servePrompt(): TrainingPauseState {
-    return this.prompt(
-      "serve",
-      this.control("WASD + SPACE", "LEFT STICK + A", "JOYSTICK + STRIKE", "SWIPE TO SERVE")
-    );
-  }
-
-  private positionPrompt(): TrainingPauseState {
-    return this.prompt("position", this.control("WASD", "LEFT STICK", "JOYSTICK", "TAP THE COURT"));
-  }
-
-  private returnPrompt(): TrainingPauseState {
-    return this.prompt("return", this.control("HOLD SPACE", "HOLD A", "HOLD STRIKE", "SWIPE"));
-  }
-
-  private popPrompt(): TrainingPauseState {
-    return this.prompt("pop", this.control("K", "B", "RECEPTION", "TAP WHERE TO PLAY IT"));
-  }
-
-  private finishPrompt(): TrainingPauseState {
-    return this.prompt("finish", this.control("HOLD SPACE", "HOLD A", "HOLD STRIKE", "SWIPE"));
-  }
-
-  private prompt(step: Exclude<DrillStep, "free">, control: string): TrainingPauseState {
-    const info = STEPS[step];
+  private prompt(): TrainingPauseState {
+    const step = this.step;
+    const chapter = CHAPTER[step];
+    const done = COACHED.indexOf(step) + 1;
     return {
-      progress: info.progress,
-      title: info.title,
-      action: info.action,
-      control,
+      progress: chapter
+        ? `${t(`practice.chapter.${chapter}` as StringKey)} · ${done} / ${COACHED.length}`
+        : `${done} / ${COACHED.length}`,
+      title: t(`practice.${step}.title` as StringKey),
+      action: t(`practice.${step}.action` as StringKey),
+      control: this.controlFor(step),
       resume: this.continueLabel(),
     };
+  }
+
+  /**
+   * The one input this step needs, in the words of the device in their hands.
+   *
+   * Practice gives no assistance — the automatic first reception is off for
+   * the whole lesson — so these are the real controls, not a simplified set
+   * that stops working the moment the tutorial ends.
+   */
+  private controlFor(step: DrillStep): string {
+    switch (step) {
+      case "serve":
+        return this.control("WASD + SPACE", "LEFT STICK + A", "JOYSTICK + STRIKE", "SWIPE TO SERVE");
+      case "watch":
+      case "chase":
+      case "stepIn":
+        return this.control("WASD", "LEFT STICK", "JOYSTICK", "TAP THE COURT");
+      default:
+        return this.control("HOLD SPACE", "HOLD A", "HOLD STRIKE", "SWIPE FAST");
+    }
   }
 
   private control(keyboard: string, gamepad: string, touch: string, portrait = touch): string {
@@ -218,9 +263,9 @@ export class PracticeCoach {
   }
 
   private continueLabel(): string {
-    if (this.hasGamepad()) return "A TO CONTINUE";
-    if (this.isTouch()) return "TAP TO CONTINUE";
-    return "SPACE TO CONTINUE";
+    if (this.hasGamepad()) return t("practice.continue.pad");
+    if (this.isTouch()) return t("practice.continue.touch");
+    return t("practice.continue.key");
   }
 
   private refreshPanel(): void {
@@ -228,10 +273,23 @@ export class PracticeCoach {
       this.ui.practicePanel(null);
       return;
     }
-    const info = STEPS[this.step];
+    const step = this.step;
+    if (step === "free") {
+      this.ui.practicePanel({ title: t("practice.free.title"), goal: t("practice.free.action") });
+      return;
+    }
+    const chapter = CHAPTER[step];
+    const done = COACHED.indexOf(step) + 1;
     this.ui.practicePanel({
-      title: `PRACTICE · ${info.progress}`,
-      goal: info.action,
+      title: chapter
+        ? `${t(`practice.chapter.${chapter}` as StringKey)} · ${done} / ${COACHED.length}`
+        : `${t("practice.title")} · ${done} / ${COACHED.length}`,
+      goal: t(`practice.${step}.action` as StringKey),
     });
+  }
+
+  /** Whether the player ever managed the thing the attacking half is for. */
+  get struckFromMiddle(): boolean {
+    return this.struckFromClose;
   }
 }

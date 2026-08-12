@@ -624,6 +624,14 @@ async function boot(): Promise<void> {
         if (!session?.isPaused) {
           match.update(SIM_DT, freecam ? idleInput : stepInput, (d) => aiCtl?.update(d));
           practiceCoach?.update(SIM_DT, stepInput);
+          // The lesson is finished the moment the last coached step is done.
+          // Remembered immediately rather than when they leave the screen, so
+          // a player who closes the app mid-knockabout is not made to sit
+          // through it again.
+          if (practiceCoach?.isFinished && !prefs.coached) {
+            prefs.coached = true;
+            storePreferences(prefs);
+          }
         }
         // Stepped with the simulation, not the frame, so the tick stamped on
         // outgoing messages is the same clock the receiver counts against.
@@ -1702,11 +1710,19 @@ async function boot(): Promise<void> {
     );
   };
 
-  const showPractice = () => {
+  /**
+   * The coached lesson.
+   *
+   * `forced` is the first launch: no character choice and no way back out,
+   * because the whole point is that a player who has never seen a teqball
+   * rally is not yet in a position to choose anything. Afterwards it is an
+   * ordinary menu item, entered through the picker like every other mode.
+   */
+  const showPractice = (forced = false) => {
     // The trainer is fixed, so it is a safe useful prefetch while the user is
     // choosing their own player.
     scheduleAssetPrefetch("/models/characters/SpanishPlayer.glb", 700);
-    showSelect(tr("select.title"), (charId, ballId) => {
+    const begin = (charId: string, ballId: string) => {
       const base = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
       // Practice pays nothing — it cannot be lost — but the character is still
       // the one the career has built, or the drill would be teaching a player
@@ -1719,11 +1735,19 @@ async function boot(): Promise<void> {
       void startMatch(playerDef, ballId, {
         opponent: trainer,
         difficulty: "easy",
-        labels: [tr("hud.you"), "TRAINER"],
+        labels: [tr("hud.you"), tr("practice.coach")],
         practice: true,
         onEnd: () => match?.reset(),
       });
-    }, showModes);
+    };
+    if (forced) {
+      // Straight in, with the roster's first player and ball. Being asked to
+      // pick a character before being shown what a character does is a choice
+      // nobody can make.
+      begin(CHARACTERS[0].id, BALLS[0].id);
+      return;
+    }
+    showSelect(tr("select.title"), begin, showModes);
   };
 
   const showDifficulty = () => {
@@ -2054,7 +2078,15 @@ async function boot(): Promise<void> {
     controller.aimMarker = gs.aimMarker;
     controller.landingMarker = gs.landingMarker;
     controller.practice = opts.practice === true;
-    controller.autoFirstReception = prefs.autoReception;
+    // Practice gives no assistance. The automatic first reception is the
+    // biggest thing the game does for a player, and a lesson taught with it on
+    // teaches a game they will never play again the moment they leave.
+    controller.autoFirstReception = opts.practice ? false : prefs.autoReception;
+    // An empty hall, and no scoreboard. A lesson happening in front of a full
+    // stand with a score above it is a match, and a player who is losing a
+    // tutorial stops listening to it.
+    gs.setCrowdVisible(!opts.practice);
+    ui.setScoreVisible(!opts.practice);
     match = controller;
     // Online play is a two-human match whose second seat is a socket, so it
     // needs no AI and no split screen: each player has their own device.
@@ -2169,11 +2201,20 @@ async function boot(): Promise<void> {
   await Promise.race([preload, new Promise((r) => setTimeout(r, 4000))]);
   ui.hideIntroClip();
 
-  // A season that ended while they were away is the first thing they see —
-  // before the title screen, because the trophy count on it is already the
-  // reset one and a player deserves to be told why.
-  if (endedSeason) showSeasonEnd(endedSeason, showTitle);
-  else showTitle();
+  // The very first launch goes into the lesson and nowhere else. Teqball is a
+  // sport most people have never played, with controls nobody can guess, and a
+  // title screen offering four modes to somebody who has not seen a rally is a
+  // title screen they close. Every launch after this one starts as normal.
+  if (!prefs.coached) {
+    showPractice(true);
+  } else if (endedSeason) {
+    // A season that ended while they were away is the first thing they see —
+    // before the title screen, because the trophy count on it is already the
+    // reset one and a player deserves to be told why.
+    showSeasonEnd(endedSeason, showTitle);
+  } else {
+    showTitle();
+  }
   // Catch up with the server behind the title screen. It never blocks the
   // first screen, and if it fails nothing about the game changes.
   void refreshProfile().then(() => {

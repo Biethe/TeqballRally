@@ -2046,6 +2046,17 @@ export class UI {
     this.hudEl.classList.remove("hidden");
   }
 
+  /**
+   * Show or hide the scoreboard.
+   *
+   * Off for practice, which has no score to keep. It is hidden rather than
+   * zeroed because a scoreboard reading 0–0 for a whole lesson invites the
+   * player to wonder when it is going to start counting.
+   */
+  setScoreVisible(on: boolean): void {
+    this.scoreEl.classList.toggle("hidden", !on);
+  }
+
   practicePanel(state: PracticePanelState | null): void {
     if (!state) {
       this.practiceEl.classList.add("hidden");

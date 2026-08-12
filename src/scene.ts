@@ -78,6 +78,8 @@ export interface GameScene {
   pingTap: (x: number, z: number) => void;
   /** Advance that ripple. Wall-clock seconds; presentation, not simulation. */
   stepTapMarker: (dt: number) => void;
+  /** Empty the stands. Practice plays to an empty hall. */
+  setCrowdVisible: (on: boolean) => void;
 }
 
 function mat(scene: Scene, name: string, color: Color3, specular = 0.05): StandardMaterial {
@@ -224,9 +226,11 @@ export async function createGameScene(
           // restrictive host cannot fetch the decorative gym model.
           console.warn("Arena failed to load:", e);
         }),
-        buildEnvironment(scene, forVenue).catch((e) => {
-          console.warn("Venue dressing failed to load:", e);
-        }),
+        buildEnvironment(scene, forVenue)
+          .then(() => applyCrowdVisibility())
+          .catch((e) => {
+            console.warn("Venue dressing failed to load:", e);
+          }),
         // The world outside the fence. Cheap, procedural and synchronous, but
         // it belongs with the backdrop: without the venue there is nothing for
         // it to stand around.
@@ -304,6 +308,25 @@ export async function createGameScene(
     tapMarker.setEnabled(true);
   };
 
+  /**
+   * Show or hide every crowd figure at once.
+   *
+   * Applied to whatever is in the scene now *and* remembered, because a venue
+   * can be rebuilt (or arrive late) while the setting stands — a lesson that
+   * started in an empty hall must not fill up when the backdrop finishes
+   * loading.
+   */
+  let crowdVisible = true;
+  const applyCrowdVisibility = (): void => {
+    for (const m of scene.meshes) {
+      if ((m.metadata as { crowd?: boolean } | undefined)?.crowd) m.setEnabled(crowdVisible);
+    }
+  };
+  const setCrowdVisible = (on: boolean): void => {
+    crowdVisible = on;
+    applyCrowdVisibility();
+  };
+
   const stepTapMarker = (dt: number): void => {
     if (tapAge >= TAP_PING.life) return;
     tapAge += dt;
@@ -348,6 +371,7 @@ export async function createGameScene(
     landingMarker,
     pingTap,
     stepTapMarker,
+    setCrowdVisible,
   };
 }
 

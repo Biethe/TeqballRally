@@ -4,6 +4,7 @@
 //   npm run build && npm run preview -- --port 5199 --strictPort
 //   node scripts/ui-shots.mjs
 import { chromium } from "playwright-core";
+import { asReturningPlayer } from "./returning-player.mjs";
 import { mkdirSync } from "node:fs";
 
 const PORT = Number(process.env.PORT ?? 5199);
@@ -168,6 +169,7 @@ for (const dev of DEVICES) {
     isMobile: true,
   });
   const page = await ctx.newPage();
+  await asReturningPlayer(page);
   await page.goto(`http://localhost:${PORT}/?q=low&intro=0`, { waitUntil: "load" });
   await page.waitForTimeout(3500);
 
