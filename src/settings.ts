@@ -20,6 +20,16 @@ export interface Preferences {
   camera: CameraMode;
   /** Whether standing near an incoming ball takes the first touch for you. */
   autoReception: boolean;
+  /**
+   * Whether the coached lesson has been played through once.
+   *
+   * The first launch goes straight into it and cannot be skipped: this game is
+   * a sport most people have never played, with controls nobody can guess, and
+   * a title screen offering four modes to somebody who does not know what a
+   * teqball rally looks like is a title screen they leave. Once it is done the
+   * lesson is a menu item like any other, replayable whenever they want it.
+   */
+  coached: boolean;
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -28,6 +38,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   sound: true,
   camera: "court",
   autoReception: true,
+  coached: false,
 };
 
 const KEY = "teqopen.prefs";
@@ -49,6 +60,7 @@ export function readPreferences(): Preferences {
         typeof stored.autoReception === "boolean"
           ? stored.autoReception
           : DEFAULT_PREFERENCES.autoReception,
+      coached: stored.coached === true,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };

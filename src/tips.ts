@@ -10,12 +10,24 @@ import { t, type StringKey } from "./i18n";
  * elsewhere.
  */
 const TIP_KEYS: StringKey[] = [
+  // How the controls answer.
   "tip.power",
   "tip.setup",
   "tip.deep",
   "tip.reception",
   "tip.miss",
   "tip.serve",
+  // How a match is won. These are the ones worth reading twice: they are
+  // about the opponent rather than about the buttons, and none of them is
+  // discoverable by pressing things.
+  "tip.side",
+  "tip.tire",
+  "tip.weakness",
+  "tip.close",
+  "tip.retreat",
+  "tip.early",
+  "tip.vary",
+  "tip.strength",
 ];
 
 /** A tip, chosen at random. Translated, like everything else a player reads. */

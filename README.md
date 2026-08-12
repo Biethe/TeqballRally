@@ -81,6 +81,47 @@ divides the spread, so an improved striker can hit hard and still keep it in.
 `SAFE_POWER` in `src/match.ts` is where the power bar's marked band ends — past
 it the ball goes harder and lands less reliably.
 
+**Where you stand decides what you can hit.** The flat, hard shots — foot
+volleys and backflips — need the middle line. From behind it a kick's loft has
+a floor under it that grows with the distance, so a full-speed swipe from the
+back of the court gets its pace as a lob rather than as a missile. There is no
+angle through which a driven ball from deep clears the net and still lands, and
+letting one exist made position irrelevant. Attacking therefore means coming
+forward, and coming forward costs the time it takes to get back.
+
+The floor ramps from exactly where the flattest kick already is (`loftFloor`
+starts at `loftFor(1)`), so crossing the line costs nothing and the cost grows
+smoothly from there — a player can feel where it is without being told.
+
+## Practice
+
+Not a match with the scoring switched off. There is no score, no set, no serve
+rotation and no result screen, because every one of those turns "am I learning
+this" into "am I winning", and a player who is losing a tutorial stops
+listening to it. The stands are empty and the automatic first reception is off:
+a lesson taught with the assistance on teaches a game they never play again.
+
+Two chapters, in the order they matter. **Defending** is reading where the ball
+is going and being there before it is. **Attacking** is the three things that
+actually win a point here — step in to the middle line, hit it hard, take it
+early. The opponent is the coach: everything said is said by the player on the
+other side of the table.
+
+The world freezes while the coach talks, which is what lets each lesson be one
+sentence instead of a paragraph racing a live ball.
+
+**The first launch goes straight into it and cannot be skipped.** Teqball is a
+sport most people have never played, with controls nobody can guess, and a
+title screen offering four modes to somebody who has not seen a rally is a
+title screen they close. It is remembered the moment the last step is done —
+not when they leave the screen — so closing the app mid-knockabout does not
+make them sit through it again. Afterwards it is an ordinary menu item.
+
+That has one consequence worth knowing about: a fresh browser profile *is* a
+first launch, so every harness in `scripts/` seeds the preference through
+`scripts/returning-player.mjs` before the page boots. That is not a test mode;
+it is the second launch.
+
 ## Checks
 
 ```bash
@@ -109,6 +150,7 @@ run:
 npm run dev -- --port 5199
 node scripts/simulate.mjs 60      # headless match, logs state each second
 node scripts/screenshot.mjs       # screenshots of the menus and a match
+node scripts/verify-practice.mjs  # the first-launch lesson, unasked and unskippable
 ```
 
 To smoke-test a production build end to end (this is the check that catches a

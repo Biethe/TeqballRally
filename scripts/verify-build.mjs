@@ -10,6 +10,7 @@
 //
 // Set CHROMIUM_PATH if playwright-core cannot find a browser on its own.
 import { chromium } from "playwright-core";
+import { asReturningPlayer } from "./returning-player.mjs";
 
 const PORT = Number(process.env.PORT ?? 5199);
 const browser = await chromium.launch({
@@ -17,6 +18,7 @@ const browser = await chromium.launch({
   args: ["--use-gl=angle", "--use-angle=swiftshader", "--no-sandbox"],
 });
 const page = await browser.newPage({ viewport: { width: 1024, height: 640 } });
+await asReturningPlayer(page);
 
 const errors = [];
 page.on("pageerror", (e) => {

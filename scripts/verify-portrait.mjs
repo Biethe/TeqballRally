@@ -18,6 +18,7 @@
 //
 // Set CHROMIUM_PATH if playwright-core cannot find a browser on its own.
 import { chromium } from "playwright-core";
+import { asReturningPlayer } from "./returning-player.mjs";
 
 const PORT = Number(process.env.PORT ?? 5199);
 const BASE = `http://localhost:${PORT}/`;
@@ -36,6 +37,7 @@ const check = (ok, what) => {
 /** Walk the menus into a live match and hand back the page. */
 async function intoMatch(viewport) {
   const page = await browser.newPage({ viewport, hasTouch: true });
+  await asReturningPlayer(page);
   page.on("pageerror", (e) => failures.push(`page error: ${e.message}`));
   await page.goto(`${BASE}?q=medium&intro=0`, { waitUntil: "load" });
   await page.waitForTimeout(3000);

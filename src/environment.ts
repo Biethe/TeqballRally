@@ -533,6 +533,13 @@ export async function buildEnvironment(scene: Scene, venue: Venue): Promise<Mesh
       placeOnTiers(scene, dressing.tiers, library.seated, library.standing, placement, built);
     }
     const placed = applyPlacement(placement, library.rigged);
+    // Tagged so the whole crowd can be hidden at once. Practice plays to an
+    // empty hall: a coached lesson happening in front of a full stand is a
+    // strange thing to be shown, and the figures are also the most expensive
+    // part of the venue on the phones most likely to be running the tutorial.
+    for (const m of placed) {
+      m.metadata = { ...((m.metadata ?? {}) as Record<string, unknown>), crowd: true };
+    }
     built.push(...placed);
     // Anything left unplaced is still a mesh in the scene, drawn once at the
     // origin — through the middle of the court, in full view.
