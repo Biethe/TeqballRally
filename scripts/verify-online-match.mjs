@@ -8,6 +8,7 @@
 //   npm run build && npm run preview -- --port 5199 --strictPort
 //   node scripts/verify-online-match.mjs
 import { chromium } from "playwright-core";
+import { asReturningPlayer, withFullRoster } from "./returning-player.mjs";
 
 const PORT = Number(process.env.PORT ?? 5199);
 const base = `http://localhost:${PORT}/?q=low&intro=0`;
@@ -31,6 +32,14 @@ async function client(label) {
       console.log(`[${label}]`, m.text());
     }
   });
+  // `?intro=0` only skips the opening animation. A fresh context is a first
+  // launch, and a first launch goes straight into the coached lesson with no
+  // title screen behind it — so without this the run dies on an invisible
+  // PLAY button, which is where it died once the lesson landed.
+  await asReturningPlayer(page);
+  // The two clients have to be able to pick different characters, and the
+  // roster is earned: a fresh profile owns only the first one.
+  await withFullRoster(page);
   await page.goto(base, { waitUntil: "load" });
   await page.waitForTimeout(3500);
   await page.locator("#btn-play").click();

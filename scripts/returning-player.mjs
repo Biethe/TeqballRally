@@ -21,3 +21,31 @@ export async function asReturningPlayer(page) {
     }
   });
 }
+
+/**
+ * Make a page look like a player who has won something.
+ *
+ * Characters unlock on trophies (UNLOCK_AT in src/progress.ts), so a brand new
+ * profile owns exactly one of them and the select carousel has nothing to move
+ * to. A harness that needs two players to look different therefore has to be
+ * driving someone who has got somewhere — otherwise it is asserting about a
+ * roster of one, which proves nothing about whose character is whose.
+ *
+ * Like `asReturningPlayer`, this is not a test mode: a player with 400 trophies
+ * is an ordinary thing to be. The store reads defensively, so seeding the two
+ * fields the unlock actually depends on is enough.
+ */
+export async function withFullRoster(page, best = 400) {
+  await page.addInitScript((value) => {
+    try {
+      const raw = localStorage.getItem("teqopen.career");
+      const career = raw ? JSON.parse(raw) : {};
+      localStorage.setItem(
+        "teqopen.career",
+        JSON.stringify({ ...career, best: value, trophies: value })
+      );
+    } catch {
+      // Private mode: the run will see one character and fail saying so.
+    }
+  }, best);
+}
