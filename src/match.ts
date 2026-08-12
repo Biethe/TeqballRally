@@ -839,6 +839,11 @@ export class MatchController {
 
   private beginServeCycle(): void {
     this.state = "serve_move";
+    // A new point means the game is no longer over, so the victory shot must
+    // let go of the camera — otherwise a rematch plays out in close-up.
+    this.matchWinner = null;
+    this.victoryPos = null;
+    this.victoryTarget = null;
     this.servePhase = "idle";
     // A point celebration may still be playing; it must not block the walk
     // to the serve spot.
@@ -1582,6 +1587,7 @@ export class MatchController {
       if (this.sets[setWinner] >= SETS_TO_WIN) {
         // Game over: the set just won was the deciding one.
         this.state = "over";
+        this.matchWinner = setWinner;
         const loser = other(setWinner);
         const winChar = this.chars[setWinner];
         this.playCelebration(setWinner, 0, () => winChar.playAction("Idle", { loop: true }));
@@ -1973,8 +1979,20 @@ export class MatchController {
   private cameraX = -SPAWN.x - CAMERA.portrait.back;
   private cameraDt = 1 / 60;
   private cameraLast = 0;
+  /** Who won the game, while the end-of-match shot is being held on them. */
+  matchWinner: Side | null = null;
+  /**
+   * Where the victory shot has eased to so far.
+   *
+   * Kept as state rather than recomputed because the move in starts from
+   * wherever the match camera happened to be, so there is nothing to derive it
+   * from once the first frame has passed.
+   */
+  private victoryPos: Vector3 | null = null;
+  private victoryTarget: Vector3 | null = null;
 
   private updateCameraForSide(camera: TargetCamera, side: Side, mode: CameraMode): void {
+    if (this.updateVictoryCamera(camera)) return;
     const playerOne = side === "player";
     const mirror = playerOne ? -1 : 1;
     // Portrait pins the lens horizontally (see scene.ts): a vertically-fixed
@@ -2053,6 +2071,42 @@ export class MatchController {
       mirror * CAMERA.top.offsetZ
     );
     camera.setTarget(target);
+  }
+
+  /**
+   * Push in on whoever won, once the game is over. Returns whether it took the
+   * camera, so the ordinary shots can be skipped while it has it.
+   *
+   * Presentation only: it reads positions and writes to the camera, and never
+   * touches the simulation. The eased position is held rather than recomputed
+   * so the move starts wherever the match camera was, whichever shot that was.
+   */
+  private updateVictoryCamera(camera: TargetCamera): boolean {
+    const winner = this.matchWinner;
+    if (winner === null || this.state !== "over") return false;
+    const char = this.chars[winner];
+    const shot = CAMERA.victory;
+    // In front of them along the way they face, and off to one side: a
+    // dead-centre front-on shot of a rig reads as a character picker.
+    const facing = char.faceDir === -1 ? 1 : -1;
+    const want = new Vector3(
+      char.position.x + facing * shot.distance,
+      GROUND_Y + shot.height,
+      char.position.z + shot.offset
+    );
+    const look = new Vector3(char.position.x, GROUND_Y + shot.lookY, char.position.z);
+    if (!this.victoryPos || !this.victoryTarget) {
+      this.victoryPos = camera.position.clone();
+      this.victoryTarget = camera.getTarget().clone();
+    }
+    const k = Math.min(1, this.cameraDt / shot.tau);
+    this.victoryPos = Vector3.Lerp(this.victoryPos, want, k);
+    this.victoryTarget = Vector3.Lerp(this.victoryTarget, look, k);
+    camera.fov = shot.fov;
+    camera.minZ = 0.1;
+    camera.position.copyFrom(this.victoryPos);
+    camera.setTarget(this.victoryTarget);
+    return true;
   }
 
   /** The match camera, once a frame. */
