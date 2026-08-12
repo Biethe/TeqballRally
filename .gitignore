@@ -34,3 +34,8 @@ server/data/
 android/keystore.properties
 *.jks
 *.keystore
+
+# Raw Blender exports. Packing (scripts/pack-model.sh) is lossy and one-way,
+# so the unpacked originals are kept out of the repo rather than committed
+# alongside the packed ones.
+raw/
