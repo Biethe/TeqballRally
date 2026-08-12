@@ -12,6 +12,9 @@
 //   npm run preview -- --port 5199 --strictPort
 //   node scripts/verify-accounts.mjs
 //
+// To run the same checks against the deployed server rather than a local one:
+//   RELAY_URL=https://… node scripts/verify-accounts.mjs
+//
 // Set CHROMIUM_PATH if playwright-core cannot find a browser on its own.
 import { chromium } from "playwright-core";
 import { asReturningPlayer } from "./returning-player.mjs";
@@ -19,6 +22,12 @@ import { asReturningPlayer } from "./returning-player.mjs";
 const PORT = Number(process.env.PORT ?? 5199);
 const RELAY = Number(process.env.RELAY_PORT ?? 8787);
 const BASE = `http://localhost:${PORT}/`;
+// RELAY_URL points these checks at a deployed server instead of a local one.
+// It matters because the local relay and the deployed one differ in the part
+// most likely to break: the local one usually talks to a Firestore emulator or
+// a test double, while the deployed one talks to Google's Firestore over the
+// network, with its own credentials and its own CORS.
+const RELAY_BASE = (process.env.RELAY_URL ?? `http://localhost:${RELAY}`).replace(/\/+$/, "");
 
 const failures = [];
 const check = (ok, what) => {
@@ -29,12 +38,12 @@ const check = (ok, what) => {
 // A name nobody else has taken, since the store outlives the run.
 const NAME = `Probe ${Math.random().toString(36).slice(2, 7)}`;
 
-const health = await fetch(`http://localhost:${RELAY}/healthz`).then(
+const health = await fetch(`${RELAY_BASE}/healthz`).then(
   (r) => r.json(),
   () => null
 );
 if (!health?.ok) {
-  console.error(`no server on :${RELAY} — run: npm run relay`);
+  console.error(`no server at ${RELAY_BASE} — run: npm run relay, or set RELAY_URL`);
   process.exit(1);
 }
 
@@ -114,7 +123,7 @@ console.log("\nfriends");
 {
   // A second account to be friends with, made through the API rather than the
   // UI: what is being checked is the list, not a second sign-up.
-  const other = await fetch(`http://localhost:${RELAY}/api/players`, {
+  const other = await fetch(`${RELAY_BASE}/api/players`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: `Rival ${Math.random().toString(36).slice(2, 7)}` }),
@@ -148,7 +157,7 @@ console.log("\nfriends");
   );
 
   // …and it is mutual, without the other side having done anything.
-  const theirs = await fetch(`http://localhost:${RELAY}/api/players/me/friends`, {
+  const theirs = await fetch(`${RELAY_BASE}/api/players/me/friends`, {
     headers: { authorization: `Bearer ${other.token}` },
   }).then((r) => r.json());
   check(theirs.friends?.length === 1, "and on theirs, without them lifting a finger");
@@ -198,12 +207,12 @@ console.log("\nclubs");
 
   // Somebody else joining, through the API: what is being checked here is that
   // the board this browser is looking at is the one the server holds.
-  const recruit = await fetch(`http://localhost:${RELAY}/api/players`, {
+  const recruit = await fetch(`${RELAY_BASE}/api/players`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: `Recruit ${Math.random().toString(36).slice(2, 7)}` }),
   }).then((r) => r.json());
-  const joined = await fetch(`http://localhost:${RELAY}/api/clubs/join`, {
+  const joined = await fetch(`${RELAY_BASE}/api/clubs/join`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${recruit.token}` },
     body: JSON.stringify({ code: invite }),
@@ -228,7 +237,7 @@ console.log("\nclubs");
   ).catch(() => null);
   const rotated = await page.locator("#club-screen .account-code-value").textContent();
   check(rotated?.trim() !== before, `a new code replaces the old one (${rotated?.trim()})`);
-  const stale = await fetch(`http://localhost:${RELAY}/api/clubs/join`, {
+  const stale = await fetch(`${RELAY_BASE}/api/clubs/join`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code: before }),
@@ -242,7 +251,7 @@ console.log("\nclubs");
     polling: 250,
   }).catch(() => null);
   check((await page.locator(".club-row").count()) === 1, "the owner can put somebody out");
-  const orphan = await fetch(`http://localhost:${RELAY}/api/clubs/me`, {
+  const orphan = await fetch(`${RELAY_BASE}/api/clubs/me`, {
     headers: { authorization: `Bearer ${recruit.token}` },
   }).then((r) => r.json());
   check(orphan.club === null, "and they are told they have no club");

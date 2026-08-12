@@ -12,7 +12,16 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-COPY relay.mjs api.mjs accounts.mjs secrets.mjs store.mjs firestore.mjs rules.mjs ./
+# Every runtime module, by glob rather than by name. The list used to be
+# spelled out, and it silently fell behind: clubs, matches and presence were
+# added to the server without being added here, so the image built perfectly
+# and then died on startup with "Cannot find module '/app/presence.mjs'". A
+# missing file is not something the build can catch — only a container that
+# refuses to boot, which is the slowest possible place to find out.
+#
+# Nothing in this directory is dead weight: *.mjs is the server itself, and the
+# type declarations beside it are .d.mts, so they stay out of the image.
+COPY *.mjs ./
 
 # Players live in Firestore when FIRESTORE_PROJECT is set, which is what a
 # deployment does — Cloud Run's filesystem is ephemeral, so the JSON store the

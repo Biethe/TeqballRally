@@ -26,3 +26,11 @@ server/data/
 
 # Windows download metadata accidentally copied with assets
 *:Zone.Identifier
+
+# Android signing. The upload key and its password are the identity Google Play
+# checks every release against: committing them hands anyone with repository
+# access the ability to publish as this app. Keep them off the machine too —
+# losing them means Play will not accept an update until Google resets the key.
+android/keystore.properties
+*.jks
+*.keystore

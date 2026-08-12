@@ -18,6 +18,11 @@ PROJECT="${PROJECT:-teqopen-4c7ae}"
 # database is on the other side of every request the server serves.
 REGION="${REGION:-europe-west9}"
 SERVICE="${SERVICE:-teqrallly}"
+# Warm instances are the one setting here that costs money while nobody is
+# playing, so it is the one worth being able to turn off from the outside —
+# a throwaway deploy that only has to answer /healthz does not need to be paid
+# for around the clock. The default stays 1 for the reason given below.
+MIN_INSTANCES="${MIN_INSTANCES:-1}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "→ project $PROJECT, region $REGION, service $SERVICE"
@@ -34,7 +39,7 @@ gcloud run deploy "$SERVICE" \
   --source "$HERE" \
   --allow-unauthenticated \
   --set-env-vars "FIRESTORE_PROJECT=$PROJECT" \
-  --min-instances 1 \
+  --min-instances "$MIN_INSTANCES" \
   --max-instances 4 \
   --cpu 1 \
   --memory 512Mi \
@@ -43,7 +48,9 @@ gcloud run deploy "$SERVICE" \
 
 # --min-instances 1 because the websocket relay is the point: a cold start in
 #   the middle of somebody looking for a match is a lost match, and one warm
-#   instance is a few euros a month.
+#   instance is a few euros a month. MIN_INSTANCES=0 trades that back for
+#   nothing to pay while idle, which is the right deal for a service that is
+#   only being proved, not played on.
 # --timeout 3600 because a match is a long-lived socket, and Cloud Run counts
 #   that against the request timeout.
 # --concurrency 250 because each connection is nearly idle — the process
