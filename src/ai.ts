@@ -2,14 +2,32 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { predict, sampleFlight, type Prediction } from "./ball";
 import type { MatchController, MatchEvent } from "./match";
 import { tableTarget } from "./aim";
-import { AI_REACH, COURT, GROUND_Y, MAX_TOUCHES, SPAWN } from "./config";
+import {
+  AI_REACH,
+  COURT,
+  GROUND_Y,
+  MAX_TOUCHES,
+  SPAWN,
+  TABLE,
+  clearTable,
+  onTableFootprint,
+} from "./config";
 
 export interface AIDifficulty {
   /** Fraction of the AI character's own court speed it actually uses. */
   speed: number;
   aimError: number;
   reactionTime: number;
-  whiffChance: number;
+  /**
+   * How badly it reads the ball, in metres of error on the drop point.
+   *
+   * This is the whole of its fallibility, and it is deliberately the only
+   * knob that produces a missed ball. A weak opponent stands in the wrong
+   * place and arrives late; it never declines to play. See the note on the
+   * class for why that distinction is the difference between an opponent and
+   * a bug.
+   */
+  misjudge: number;
   /** Chance per possession the AI starts a control-touch sequence. */
   popChance: number;
   /** Number of control touches to attempt when that sequence starts. */
@@ -23,7 +41,9 @@ export const DIFFICULTIES = {
     speed: 0.55,
     aimError: 0.65,
     reactionTime: 0.32,
-    whiffChance: 0.24,
+    // Two thirds of a metre of misread is enough to lose a ball it had to
+    // stretch for, and never enough to lose one played straight at it.
+    misjudge: 0.66,
     popChance: 0.28,
     maxPopTouches: 1,
   },
@@ -34,7 +54,7 @@ export const DIFFICULTIES = {
     speed: 0.78,
     aimError: 0.45,
     reactionTime: 0.18,
-    whiffChance: 0.04,
+    misjudge: 0.3,
     popChance: 0.5,
     maxPopTouches: 1,
   },
@@ -42,7 +62,7 @@ export const DIFFICULTIES = {
     speed: 0.94,
     aimError: 0.22,
     reactionTime: 0.08,
-    whiffChance: 0.01,
+    misjudge: 0.12,
     popChance: 0.9,
     maxPopTouches: 2,
   },
@@ -52,16 +72,64 @@ export type DifficultyLevel = keyof typeof DIFFICULTIES;
 export const DIFFICULTY: AIDifficulty = DIFFICULTIES.normal;
 
 /**
+ * One possession's misread of where the ball will drop, in metres.
+ *
+ * Signed, so the AI is as likely to be short as long and as likely to be left
+ * as right. That symmetry is the whole point: an opponent that is always wrong
+ * in the same direction is not misjudging the ball, it is avoiding it, and it
+ * looks exactly like the bug it is.
+ *
+ * Squared about zero (`r * |r|`) so most reads are nearly right and a badly
+ * misjudged ball is the occasional one — a uniform error makes every reception
+ * equally sloppy, which reads as an opponent who cannot play at all.
+ */
+export function misreadOffset(misjudge: number, rand: () => number = Math.random): number {
+  const r = rand() * 2 - 1;
+  // `|| 0` collapses negative zero, which a negative draw against a zero
+  // misjudge produces. It is worth being fussy about here: this feeds a
+  // position that the two peers of an online match both compute, and -0 does
+  // not survive a round trip the way 0 does.
+  return r * Math.abs(r) * misjudge || 0;
+}
+
+/**
  * AI opponent: predicts the ball's path with the same physics step, runs to an
  * interception point after the bounce on its half, and strikes with some aim
- * error. Occasionally "whiffs" (stands off the intercept) so rallies are winnable.
+ * error.
+ *
+ * **It always tries to play the ball.** Every mistake it makes is a mistake of
+ * position or timing — it read the bounce wrong, it started late, it could not
+ * cover the ground. It never decides not to go.
+ *
+ * That rule is here because the opposite was, and it was the single worst
+ * thing about the opponent. Difficulty used to include a "whiff": a fixed
+ * 1.15 m sidestep, always in the same direction, combined with a rule
+ * forbidding the AI to touch the ball at all that possession. On easy it fired
+ * on nearly a quarter of incoming balls, which on a serve meant a quarter of
+ * points opened with the opponent walking away from the ball and watching it
+ * land. No player does that, so it read as a bug rather than as a weak
+ * opponent — and it could not be tuned out, because the problem was not the
+ * amount, it was the kind.
+ *
+ * A miss now has to be earned by the shot: put the ball somewhere it has to
+ * hurry to, and its misread of the drop point plus its reaction delay decide
+ * whether it gets there. That also means a ball played straight at a weak
+ * opponent comes back, which is correct — beating them should require aiming.
  */
 export class AIController {
   private prediction: Prediction | null = null;
   private repredictIn = 0;
   private reaction = 0;
-  private whiffOffset = 0;
-  private rolledWhiff = false;
+  /**
+   * How far off this possession's read of the drop point is, in metres.
+   *
+   * Signed, and rolled once per incoming ball: a fixed sign is what made the
+   * old whiff look mechanical, because a player who is always wrong the same
+   * way is not misjudging, they are dodging.
+   */
+  private misreadZ = 0;
+  private misreadX = 0;
+  private rolledRead = false;
   /** Planned control touches for the current AI possession. */
   private plannedPops = 0;
   /** Let the ball drop below waist height before returning (shows low kicks). */
@@ -77,9 +145,8 @@ export class AIController {
   constructor(private match: MatchController, private diff: AIDifficulty = DIFFICULTY) {
     // `lastHitter` deliberately survives the between-point state, so it
     // cannot by itself tell us that a new player serve began.  Reset the
-    // possession choice from the authoritative launch events instead.  In
-    // particular this prevents one intentional whiff from offsetting every
-    // later reception after that point has already ended.
+    // possession choice from the authoritative launch events instead, so one
+    // ball's misread does not follow the AI into every later reception.
     this.unsubscribe = this.match.subscribe((event) => this.onMatchEvent(event));
   }
 
@@ -103,8 +170,9 @@ export class AIController {
   private resetInboundPlan(): void {
     this.prediction = null;
     this.repredictIn = 0;
-    this.rolledWhiff = false;
-    this.whiffOffset = 0;
+    this.rolledRead = false;
+    this.misreadZ = 0;
+    this.misreadX = 0;
     this.plannedPops = 0;
     this.wantLow = false;
     this.jitterZ = 0;
@@ -131,7 +199,7 @@ export class AIController {
     const speed = Math.min(ai.def.speed, cruiseSpeed * 1.1);
     if (!incoming) {
       this.prediction = null;
-      this.rolledWhiff = false;
+      this.rolledRead = false;
       this.dropSpot = null;
       this.chaseSpot = null;
       this.chaseGrace = 0;
@@ -146,13 +214,16 @@ export class AIController {
     }
 
     if (
-      !this.rolledWhiff &&
+      !this.rolledRead &&
       (this.prediction.tableBounce?.side === "ai" || m.strikeableSide === "ai")
     ) this.rollPossessionChoice();
 
     const intercept = this.pickIntercept(dt);
     if (intercept) {
-      intercept.z += this.whiffOffset + this.jitterZ;
+      // Where it *thinks* the ball is going. The error is what a mistake is
+      // made of, so it is applied to the run and not to the decision to run.
+      intercept.z += this.misreadZ + this.jitterZ;
+      intercept.x += this.misreadX;
       this.chaseSpot = intercept.clone();
       this.chaseGrace = 0.3;
       ai.moveToward(intercept, speed, dt);
@@ -171,7 +242,9 @@ export class AIController {
       this.reaction -= dt;
       const chest = ai.position.add(new Vector3(0, ai.height * 0.55, 0));
       const d = Vector3.Distance(chest, m.ball.state.pos);
-      if (d <= AI_REACH && this.reaction <= 0 && this.whiffOffset === 0) {
+      // No veto here any more: if the ball is in reach, it is played. Whether
+      // it got into reach is what the misread and the reaction delay decided.
+      if (d <= AI_REACH && this.reaction <= 0) {
         const canBuildAttack =
           this.plannedPops > m.touchCount &&
           (m.touchCount === 0 || m.ball.state.vel.y < 0);
@@ -195,7 +268,7 @@ export class AIController {
             this.wantLow &&
             m.touchCount === 0 &&
             relH > 0.72 &&
-            m.ball.state.pos.x > COURT.minX &&
+            m.ball.state.pos.x > TABLE.halfLen &&
             d < AI_REACH * 0.72;
           if (!holdForLow) {
             // The CPU aims at a spot on the player's half and strikes at a
@@ -216,13 +289,17 @@ export class AIController {
 
   /** Roll variety once for this inbound ball, never once per reprediction. */
   private rollPossessionChoice(): void {
-    this.rolledWhiff = true;
-    this.whiffOffset = Math.random() < this.diff.whiffChance ? 1.15 : 0;
+    this.rolledRead = true;
+    // Independent on both axes, so being wrong looks like being wrong rather
+    // than like a habit. Less error along the table than across it: judging
+    // how far a ball is coming is easier than judging where it will land.
+    this.misreadZ = misreadOffset(this.diff.misjudge);
+    this.misreadX = misreadOffset(this.diff.misjudge * 0.6);
     const maxPops = Math.max(0, Math.min(MAX_TOUCHES - 1, Math.floor(this.diff.maxPopTouches)));
     this.plannedPops = Math.random() < this.diff.popChance ? maxPops : 0;
     this.wantLow = Math.random() < 0.16;
     // Enough texture to keep the AI from parking on a perfect rail, but not
-    // enough to turn a normal-difficulty reception into an accidental whiff.
+    // enough to lose it a reception it should make.
     this.jitterZ = (Math.random() - 0.5) * 0.42;
     this.reaction = this.diff.reactionTime;
   }
@@ -251,11 +328,7 @@ export class AIController {
       if (this.dropSpot) return this.dropSpot.clone();
       // No drop point (ball hovering in reach right now): stand under the ball.
       const b = m.ball.state.pos;
-      return new Vector3(
-        Math.max(COURT.minX, Math.min(COURT.maxX, b.x)),
-        GROUND_Y,
-        Math.max(-COURT.maxZ, Math.min(COURT.maxZ, b.z))
-      );
+      return this.standAt(b.x, b.z);
     }
     const p = this.prediction;
     if (!p || !p.tableBounce || p.tableBounce.side !== "ai") return null;
@@ -267,7 +340,7 @@ export class AIController {
     if (planned) return planned;
     // Fallback: hover just behind the predicted bounce.
     const b = p.tableBounce.pos;
-    return new Vector3(Math.max(COURT.minX, b.x + 1.2), GROUND_Y, b.z);
+    return this.standAt(b.x + 1.2, b.z);
   }
 
   /**
@@ -288,7 +361,9 @@ export class AIController {
       const h = s.pos.y - GROUND_Y;
       const descending = s.pos.y <= prevY + 0.002;
       prevY = s.pos.y;
-      const offTable = s.pos.x > COURT.minX || Math.abs(s.pos.z) > 0.95;
+      // A ball still over the table has not been received yet — it is about
+      // to bounce. The reception is the part of the flight past it.
+      const offTable = !onTableFootprint(s.pos.x, s.pos.z);
       if (!descending || !offTable || s.pos.x <= 0 || h < 0.28 || h > 1.22) continue;
       // Prefer a natural chest/foot reception height. A tiny forward bias
       // keeps the target from jumping to a much later, lower sample.
@@ -296,10 +371,20 @@ export class AIController {
       if (!best || cost < best.cost) best = { pos: s.pos, cost };
     }
     if (!best) return null;
-    return new Vector3(
-      Math.max(COURT.minX, Math.min(COURT.maxX, best.pos.x)),
-      GROUND_Y,
-      Math.max(-COURT.maxZ, Math.min(COURT.maxZ, best.pos.z))
+    return this.standAt(best.pos.x, best.pos.z);
+  }
+
+  /**
+   * A spot the AI can actually stand on: inside its half, and not in the table.
+   *
+   * The half now runs all the way to the middle line, so every run target has
+   * to be cleared of the table rather than simply held behind its end.
+   */
+  private standAt(x: number, z: number): Vector3 {
+    const clear = clearTable(
+      Math.max(COURT.minX, Math.min(COURT.maxX, x)),
+      Math.max(-COURT.maxZ, Math.min(COURT.maxZ, z))
     );
+    return new Vector3(clear.x, GROUND_Y, clear.z);
   }
 }

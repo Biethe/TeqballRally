@@ -46,10 +46,54 @@ export const GRAVITY = 9.81;
 // The far limits are the arena's floor, which is a fixed model and does not
 // scale with the table; the near limit is the table end and must.
 export const COURT = {
-  minX: TABLE.halfLen + 0.06, // players stay behind the table end
+  // Players may come right up to the middle line. They used to be held behind
+  // the table *end*, nearly two metres off the net, which made the whole front
+  // of the court unreachable and the hardest shots — the ones taken close in —
+  // impossible to play. What they cannot do is stand on the table; that is
+  // `clearTable` below, and it is a hole in the middle of the half rather than
+  // a wall across it.
+  minX: 0.06,
   maxX: 6.8,
   maxZ: 4.6,
 };
+
+/**
+ * How much room a standing player keeps around the table.
+ *
+ * Roughly half a shoulder width. It is what stops a player's root ending up
+ * inside the table model while they walk past it, and it is deliberately small
+ * — being able to play from right beside the table is the point of opening the
+ * half up at all.
+ */
+export const TABLE_CLEARANCE = 0.28;
+
+/** True when a player standing here would be inside the table. */
+export function onTableFootprint(x: number, z: number): boolean {
+  return (
+    Math.abs(x) < TABLE.halfLen + TABLE_CLEARANCE &&
+    Math.abs(z) < TABLE.halfWid + TABLE_CLEARANCE
+  );
+}
+
+/**
+ * Push a standing position out of the table, by the shortest way out.
+ *
+ * Sideways when they are alongside it, backwards when they are at the end —
+ * which is what walking into a table actually does to you, and which keeps a
+ * player who is running down the side of the table running down the side of
+ * it rather than being flung behind the baseline.
+ */
+export function clearTable(x: number, z: number): { x: number; z: number } {
+  if (!onTableFootprint(x, z)) return { x, z };
+  const outZ = TABLE.halfWid + TABLE_CLEARANCE;
+  const outX = TABLE.halfLen + TABLE_CLEARANCE;
+  const pushZ = outZ - Math.abs(z);
+  const pushX = outX - Math.abs(x);
+  // A player exactly on the centre line has no side to be pushed to, so the
+  // tie goes backwards rather than picking one arbitrarily.
+  if (pushZ < pushX && z !== 0) return { x, z: Math.sign(z) * outZ };
+  return { x: (x === 0 ? 1 : Math.sign(x)) * outX, z };
+}
 
 // ---------------- world layout tuning (hand-editable) ----------------
 // Distances in metres. Gameplay space: table centre at the origin, ground at

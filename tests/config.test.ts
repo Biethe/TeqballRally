@@ -20,8 +20,11 @@ import {
   SETS_TO_WIN,
   SPAWN,
   TABLE,
+  TABLE_CLEARANCE,
   WIN_SCORE,
+  clearTable,
   contactDelaySeconds,
+  onTableFootprint,
   contactFraction,
   tableSurfaceY,
   tossFraction,
@@ -236,9 +239,41 @@ describe("kick tuning tables", () => {
 });
 
 describe("court and match rules", () => {
-  it("keeps players behind the table", () => {
-    expect(COURT.minX).toBeGreaterThan(TABLE.halfLen);
+  it("lets players reach the middle line", () => {
+    // They used to be held behind the table *end*, nearly two metres off the
+    // net, which put the whole front of the court out of reach and made the
+    // shots taken from there impossible to play.
+    expect(COURT.minX).toBeLessThan(TABLE.halfLen);
+    expect(COURT.minX).toBeGreaterThan(0);
     expect(COURT.maxX).toBeGreaterThan(COURT.minX);
+  });
+
+  it("keeps them off the table while they are up there", () => {
+    // The table is a hole in the half, not a wall across it.
+    expect(onTableFootprint(0.5, 0)).toBe(true);
+    expect(onTableFootprint(TABLE.halfLen + TABLE_CLEARANCE + 0.1, 0)).toBe(false);
+    expect(onTableFootprint(0.5, TABLE.halfWid + TABLE_CLEARANCE + 0.1)).toBe(false);
+  });
+
+  it("pushes a player out of the table the short way", () => {
+    // Alongside it they are moved sideways, so a run down the side of the
+    // table stays a run down the side of the table.
+    const beside = clearTable(0.5, TABLE.halfWid);
+    expect(Math.abs(beside.z)).toBeGreaterThan(TABLE.halfWid);
+    expect(beside.x).toBeCloseTo(0.5);
+
+    // At the end of it they are moved back behind the end.
+    const ahead = clearTable(TABLE.halfLen, 0.1);
+    expect(Math.abs(ahead.x)).toBeGreaterThan(TABLE.halfLen);
+
+    // Dead centre has no side to be pushed to, and must still resolve.
+    const centre = clearTable(0, 0);
+    expect(onTableFootprint(centre.x, centre.z)).toBe(false);
+  });
+
+  it("leaves a position that was never on the table alone", () => {
+    const clear = clearTable(4, 2);
+    expect(clear).toEqual({ x: 4, z: 2 });
   });
 
   // Movement bounds are shared by every venue, so a venue whose floor is
@@ -265,8 +300,10 @@ describe("court and match rules", () => {
   // measured against it has to grow with it. These used to be bare metres, so
   // enlarging the table quietly walked the players into their own table end.
   it("scales the standing room with the table", () => {
-    expect(COURT.minX).toBeGreaterThan(TABLE.halfLen);
-    expect(SPAWN.x).toBeGreaterThan(COURT.minX);
+    // The clearance keeping a player out of the table is what has to grow with
+    // it now, since the bound itself is the middle line.
+    expect(TABLE_CLEARANCE).toBeGreaterThan(0);
+    expect(SPAWN.x).toBeGreaterThan(TABLE.halfLen);
     expect(SERVE_X).toBeGreaterThan(SPAWN.x);
     // Still an arena, not a corridor: there is court left behind the server.
     expect(COURT.maxX - SERVE_X).toBeGreaterThan(1);
