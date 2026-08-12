@@ -4,12 +4,9 @@ import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import type { Scene } from "@babylonjs/core/scene";
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
-import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
-import { Texture } from "@babylonjs/core/Materials/Textures/texture";
-import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import {
   clearTable,
+  clipStartFraction,
   contactFraction,
   CHARACTER_SCALE,
   COURT,
@@ -19,7 +16,22 @@ import {
 } from "./config";
 import { brightenKit, fixMetallicMaterials } from "./scene";
 
-const LOCO_CLIPS = ["Idle", "JogForward", "jogBackward", "JogStrafeLeft", "JogStrafeRight"] as const;
+/**
+ * The clips locomotion blends between.
+ *
+ * The sideways ones are the InPlace variants: movement is integrated from
+ * velocity, so a clip that travels as well would move the character twice and
+ * drift the rig off where the game thinks it is. See Animation.txt.
+ */
+const LOCO_CLIPS = [
+  "Idle",
+  "JogForward",
+  "jogBackward",
+  "WalkStrafeLeftInPlace",
+  "WalkStrafeRightInPlace",
+  "JogStrafeLeftInPlace",
+  "JogStrafeRightInPlace",
+] as const;
 /** Ground speed the jog clips look natural at; playback scales around it. */
 const LOCO_SPEED = 4.5 * CHARACTER_SCALE;
 
@@ -29,10 +41,23 @@ const LOCO_SPEED = 4.5 * CHARACTER_SCALE;
  * A strafe is a shuffle: the feet cross less distance per cycle than a run
  * does. Driving both off the same reference speed therefore under-cranks the
  * strafe clips — the body slides out from under feet that are still shuffling.
- * Calibrated by eye against a real browser; lower it if sideways runs still
- * skate, raise it if the feet look like they are running on the spot.
+ * The walk is slower again, which is the whole reason it exists as its own
+ * clip. Both are calibrated by eye against a real browser: lower them if
+ * sideways movement still skates, raise them if the feet run on the spot.
  */
 const STRAFE_STRIDE_RATIO = 0.62;
+const WALK_STRIDE_RATIO = 0.3;
+
+/**
+ * The speed band the sideways movement changes gait over.
+ *
+ * Below the first it is a walking adjustment — the half-step you take for a
+ * ball that is nearly on you. Above the second it is a proper sideways run for
+ * one that is not. In between both clips carry weight, so the change of gait
+ * is something the legs do rather than something that snaps.
+ */
+const STRAFE_WALK_SPEED = 1.1;
+const STRAFE_JOG_SPEED = 2.6;
 
 /** Below this the character is standing; above JOG_SPEED the jog carries full weight. */
 const IDLE_SPEED = 0.4;
@@ -48,6 +73,12 @@ const STRIDE_MAX = 1.6;
 
 export type LocoClip = (typeof LOCO_CLIPS)[number];
 export type LocoWeights = Record<LocoClip, number>;
+
+/** A callback fired once the clip reaches a given fraction of its length. */
+interface FracCallback {
+  frac: number;
+  fn: () => void;
+}
 
 /**
  * Goal weights for the locomotion clips, from a run velocity already expressed
@@ -68,8 +99,10 @@ export function locoBlend(fwd: number, lat: number, speed: number): LocoWeights 
     Idle: 0,
     JogForward: 0,
     jogBackward: 0,
-    JogStrafeLeft: 0,
-    JogStrafeRight: 0,
+    WalkStrafeLeftInPlace: 0,
+    WalkStrafeRightInPlace: 0,
+    JogStrafeLeftInPlace: 0,
+    JogStrafeRightInPlace: 0,
   };
   // Cross-fade out of standing across a band rather than switching at a single
   // threshold: a small adjusting step used to snap a full-weight jog on and
@@ -90,8 +123,21 @@ export function locoBlend(fwd: number, lat: number, speed: number): LocoWeights 
   const s = (az / sum) * moving;
   if (fwd >= 0) w.JogForward = f;
   else w.jogBackward = f;
-  if (lat >= 0) w.JogStrafeRight = s;
-  else w.JogStrafeLeft = s;
+  // Sideways splits again by gait. A ball nearly on you is a walking half-step
+  // sideways; one you have to cover ground for is a run. Speed is what tells
+  // them apart, and blending across the band means the legs change gait rather
+  // than the clip switching under them.
+  const jogShare = Math.min(
+    1,
+    Math.max(0, (speed - STRAFE_WALK_SPEED) / (STRAFE_JOG_SPEED - STRAFE_WALK_SPEED))
+  );
+  if (lat >= 0) {
+    w.JogStrafeRightInPlace = s * jogShare;
+    w.WalkStrafeRightInPlace = s * (1 - jogShare);
+  } else {
+    w.JogStrafeLeftInPlace = s * jogShare;
+    w.WalkStrafeLeftInPlace = s * (1 - jogShare);
+  }
   return w;
 }
 
@@ -103,11 +149,16 @@ export function locoBlend(fwd: number, lat: number, speed: number): LocoWeights 
  * a full running stride.
  */
 export function locoStride(weights: LocoWeights, speed: number): number {
+  // Each gait covers a different amount of ground per cycle. Averaging their
+  // authored speeds by the weights actually in play gives the speed this blend
+  // was drawn for, and the rate is how far off it the body really is.
   const run = weights.JogForward + weights.jogBackward;
-  const side = weights.JogStrafeLeft + weights.JogStrafeRight;
-  const total = run + side;
+  const jogSide = weights.JogStrafeLeftInPlace + weights.JogStrafeRightInPlace;
+  const walkSide = weights.WalkStrafeLeftInPlace + weights.WalkStrafeRightInPlace;
+  const total = run + jogSide + walkSide;
   if (total <= 1e-6) return 1;
-  const reference = LOCO_SPEED * ((run + side * STRAFE_STRIDE_RATIO) / total);
+  const reference =
+    (LOCO_SPEED * (run + jogSide * STRAFE_STRIDE_RATIO + walkSide * WALK_STRIDE_RATIO)) / total;
   return Math.min(STRIDE_MAX, Math.max(STRIDE_MIN, speed / reference));
 }
 
@@ -144,238 +195,6 @@ export function approachVelocity(
  * brave point into a lost game.
  */
 export const MIN_EFFORT = 0.62;
-
-// The source kits are real shirt textures whose back panel contains a literal
-// "NAME" placeholder. It is baked into the albedo map rather than being a
-// standalone mesh, so hiding a node cannot remove it. The same atlas layout
-// is used by every player: this is the small rear-name strip, deliberately
-// ending above the jersey number.
-const JERSEY_NAME_MASK = { x: 0.16, y: 0.224, width: 0.205, height: 0.058 };
-const JERSEY_TEXTURE_SIZE = 1024;
-
-interface GltfImageRef {
-  bufferView?: number;
-  mimeType?: string;
-}
-
-interface GltfDocument {
-  bufferViews?: Array<{ byteOffset?: number; byteLength: number }>;
-  images?: GltfImageRef[];
-  materials?: Array<{
-    name?: string;
-    pbrMetallicRoughness?: { baseColorTexture?: { index: number } };
-  }>;
-  textures?: Array<{ source?: number }>;
-}
-
-/** Shared, already-redacted shirt canvases, one inexpensive 1024px copy per kit. */
-const maskedShirtCanvases = new Map<string, Promise<HTMLCanvasElement | null>>();
-
-interface FracCallback {
-  frac: number;
-  fn: () => void;
-}
-
-/**
- * Remove the template name from a player kit without changing its rig or
- * geometry. Both the match scene and the selector import the same GLBs, so
- * keeping this beside Character makes the treatment identical in each place.
- */
-export async function maskJerseyPlaceholder(meshes: AbstractMesh[], id: string): Promise<void> {
-  const shirts = new Set<PBRMaterial>();
-  for (const mesh of meshes) {
-    const material = mesh.material;
-    if (material instanceof PBRMaterial && /shirt/i.test(material.name)) shirts.add(material);
-  }
-  if (shirts.size === 0) return;
-
-  const firstShirt = [...shirts].find((shirt) => shirt.albedoTexture !== null);
-  if (!firstShirt?.albedoTexture) return;
-  const canvas = await maskedShirtCanvas(id, firstShirt.albedoTexture);
-  if (!canvas) return;
-
-  for (const shirt of shirts) {
-    const source = shirt.albedoTexture;
-    if (!source) continue;
-    const invertY = source instanceof Texture ? source.invertY : false;
-    const redacted = new DynamicTexture(
-      `${id}-shirt-without-template-name`,
-      canvas,
-      shirt.getScene(),
-      !source.noMipmap,
-      source.samplingMode,
-      undefined,
-      invertY
-    );
-    copyTextureSettings(redacted, source);
-    redacted.update(invertY);
-    shirt.albedoTexture = redacted;
-  }
-}
-
-function copyTextureSettings(target: DynamicTexture, source: BaseTexture): void {
-  target.hasAlpha = source.hasAlpha;
-  target.getAlphaFromRGB = source.getAlphaFromRGB;
-  target.level = source.level;
-  target.coordinatesIndex = source.coordinatesIndex;
-  target.coordinatesMode = source.coordinatesMode;
-  target.wrapU = source.wrapU;
-  target.wrapV = source.wrapV;
-  target.wrapR = source.wrapR;
-  target.gammaSpace = source.gammaSpace;
-  target.isRGBD = source.isRGBD;
-  target.anisotropicFilteringLevel = source.anisotropicFilteringLevel;
-  target.optimizeUVAllocation = source.optimizeUVAllocation;
-  if (!(source instanceof Texture)) return;
-  target.uOffset = source.uOffset;
-  target.vOffset = source.vOffset;
-  target.uScale = source.uScale;
-  target.vScale = source.vScale;
-  target.uAng = source.uAng;
-  target.vAng = source.vAng;
-  target.wAng = source.wAng;
-  target.uRotationCenter = source.uRotationCenter;
-  target.vRotationCenter = source.vRotationCenter;
-  target.wRotationCenter = source.wRotationCenter;
-  target.homogeneousRotationInUVTransform = source.homogeneousRotationInUVTransform;
-}
-
-function maskedShirtCanvas(id: string, source: BaseTexture): Promise<HTMLCanvasElement | null> {
-  let canvas = maskedShirtCanvases.get(id);
-  if (!canvas) {
-    canvas = createMaskedShirtCanvas(id, source);
-    maskedShirtCanvases.set(id, canvas);
-  }
-  return canvas;
-}
-
-async function createMaskedShirtCanvas(id: string, sourceTexture: BaseTexture): Promise<HTMLCanvasElement | null> {
-  if (typeof document === "undefined" || typeof createImageBitmap === "undefined") return null;
-  try {
-    // glTF normally keeps each embedded image behind a blob URL. Reading that
-    // small shirt image avoids downloading a second full character GLB.
-    let shirtBlob: Blob | null = null;
-    const textureUrl = sourceTexture instanceof Texture ? sourceTexture.url ?? "" : "";
-    // Babylon represents embedded glTF images as `data:/model.glb#imageN`.
-    // That is an internal identifier, not a fetchable data URI, so trying it
-    // creates a browser warning before the GLB fallback can take over.
-    const canReadTextureUrl = /^(blob:|https?:|\/|data:image\/)/i.test(textureUrl);
-    if (canReadTextureUrl) {
-      try {
-        const response = await fetch(textureUrl);
-        if (response.ok) shirtBlob = await response.blob();
-      } catch {
-        // Some loaders revoke their blob URL after upload; use the GLB fallback.
-      }
-    }
-    if (!shirtBlob) {
-      const response = await fetch(`/models/characters/${id}.glb`);
-      if (!response.ok) return null;
-      const source = shirtImageFromGlb(await response.arrayBuffer());
-      if (!source) return null;
-      shirtBlob = new Blob([source.bytes], { type: source.mimeType });
-    }
-
-    const bitmap = await createImageBitmap(shirtBlob);
-    const canvas = document.createElement("canvas");
-    canvas.width = JERSEY_TEXTURE_SIZE;
-    canvas.height = JERSEY_TEXTURE_SIZE;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      bitmap.close();
-      return null;
-    }
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    bitmap.close();
-    eraseTemplateName(canvas, JERSEY_NAME_MASK);
-    return canvas;
-  } catch {
-    // A failed cosmetic mask should never prevent a player model from loading.
-    return null;
-  }
-}
-
-function shirtImageFromGlb(buffer: ArrayBuffer): { bytes: ArrayBuffer; mimeType: string } | null {
-  const view = new DataView(buffer);
-  // GLB header: magic "glTF", version, complete byte length.
-  if (view.byteLength < 20 || view.getUint32(0, true) !== 0x46546c67) return null;
-
-  let json: GltfDocument | null = null;
-  let binary: Uint8Array | null = null;
-  let cursor = 12;
-  while (cursor + 8 <= view.byteLength) {
-    const length = view.getUint32(cursor, true);
-    const type = view.getUint32(cursor + 4, true);
-    const start = cursor + 8;
-    const end = start + length;
-    if (end > view.byteLength) return null;
-    if (type === 0x4e4f534a) {
-      const text = new TextDecoder().decode(new Uint8Array(buffer, start, length)).replace(/\0+$/g, "").trim();
-      json = JSON.parse(text) as GltfDocument;
-    } else if (type === 0x004e4942) {
-      binary = new Uint8Array(buffer, start, length);
-    }
-    cursor = end;
-  }
-  if (!json || !binary) return null;
-
-  const shirt = json.materials?.find((material) => /shirt/i.test(material.name ?? ""));
-  const textureIndex = shirt?.pbrMetallicRoughness?.baseColorTexture?.index;
-  const imageIndex = textureIndex === undefined ? undefined : json.textures?.[textureIndex]?.source;
-  const image = imageIndex === undefined ? undefined : json.images?.[imageIndex];
-  const imageView = image?.bufferView === undefined ? undefined : json.bufferViews?.[image.bufferView];
-  if (!image || !imageView) return null;
-
-  const offset = imageView.byteOffset ?? 0;
-  const end = offset + imageView.byteLength;
-  if (offset < 0 || end > binary.byteLength) return null;
-  // Copy to an owned ArrayBuffer: BlobPart intentionally rejects a view whose
-  // buffer could be a SharedArrayBuffer, while GLB's binary chunk is ordinary
-  // data we can safely isolate here.
-  const bytes = new Uint8Array(new ArrayBuffer(imageView.byteLength));
-  bytes.set(binary.subarray(offset, end));
-  return { bytes: bytes.buffer, mimeType: image.mimeType ?? "image/jpeg" };
-}
-
-/** Paint over NAME using the surrounding shirt pixels, leaving its number intact. */
-function eraseTemplateName(canvas: HTMLCanvasElement, rect: typeof JERSEY_NAME_MASK): void {
-  const context = canvas.getContext("2d");
-  if (!context) return;
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
-  const { data, width, height } = pixels;
-  const left = Math.round(rect.x * width);
-  const top = Math.round(rect.y * height);
-  const right = Math.round((rect.x + rect.width) * width);
-  const bottom = Math.round((rect.y + rect.height) * height);
-  const sample = (x: number, y: number, channel: number): number => {
-    let total = 0;
-    let count = 0;
-    for (let sy = Math.max(0, y - 2); sy <= Math.min(height - 1, y + 2); sy++) {
-      for (let sx = Math.max(0, x - 10); sx <= Math.min(width - 1, x + 10); sx++) {
-        total += data[(sy * width + sx) * 4 + channel];
-        count++;
-      }
-    }
-    return total / Math.max(1, count);
-  };
-
-  for (let y = top; y < bottom; y++) {
-    const leftColour = [sample(left - 15, y, 0), sample(left - 15, y, 1), sample(left - 15, y, 2)];
-    const rightColour = [sample(right + 15, y, 0), sample(right + 15, y, 1), sample(right + 15, y, 2)];
-    for (let x = left; x < right; x++) {
-      const t = (x - left) / Math.max(1, right - left - 1);
-      // Feather the join very slightly, so the mask follows shirt shading
-      // instead of reading as a rectangular label.
-      const edge = Math.min(1, Math.min(x - left, right - 1 - x) / 3);
-      const p = (y * width + x) * 4;
-      for (let channel = 0; channel < 3; channel++) {
-        const fill = leftColour[channel] * (1 - t) + rightColour[channel] * t;
-        data[p + channel] = Math.round(data[p + channel] * (1 - edge) + fill * edge);
-      }
-    }
-  }
-  context.putImageData(pixels, 0, 0);
-}
 
 /**
  * A loaded, rigged character: kinematic movement plus a two-layer animation
@@ -445,7 +264,6 @@ export class Character {
     // textures nearly black without an environment map.
     fixMetallicMaterials(res.meshes);
     brightenKit(res.meshes);
-    await maskJerseyPlaceholder(res.meshes, file);
     for (const g of res.animationGroups) {
       g.stop();
       char.groups.set(g.name.trim(), g);
@@ -660,7 +478,11 @@ export class Character {
       this.root.rotation.y += opts.yawOffset;
     }
     for (const loco of LOCO_CLIPS) this.setLocoWeight(loco, 0);
-    const from = g.from + (opts.startFrac ?? 0) * (g.to - g.from);
+    // A clip may have unusable frames at its head (CLIP_SKIP_FRAMES). Enforcing
+    // the floor here rather than at each call site means no planner can ask for
+    // a wind-up long enough to reach back into them.
+    const startFrac = Math.max(opts.startFrac ?? 0, clipStartFraction(name));
+    const from = g.from + startFrac * (g.to - g.from);
     g.start(opts.loop ?? false, opts.speed ?? 1, from, g.to);
     g.setWeightForAllAnimatables(1);
     this.action = g;
