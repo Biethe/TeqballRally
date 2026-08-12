@@ -251,6 +251,33 @@ export const CAMERA = {
      */
     margin: 0.7,
   },
+  /**
+   * The shot held on whoever just won the game.
+   *
+   * A match ends with one player celebrating and the other playing Defeat, and
+   * the locked-off court camera is too far away for either to read as anything
+   * but a small figure. Coming in on the winner is what the moment is for.
+   *
+   * The camera sits in front of them — between them and the net, since that is
+   * the side they are facing — and slightly off-axis, because a dead-centre
+   * front-on shot of a rig is the one angle that looks like a character
+   * selection screen rather than a celebration.
+   */
+  victory: {
+    /** Metres in front of the winner, along the way they face. */
+    distance: 3.4,
+    /** Metres to their side, so the shot is not dead-on. */
+    offset: 1.5,
+    height: 1.9,
+    /** Height on the winner the camera looks at: chest, not feet. */
+    lookY: 1.25,
+    fov: 0.95,
+    /**
+     * Seconds for the move in. Slow enough to read as a deliberate push rather
+     * than a cut, short enough to arrive while the celebration is still going.
+     */
+    tau: 0.55,
+  },
   // P2 cannot use the mirrored P1 position: it lands outside the imported
   // gym. This keeps the view inside, matches P1's player scale, and gives it
   // a slightly steeper tilt.
