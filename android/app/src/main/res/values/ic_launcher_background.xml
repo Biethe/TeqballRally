@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <!--
+      The navy the icon art sits on. It was white, which put a bright ring
+      around the artwork on every launcher that masks adaptive icons to a
+      circle or squircle - the mask crops the foreground, not the background.
+    -->
+    <color name="ic_launcher_background">#00225A</color>
 </resources>

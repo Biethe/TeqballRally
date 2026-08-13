@@ -1008,6 +1008,28 @@ That one is worth the wall-clock: it caught a guest whose opponent never moved,
 and again a guest whose opponent moved but never animated, both of which
 typecheck and pass every unit test.
 
+## Purchases
+
+Everything paid hangs off one entitlement, **Teqie Pro**, and `src/purchases.ts`
+is the only module that imports the SDK — so there is one answer to "is this
+player pro" rather than one per call site. Products are `monthly`, `yearly` and
+`lifetime`; the game never asks which one somebody bought, because all three
+mean the same thing to a locked arena.
+
+It goes through `@revenuecat/purchases-capacitor` rather than Kotlin because the
+game is TypeScript in a WebView: the plugin *is* the native Android SDK
+(`purchases-hybrid-common` wraps `com.revenuecat.purchases:purchases`), and an
+entitlement the WebView cannot read is one that nothing can act on.
+
+`purchasesAvailable()` is false in a browser, so the dev server, the hosted
+build and every harness run with no store and nothing to stub.
+
+Two things that are easy to get wrong and fail quietly: the entitlement
+identifier is a dictionary key and must match the dashboard exactly, and the
+default API key is a **Test Store** key — a Play release needs the `goog_…` one
+via `VITE_REVENUECAT_KEY`. See **PURCHASES.md** for the dashboard setup, usage
+examples and the release checklist.
+
 ## Testing on a phone
 
 **Quickest — no Android tooling at all.** The game is a web app, so a phone on
