@@ -1,5 +1,10 @@
 ext {
-    minSdkVersion = 23
+    // 24 (Android 7.0) because RevenueCat's paywall and customer-center library
+    // declares it: purchases-hybrid-common-ui refuses to merge into a manifest
+    // that claims to support less. It costs Android 6.0, which is a fraction of
+    // a percent of active devices and none of the phones this is aimed at, and
+    // the alternative is shipping without a paywall.
+    minSdkVersion = 24
     compileSdkVersion = 35
     targetSdkVersion = 35
     androidxActivityVersion = '1.9.2'

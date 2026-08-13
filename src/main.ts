@@ -16,6 +16,7 @@ import {
 } from "./quality";
 import { VENUE_IDS, resolveVenue, storeVenue, venueFor } from "./venue";
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
+import { initPurchases } from "./purchases";
 import { INTRO_SECONDS, introPose } from "./intro";
 import { Ball, type Side } from "./ball";
 import { Character } from "./character";
@@ -146,6 +147,11 @@ async function boot(): Promise<void> {
   const ui = new UI(uiRoot);
   const audio = new AudioManager();
   const input = new Input(uiRoot);
+  // Not awaited: the store is never allowed to hold up the game starting, and
+  // every gate reads the entitlement through subscribeToPro, which fires again
+  // when the real answer lands. Off-device this settles immediately on "no
+  // store", so the browser and the harnesses are unaffected.
+  void initPurchases();
   // The browser harnesses in scripts/ drive screens that are otherwise only
   // reachable by playing a match out — which, on a software renderer at a
   // frame a second, they cannot do. Same reason __teq exposes the match.
