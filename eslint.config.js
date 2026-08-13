@@ -13,6 +13,12 @@ export default tseslint.config(
       ".firebase/**",
       "assets/**",
       "server/rules.mjs",
+      // Gradle's output, which contains Capacitor's own bundled native-bridge.js.
+      // It is gitignored, but it exists on any machine that has built an APK,
+      // and linting it fails the whole check on a file nobody here wrote.
+      "android/**/build/**",
+      // Unpacked Blender exports and other raw art inputs.
+      "raw/**",
     ],
   },
 

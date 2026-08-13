@@ -13,6 +13,52 @@
   <body>
     <canvas id="game-canvas"></canvas>
     <div id="ui-root"></div>
+    <!--
+      Somewhere to put a startup failure.
+
+      A packaged build has no console attached, so an early error — unsupported
+      syntax on an old System WebView, a missing asset, a WebGL context that
+      will not create — is a black screen and nothing else. This is a classic
+      script rather than a module on purpose: it still runs when the module
+      below is the thing that failed to parse, which is exactly the case it
+      exists to report.
+    -->
+    <script>
+      (function () {
+        var shown = false;
+        function show(title, detail) {
+          if (shown) return;
+          shown = true;
+          var el = document.createElement("pre");
+          el.id = "fatal-error";
+          el.style.cssText =
+            "position:fixed;inset:0;z-index:99999;margin:0;padding:16px;overflow:auto;" +
+            "background:#12060a;color:#ffb4b4;font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap";
+          var webgl2;
+          try {
+            webgl2 = !!document.createElement("canvas").getContext("webgl2");
+          } catch (e) {
+            webgl2 = "threw " + e;
+          }
+          el.textContent =
+            title + "\n\n" + detail + "\n\nWebGL2: " + webgl2 + "\nUA: " + navigator.userAgent;
+          document.body.appendChild(el);
+        }
+        window.addEventListener("error", function (e) {
+          show("Startup error", (e.message || "") + "\n" + (e.filename || "") + ":" + (e.lineno || 0));
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          show("Unhandled rejection", String((e.reason && e.reason.stack) || e.reason));
+        });
+        // Nothing drawn after 30 s is a hang rather than a thrown error, and it
+        // needs saying too — the loading screen alone cannot tell them apart.
+        setTimeout(function () {
+          if (!document.querySelector("#ui-root > *")) {
+            show("Nothing rendered after 30 s", "The page loaded but never drew a screen.");
+          }
+        }, 30000);
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

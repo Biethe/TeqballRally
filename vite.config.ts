@@ -84,6 +84,11 @@ export default defineConfig({
     host: true,
   },
   build: {
+    // Vite defaults to Chrome 87+. The System WebView on a budget Android can
+    // be years behind that, and syntax it cannot parse is not a graceful
+    // degradation — it is a black screen before a single line of the game runs.
+    // es2019 covers Chrome 73+, and costs nothing measurable here.
+    target: "es2019",
     // The Babylon vendor chunk is legitimately ~1.9 MB. Warn on anything that
     // grows past it so a genuine regression in the app chunk is still visible.
     chunkSizeWarningLimit: 2048,
