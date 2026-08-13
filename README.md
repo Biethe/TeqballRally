@@ -1089,6 +1089,30 @@ npm run build
 npx firebase-tools deploy --only hosting --project YOUR_FIREBASE_PROJECT_ID
 ```
 
+The relay lives on Cloud Run (`server/deploy.sh`), currently at
+`https://teqrallly-rpvbgjr3wa-od.a.run.app` in europe-west9 — the same region as
+Firestore, because the database is on the other side of every request it serves.
+
+**Any build not served by the dev server has to be told where that is.** Online
+play derives its address from the page origin otherwise, which in a packaged app
+is `https://localhost`, and `looksReachable` then correctly offers online play as
+unavailable. That is how builds 22-24 shipped with it quietly switched off:
+
+```bash
+VITE_RELAY_URL=wss://teqrallly-rpvbgjr3wa-od.a.run.app npm run build
+npx cap sync android
+```
+
+`.github/workflows/deploy.yml` chains the two so they cannot drift; a build made
+by hand has to pass the variable by hand.
+
+Firestore's composite indexes are declared in `firestore.indexes.json` and are
+not optional — the queries fail outright without them:
+
+```bash
+npx firebase-tools deploy --only firestore:indexes
+```
+
 ## Project notes
 
 - `src/scene.ts` — Babylon scene, court, table, backdrop, and asset loading.
