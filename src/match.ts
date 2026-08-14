@@ -661,9 +661,18 @@ export class MatchController {
     return () => this.eventListeners.delete(listener);
   }
 
-  /** Freeze only the simulation; the app can keep rendering the teachable moment. */
+  /**
+   * Freeze only the simulation; the app can keep rendering the teachable moment.
+   *
+   * The characters are told separately because their clips do not run on our
+   * clock — Babylon plays animation groups off the scene's render loop. Without
+   * this the world stopped but the legs did not, and a player frozen mid-stride
+   * jogged on the spot through the whole of the coach's explanation.
+   */
   setTutorialFrozen(frozen: boolean): void {
     this.tutorialFrozen = frozen;
+    this.chars.player.setAnimationsFrozen(frozen);
+    this.chars.ai.setAnimationsFrozen(frozen);
   }
 
   get isTutorialFrozen(): boolean {

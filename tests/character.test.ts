@@ -236,48 +236,48 @@ describe("pickStrikeClip", () => {
 
   it("heads a high ball and volleys a low one", () => {
     stubRandom(0);
-    expect(pickStrikeClip(height * 0.9, 0.5, height, "both", 1)).toBe("RightHeadKick");
-    expect(pickStrikeClip(height * 0.7, 0.5, height, "both", 1)).toBe("RightHeadKick");
-    expect(pickStrikeClip(height * 0.5, 0.5, height, "both", 1)).toBe("ChestKick");
-    expect(pickStrikeClip(height * 0.2, 0.5, height, "both", 1)).toBe("RightFootKick");
+    expect(pickStrikeClip(height * 0.9, 0.5, height, "both", 1, true, 0)).toBe("RightHeadKick");
+    expect(pickStrikeClip(height * 0.7, 0.5, height, "both", 1, true, 0)).toBe("RightHeadKick");
+    expect(pickStrikeClip(height * 0.5, 0.5, height, "both", 1, true, 0)).toBe("ChestKick");
+    expect(pickStrikeClip(height * 0.2, 0.5, height, "both", 1, true, 0)).toBe("RightFootKick");
   });
 
   it("plays the floated clip in each band when the kick is a soft one", () => {
     // The animation has to agree with the ball that comes off it: a lofted
     // kick is played with the inner foot or the knee, never drilled.
     stubRandom(0);
-    expect(pickStrikeClip(height * 0.7, 0.5, height, "both", 0.1)).toBe("ChestKick");
-    expect(pickStrikeClip(height * 0.5, 0.5, height, "both", 0.1)).toBe("RightKneeReception");
-    expect(pickStrikeClip(height * 0.2, 0.5, height, "both", 0.1)).toBe("InnerRightFootReception");
+    expect(pickStrikeClip(height * 0.7, 0.5, height, "both", 0.1, true, 0)).toBe("ChestKick");
+    expect(pickStrikeClip(height * 0.5, 0.5, height, "both", 0.1, true, 0)).toBe("RightKneeReception");
+    expect(pickStrikeClip(height * 0.2, 0.5, height, "both", 0.1, true, 0)).toBe("InnerRightFootReception");
   });
 
   it("picks the side from the lateral offset", () => {
     stubRandom(0);
-    expect(pickStrikeClip(height * 0.9, 0.5, height, "both", 1)).toBe("RightHeadKick");
-    expect(pickStrikeClip(height * 0.9, -0.5, height, "both", 1)).toBe("LeftHeadKick");
+    expect(pickStrikeClip(height * 0.9, 0.5, height, "both", 1, true, 0)).toBe("RightHeadKick");
+    expect(pickStrikeClip(height * 0.9, -0.5, height, "both", 1, true, 0)).toBe("LeftHeadKick");
   });
 
   it("always heads a wide high ball rather than centring it", () => {
     stubRandom(0);
-    expect(pickStrikeClip(height * 0.95, 0.5, height, "both", 1)).toBe("RightHeadKick");
+    expect(pickStrikeClip(height * 0.95, 0.5, height, "both", 1, true, 0)).toBe("RightHeadKick");
     // Dead centre a driven ball is headed straight through.
-    expect(pickStrikeClip(height * 0.95, 0.1, height, "both", 1)).toBe("CenterHeadKick");
+    expect(pickStrikeClip(height * 0.95, 0.1, height, "both", 1, true, 0)).toBe("CenterHeadKick");
   });
 
   it("favours the strong foot on a dead-centre ball", () => {
     // |lateral| < 0.06 makes pickSide consume the first random: 0.5 < 0.75
     // keeps the preferred side, then 0 takes the first option in the band.
     stubRandom(0.5, 0);
-    expect(pickStrikeClip(height * 0.2, 0, height, "left", 1)).toBe("LeftFootKick");
+    expect(pickStrikeClip(height * 0.2, 0, height, "left", 1, true, 0)).toBe("LeftFootKick");
 
     vi.restoreAllMocks();
     stubRandom(0.5, 0);
-    expect(pickStrikeClip(height * 0.2, 0, height, "right")).toBe("RightFootKick");
+    expect(pickStrikeClip(height * 0.2, 0, height, "right", 0.6, true, 0)).toBe("RightFootKick");
 
     // A roll past 0.75 crosses to the other foot.
     vi.restoreAllMocks();
     stubRandom(0.8, 0);
-    expect(pickStrikeClip(height * 0.2, 0, height, "left")).toBe("RightFootKick");
+    expect(pickStrikeClip(height * 0.2, 0, height, "left", 0.6, true, 0)).toBe("RightFootKick");
   });
 
   it("only ever returns a real clip with a contact frame", () => {
@@ -292,10 +292,10 @@ describe("pickStrikeClip", () => {
 
   it("scales with the character's height, not absolute metres", () => {
     stubRandom(0);
-    const tall = pickStrikeClip(1.7, 0.5, 2.0); // rel 0.85 -> head
+    const tall = pickStrikeClip(1.7, 0.5, 2.0, "both", 0.6, true, 0); // rel 0.85 -> head
     vi.restoreAllMocks();
     stubRandom(0);
-    const shortPlayer = pickStrikeClip(1.7, 0.5, 1.6); // rel > 1 -> also head
+    const shortPlayer = pickStrikeClip(1.7, 0.5, 1.6, "both", 0.6, true, 0); // rel > 1 -> also head
 
     expect(tall).toBe("RightHeadKick");
     expect(shortPlayer).toBe("RightHeadKick");
@@ -303,11 +303,11 @@ describe("pickStrikeClip", () => {
     vi.restoreAllMocks();
     stubRandom(0);
     // The same ball height is a knee ball for a 2 m player...
-    expect(pickStrikeClip(1.0, 0.5, 2.0, "both", 0.1)).toBe("RightKneeReception");
+    expect(pickStrikeClip(1.0, 0.5, 2.0, "both", 0.1, true, 0)).toBe("RightKneeReception");
     vi.restoreAllMocks();
     stubRandom(0);
     // ...and a chest ball for a 1.5 m one.
-    expect(pickStrikeClip(1.0, 0.5, 1.5, "both", 0.1)).toBe("ChestKick");
+    expect(pickStrikeClip(1.0, 0.5, 1.5, "both", 0.1, true, 0)).toBe("ChestKick");
   });
 });
 
@@ -316,18 +316,30 @@ describe("pickReceptionClip", () => {
 
   it("chests a high ball, knees a mid one and uses the inner foot low", () => {
     stubRandom(0.99);
-    expect(pickReceptionClip(height * 0.8, 0.5, height)).toBe("ChestPrepRight");
+    expect(pickReceptionClip(height * 0.8, 0.5, height, "both", 0)).toBe("ChestPrepRight");
     vi.restoreAllMocks();
     stubRandom(0);
-    expect(pickReceptionClip(height * 0.8, 0.5, height)).toBe("ChestReception");
-    expect(pickReceptionClip(height * 0.5, 0.5, height)).toBe("RightKneeReception");
-    expect(pickReceptionClip(height * 0.2, 0.5, height)).toBe("InnerRightFootReception");
+    expect(pickReceptionClip(height * 0.8, 0.5, height, "both", 0)).toBe("ChestReception");
+    expect(pickReceptionClip(height * 0.5, 0.5, height, "both", 0)).toBe("RightKneeReception");
+    expect(pickReceptionClip(height * 0.2, 0.5, height, "both", 0)).toBe("InnerRightFootReception");
   });
 
   it("picks the side from the lateral offset", () => {
     stubRandom(0);
-    expect(pickReceptionClip(height * 0.2, -0.5, height)).toBe("InnerLeftFootReception");
-    expect(pickReceptionClip(height * 0.5, -0.5, height)).toBe("LeftKneeReception");
+    expect(pickReceptionClip(height * 0.2, -0.5, height, "both", 0)).toBe("InnerLeftFootReception");
+    expect(pickReceptionClip(height * 0.5, -0.5, height, "both", 0)).toBe("LeftKneeReception");
+  });
+
+  it("uses more than one clip for the same ball", () => {
+    // The complaint this exists for: a rally played the same three animations
+    // over and over. Contact heights measured over a real match run 0.31 to
+    // 0.88 of body height with a median of 0.75, so a hard-edged band meant one
+    // clip owned nearly every touch at a given height. Handing the same ball
+    // to the picker repeatedly must now produce a spread.
+    const seen = new Set<string>();
+    for (let i = 0; i < 400; i++) seen.add(pickReceptionClip(height * 0.47, 0.02, height));
+
+    expect(seen.size).toBeGreaterThan(2);
   });
 
   it("only ever returns a real clip with a contact frame", () => {

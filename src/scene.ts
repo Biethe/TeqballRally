@@ -600,11 +600,7 @@ async function loadTable(scene: Scene): Promise<AbstractMesh[]> {
 // Several ball .glb files are one export containing multiple balls side by side;
 // this maps each file to the top-level node of the ball it is named after.
 const BALL_KEEP_NODE: Record<string, string> = {
-  GreenBall: "Nike_Pitch_Green",
-  WhiteBall: "Nike_Pitch_White",
   OrangeAndBlackBall: "Nike_Pitch_Orange",
-  OrangeBall: "Nike_Pitch_Orange",
-  BlueAndBlackBall: "Nike_Pitch_Blue",
 };
 
 /** Import a ball file, discard sibling balls bundled in the same export, and wrap it. */

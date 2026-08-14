@@ -219,6 +219,7 @@ export class Character {
   /** Temporary yaw applied for the current action (e.g. backflips face away). */
   private actionYawOffset = 0;
   velocity = new Vector3();
+  private animationsFrozen = false;
 
   /** Active contact lunge: glides the root while an action clip plays. */
   private lungeState: { from: Vector3; to: Vector3; dur: number; t: number } | null = null;
@@ -590,6 +591,29 @@ export class Character {
     }
   }
 
+  /**
+   * Hold every clip where it stands, or let them run again.
+   *
+   * Stopping the simulation is not enough to stop the character moving.
+   * Babylon drives animation groups off the scene's own render loop, not off
+   * our `update`, so a frozen world still had legs cycling in it: a player
+   * caught mid-stride kept jogging on the spot for as long as the coach was
+   * talking, which is what made a frozen lesson look broken.
+   *
+   * `restart()` on an animatable is a misnomer — it clears the paused flag and
+   * nothing else. That is what makes this pair a freeze and a thaw rather than
+   * a freeze and a rewind.
+   */
+  setAnimationsFrozen(frozen: boolean): void {
+    if (frozen === this.animationsFrozen) return;
+    this.animationsFrozen = frozen;
+    for (const g of this.groups.values()) {
+      if (!g.isStarted) continue;
+      if (frozen) g.pause();
+      else g.restart();
+    }
+  }
+
   dispose(): void {
     for (const g of this.groups.values()) g.dispose();
     this.root.dispose(false, true);
@@ -670,11 +694,40 @@ export function backflipAllowed(def: CharacterDef, foot: Foot): boolean {
 }
 
 /**
+ * How far a band edge may move for one contact, as a fraction of body height.
+ *
+ * About 12 cm on a 1.8 m player: inside the range a real contact could
+ * plausibly be taken at, so it buys variety without ever putting a head kick on
+ * a knee-height ball.
+ *
+ * Hard edges are why a rally played the same three clips. Contact heights
+ * measured over a real match run from 0.31 to 0.88 of body height with a median
+ * of 0.75 — a narrow, top-heavy spread — so most of a match landed in one band
+ * and stayed there while the other clips sat loaded and unused.
+ */
+export const BAND_OVERLAP = 0.07;
+
+/** This contact's shift of the band edges. Pass 0 for a deterministic pick. */
+function bandJitter(): number {
+  return (Math.random() * 2 - 1) * BAND_OVERLAP;
+}
+
+/**
+ * How far off centre a ball still counts as dead ahead.
+ *
+ * Widened from 0.06, which was so tight that the side was effectively decided
+ * by the sign of `lateral` alone — and since play is not symmetric, one of each
+ * left/right pair barely appeared. Over a measured match InnerLeftFootReception
+ * ran to 237 samples against InnerRightFootReception's zero.
+ */
+const CENTRE_ZONE = 0.18;
+
+/**
  * Left/Right by lateral offset; when the ball is near dead-centre, footed
  * players favour their strong side.
  */
 function pickSide(lateral: number, prefer: Foot | "both" = "both"): "Left" | "Right" {
-  if (Math.abs(lateral) < 0.06) {
+  if (Math.abs(lateral) < CENTRE_ZONE) {
     if (prefer === "left") return Math.random() < 0.75 ? "Left" : "Right";
     if (prefer === "right") return Math.random() < 0.75 ? "Right" : "Left";
     return Math.random() < 0.5 ? "Left" : "Right";
@@ -708,9 +761,16 @@ export function pickStrikeClip(
    * lands. From deep the same ball is played as an inner-foot lob instead, so
    * the animation still agrees with the flight that comes off it.
    */
-  nearMiddle = true
+  nearMiddle = true,
+  /**
+   * This contact's shift of the band edges. Defaults to a fresh random one —
+   * and because a default is only evaluated when the argument is missing,
+   * passing 0 draws no random number at all, which is what lets the tests pin
+   * an exact clip without their stubbed sequences moving under them.
+   */
+  relJitter: number = bandJitter()
 ): string {
-  const rel = ballY / height; // normalised contact height
+  const rel = ballY / height + relJitter; // normalised contact height
   const side = pickSide(lateral, strongFoot);
   const driven = power >= 0.5;
   if (rel > 0.8) {
@@ -729,15 +789,20 @@ export function pickReceptionClip(
   ballY: number,
   lateral: number,
   height: number,
-  strongFoot: Foot | "both" = "both"
+  strongFoot: Foot | "both" = "both",
+  /** As `pickStrikeClip`: pass 0 for a deterministic pick and no random draw. */
+  relJitter: number = bandJitter()
 ): string {
-  const rel = ballY / height;
+  const rel = ballY / height + relJitter;
   const side = pickSide(lateral, strongFoot);
   if (rel > 0.62) {
     return Math.random() < 0.4 ? "ChestReception" : `ChestPrep${side}`;
   }
   if (rel > 0.45) return Math.random() < 0.6 ? `${side}KneeReception` : "ChestReception";
-  return `Inner${side}FootReception`;
+  // A knee sometimes takes the low ball too. Both are soft control touches that
+  // leave the ball in the same place, so this is a change of picture rather
+  // than of play — and it stops the inner foot owning the whole bottom band.
+  return Math.random() < 0.75 ? `Inner${side}FootReception` : `${side}KneeReception`;
 }
 
 export const SERVE_CLIPS = ["ServeRightFoot", "ServeLeftFoot", "HeadServeRight", "HeadServeLeft"] as const;

@@ -160,7 +160,8 @@ broken asset pipeline — the wrong loader import still typechecks and builds):
 npm run build
 npm run preview -- --port 5199 --strictPort
 node scripts/verify-build.mjs
-node scripts/verify-portrait.mjs   # the phone-upright control scheme
+node scripts/verify-portrait.mjs        # the phone-upright control scheme
+node scripts/verify-purchase-gate.mjs   # the locked venue, and the restore path
 ```
 
 The account flow needs a server as well as a page, because what it checks is
@@ -598,8 +599,18 @@ reflows in front of the player.
 ## Venues
 
 A venue is a backdrop model plus a procedural court that suits it, defined in
-`src/venue.ts` and picked from SETTINGS → VENUE (`?venue=` overrides it for a
-session). There are four: the indoor sports hall, and three outdoor grounds.
+`src/venue.ts` and picked from its own tab on the select screen, beside the
+player and the ball (`?venue=` overrides it for a session). There are four: the
+indoor sports hall, and three outdoor grounds. A new install opens on
+STREETBALL — the sports hall is the one behind the purchase, so it cannot be
+the default.
+
+The venue tab shows the **real scene** rather than a model in the viewer's
+studio: the venue is already built behind the picker, so browsing steps out of
+the studio and lets the court show through. A 4.8 MB arena loaded a second time
+to render a worse version of something already on screen would be the wrong
+trade. On the locked venue, PLAY becomes UNLOCK — the screen showing what you
+cannot have is the screen that should sell it.
 
 Nothing in a venue touches gameplay. The bounds players move inside
 (`COURT.minX`, `maxX`, `maxZ`) and `GROUND_Y` are the same everywhere, which is
@@ -1024,11 +1035,63 @@ entitlement the WebView cannot read is one that nothing can act on.
 `purchasesAvailable()` is false in a browser, so the dev server, the hosted
 build and every harness run with no store and nothing to stub.
 
+What it sells is the **sports hall**. The three outdoor courts stay free, so
+what is given away is a whole game rather than a demo. The rule sits on the
+venue itself (`premium: true` in `src/venue.ts`), which makes adding a venue ask
+the question, and `permittedVenue(id, pro)` re-checks a *remembered* choice at
+boot — a subscription can lapse between two sessions, and the venue saved in
+`localStorage` must not stay unlocked after it does. The check runs once the
+store answers rather than before it, because holding the first frame on a
+network round trip would make a paying player wait to see what they paid for.
+
+The padlock on the locked chip is drawn from an SVG mask rather than typed as
+🔒: an emoji is a font the device may not have, and headless Chromium proves
+the point by rendering a tofu box. A `?venue=` URL override is not gated — it is
+the harness hook, and hiding a client-side check in an open web bundle would be
+theatre.
+
 Two things that are easy to get wrong and fail quietly: the entitlement
 identifier is a dictionary key and must match the dashboard exactly, and the
 default API key is a **Test Store** key — a Play release needs the `goog_…` one
 via `VITE_REVENUECAT_KEY`. See **PURCHASES.md** for the dashboard setup, usage
 examples and the release checklist.
+
+## Balls, and the shirt
+
+A ball is not just a colour. Each carries multipliers on the player's traits in
+`BALLS` (`src/config.ts`), every one of them a trade — a ball that were only
+better would make the choice a formality and the other three decoration. Each
+character also has one ball that suits them (`BALL_AFFINITY`), which multiplies
+that ball's *upside* by `AFFINITY_BONUS`; the downside is left alone, so
+affinity is a reward rather than something to think twice about.
+
+`withBall(def, ball)` is shaped like `withCareer`: traits in, traits out. It is
+applied inside `startMatch`, the one place a match is built, so the physics, the
+AI and the card on the picker all read one already-modified `CharacterDef` and
+none of them has to know a ball was involved. The picker shows the difference
+rather than the total — `+6 POWER` is a reason to own a ball and `104 POWER` is
+not.
+
+Four of the original eight balls are gone. They came from a Nike Pitch export
+and carried the mark plainly enough to read on a phone, and `publicDir` is the
+whole `assets/` folder — so a model that is merely unreferenced still ships
+inside the APK. They were deleted, not just delisted.
+
+**The shirt.** `src/kit.ts` composites a name across the back, a number under
+it, and a small crest on the chest into the shirt's own albedo texture. Not a
+decal: Babylon builds a decal as static geometry from the mesh's current pose,
+and these characters are skinned, so a decal number would hang in mid-air the
+moment the player ran. The only thing that follows a skinned mesh is its
+texture.
+
+Where the marks go was measured, not guessed — an 8×8 labelled grid painted
+onto the shirt and photographed from both sides put the back panel at cells
+B2–C4 and the front at F2–G4, which is what `BACK_PANEL` and `FRONT_PANEL`
+record. Getting the artwork back to composite onto needs `readPixels`, because
+the glTF loader keeps its images inside the `.glb` and `texture.url` is
+`data:/models/…glb#image3` — a name, not something fetchable. Those rows come
+back bottom-up, as WebGL has always returned them, and are flipped on the way
+into the canvas.
 
 ## Testing on a phone
 

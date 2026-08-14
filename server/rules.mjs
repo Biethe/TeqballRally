@@ -18,6 +18,17 @@ var PLAY_BOX = {
   halfWid: TABLE.halfWid + 0.32
 };
 var BALL_RADIUS = 0.08095 * TABLE_SCALE;
+var COURT = {
+  // Players may come right up to the middle line. They used to be held behind
+  // the table *end*, nearly two metres off the net, which made the whole front
+  // of the court unreachable and the hardest shots — the ones taken close in —
+  // impossible to play. What they cannot do is stand on the table; that is
+  // `clearTable` below, and it is a hole in the middle of the half rather than
+  // a wall across it.
+  minX: 0.06,
+  maxX: 6.8,
+  maxZ: 4.6
+};
 var SPAWN = {
   x: 2.64 * TABLE_SCALE,
   // distance from the net along the table axis
@@ -27,6 +38,127 @@ var SPAWN = {
   // extra y lift if a model's feet still sink into the floor
 };
 var CHARACTER_SCALE = 0.8 * TABLE_SCALE;
+var PORTRAIT_FOV = 0.88;
+var PORTRAIT_MARGIN = 0.5;
+var PORTRAIT_SPREAD = Math.tan(PORTRAIT_FOV / 2);
+var PORTRAIT_HALF_WIDTH = (COURT.maxZ + TABLE.halfWid) / 2 + PORTRAIT_MARGIN;
+var PORTRAIT_STANDOFF = 2.2;
+var PORTRAIT_SLANT = PORTRAIT_HALF_WIDTH / PORTRAIT_SPREAD;
+var PORTRAIT_HEIGHT = Math.sqrt(
+  Math.max(0, PORTRAIT_SLANT * PORTRAIT_SLANT - PORTRAIT_STANDOFF * PORTRAIT_STANDOFF)
+);
+var CAMERA = {
+  back: 7.4,
+  // distance behind the serve spot along the table axis (m)
+  height: 5.1,
+  // height above the ground (m)
+  // Height above the ground the camera looks at (table centre). Lower = the
+  // camera tilts further down; the old follow-camera aimed at ~0.9.
+  lookY: 0.55,
+  /** Landscape lens, pinned vertically. Shared by the scene's default camera. */
+  fov: 0.72,
+  // Portrait is a tall, narrow window on the same court. The lens is pinned
+  // horizontally there (see scene.ts), which makes the vertical angle very
+  // wide — from the landscape distance the players end up specks in a frame
+  // mostly full of roof. So portrait comes in closer and tilts up a little.
+  // Portrait's lens cannot be tightened as far as landscape's looks like it
+  // should allow. Pinned horizontally, the fov *is* the width of what can be
+  // seen, and the narrowest part of the shot is right where the player stands:
+  // squeeze it and a player chasing a wide ball walks out of their own frame.
+  portrait: {
+    // Solved above, expressed the way this table expresses everything else —
+    // as a distance behind the serve spot — so the one call site does not have
+    // to know which baseline the solve was measured from.
+    back: COURT.maxX + PORTRAIT_STANDOFF - SPAWN.x,
+    height: PORTRAIT_HEIGHT,
+    lookY: 0.95,
+    fov: PORTRAIT_FOV,
+    /** How far the camera may pan before the table leaves the frame. */
+    pan: PORTRAIT_HALF_WIDTH - TABLE.halfWid,
+    /**
+     * How much of the visible half-width the player may use before the camera
+     * starts to follow them.
+     *
+     * A deadzone, not a lock: inside this band the shot is still, and the
+     * camera slides only as far as it must to bring them back inside it. A
+     * camera welded to the player makes the world slide under a figure that
+     * never moves, which is both harder to read and worse to look at.
+     *
+     * It has to exist at all because the shot narrows towards the near end.
+     * The lens is pinned horizontally, so the visible width is proportional to
+     * the distance from the camera — and a player at the back of their half is
+     * only about a metre from either edge of frame. Now that the half runs all
+     * the way to the middle line, they cover far more of it than they used to.
+     */
+    safe: 0.55,
+    /** Seconds for the follow to catch up. Long enough to read as camera work. */
+    tau: 0.22,
+    /** Headroom in the solved framing, beside the table. */
+    margin: PORTRAIT_MARGIN
+  },
+  /**
+   * The shot held on whoever just won the game.
+   *
+   * A match ends with one player celebrating and the other playing Defeat, and
+   * the locked-off court camera is too far away for either to read as anything
+   * but a small figure. Coming in on the winner is what the moment is for.
+   *
+   * The camera sits in front of them — between them and the net, since that is
+   * the side they are facing — and slightly off-axis, because a dead-centre
+   * front-on shot of a rig is the one angle that looks like a character
+   * selection screen rather than a celebration.
+   */
+  victory: {
+    /** Metres in front of the winner, along the way they face. */
+    distance: 3.4,
+    /** Metres to their side, so the shot is not dead-on. */
+    offset: 1.5,
+    height: 1.9,
+    /** Height on the winner the camera looks at: chest, not feet. */
+    lookY: 1.25,
+    fov: 0.95,
+    /**
+     * Seconds for the move in. Slow enough to read as a deliberate push rather
+     * than a cut, short enough to arrive while the celebration is still going.
+     */
+    tau: 0.55
+  },
+  // P2 cannot use the mirrored P1 position: it lands outside the imported
+  // gym. This keeps the view inside, matches P1's player scale, and gives it
+  // a slightly steeper tilt.
+  p2Court: {
+    x: 8.5,
+    height: 7,
+    lookY: 0.3,
+    fov: 1.1
+  },
+  // Side-on and overhead presets. Side cameras use the clear, opposite
+  // sideline of the imported arena; the old wider placement intersected a
+  // concourse prop in the frame.
+  side: {
+    distance: 5,
+    height: 7.6,
+    lookY: 0.3,
+    fov: 1,
+    minZ: 0.1
+  },
+  // A true 90° side orbit, pitched down by ~75° (7.20 m up over 1.93 m
+  // sideways). It brings the players about 11% closer than the first top
+  // camera while the slightly wider lens still frames the full 18 m × 13.4 m
+  // court in a half-width viewport. The larger near plane cleanly clips the
+  // arena roof trusses which otherwise cross the wide top-view lens.
+  top: {
+    offsetX: 0,
+    offsetZ: -1.93,
+    height: 7.45,
+    lookY: 0.25,
+    // Split-screen needs the wider lens to keep both court ends visible. Solo
+    // play has the full viewport, so tighten it for a more readable player size.
+    fov: 1.9,
+    soloFov: 1.74,
+    minZ: 2
+  }
+};
 var SIM_HZ = 60;
 var SIM_DT = 1 / SIM_HZ;
 var SERVE_X = 3.64 * TABLE_SCALE;

@@ -181,7 +181,16 @@ export class PracticeCoach {
         break;
 
       case "touch-committed": {
-        if (event.side !== "player" || event.action !== "strike") break;
+        if (event.side !== "player") break;
+        // Reading the ball is done the moment they play one. Any touch counts,
+        // including a pop: a step about anticipation must not also quietly
+        // demand a clean strike, and this one had no way out at all until it
+        // did — the lesson sat on DEFENDING 2/6 forever.
+        if (this.step === "watch") {
+          this.advance();
+          break;
+        }
+        if (event.action !== "strike") break;
         const close = canSmashFrom(this.match.chars.player.position.x);
         if (this.step === "strike" && close) {
           this.struckFromClose = true;
