@@ -35,7 +35,11 @@ env:
   # relay, because nothing had ever set the repository variable the push builds
   # fall back to. Set `VITE_RELAY_URL` under Settings -> Secrets and variables
   # -> Actions -> Variables to point every build somewhere else.
-  DEFAULT_RELAY: wss://teqopen-relay.onrender.com
+  # The Cloud Run service, in europe-west9 alongside Firestore, verified end to
+  # end on 2026-08-13: two clients played a full match through it with real
+  # Firestore behind them. This replaces the Render address, which predates
+  # that deploy.
+  DEFAULT_RELAY: wss://teqrallly-rpvbgjr3wa-od.a.run.app
 
 # Scoped to the calling workflow as well as the branch: without that, a push
 # build would cancel the APK a deploy had just chained on the same branch, and
