@@ -68,7 +68,17 @@ interface Clip {
   deltas: Record<string, number[][]>;
 }
 
-const clips: Record<string, Clip> = await (await fetch("/clips.json")).json();
+/**
+ * Retarget data for figures that carry no animation of their own.
+ *
+ * Optional now, and absent: every figure in the set ships its own clips, so
+ * nothing is retargeted and the file was never regenerated. Left in place
+ * rather than deleted because the retarget path below is the only record of
+ * what was tried, and a figure without animation would still need it.
+ */
+const clips: Record<string, Clip> = await fetch("/clips.json")
+  .then((r) => (r.ok ? (r.json() as Promise<Record<string, Clip>>) : {}))
+  .catch(() => ({}));
 
 /** Base64 in chunks: spreading a 166 KB buffer as arguments blows the stack. */
 function toBase64(bytes: Uint8Array): string {
@@ -107,7 +117,18 @@ for (const figure of CROWD_FIGURES) {
   // mesh, rig and motion come from one source with one set of conventions.
   // That is the whole reason retargeting was ever attempted, and the whole
   // reason it kept failing.
-  const own = res.animationGroups[0];
+  // Named, not first: every figure ships all eight clips, so taking index 0
+  // would bake the whole crowd doing whichever one the exporter happened to
+  // write first — one motion, seven times over.
+  const own =
+    res.animationGroups.find((g) => g.name === figure.clip) ??
+    res.animationGroups.find((g) => g.name.toLowerCase() === figure.clip.toLowerCase());
+  if (!own && res.animationGroups.length > 0) {
+    throw new Error(
+      `${figure.file} has no clip "${figure.clip}" — it has: ` +
+        res.animationGroups.map((g) => g.name).join(", ")
+    );
+  }
   if (own) {
     for (const g of res.animationGroups) g.stop();
     own.play(false);
@@ -128,6 +149,17 @@ for (const figure of CROWD_FIGURES) {
       `baked ${figure.file} from its own ${own.name}: ` +
         `${skeleton.bones.length} bones, ${mesh.getTotalIndices() / 3} tris, spread ${spreadOwn.toFixed(4)}`
     );
+    // A figure that never moves is a statue in a crowd, and the only sign of it
+    // is this number — the texture bakes, loads and renders perfectly either
+    // way. Several of these files ship poses rather than animations
+    // (StandingPose2 measured exactly 0), so the difference has to be fatal
+    // here or it reaches the stands unnoticed.
+    if (spreadOwn === 0) {
+      throw new Error(
+        `${figure.file}: clip "${own.name}" does not move — it is a pose, not an animation. ` +
+          `Pick another in src/crowdclips.ts.`
+      );
+    }
     results[figure.file] = {
       width: (skeleton.bones.length + 1) * 4,
       height: CROWD_FRAMES,

@@ -34,18 +34,31 @@ export interface CrowdFigure {
 }
 
 /**
- * Four figures, four different motions.
+ * Seven figures, seven different motions.
  *
  * Giving each figure its own clip is what stops the crowd looking like a
  * chorus line — the per-instance phase offset varies timing, but only
  * different motions vary the shape.
+ *
+ * Each of these carries its own animation, so `clip` names a group inside the
+ * figure's own file rather than something to retarget onto it. That is the
+ * difference between this crowd and the one before it: retargeting Mixamo
+ * motion onto the old rigs tore them apart every way it was tried, and the
+ * bake shipped a held pose because of it. Mesh, rig and motion from one source
+ * have one set of conventions and need no transfer at all.
  */
 export const CROWD_FIGURES: CrowdFigure[] = [
-  // Mixamo character: mesh, rig and clapping animation from one source, so
-  // nothing has to be retargeted.
-  { file: "m1.glb", clip: "own", posture: "standing" },
-  { file: "f1.glb", clip: "Cheering", posture: "standing" },
-  { file: "f2.glb", clip: "Fist_Pump", posture: "standing" },
-  { file: "f3.glb", clip: "Sitting_Clap", posture: "seated" },
-  { file: "f4.glb", clip: "Sitting_Clap_1", posture: "seated" },
+  { file: "Caleb.glb", clip: "CheeringWhileStanding", posture: "standing" },
+  { file: "Judith.glb", clip: "ClappingWhileStanding", posture: "standing" },
+  { file: "Lea.glb", clip: "StandingAndYelling", posture: "standing" },
+  { file: "Leo.glb", clip: "StandingAndFistpump", posture: "standing" },
+  // Quieter, so the stand is not uniformly ecstatic between points. Not one of
+  // the StandingPose clips: those are poses, and bake to a spread of exactly
+  // zero — a statue among people.
+  { file: "Megan.glb", clip: "StandingStill", posture: "standing" },
+  // The only seated clip in the set, and the benches need somebody on them.
+  // Two figures share it: the meshes differ and the per-instance phase offset
+  // does the rest.
+  { file: "Simone.glb", clip: "FistPumpWhileSitting", posture: "seated" },
+  { file: "Tebby.glb", clip: "FistPumpWhileSitting", posture: "seated" },
 ];
