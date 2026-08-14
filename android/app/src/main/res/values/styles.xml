@@ -16,7 +16,22 @@
     </style>
 
 
+    <!--
+      The launch screen, on both of the two paths Android takes to it.
+
+      `android:background` is the pre-Android-12 route and points at the
+      generated drawable/splash.png (see scripts/make-splash.mjs). Android 12
+      and up ignores it and draws its own splash from the windowSplashScreen*
+      attributes instead, which is why both are set: with only the first, a
+      modern phone fell back to the framework default and showed Capacitor's
+      logo on white before a dark game.
+
+      No postSplashScreenTheme is needed — Capacitor's BridgeActivity already
+      calls setTheme(AppTheme_NoActionBar) in onCreate.
+    -->
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
     </style>
 </resources>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The game's own ink colour (var(:root, ink) in src/style.css). The launch
+      screen is painted in it so the splash dissolves into the first frame
+      instead of flashing a different colour in between.
+    -->
+    <color name="splash_background">#071426</color>
+</resources>
