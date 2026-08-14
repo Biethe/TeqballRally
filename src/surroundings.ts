@@ -212,8 +212,13 @@ function buildCity(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[
     // cost is one draw call per *distinct* model, so this is six more calls —
     // and it halves how often the same house appears twice in one view, which
     // was the thing that read as a repeated texture rather than a street.
+    // Placed as a skyline rather than as a street. Each of these is a whole
+    // city block a hundred metres and more across, so eight of them at sixty to
+    // a hundred and ten metres surround the court with a city; twenty-six on a
+    // twenty-five-metre ring, which is where the cottages they replace stood,
+    // put a wall of masonry immediately behind the fence.
     out.push(
-      ...scatterProps(houses, { count: 26, inner: 25, outer: 47, facing: "inward", vary: 0.12, seed: 31, models: 12 })
+      ...scatterProps(houses, { count: 8, inner: 62, outer: 112, facing: "inward", vary: 0.15, seed: 31, models: 8 })
     );
     out.push(
       ...scatterProps(props.get("car") ?? [], {
@@ -234,7 +239,9 @@ function buildCity(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[
 
   // Behind the houses when there are houses, and taking the near ring itself
   // when the prop file did not load.
-  const nearest = houses.length > 0 ? 38 : 14;
+  // Behind the city blocks when there are any, and taking the near ring itself
+  // when the pack did not load.
+  const nearest = houses.length > 0 ? 105 : 14;
   for (let i = 0; i < spec.count; i++) {
     const seed = noise(i, 3);
     const seed2 = noise(i * 7 + 1, 11);

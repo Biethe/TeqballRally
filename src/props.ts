@@ -23,6 +23,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { Material } from "@babylonjs/core/Materials/material";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 
 /** Prop families in `Props.glb`, by the prefix their nodes are named with. */
@@ -36,19 +37,81 @@ const KINDS: PropKind[] = ["house", "tree", "car", "palm", "bush"];
 /**
  * Metres tall, per kind, applied uniformly to every prop in it.
  *
- * The packs disagree about scale — the houses are authored around 9 m, the
- * tropical props at anything from 0.1 to 60 units — and a prop that is half a
- * metre out is the single most diorama-like thing in a backdrop. Normalising
- * on height keeps each family's own proportions while putting all of them in
- * the same world.
+ * The packs disagree about scale — the planting runs from 0.1 to 60 units —
+ * and a prop that is half a metre out is the single most diorama-like thing in
+ * a backdrop. Normalising on height keeps each family's own proportions while
+ * putting all of them in the same world.
+ *
+ * `house` is 20 m because these are not houses. Each node in the building pack
+ * is a whole street — measured at 99 x 200 m and 94 x 33 m — so the family is
+ * city blocks, and a block normalised to a cottage's 9.5 m becomes a
+ * two-hundred-metre-long slab lying behind the fence.
  */
 const HEIGHT: Record<PropKind, number> = {
-  house: 7.6,
+  house: 20,
   tree: 6.4,
   car: 1.55,
   palm: 7.2,
   bush: 1.5,
 };
+
+/**
+ * Where each family of props comes from.
+ *
+ * Three packs rather than one, because the houses and the planting were
+ * replaced wholesale and re-exporting them into a single file would mean
+ * renaming every node to a convention none of the packs use. Each source says
+ * which kinds it can provide, so a venue that wants no planting never
+ * downloads any, and how to read a kind out of that pack's own naming.
+ */
+interface PropSource {
+  dir: string;
+  file: string;
+  provides: PropKind[];
+  kindOf: (name: string) => PropKind | null;
+  /**
+   * Whether this pack's own materials are worth keeping.
+   *
+   * The original pack carries no textures at all — its colour was sampled into
+   * vertex colours at build time — so one shared white material is exactly
+   * right for it and costs nothing. The buildings and the planting are
+   * textured, and handing them that same material paints every building white
+   * and every leaf grey, which is precisely what it did.
+   */
+  keepMaterials: boolean;
+}
+
+const SOURCES: PropSource[] = [
+  {
+    dir: "/models/Buildings/",
+    file: "Buildings.glb",
+    provides: ["house"],
+    // Every building in the pack is `bina`, `bina.001`, `bina.002`… `Plane` is
+    // the slab they were exported standing on, and is not a prop.
+    kindOf: (n) => (/^bina(\.\d+)?$/i.test(n) ? "house" : null),
+    keepMaterials: true,
+  },
+  // The new planting kit is NOT here yet, deliberately. Its trees come through
+  // as bare trunks: the foliage is separate geometry with alphaMode BLEND leaf
+  // cards, and neither grouping the parts under one prop nor switching them to
+  // alpha test brought the leaves back. Until that is understood, trees and
+  // bushes stay on the pack that works — a stick is worse than an old tree.
+  // The packed asset is in place at assets/models/Plants/Plants.glb.
+  {
+    dir: "/models/Props/",
+    file: "Props.glb",
+    provides: ["tree", "bush", "car", "palm"],
+    // The original pack: everything except the buildings.
+    kindOf: (n) => {
+      const kind = KINDS.find((k) => new RegExp(`^${k}_\\d+$`).test(n));
+      return kind && kind !== "house" ? kind : null;
+    },
+    keepMaterials: false,
+  },
+];
+
+/** Foliage is drawn from both sides; a wall is not. */
+const DOUBLE_SIDED: ReadonlySet<PropKind> = new Set<PropKind>(["tree", "bush", "palm"]);
 
 /**
  * Load the prop library, keeping only the kinds asked for.
@@ -58,7 +121,20 @@ const HEIGHT: Record<PropKind, number> = {
  * venue shares beats five that each venue picks from, at this file size.
  */
 export async function loadProps(scene: Scene, kinds: PropKind[]): Promise<PropLibrary> {
-  const res = await SceneLoader.ImportMeshAsync("", "/models/Props/", "Props.glb", scene);
+  const wanted = SOURCES.filter((src) => src.provides.some((k) => kinds.includes(k)));
+  const loaded = await Promise.all(
+    wanted.map((src) =>
+      SceneLoader.ImportMeshAsync("", src.dir, src.file, scene).then(
+        (res) => ({ res, src }),
+        (error: unknown) => {
+          // A missing pack costs its own props and nothing else: a venue with
+          // no trees beats a venue that will not open.
+          console.warn(`Prop pack ${src.file} failed:`, error);
+          return null;
+        }
+      )
+    )
+  );
 
   const shared = new StandardMaterial("prop", scene);
   shared.diffuseColor = new Color3(1, 1, 1);
@@ -75,58 +151,124 @@ export async function loadProps(scene: Scene, kinds: PropKind[]): Promise<PropLi
   // geometry the packs ship.
 
   /**
+   * The same material, drawn from both sides, for planting.
+   *
+   * The kit is authored as double-sided cards — its own filename says so — and
+   * a leaf card culled from behind is simply gone. Half of every tree
+   * disappears depending on which way it happens to face, which reads as a
+   * flat sticker rather than a tree.
+   */
+  const foliage = new StandardMaterial("prop-foliage", scene);
+  foliage.diffuseColor = shared.diffuseColor;
+  foliage.specularColor = shared.specularColor;
+  foliage.emissiveColor = shared.emissiveColor;
+  foliage.backFaceCulling = false;
+
+  /**
    * The prop a mesh belongs to, by walking up to the node the exporter named.
    *
    * Not simply `m.parent`: the compression pass nests a generated `node0`
    * between the named node and its mesh, so the parent is anonymous and the
    * prop's name lives one level further up. Same shape as the crowd library.
    */
-  const propOf = (m: Mesh): { kind: PropKind; name: string } | null => {
+  const propOf = (m: Mesh, src: PropSource): { kind: PropKind; name: string } | null => {
     // The mesh itself when the exporter's node carries it directly, and
     // otherwise a walk up the chain: the compression pass inserts a generated
     // node between a named node and its mesh whenever it needs one to hold a
     // dequantization transform, so the name is one or two levels up depending
     // on how the file was packed.
     for (let node: { name: string; parent: unknown } | null = m; node; node = node.parent as never) {
-      const kind = KINDS.find((k) => new RegExp(`^${k}_\\d+$`).test(node.name));
+      const kind = src.kindOf(node.name);
       if (kind) return { kind, name: node.name };
     }
     return null;
   };
 
-  const library: PropLibrary = new Map();
-  for (const m of res.meshes) {
-    if (!(m instanceof Mesh) || m.getTotalVertices() === 0) continue;
-    const prop = propOf(m);
-    if (!prop || !kinds.includes(prop.kind)) {
-      m.dispose();
-      continue;
-    }
-    const { kind } = prop;
-    // Carry the prop's name onto the mesh before its named parent goes: it is
-    // the only handle left once the hierarchy is flattened.
-    m.name = prop.name;
-    // Detach from the loader's root before instancing. The glTF loader parents
-    // everything under a `__root__` that mirrors one axis to convert
-    // handedness, and a thin instance matrix is applied *inside* that — so a
-    // prop left attached is placed in a mirrored world. Baking folds the
-    // mirror into the vertices, and `bakeTransformIntoVertices` reverses the
-    // winding to match.
-    m.setParent(null);
-    m.bakeCurrentTransformIntoVertices();
-    // Baking also rewrites the vertex buffer while leaving the bounding box
-    // the loader built from the file's own accessor bounds, so it has to be
-    // asked for again — otherwise the height read below is the height before
-    // the bake, and every prop is scaled by the wrong number.
-    m.refreshBoundingInfo();
+  /**
+   * A prop's meshes, gathered under the name the exporter gave it.
+   *
+   * The original pack is one mesh per prop; these are not. A tree in the
+   * planting kit is a trunk *and* its foliage, as separate meshes under one
+   * node — and `scatterProps` picks a spread of the props it is given and
+   * disposes the rest, so handing it a flat list of meshes had it keeping
+   * trunks and throwing the leaves away. Every tree came back a bare stick.
+   */
+  const byProp = new Map<string, { kind: PropKind; parts: Mesh[]; keepMaterials: boolean }>();
+  for (const entry of loaded) {
+    if (!entry) continue;
+    const { res, src } = entry;
+    for (const m of res.meshes) {
+      if (!(m instanceof Mesh) || m.getTotalVertices() === 0) continue;
+      const prop = propOf(m, src);
+      if (!prop || !kinds.includes(prop.kind)) {
+        m.dispose();
+        continue;
+      }
+      const { kind } = prop;
+      // Carry the prop's name onto the mesh before its named parent goes: it is
+      // the only handle left once the hierarchy is flattened.
+      m.name = prop.name;
+      // Detach from the loader's root before instancing. The glTF loader parents
+      // everything under a `__root__` that mirrors one axis to convert
+      // handedness, and a thin instance matrix is applied *inside* that — so a
+      // prop left attached is placed in a mirrored world. Baking folds the
+      // mirror into the vertices, and `bakeTransformIntoVertices` reverses the
+      // winding to match.
+      m.setParent(null);
+      m.bakeCurrentTransformIntoVertices();
+      // Baking also rewrites the vertex buffer while leaving the bounding box
+      // the loader built from the file's own accessor bounds, so it has to be
+      // asked for again — otherwise the height read below is the height before
+      // the bake, and every prop is scaled by the wrong number.
+      m.refreshBoundingInfo();
 
+      const group = byProp.get(prop.name);
+      if (group) group.parts.push(m);
+      else byProp.set(prop.name, { kind, parts: [m], keepMaterials: src.keepMaterials });
+    }
+    // Dispose the transform nodes the props hung from, and the loader root.
+    for (const node of res.transformNodes) {
+      if (node.getChildren().length === 0) node.dispose();
+    }
+  }
+
+  const library: PropLibrary = new Map();
+  for (const [name, { kind, parts, keepMaterials }] of byProp) {
+    // One mesh per prop again, which is what the scatter and the instancing
+    // both assume. Multi-material merging keeps a trunk's bark and its leaves
+    // as separate submeshes of one drawable.
+    const m =
+      parts.length === 1
+        ? parts[0]
+        : Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+    if (!m) continue;
+    m.name = name;
+    // Measured after merging, so a tree is scaled by its own full height and
+    // not by whichever of its parts happened to be read first.
+    m.refreshBoundingInfo();
     const box = m.getBoundingInfo().boundingBox;
     const scale = HEIGHT[kind] / Math.max(0.001, box.maximum.y - box.minimum.y);
     m.scaling.setAll(scale);
     m.bakeCurrentTransformIntoVertices();
     m.refreshBoundingInfo();
 
-    m.material = shared;
+    if (keepMaterials) {
+      // The pack's own textured material, kept as it is — apart from how its
+      // leaves are cut out.
+      //
+      // The planting kit ships every leaf card as alphaMode BLEND, and blended
+      // geometry writes no depth. Alpha *test* is what a leaf card wants: the
+      // texture is a cut-out, not a window, and nothing has to be sorted.
+      const multi = m.material as { subMaterials?: (typeof m.material)[] } | null;
+      for (const mat of multi?.subMaterials ?? [m.material]) {
+        if (!mat || !DOUBLE_SIDED.has(kind)) continue;
+        mat.backFaceCulling = false;
+        mat.transparencyMode = Material.MATERIAL_ALPHATEST;
+        (mat as { alphaCutOff?: number }).alphaCutOff = 0.4;
+      }
+    } else {
+      m.material = shared;
+    }
     // Vertex colours are a mesh flag, not a material one, and default to on —
     // set it explicitly so the single shared material cannot be misread as the
     // thing that would paint every prop the same colour.
@@ -139,16 +281,14 @@ export async function loadProps(scene: Scene, kinds: PropKind[]): Promise<PropLi
     else library.set(kind, [m]);
   }
 
-  // Dispose the transform nodes the props hung from, and the loader root.
-  for (const node of res.transformNodes) {
-    if (node.getChildren().length === 0) node.dispose();
-  }
-
   // A stable order, so a scatter seeded by index puts the same prop in the
-  // same place on both peers of an online match and between runs. Sorted on
-  // the trailing number rather than the string, so `house_2` precedes
-  // `house_10`.
-  const ordinal = (m: Mesh): number => Number(m.name.split("_")[1] ?? 0);
+  // same place on both peers of an online match and between runs.
+  //
+  // `house_10`, `bina.004` and `Tree-01-2` are three conventions; every digit
+  // in the name, read as one number, orders all of them stably. The value is
+  // meaningless on its own — only that it is the same on every run and every
+  // peer, which is what a seeded scatter needs.
+  const ordinal = (m: Mesh): number => Number(m.name.replace(/\D+/g, "")) || 0;
   for (const group of library.values()) group.sort((a, b) => ordinal(a) - ordinal(b));
   return library;
 }
