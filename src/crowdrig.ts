@@ -32,6 +32,16 @@ const SAMPLING = Texture.NEAREST_NEAREST;
 
 export interface RiggedFigure {
   mesh: Mesh;
+  /**
+   * The figure's other drawable pieces, hair especially.
+   *
+   * These characters are exported as several meshes split by material rather
+   * than as one, so taking the first — which is what this did — put 266 of
+   * Caleb's 4,763 triangles on screen and left the rest of him behind. They
+   * share one skeleton and one baked texture, so every piece takes the same
+   * instance matrices; only the draw is separate.
+   */
+  parts: Mesh[];
   /** Which figure and clip this is, so placement can split by posture. */
   spec: CrowdFigure;
   manager: BakedVertexAnimationManager;
@@ -85,7 +95,13 @@ async function loadFigure(scene: Scene, spec: CrowdFigure): Promise<RiggedFigure
     SceneLoader.ImportMeshAsync("", "/models/Crowd/", spec.file, scene),
     loadBakedTexture(scene, spec.file),
   ]);
-  const mesh = res.meshes.find((m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0);
+  const drawable = res.meshes.filter(
+    (m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0
+  );
+  // The biggest piece leads, because grounding is measured off it and a
+  // bounding box taken from an eyelash would put the figure underground.
+  drawable.sort((a, b) => b.getTotalVertices() - a.getTotalVertices());
+  const mesh = drawable[0];
   if (!mesh) {
     for (const m of res.meshes) m.dispose();
     texture.dispose();
@@ -95,28 +111,34 @@ async function loadFigure(scene: Scene, spec: CrowdFigure): Promise<RiggedFigure
   // Render the mesh with no node transform of its own, matching the bake:
   // baked matrices are only valid for the mesh they were taken from. The
   // geometry is already life-sized — 1.74 m top to toe — so nothing is lost.
-  mesh.parent = null;
-  mesh.position.setAll(0);
-  mesh.rotationQuaternion = null;
-  mesh.rotation.setAll(0);
-  mesh.scaling.setAll(1);
-  mesh.computeWorldMatrix(true);
+  // Every piece, not just the leader: the baked matrices were taken with all
+  // transforms at identity, so a piece left under its exported node would be
+  // animated as though it were somewhere else.
+  for (const part of drawable) {
+    part.parent = null;
+    part.position.setAll(0);
+    part.rotationQuaternion = null;
+    part.rotation.setAll(0);
+    part.scaling.setAll(1);
+    part.computeWorldMatrix(true);
+  }
 
   const grounding = groundingMatrix(mesh);
 
   const manager = new BakedVertexAnimationManager(scene);
   manager.texture = texture;
   manager.setAnimationParameters(0, CROWD_FRAMES - 1, 0, CROWD_FPS);
-  mesh.bakedVertexAnimationManager = manager;
-
-  mesh.setEnabled(false);
-  // A crowd ringing the court is always partly on screen, and its bounding box
-  // is the one figure rather than the ring, so leave the culler out of it.
-  mesh.alwaysSelectAsActiveMesh = true;
-  for (const node of res.meshes) {
-    if (node !== mesh && node.getTotalVertices() === 0) node.dispose();
+  for (const part of drawable) {
+    part.bakedVertexAnimationManager = manager;
+    part.setEnabled(false);
+    // A crowd ringing the court is always partly on screen, and its bounding
+    // box is the one figure rather than the ring, so leave the culler out of it.
+    part.alwaysSelectAsActiveMesh = true;
   }
-  return { mesh, manager, grounding, spec };
+  for (const node of res.meshes) {
+    if (!drawable.includes(node as Mesh) && node.getTotalVertices() === 0) node.dispose();
+  }
+  return { mesh, parts: drawable.slice(1), manager, grounding, spec };
 }
 
 /**

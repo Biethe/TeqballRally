@@ -305,6 +305,8 @@ function applyPlacement(
     );
     // Not a static buffer: the crowd animator rewrites it every frame.
     person.thinInstanceSetBuffer("matrix", buffer, 16, false);
+    let sharedTint: Float32Array | null = null;
+    let sharedSettings: Float32Array | null = null;
     if (rigged.has(person)) {
       // Four figure models means four colour schemes across seventy-odd
       // spectators, which reads as a grey uniform. A per-instance tint costs
@@ -319,6 +321,7 @@ function applyPlacement(
         tint[i * 4 + 3] = 1;
       }
       person.thinInstanceSetBuffer("instanceColor", tint, 4, true);
+      sharedTint = tint;
     }
     if (rigged.has(person)) {
       // Deterministic, so both peers of an online match and successive runs
@@ -328,15 +331,32 @@ function applyPlacement(
         seed = (seed * 1103515245 + 12345) & 0x7fffffff;
         return seed / 0x7fffffff;
       };
+      sharedSettings = animationSettingsBuffer(matrices.length, random);
       person.thinInstanceSetBuffer(
         "bakedVertexAnimationSettingsInstanced",
-        animationSettingsBuffer(matrices.length, random),
+        sharedSettings,
         4,
         true
       );
     }
     person.setEnabled(true);
     placed.push(person);
+
+    // The rest of the figure — hair, and whatever else the export split off by
+    // material — takes exactly the same instance buffers. One person is one
+    // set of matrices however many meshes they are made of, and the buffers
+    // are shared by reference rather than copied because the animator rewrites
+    // the matrix array in place every frame.
+    const figure = rigged.get(person);
+    for (const part of figure?.parts ?? []) {
+      part.thinInstanceSetBuffer("matrix", buffer, 16, false);
+      if (sharedTint) part.thinInstanceSetBuffer("instanceColor", sharedTint, 4, true);
+      if (sharedSettings) {
+        part.thinInstanceSetBuffer("bakedVertexAnimationSettingsInstanced", sharedSettings, 4, true);
+      }
+      part.setEnabled(true);
+      placed.push(part);
+    }
   }
   return placed;
 }
