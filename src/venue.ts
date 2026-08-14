@@ -19,6 +19,15 @@ export type VenueId = "gym" | "basketball" | "football" | "tennis";
 
 export const VENUE_IDS: VenueId[] = ["gym", "basketball", "football", "tennis"];
 
+/**
+ * Where a player without the entitlement lands.
+ *
+ * The three outdoor venues are free, so the game a player is given for nothing
+ * is a whole game rather than a demo — the sports hall is the one that costs.
+ * It has to be one of the free ones, or a new install opens on a locked door.
+ */
+export const DEFAULT_VENUE: VenueId = "basketball";
+
 /** An RGB triple in 0..1, kept plain so this module stays free of Babylon. */
 export type Rgb = readonly [number, number, number];
 
@@ -246,6 +255,14 @@ export interface Venue {
   sky: Rgb;
   /** The world outside the fence. null leaves the venue on its own. */
   surrounds: Surrounds | null;
+  /**
+   * Whether the Teqie Pro entitlement is needed to play here.
+   *
+   * Deliberately a property of the venue rather than a list kept somewhere
+   * else: what is for sale is then visible at the point the venue is defined,
+   * and adding a venue forces the question to be answered.
+   */
+  premium: boolean;
 }
 
 /**
@@ -287,6 +304,7 @@ export const VENUES: Record<VenueId, Venue> = {
     id: "gym",
     label: "SPORTS HALL",
     sub: "Indoor court under the roof lights",
+    premium: true,
     arena: {
       file: "indoor_arena_inside_out_improved_version.glb",
       span: 55,
@@ -345,6 +363,7 @@ export const VENUES: Record<VenueId, Venue> = {
     id: "basketball",
     label: "STREETBALL",
     sub: "Outdoor blacktop under the hoops",
+    premium: false,
     arena: { file: "Basketball.glb", ...OUTDOOR },
     court: {
       surface: "venue",
@@ -390,6 +409,7 @@ export const VENUES: Record<VenueId, Venue> = {
     id: "football",
     label: "TOUCHLINE",
     sub: "Out on the pitch with the goals behind",
+    premium: false,
     arena: { file: "Soccer.glb", ...OUTDOOR },
     // No boards: a pitch has touchlines, not barriers, and the goals already
     // frame the ends.
@@ -433,6 +453,7 @@ export const VENUES: Record<VenueId, Venue> = {
     id: "tennis",
     label: "CENTRE COURT",
     sub: "Hard court under the floodlights",
+    premium: false,
     // Mat.3 and Mat.4 are the tennis net's cord and tape, used by nothing else
     // in the model. It stands across the middle of the court, at exactly the
     // height and plane the ball is played through.
@@ -505,11 +526,31 @@ export function storeVenue(id: VenueId): void {
   }
 }
 
-/** URL override, then the remembered choice, then the original sports hall. */
+/** URL override, then the remembered choice, then the free default. */
 export function resolveVenue(search: string): VenueId {
-  return venueFromSearch(search) ?? storedVenue() ?? "gym";
+  return venueFromSearch(search) ?? storedVenue() ?? DEFAULT_VENUE;
 }
 
 export function venueFor(id: VenueId): Venue {
   return VENUES[id];
+}
+
+/** Whether playing here needs the entitlement. */
+export function isPremiumVenue(id: VenueId): boolean {
+  return VENUES[id].premium;
+}
+
+/**
+ * The venue a player may actually be sent to.
+ *
+ * Applied to a *remembered* choice rather than to a chosen one, which is the
+ * case that matters: a subscription lapses between sessions, and the venue
+ * saved last month must not quietly stay unlocked. A player picking a venue
+ * now goes through the paywall in the picker instead.
+ *
+ * Pure, and takes `pro` as an argument rather than importing `purchases`, so
+ * this module stays free of the SDK and the rule stays testable without a store.
+ */
+export function permittedVenue(id: VenueId, pro: boolean): VenueId {
+  return isPremiumVenue(id) && !pro ? DEFAULT_VENUE : id;
 }

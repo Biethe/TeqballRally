@@ -53,6 +53,46 @@ const scored = await p.evaluate(() => {
 });
 check(scored.sets.player === 0 && scored.sets.ai === 0, "a finished point never wins a set in practice");
 
+// Babylon plays animation groups off the scene's render loop rather than off
+// the match's update, so freezing the simulation never stopped the clips: a
+// player caught mid-stride jogged on the spot through the coach's whole
+// explanation. Nothing but a real scene can show this — the groups only exist
+// once a rig has loaded.
+console.log("\nfreezing the world stops the legs too");
+const frozen = await p.evaluate(async () => {
+  const m = window.__teq.match;
+  const c = m.chars.player;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Let it run first, so there is something to stop.
+  m.setTutorialFrozen(false);
+  await wait(400);
+  const started = [...c.groups.values()].filter((g) => g.isStarted);
+  m.setTutorialFrozen(true);
+  const playingWhileFrozen = started.filter((g) => g.isPlaying).length;
+  const before = started.map((g) => g.animatables[0]?.masterFrame ?? 0);
+  await wait(500);
+  const after = started.map((g) => g.animatables[0]?.masterFrame ?? 0);
+  m.setTutorialFrozen(false);
+  // Sampled on the same tick as the thaw, before anything has rendered. Later
+  // is no good: these clips loop, so a wrapped frame is indistinguishable from
+  // a rewound one a few hundred milliseconds in.
+  const resumed = started.map((g) => g.animatables[0]?.masterFrame ?? 0);
+  await wait(300);
+  return {
+    started: started.length,
+    playingWhileFrozen,
+    advanced: before.filter((f, i) => Math.abs(after[i] - f) > 0.01).length,
+    playingAfter: started.filter((g) => g.isPlaying).length,
+    // A thaw must resume, not rewind: the pose carries on from where it held.
+    rewound: resumed.filter((f, i) => Math.abs(f - after[i]) > 0.01).length,
+  };
+});
+check(frozen.started > 0, "the character had clips running");
+check(frozen.playingWhileFrozen === 0, "none of them play while the world is frozen");
+check(frozen.advanced === 0, "and not one advanced a frame");
+check(frozen.playingAfter > 0, "they run again when it thaws");
+check(frozen.rewound === 0, "and resume where they held rather than rewinding");
+
 console.log("\nonce it is done, a normal launch shows the title screen");
 await p.evaluate(() => {
   const raw = JSON.parse(localStorage.getItem("teqopen.prefs") ?? "{}");

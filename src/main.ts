@@ -4,6 +4,7 @@ import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { TrailMesh } from "@babylonjs/core/Meshes/trailMesh";
 import { createGameScene, loadBall, type GameScene } from "./scene";
 import {
@@ -14,9 +15,27 @@ import {
   settingsFor,
   storeTier,
 } from "./quality";
-import { VENUE_IDS, resolveVenue, storeVenue, venueFor } from "./venue";
+import {
+  VENUE_IDS,
+  isPremiumVenue,
+  permittedVenue,
+  resolveVenue,
+  storeVenue,
+  venueFor,
+  venueFromSearch,
+} from "./venue";
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
-import { initPurchases } from "./purchases";
+import { CRESTS, applyKit } from "./kit";
+import {
+  initPurchases,
+  isPro,
+  proStatus,
+  purchasesAvailable,
+  restorePro,
+  showCustomerCenter,
+  showPaywallIfNeeded,
+  subscribeToPro,
+} from "./purchases";
 import { INTRO_SECONDS, introPose } from "./intro";
 import { Ball, type Side } from "./ball";
 import { Character } from "./character";
@@ -104,6 +123,8 @@ import { dailyChallenges, isComplete, secondsUntilRollover } from "./challenges"
 import { LANGUAGES, detectLanguage, isLanguage, setLanguage, t as tr, tf } from "./i18n";
 import {
   BALLS,
+  ballFor,
+  withBall,
   CHARACTERS,
   BALL_RADIUS,
   COURT,
@@ -125,7 +146,19 @@ import {
  */
 const TRAIL_FROM = 6;
 const TRAIL_FULL = 15;
-const TRAIL_ALPHA = 0.5;
+const TRAIL_ALPHA = 0.78;
+
+/**
+ * How long the streak stays away after a ball is launched, in seconds.
+ *
+ * The ball is moved onto the striking foot for the contact frame, so the first
+ * few centimetres of every kick are a snap rather than a flight. Drawing a
+ * streak through that is what made the adaptation obvious — the trail pointed
+ * straight at the cheat. Waiting a hundredth of a second and starting from
+ * where the ball actually leaves hides it completely, and reads as the streak
+ * being *thrown* by the strike rather than dragged into it.
+ */
+const TRAIL_DELAY = 0.09;
 
 const MAX_FRAME_DT = 1 / 20;
 
@@ -237,6 +270,22 @@ async function boot(): Promise<void> {
     };
   };
 
+  // The remembered venue is honoured first and checked second, on purpose. The
+  // store answers over the network, and holding the first frame for it would
+  // make a paying player wait to see what they paid for. Showing a lapsed one
+  // the sports hall for a moment on the title screen costs nothing; showing a
+  // member a downgrade while their entitlement loads is the version that reads
+  // as the game taking something away. A `?venue=` override is left alone —
+  // it is a harness hook, not a way to buy anything.
+  subscribeToPro((status) => {
+    if (!status.ready || venueFromSearch(location.search)) return;
+    const allowed = permittedVenue(venueId, status.pro);
+    if (allowed === venueId) return;
+    venueId = allowed;
+    storeVenue(allowed);
+    void gs.setVenue(venueFor(allowed));
+  });
+
   const ball = new Ball();
   let ballMesh: AbstractMesh | null = null;
   let ballMeshId: string | null = null;
@@ -251,6 +300,8 @@ async function boot(): Promise<void> {
    */
   let ballTrail: TrailMesh | null = null;
   let trailMat: StandardMaterial | null = null;
+  /** Seconds left of the blackout after a launch; 0 means the streak may draw. */
+  let trailHold = 0;
 
   let match: MatchController | null = null;
   let aiCtl: AIController | null = null;
@@ -656,13 +707,29 @@ async function boot(): Promise<void> {
     // running the same match at different frame rates.
     gs.stepTapMarker(dt);
     if (ballTrail && trailMat) {
-      // Visible in proportion to how fast the ball is actually travelling, so
-      // a smash streaks and a set-up touch shows nothing. No rule has to
-      // remember to switch it on.
-      const speed = ball.state.vel.length();
-      const want = Math.min(1, Math.max(0, (speed - TRAIL_FROM) / (TRAIL_FULL - TRAIL_FROM)));
-      trailMat.alpha += (want * TRAIL_ALPHA - trailMat.alpha) * Math.min(1, dt * 12);
-      ballTrail.setEnabled(trailMat.alpha > 0.01);
+      if (trailHold > 0) {
+        // Held: hidden, and not accumulating either. A trail left running
+        // through the blackout would come back holding the very frames it was
+        // meant to hide.
+        trailHold -= dt;
+        trailMat.alpha = 0;
+        ballTrail.setEnabled(false);
+        if (trailHold <= 0) {
+          // Collapse every segment onto where the ball is *now*, so the streak
+          // begins at the ball rather than being dragged out of the foot it
+          // just left.
+          ballTrail.reset();
+          ballTrail.start();
+        }
+      } else {
+        // Visible in proportion to how fast the ball is actually travelling, so
+        // a smash streaks and a set-up touch shows nothing. No rule has to
+        // remember to switch it on.
+        const speed = ball.state.vel.length();
+        const want = Math.min(1, Math.max(0, (speed - TRAIL_FROM) / (TRAIL_FULL - TRAIL_FROM)));
+        trailMat.alpha += (want * TRAIL_ALPHA - trailMat.alpha) * Math.min(1, dt * 12);
+        ballTrail.setEnabled(trailMat.alpha > 0.01);
+      }
     }
     // Scenery runs on wall-clock time and outside the simulation: it must not
     // consume simulation steps, and it keeps moving through a menu sitting
@@ -1357,10 +1424,14 @@ async function boot(): Promise<void> {
         { id: "btn-set-display", label: tr("settings.display"), sub: tr("settings.display.sub"), primary: true },
         { id: "btn-set-gameplay", label: tr("settings.gameplay"), sub: tr("settings.gameplay.sub") },
         { id: "btn-set-audio", label: tr("settings.audio"), sub: tr("settings.audio.sub") },
+        { id: "btn-set-kit", label: tr("settings.kit"), sub: tr("settings.kit.sub") },
+        { id: "btn-set-pro", label: tr("settings.pro"), sub: tr("settings.pro.sub") },
       ],
       (id) => {
         if (id === "btn-set-display") showSettingsGroup("display", back);
         else if (id === "btn-set-gameplay") showSettingsGroup("gameplay", back);
+        else if (id === "btn-set-kit") showSettingsGroup("kit", back);
+        else if (id === "btn-set-pro") showSettingsGroup("pro", back);
         else showSettingsGroup("audio", back);
       },
       undefined,
@@ -1368,9 +1439,96 @@ async function boot(): Promise<void> {
     );
   };
 
+  /**
+   * Present the paywall, and answer whether the player came out of it a member.
+   *
+   * The one route to a purchase in the game, so the "there is no store here"
+   * case is handled once: in a browser this says so plainly instead of a
+   * button doing nothing, which is the version that gets reported as a bug.
+   */
+  const unlockPro = async (): Promise<boolean> => {
+    if (!purchasesAvailable()) {
+      ui.notice(tr("pro.unavailable.title"), tr("pro.unavailable.body"), tr("pro.ok"));
+      return false;
+    }
+    return showPaywallIfNeeded();
+  };
+
   /** One focused screen of settings, and the rows that belong on it. */
-  const showSettingsGroup = (group: "display" | "gameplay" | "audio", back: () => void) => {
+  const showSettingsGroup = (
+    group: "display" | "gameplay" | "audio" | "pro" | "kit",
+    back: () => void
+  ) => {
     const rows = (): SettingRow[] => {
+      if (group === "kit") {
+        return [
+          {
+            id: "kit-name",
+            label: tr("settings.kit.name"),
+            hint: prefs.kit.name || tr("settings.kit.name.hint"),
+            control: { kind: "action", label: tr("settings.kit.edit") },
+          },
+          {
+            id: "kit-number",
+            label: tr("settings.kit.number"),
+            hint: prefs.kit.number || tr("settings.kit.number.hint"),
+            control: { kind: "action", label: tr("settings.kit.edit") },
+          },
+          {
+            id: "kit-crest",
+            label: tr("settings.kit.crest"),
+            hint: tr("settings.kit.crest.hint"),
+            control: {
+              kind: "choice",
+              value: prefs.kit.crest,
+              options: CRESTS.map((c) => ({ id: c, label: tr(`settings.kit.crest.${c}`) })),
+            },
+          },
+        ];
+      }
+      if (group === "pro") {
+        const status = proStatus();
+        // Lifetime has no expiry date; a subscription has one that means
+        // opposite things depending on whether it is going to renew, and
+        // "ends" is the one a player needs to see coming.
+        const when = status.expires ? new Date(status.expires).toLocaleDateString() : null;
+        const term = when
+          ? tf(status.willRenew ? "pro.renews" : "pro.lapses", { date: when })
+          : tr("pro.lifetime");
+        return [
+          {
+            id: "pro-status",
+            label: status.pro ? tr("pro.status.active") : tr("pro.status.inactive"),
+            hint: status.pro
+              ? `${tr("pro.status.hint.active")} ${term}`
+              : tr("pro.status.hint.inactive"),
+          },
+          // A member is not sold to again; they are given the store's own
+          // screen for changing or cancelling, which is where that belongs.
+          status.pro
+            ? {
+                id: "pro-manage",
+                label: tr("pro.manage"),
+                hint: tr("pro.manage.hint"),
+                control: { kind: "action", label: tr("pro.manage.action") },
+              }
+            : {
+                id: "pro-unlock",
+                label: tr("pro.unlock"),
+                hint: tr("pro.unlock.hint"),
+                control: { kind: "action", label: tr("pro.unlock.action") },
+              },
+          // Reachable without buying anything first, and without already being
+          // a member: somebody who reinstalled has no other way back in, and
+          // both stores require the path to exist.
+          {
+            id: "pro-restore",
+            label: tr("pro.restore"),
+            hint: tr("pro.restore.hint"),
+            control: { kind: "action", label: tr("pro.restore.action") },
+          },
+        ];
+      }
       if (group === "display") {
         return [
           {
@@ -1440,6 +1598,67 @@ async function boot(): Promise<void> {
         tr(`settings.${group}`),
         rows(),
         (id, value) => {
+          if (id === "kit-name" || id === "kit-number") {
+            const isName = id === "kit-name";
+            ui.showTextEntry({
+              title: tr(isName ? "settings.kit.name" : "settings.kit.number"),
+              placeholder: tr(isName ? "settings.kit.name.hint" : "settings.kit.number.hint"),
+              value: isName ? prefs.kit.name : prefs.kit.number,
+              maxLength: isName ? 12 : 2,
+              // A shirt name is upper case because that is how a shirt is
+              // printed; a number is digits or it is not a number.
+              clean: (raw) =>
+                isName ? raw.toUpperCase().replace(/[^A-Z ]/g, "") : raw.replace(/\D/g, ""),
+              submitLabel: tr("nav.done"),
+              onSubmit: (entered) => {
+                if (isName) prefs.kit.name = entered;
+                else prefs.kit.number = entered;
+                storePreferences(prefs);
+                render();
+              },
+              onBack: () => render(),
+            });
+            return;
+          }
+          if (id === "kit-crest" && typeof value === "string") {
+            const picked = CRESTS.find((c) => c === value);
+            if (picked) {
+              prefs.kit.crest = picked;
+              storePreferences(prefs);
+            }
+            render();
+            return;
+          }
+          if (id === "pro-unlock") {
+            void unlockPro().then(render);
+            return;
+          }
+          if (id === "pro-manage") {
+            // Anything can happen in there, including a cancellation, so the
+            // screen is redrawn from the entitlement rather than assumed.
+            void showCustomerCenter().then(render);
+            return;
+          }
+          if (id === "pro-restore") {
+            if (!purchasesAvailable()) {
+              ui.notice(tr("pro.unavailable.title"), tr("pro.unavailable.body"), tr("pro.ok"));
+              return;
+            }
+            void restorePro().then((outcome) => {
+              render();
+              if (outcome.ok && outcome.pro) {
+                ui.notice(tr("pro.restored.title"), tr("pro.restored.body"), tr("pro.ok"));
+              } else if (outcome.ok) {
+                // A restore that finds nothing is not an error, and saying so
+                // is the difference between an answer and a button that did
+                // nothing visible.
+                ui.notice(tr("pro.restoredNone.title"), tr("pro.restoredNone.body"), tr("pro.ok"));
+              } else if (!outcome.cancelled) {
+                ui.notice(tr("pro.failed.title"), outcome.message, tr("pro.ok"));
+              }
+            });
+            return;
+          }
           if (id === "graphics") {
             const picked = QUALITY_TIERS.find((tier) => tier === value);
             if (!picked || picked === qualityTier) return;
@@ -1825,26 +2044,83 @@ async function boot(): Promise<void> {
   ) => {
     viewer.activate();
     input.setTouchControlsEnabled(false);
-    // WHITE is the default picker item and the most common choice. Begin it
-    // at idle priority while the selected character preview is being readied.
+    // The first ball is what the picker opens on, so it is the one most likely
+    // to be played. Begin it at idle priority while the selected character
+    // preview is being readied.
     scheduleAssetPrefetch(`/models/Ball_and_Table/${BALLS[0].id}.glb`, 900);
     ui.showSelect({
-      // Only what the career has unlocked. The locked ones are not hidden from
-      // the player — they are on the CHAMPIONS screen with the price on them,
-      // which is a reason to keep playing rather than a gap in a menu.
-      characters: CHARACTERS.filter((c) => isUnlocked(career, c.id)),
+      // The whole roster, locked ones included. Filtering them out left a new
+      // player looking at a carousel of one and no sign there was anything
+      // else — the arrows moved nothing. Shown blurred with the price on them,
+      // the same screen says the game has four players and what each costs.
+      characters: CHARACTERS,
       balls: BALLS,
-      venues: VENUE_IDS.map((id) => ({ id, label: venueFor(id).label })),
+      locked: Object.fromEntries<string>([
+        ...CHARACTERS.filter((c) => !isUnlocked(career, c.id)).map(
+          (c): [string, string] => [c.id, tf("select.unlockAt", { trophies: UNLOCK_AT[c.id] ?? 0 })]
+        ),
+        // Balls unlock on the same currency as players, so one screen answers
+        // "what is there to play for" for everything on it.
+        ...BALLS.filter((b) => career.best < b.unlockAt).map(
+          (b): [string, string] => [b.id, tf("select.unlockAt", { trophies: b.unlockAt })]
+        ),
+        // The premium venue is locked by the entitlement rather than by
+        // trophies, so it says something different — but it goes through the
+        // same map, which is what makes PLAY turn into the offer on its tab.
+        ...VENUE_IDS.filter((id) => isPremiumVenue(id) && !isPro()).map(
+          (id): [string, string] => [id, tr("select.venuePro")]
+        ),
+      ]),
+      // What this ball does for *this* player, so affinity is visible at the
+      // moment it matters rather than buried in a table somewhere.
+      withBall: (characterId, ballId) => {
+        const base = CHARACTERS.find((c) => c.id === characterId) ?? CHARACTERS[0];
+        const trained = withCareer(base, levelOf(career, base.id));
+        return { base: trained, withBall: withBall(trained, ballFor(ballId)) };
+      },
+      venues: VENUE_IDS.map((id) => ({
+        id,
+        label: venueFor(id).label,
+        locked: isPremiumVenue(id) && !isPro(),
+      })),
       venue: venueId,
-      onVenue: (id) => {
+      // Called when PLAY is pressed, to commit whatever the venue tab is
+      // showing — and to sell it first if it is not owned. Browsing only
+      // previews; nothing is bought by scrolling past it.
+      onVenue: async (id) => {
         const picked = VENUE_IDS.find((v) => v === id);
-        if (!picked || picked === venueId) return;
+        if (!picked) return false;
+        // Already the chosen venue: nothing to do, and emphatically not a
+        // refusal. Answering false here would have made PLAY do nothing at all
+        // for anyone who had not changed venue since opening the screen.
+        if (picked === venueId) return true;
+        if (isPremiumVenue(picked) && !isPro()) {
+          // Backing out of the paywall is a decision, not a failure: the screen
+          // stays where it is and says nothing about it.
+          if (!(await unlockPro())) return false;
+        }
         storeVenue(picked);
         venueId = picked;
         void gs.setVenue(venueFor(picked));
+        return true;
       },
       title,
       onBrowse: async (kind, id) => {
+        if (kind === "venue") {
+          // Step out of the studio and let the real court show through. The
+          // venue is already built in the live scene behind this screen, so
+          // this previews the actual thing at full size rather than a second,
+          // smaller copy loaded into the viewer — and it costs no download.
+          const picked = VENUE_IDS.find((v) => v === id);
+          if (!picked) return false;
+          viewer.deactivate();
+          await gs.setVenue(venueFor(picked));
+          return true;
+        }
+        viewer.activate();
+        // Blurred before the load is awaited, so a locked model is never
+        // legible for the frame between arriving and being obscured.
+        viewer.setBlurred(kind === "character" && !isUnlocked(career, id));
         const shown = await viewer.show(kind, id);
         // If the player is browsing, make the next arrow press instant on a
         // normal connection. Only one adjacent item is scheduled at a time;
@@ -2022,7 +2298,12 @@ async function boot(): Promise<void> {
 
   // ------------------------------------------------------------ match setup
 
-  const startMatch = async (playerDef: CharacterDef, ballId: string, opts: MatchOpts) => {
+  const startMatch = async (player: CharacterDef, ballId: string, opts: MatchOpts) => {
+    // The ball is applied here, at the one place a match is built, for the same
+    // reason the career level is: four call sites reach this one, and a trait
+    // that only counts in three of them is worse than one that counts in none.
+    // Only the human's ball is theirs — the opponent plays their own game.
+    const playerDef = withBall(player, ballFor(ballId));
     ui.showLoading("Loading the court…");
     input.setTouchControlsEnabled(true);
     practiceCoach?.dispose();
@@ -2042,6 +2323,19 @@ async function boot(): Promise<void> {
       Character.load(gs.scene, playerDef),
       Character.load(gs.scene, opts.opponent),
     ]);
+    // The human's shirt only. The opponent is somebody else and wears their own
+    // kit — printing the player's name on both is the version of this feature
+    // that reads as a bug. Awaited so the first frame already shows it, and
+    // never allowed to throw: a name on a shirt must not cost anyone a match.
+    try {
+      await applyKit(playerChar.meshes, prefs.kit, (url, invertY) => {
+        const painted = new Texture(url, gs.scene, undefined, invertY);
+        painted.name = "shirt (kit)";
+        return painted;
+      });
+    } catch (error) {
+      console.warn("[kit] could not paint the shirt:", error);
+    }
     if (needsNewBall && loadedBall) {
       if (ballMesh) {
         gs.shadows?.removeShadowCaster(ballMesh, true);
@@ -2058,7 +2352,15 @@ async function boot(): Promise<void> {
       trailMat.emissiveColor = new Color3(1, 0.72, 0.32);
       trailMat.disableLighting = true;
       trailMat.alpha = 0;
-      ballTrail = new TrailMesh("ball-trail", ballMesh, gs.scene, BALL_RADIUS * 0.62, 24, true);
+      // Wider than the ball's own radius and round rather than square: at four
+      // section points the tube is a flat ribbon that disappears edge-on, which
+      // is exactly when a smash is worth seeing. Eight costs 288 vertices.
+      ballTrail = new TrailMesh("ball-trail", ballMesh, gs.scene, {
+        diameter: BALL_RADIUS * 1.5,
+        length: 32,
+        sections: 8,
+        autoStart: true,
+      });
       ballTrail.material = trailMat;
       ballTrail.isPickable = false;
     }
@@ -2088,6 +2390,13 @@ async function boot(): Promise<void> {
     stopCrowdCheer();
     controller.subscribe((event) => {
       if (event.type === "point-awarded") cheerCrowd();
+      // Every serve, strike and pop comes through here, which is the one place
+      // that knows a ball has just been given a new velocity — and so the only
+      // honest place to start the streak from.
+      if (event.type === "ball-launched") {
+        trailHold = TRAIL_DELAY;
+        ballTrail?.stop();
+      }
     });
     controller.aimMarker = gs.aimMarker;
     controller.landingMarker = gs.landingMarker;

@@ -140,12 +140,23 @@ function buildSky(scene: Scene, horizon: Rgb, zenith: Rgb): Mesh {
   }
   dome.setVerticesData(VertexBuffer.ColorKind, colours);
   const mat = new StandardMaterial("skyMat", scene);
-  // Unlit, and the gradient rides on the *diffuse* channel: a vertex colour
-  // multiplies diffuse, not emissive, so a white emissive dome with vertex
-  // colours comes out flat and a black one comes out black.
+  // Unlit, and the gradient has to ride on **emissive** — which is the opposite
+  // of what it looks like it should do, and is why this dome rendered black
+  // above the horizon in all three outdoor venues.
+  //
+  // The vertex colour does multiply the diffuse channel, but that is not the
+  // channel that survives `disableLighting`. Babylon's default shader ends with
+  //
+  //   finalDiffuse = clamp(diffuseBase*diffuseColor + emissiveColor + ambient)
+  //                * baseColor.rgb          // baseColor already *= vColor
+  //
+  // and with lighting disabled no light ever writes `diffuseBase`, so it stays
+  // zero. A black emissive and a black scene ambient then multiply the whole
+  // gradient by nothing. White emissive makes the bracket 1 and hands the
+  // colour entirely to the vertex ramp, which is what an unlit sky wants.
   mat.disableLighting = true;
   mat.diffuseColor = new Color3(1, 1, 1);
-  mat.emissiveColor = new Color3(0, 0, 0);
+  mat.emissiveColor = new Color3(1, 1, 1);
   mat.backFaceCulling = false;
   // The sky must not be fogged toward itself, and must never occlude anything.
   mat.fogEnabled = false;
@@ -197,8 +208,12 @@ function buildCity(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[
     // the procedural blocks pushed out behind to carry the skyline. A street
     // of parked cars and some planting is what makes the near ring read as a
     // street rather than a row of models.
+    // Twelve of the pack's twenty houses rather than six. Instancing means the
+    // cost is one draw call per *distinct* model, so this is six more calls —
+    // and it halves how often the same house appears twice in one view, which
+    // was the thing that read as a repeated texture rather than a street.
     out.push(
-      ...scatterProps(houses, { count: 26, inner: 25, outer: 47, facing: "inward", vary: 0.12, seed: 31, models: 6 })
+      ...scatterProps(houses, { count: 26, inner: 25, outer: 47, facing: "inward", vary: 0.12, seed: 31, models: 12 })
     );
     out.push(
       ...scatterProps(props.get("car") ?? [], {

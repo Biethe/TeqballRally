@@ -85,41 +85,35 @@ export function portraitCameraShot(
   playerZ: number,
   baseCameraX: number,
   fov: number = CAMERA.portrait.fov,
-  safe: number = CAMERA.portrait.safe
+  safe: number = CAMERA.portrait.safe,
+  pan: number = CAMERA.portrait.pan,
+  height: number = CAMERA.portrait.height
 ): { x: number; z: number } {
   const spread = Math.tan(fov / 2);
-  const restDistance = Math.abs(playerX - baseCameraX);
 
-  // The still shot, while it holds everything. A camera that reacts to every
-  // step slides the world under a figure that never moves, which is both
-  // harder to read and worse to look at.
+  // The camera does not move along the court axis, ever. Its position was
+  // solved for the worst case the court allows, so there is nothing left for a
+  // dolly to fix — and everything behind this line is scenery, which is what
+  // the old backwards travel kept finding.
+  const x = baseCameraX;
+
+  // A deadzone, not a lock. Inside this band the shot is still: a camera welded
+  // to the player slides the world under a figure that never moves, which is
+  // both harder to read and worse to look at. The band is a fraction of the
+  // frame at the player's own depth, so it narrows as they come towards the
+  // lens — which is where they need the camera to react soonest.
   //
-  // Both conditions matter, and the second is easy to forget: a player standing
-  // dead centre can still be close enough to the lens that the *table* no
-  // longer fits, because the frame narrows towards the near end.
-  const restHalfWidth = restDistance * spread;
-  if (
-    Math.abs(playerZ) <= restHalfWidth * safe &&
-    restHalfWidth >= TABLE.halfWid + CAMERA.portrait.margin
-  ) {
-    return { x: baseCameraX, z: 0 };
-  }
+  // Measured along the sight line rather than across the ground. The camera is
+  // 6.6 m up; ignoring that would put the frame at a third of its real width
+  // and pan for players who are comfortably inside it.
+  const halfWidthAtPlayer = Math.hypot(playerX - baseCameraX, height) * spread;
+  const inner = halfWidthAtPlayer * safe;
+  const slide = Math.abs(playerZ) <= inner ? 0 : playerZ - Math.sign(playerZ) * inner;
 
-  // Otherwise: frame the table and the player *together*, and take whatever
-  // distance that needs. Panning alone cannot do it — deep in the half the
-  // whole shot is barely three metres across, so sliding sideways to catch a
-  // wide player pushes the court out the other edge. The only thing that makes
-  // room for two objects is backing away from both.
-  const lo = Math.min(-TABLE.halfWid, playerZ);
-  const hi = Math.max(TABLE.halfWid, playerZ);
-  const z = (lo + hi) / 2;
-  const need = (hi - lo) / 2 + CAMERA.portrait.margin;
-  const distance = Math.max(restDistance, need / (spread * safe));
-  // The camera lives behind the player's own baseline, which is the negative
-  // end of the axis, so further back is always further negative — and never
-  // nearer than where it rests, or walking forward would shove the lens into
-  // the court.
-  return { x: Math.min(baseCameraX, playerX - distance), z };
+  // Clamped to what the table can spare. Past this the court starts leaving the
+  // frame on the opposite edge, which is the thing the whole solve exists to
+  // prevent.
+  return { x, z: Math.max(-pan, Math.min(pan, slide)) };
 }
 
 /** True when a player standing here would be inside the table. */
@@ -195,6 +189,56 @@ export const REACH_ASSIST = {
 
 export type CameraMode = "court" | "side" | "top";
 
+/**
+ * Portrait framing, solved from the court rather than tuned by eye.
+ *
+ * The old portrait camera dollied backwards to fit a wide player and the table
+ * into one shot. It worked, and it went a very long way to do it: a player at
+ * the corner of their own half put the lens at x = -20.2, while the outdoor
+ * venues are a 28.8 m site — ±14.4. The camera was outside the fence, filming
+ * the court through it. That is the "objects behind the player" problem.
+ *
+ * Two things have to be true where the frame is narrowest, at the near
+ * baseline:
+ *
+ *   the table stays in shot   →  pan + TABLE.halfWid <= halfWidth
+ *   the player stays in shot  →  COURT.maxZ - pan    <= halfWidth
+ *
+ * Eliminating `pan` gives halfWidth >= (COURT.maxZ + TABLE.halfWid) / 2, plus
+ * a margin for headroom. What is left over after the table is how far the
+ * camera may pan.
+ *
+ * The trap is *how* that half-width is bought. Buying it with distance needs
+ * 6.9 m behind the baseline, and no venue has it — the sports hall's stands
+ * start well inside that, and a camera solved that way ends up filming the
+ * underside of the roof. So it is bought with **height** instead: the frame's
+ * width at a point on the ground is set by how far the lens is from it, and a
+ * raised camera is further away than its ground distance suggests. Standing
+ * 2.2 m back and 6.6 m up is 7.0 m from the near baseline — the same shot, from
+ * inside the building, looking over the goals and backboards that a low camera
+ * this far out would have been staring straight into.
+ */
+const PORTRAIT_FOV = 0.88;
+/** Headroom beyond the bare "table and player both fit" solution. */
+const PORTRAIT_MARGIN = 0.5;
+const PORTRAIT_SPREAD = Math.tan(PORTRAIT_FOV / 2);
+/** Half-width the frame must hold at the near baseline. */
+const PORTRAIT_HALF_WIDTH = (COURT.maxZ + TABLE.halfWid) / 2 + PORTRAIT_MARGIN;
+/**
+ * How far behind the deepest a player may stand the lens sits.
+ *
+ * Small on purpose. This is the only part of the shot that eats into the
+ * venue, and every venue puts something solid — stands, a goal, a hoop —
+ * a few metres past the end of the play area.
+ */
+const PORTRAIT_STANDOFF = 2.2;
+/** Lens-to-near-baseline distance the framing needs, along the sight line. */
+const PORTRAIT_SLANT = PORTRAIT_HALF_WIDTH / PORTRAIT_SPREAD;
+/** Whatever height is left to make up, once the standoff has been spent. */
+const PORTRAIT_HEIGHT = Math.sqrt(
+  Math.max(0, PORTRAIT_SLANT * PORTRAIT_SLANT - PORTRAIT_STANDOFF * PORTRAIT_STANDOFF)
+);
+
 // Rally camera framing (hand-editable). Cameras are fully static: they never
 // follow the player or ball. The arena is intentionally asymmetric, so P2's
 // court view uses its own interior position instead of mirroring P1's.
@@ -220,10 +264,15 @@ export const CAMERA = {
   // seen, and the narrowest part of the shot is right where the player stands:
   // squeeze it and a player chasing a wide ball walks out of their own frame.
   portrait: {
-    back: 5.0,
-    height: 3.9,
+    // Solved above, expressed the way this table expresses everything else —
+    // as a distance behind the serve spot — so the one call site does not have
+    // to know which baseline the solve was measured from.
+    back: COURT.maxX + PORTRAIT_STANDOFF - SPAWN.x,
+    height: PORTRAIT_HEIGHT,
     lookY: 0.95,
-    fov: 0.88,
+    fov: PORTRAIT_FOV,
+    /** How far the camera may pan before the table leaves the frame. */
+    pan: PORTRAIT_HALF_WIDTH - TABLE.halfWid,
     /**
      * How much of the visible half-width the player may use before the camera
      * starts to follow them.
@@ -242,14 +291,8 @@ export const CAMERA = {
     safe: 0.55,
     /** Seconds for the follow to catch up. Long enough to read as camera work. */
     tau: 0.22,
-    /**
-     * Room kept beside the table when the camera pulls back.
-     *
-     * The camera dollies out as the player comes towards it so the frame never
-     * gets narrower than the court; this is how much more than the bare table
-     * width it holds, so the sidelines are not flush against the edge.
-     */
-    margin: 0.7,
+    /** Headroom in the solved framing, beside the table. */
+    margin: PORTRAIT_MARGIN,
   },
   /**
    * The shot held on whoever just won the game.
@@ -503,14 +546,16 @@ export const KICK_LOFT: Record<string, number> = {
 /**
  * Frames at the head of a clip that must never play.
  *
- * ServeRightFoot's first 20 frames contain movement that reads as a twitch
+ * ServeRightFoot's first 25 frames contain movement that reads as a twitch
  * before the serve begins. Skipping them is preferable to re-cutting the clip:
  * the toss (frame 44) and the contact (92) both sit well after the skip, so
  * every fraction derived from the full clip stays correct and the ball is
  * still launched on the frame the foot meets it.
+ *
+ * 20 left some of the twitch in view; 25 is where the clip settles.
  */
 export const CLIP_SKIP_FRAMES: Record<string, number> = {
-  ServeRightFoot: 20,
+  ServeRightFoot: 25,
 };
 
 /** The earliest fraction of `name` that is safe to start playing from. */
@@ -640,13 +685,101 @@ export const FOOT_FACTOR = {
   weak: { power: 0.85, spray: 1.7 },
 };
 
-export const BALLS = [
-  { id: "WhiteBall", label: "WHITE" },
-  { id: "RedBall", label: "RED" },
-  { id: "BlueBall", label: "BLUE" },
-  { id: "GreenBall", label: "GREEN" },
-  { id: "OrangeBall", label: "ORANGE" },
-  { id: "BlueAndBlackBall", label: "BLUE & BLACK" },
-  { id: "BlueAndRoseBall", label: "BLUE & ROSE" },
-  { id: "OrangeAndBlackBall", label: "ORANGE & BLACK" },
+/**
+ * The balls, and why there are four rather than eight.
+ *
+ * Every ball model in this project came from the same Nike Pitch export, and
+ * four of the eight carried the mark plainly enough to read on a phone: a
+ * swoosh on WHITE, GREEN and ORANGE, and "TEAM" lettering on BLUE & BLACK.
+ * Those are gone — from this list *and* from `assets/`, because `publicDir` is
+ * the whole asset folder, so a model that is merely unreferenced still ships
+ * inside the APK.
+ *
+ * The four that remain render without a visible mark. That is not the same as
+ * being original artwork: their source is still that export, and the node names
+ * in the files still say `Nike_Pitch_*`. Commissioning or generating clean
+ * models is the only thing that actually settles it.
+ */
+export interface BallDef {
+  id: string;
+  label: string;
+  /**
+   * Multipliers on the player's own traits. 1, or absent, leaves one alone.
+   *
+   * Every ball that gives something takes something back. A ball that were
+   * only better would make the choice a formality and the other three
+   * decoration, which is the failure mode of every "equipment" system that
+   * stops being interesting the day you own the best item.
+   */
+  mods: Partial<Record<"power" | "precision" | "speed" | "serve" | "volley", number>>;
+  /** Best-ever trophies needed to play with it. 0 is owned from the start. */
+  unlockAt: number;
+}
+
+export const BALLS: BallDef[] = [
+  // The honest one: no help and no trade. Owned from the start, and the
+  // reference every other ball is read against.
+  { id: "RedBall", label: "RED", mods: {}, unlockAt: 0 },
+  // Control at the cost of pace.
+  { id: "BlueBall", label: "BLUE", mods: { precision: 1.08, power: 0.96 }, unlockAt: 40 },
+  // Light and lively: takes the ball early and serves well, less settled.
+  {
+    id: "BlueAndRoseBall",
+    label: "BLUE & ROSE",
+    mods: { volley: 1.1, serve: 1.06, precision: 0.96 },
+    unlockAt: 120,
+  },
+  // The hammer. Everything a hard hitter wants and nothing a placer does.
+  {
+    id: "OrangeAndBlackBall",
+    label: "ORANGE & BLACK",
+    mods: { power: 1.1, precision: 0.94 },
+    unlockAt: 220,
+  },
 ];
+
+/**
+ * Which ball each player gets more out of than anybody else does.
+ *
+ * The reason to own more than one: the same ball is not the best ball for
+ * everybody, so a roster and a ball cupboard are worth more together than
+ * either is alone.
+ */
+export const BALL_AFFINITY: Record<string, string> = {
+  BrazilianPlayer: "BlueAndRoseBall",
+  EnglishPlayer: "OrangeAndBlackBall",
+  FrenchPlayer: "RedBall",
+  SpanishPlayer: "BlueBall",
+};
+
+/** How much more a player gets from a ball that suits them. */
+export const AFFINITY_BONUS = 1.5;
+
+/**
+ * The player, holding this ball.
+ *
+ * Shaped like `withCareer`: traits in, traits out, so everything downstream —
+ * the physics, the ratings on the card, the AI — reads one already-modified
+ * `CharacterDef` and never has to know a ball was involved.
+ */
+export function withBall(def: CharacterDef, ball: BallDef): CharacterDef {
+  const suits = BALL_AFFINITY[def.id] === ball.id;
+  // Only the upside is amplified. A ball somebody suits should not also punish
+  // them harder for its trade-off — that would make affinity a mixed blessing
+  // and the whole system something to be read twice rather than felt.
+  const scale = (m: number | undefined): number =>
+    m === undefined ? 1 : m > 1 && suits ? 1 + (m - 1) * AFFINITY_BONUS : m;
+  return {
+    ...def,
+    power: def.power * scale(ball.mods.power),
+    precision: def.precision * scale(ball.mods.precision),
+    speed: def.speed * scale(ball.mods.speed),
+    serve: def.serve * scale(ball.mods.serve),
+    volley: def.volley * scale(ball.mods.volley),
+  };
+}
+
+/** The ball with this id, or the free default when the id is unknown. */
+export function ballFor(id: string): BallDef {
+  return BALLS.find((b) => b.id === id) ?? BALLS[0];
+}

@@ -7,6 +7,42 @@ and a lifetime all mean the same thing to a locked arena.
 `src/purchases.ts` is the only module that imports the SDK, so there is one
 answer to "is this player pro" rather than one per call site.
 
+## What is actually sold
+
+The **sports hall** — the indoor arena, `gym` in `src/venue.ts`. The three
+outdoor courts are free, which is the shape of the offer: what is given away is
+a whole game rather than a demo, and the venue that costs is the one that looks
+like a fixture rather than a kickabout.
+
+The rule lives on the venue itself (`premium: true`), so adding a venue forces
+somebody to answer whether it is for sale, and two pure functions decide the
+rest:
+
+- `isPremiumVenue(id)` — what the picker marks with a padlock.
+- `permittedVenue(id, pro)` — what a **remembered** choice is allowed to be.
+
+That second one is the case worth naming. A venue chosen while paying is kept
+in `localStorage`, and a subscription can lapse between two sessions; without
+that check the sports hall would stay unlocked for good after one month's
+payment. It is applied at boot, *after* the store answers rather than before —
+holding the first frame on a network round trip would make a paying player wait
+to see what they paid for, whereas showing a lapsed one the hall for a moment on
+the title screen costs nothing.
+
+A `?venue=` URL override is deliberately **not** gated: it is the hook the
+harnesses in `scripts/` drive, and this is a cosmetic backdrop in an open web
+bundle. Obfuscating a client-side check there would be theatre, not security.
+
+Where it is wired:
+
+| Screen | What it does |
+| --- | --- |
+| VENUE tab on the select screen | The sports hall is previewed at full size in the real scene, with the lock line under its name and PLAY turned into UNLOCK. Browsing only previews — nothing is bought by scrolling past it |
+| SETTINGS → MEMBERSHIP | Status and renewal date, JOIN or MANAGE depending on the entitlement, and RESTORE |
+
+`node scripts/verify-purchase-gate.mjs` proves all of it in a real browser at
+A20e size, against a build.
+
 ## Why the Capacitor plugin rather than Kotlin
 
 The game is TypeScript in a WebView; `android/` is a shell around it. Every

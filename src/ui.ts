@@ -1,6 +1,16 @@
 import type { Side } from "./ball";
 import type { CameraMode, CharacterDef } from "./config";
 import type { ViewerKind } from "./viewer";
+
+/**
+ * A page of the picker.
+ *
+ * Venues are here rather than in the model viewer because the *real* scene is
+ * already standing behind this screen with the venue built in it. Loading a
+ * second copy into the viewer's studio would cost a 4.8 MB arena to show a
+ * worse version of something the player can simply be shown directly.
+ */
+export type SelectTab = ViewerKind | "venue";
 import { t, tf } from "./i18n";
 import { randomTip } from "./tips";
 import { RATING_KEYS, rating, totalPower, type RatingKey } from "./ratings";
@@ -20,6 +30,12 @@ const RATING_DETAIL: Record<RatingKey, string> = {
 export interface SelectItem {
   id: string;
   label: string;
+  /**
+   * Shown, but behind a purchase. Marked rather than hidden or disabled: a
+   * venue nobody can see is not one anybody will buy, and the lock is the
+   * thing that says what the game has beyond what was given away.
+   */
+  locked?: boolean;
 }
 
 export interface SelectOptions {
@@ -30,12 +46,34 @@ export interface SelectOptions {
   venues?: SelectItem[];
   /** Which venue is currently built. */
   venue?: string;
-  /** Called when a different venue is picked; the scene swaps behind the picker. */
-  onVenue?: (id: string) => void;
+  /**
+   * Items that cannot be played yet, keyed by id, mapped to what it takes.
+   *
+   * Locked entries stay in the carousel rather than being filtered out of it.
+   * A roster of one says the game has one player in it; the same roster with
+   * three locked names says there are four, and what each of them costs — the
+   * difference between an empty menu and a reason to keep playing.
+   */
+  locked?: Record<string, string>;
+  /**
+   * The chosen player with and without the browsed ball.
+   *
+   * Returns both so the card can show the difference rather than a second set
+   * of numbers: "+6 POWER" is a reason to own a ball, and "104 POWER" is not.
+   */
+  withBall?: (characterId: string, ballId: string) => { base: CharacterDef; withBall: CharacterDef };
+  /**
+   * Called when a different venue is picked; the scene swaps behind the picker.
+   *
+   * Answers whether the pick was allowed to stand, because a locked venue sends
+   * the player through the paywall and they are free to back out of it. The
+   * strip waits for that answer rather than lighting the chip up first.
+   */
+  onVenue?: (id: string) => boolean | Promise<boolean>;
   /** Heading shown above the tabs (defaults to "CHOOSE YOUR SETUP"). */
   title?: string;
   /** Called whenever the browsed item changes; resolve when the model is visible. */
-  onBrowse: (kind: ViewerKind, id: string) => Promise<unknown> | void;
+  onBrowse: (kind: SelectTab, id: string) => Promise<unknown> | void;
   onConfirm: (characterId: string, ballId: string) => void;
   /** Return to the screen that led into the picker. */
   onBack?: () => void;
@@ -44,7 +82,13 @@ export interface SelectOptions {
 /** One row in the settings window: a label, a hint, and a control. */
 export type SettingControl =
   | { kind: "choice"; options: { id: string; label: string }[]; value: string }
-  | { kind: "toggle"; value: boolean };
+  | { kind: "toggle"; value: boolean }
+  /**
+   * A row that does something when pressed rather than holding a value —
+   * restoring a purchase, or opening the store's own management screen. Those
+   * belong in settings and cannot be expressed as a preference.
+   */
+  | { kind: "action"; label: string; disabled?: boolean };
 
 export interface SettingRow {
   id: string;
@@ -52,7 +96,8 @@ export interface SettingRow {
   hint?: string;
   /** Shown under the row in warning colours, e.g. what changing it costs. */
   warning?: string;
-  control: SettingControl;
+  /** Omitted for a row that only states something — a status, not a choice. */
+  control?: SettingControl;
 }
 
 export interface MenuOption {
@@ -422,6 +467,7 @@ export class UI {
         <div class="tabs">
           <button class="tab-btn active" data-tab="character"></button>
           <button class="tab-btn" data-tab="ball"></button>
+          <button class="tab-btn" data-tab="venue"></button>
         </div>
       </div>
       <div class="select-stage">
@@ -436,6 +482,7 @@ export class UI {
           <div class="item-label">
             <div id="item-name">…</div>
             <div id="item-status" class="hidden">Loading…</div>
+            <div id="item-lock" class="hidden"></div>
           </div>
           <button class="arrow-btn" id="btn-next">▶</button>
         </div>
@@ -718,43 +765,86 @@ export class UI {
    * a player reading a code off a friend's screen cannot enter something the
    * server will reject.
    */
+  /**
+   * One line of text, on its own screen.
+   *
+   * Generalised out of the room-code entry so a shirt name and a room code can
+   * share a keyboard-friendly screen without the name inheriting a five-letter
+   * limit and a JOIN button.
+   */
+  showTextEntry(opts: {
+    title: string;
+    placeholder: string;
+    value?: string;
+    maxLength: number;
+    minLength?: number;
+    /** Applied on every keystroke; what the field is allowed to contain. */
+    clean: (raw: string) => string;
+    submitLabel: string;
+    onSubmit: (value: string) => void;
+    onBack: () => void;
+  }): void {
+    this.hideAll();
+    this.standingsEl.innerHTML = `
+      <div class="logo small">${opts.title}</div>
+      <div class="standings-rows">
+        <input class="code-input" id="lobby-code-input" inputmode="latin"
+               autocapitalize="characters" autocomplete="off" spellcheck="false"
+               maxlength="${opts.maxLength}" placeholder="${opts.placeholder}" />
+      </div>
+      <button class="big-btn" id="btn-code-go">${opts.submitLabel}</button>
+      <button class="big-btn alt" id="btn-code-back" data-menu-back>${t("nav.back")}</button>`;
+
+    const input = this.standingsEl.querySelector<HTMLInputElement>("#lobby-code-input")!;
+    const go = this.standingsEl.querySelector<HTMLButtonElement>("#btn-code-go")!;
+    input.setAttribute("aria-label", opts.title);
+    input.value = opts.clean(opts.value ?? "");
+    const min = opts.minLength ?? 0;
+    const sync = () => {
+      go.disabled = input.value.length < min;
+    };
+    const submit = () => {
+      if (go.disabled) return;
+      opts.onSubmit(input.value.trim());
+    };
+    input.oninput = () => {
+      input.value = opts.clean(input.value);
+      sync();
+    };
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") submit();
+    };
+    sync();
+    go.onclick = submit;
+    this.standingsEl.querySelector<HTMLButtonElement>("#btn-code-back")!.onclick = () => opts.onBack();
+    this.standingsEl.classList.remove("hidden");
+    // Phones only raise the keyboard for a focus inside the tap that caused it.
+    setTimeout(() => input.focus(), 50);
+  }
+
+  /**
+   * Room-code entry. The input is upper-cased and filtered as it is typed, so
+   * a player reading a code off a friend's screen cannot enter something the
+   * server will reject.
+   */
   showCodeEntry(
     title: string,
     placeholder: string,
     onSubmit: (code: string) => void,
     onBack: () => void
   ): void {
-    this.hideAll();
-    this.standingsEl.innerHTML = `
-      <div class="logo small">${title}</div>
-      <div class="standings-rows">
-        <input class="code-input" id="lobby-code-input" inputmode="latin"
-               autocapitalize="characters" autocomplete="off" spellcheck="false"
-               maxlength="5" placeholder="${placeholder}" aria-label="Room code" />
-      </div>
-      <button class="big-btn" id="btn-code-go">JOIN</button>
-      <button class="big-btn alt" id="btn-code-back" data-menu-back>BACK</button>`;
-
-    const input = this.standingsEl.querySelector<HTMLInputElement>("#lobby-code-input")!;
-    const go = this.standingsEl.querySelector<HTMLButtonElement>("#btn-code-go")!;
-    const submit = () => {
-      const code = input.value.trim();
-      if (code.length > 0) onSubmit(code);
-    };
-    input.oninput = () => {
-      input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
-      go.disabled = input.value.length < 5;
-    };
-    input.onkeydown = (e) => {
-      if (e.key === "Enter") submit();
-    };
-    go.disabled = true;
-    go.onclick = submit;
-    this.standingsEl.querySelector<HTMLButtonElement>("#btn-code-back")!.onclick = () => onBack();
-    this.standingsEl.classList.remove("hidden");
-    // Phones only raise the keyboard for a focus inside the tap that caused it.
-    setTimeout(() => input.focus(), 50);
+    this.showTextEntry({
+      title,
+      placeholder,
+      maxLength: 5,
+      minLength: 5,
+      clean: (raw) => raw.toUpperCase().replace(/[^A-Z0-9]/g, ""),
+      submitLabel: "JOIN",
+      onSubmit,
+      onBack,
+    });
   }
+
 
   /** Names shown in the score line and end screen ("YOU"/"CPU", "P1"/"P2", …). */
   setLabels(left: string, right: string): void {
@@ -817,6 +907,10 @@ export class UI {
       }
       el.appendChild(text);
 
+      if (!row.control) {
+        list.appendChild(el);
+        continue;
+      }
       const control = document.createElement("div");
       control.className = "setting-control";
       if (row.control.kind === "choice") {
@@ -834,6 +928,14 @@ export class UI {
           b.onclick = () => onChange(row.id, option.id);
           control.appendChild(b);
         }
+      } else if (row.control.kind === "action") {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "ghost-btn setting-action";
+        b.textContent = row.control.label;
+        b.disabled = row.control.disabled === true;
+        b.onclick = () => onChange(row.id, true);
+        control.appendChild(b);
       } else {
         const b = document.createElement("button");
         b.type = "button";
@@ -870,6 +972,19 @@ export class UI {
         onConfirm();
       }],
       [cancelLabel, () => this.hideOnlinePause()],
+    ]);
+  }
+
+  /**
+   * Something the player needs told and nothing to decide — what a restore
+   * found, or why the store cannot be reached. One button, and it closes.
+   */
+  notice(title: string, detail: string, dismissLabel: string, onDismiss?: () => void): void {
+    this.showOnlinePause(title, detail, [
+      [dismissLabel, () => {
+        this.hideOnlinePause();
+        onDismiss?.();
+      }],
     ]);
   }
 
@@ -1909,8 +2024,8 @@ export class UI {
     body.appendChild(actions);
   }
 
-  private selTab: ViewerKind = "character";
-  private selIdx: Record<ViewerKind, number> = { character: 0, ball: 0 };
+  private selTab: SelectTab = "character";
+  private selIdx: Record<SelectTab, number> = { character: 0, ball: 0, venue: 0 };
   private browseSeq = 0;
 
   showSelect(opts: SelectOptions): void {
@@ -1918,7 +2033,11 @@ export class UI {
     this.selectEl.classList.remove("hidden");
     this.selectEl.querySelector<HTMLDivElement>(".select-title")!.textContent =
       opts.title ?? t("select.title");
-    const tabLabels: Record<string, string> = { character: t("select.player"), ball: t("select.ball") };
+    const tabLabels: Record<string, string> = {
+      character: t("select.player"),
+      ball: t("select.ball"),
+      venue: t("select.venue"),
+    };
     for (const tab of this.selectEl.querySelectorAll<HTMLButtonElement>(".tab-btn")) {
       tab.textContent = tabLabels[tab.dataset.tab ?? "character"] ?? "";
     }
@@ -1931,38 +2050,34 @@ export class UI {
     const profileEl = this.selectEl.querySelector<HTMLElement>("#player-profile")!;
     const profileStatsEl = profileEl.querySelector<HTMLDivElement>(".profile-stats")!;
     const profileTraitsEl = profileEl.querySelector<HTMLDivElement>(".profile-traits")!;
-    // The venue is a match choice, not a preference, so it is picked here —
-    // beside the player and the ball, on the last screen before the whistle.
+    // The chip strip is gone: venues have their own tab now, previewed at full
+    // size in the real scene rather than named on a chip. The element stays in
+    // the markup, empty, so nothing that references it has to be chased down.
     const venueStrip = this.selectEl.querySelector<HTMLDivElement>("#venue-strip")!;
     venueStrip.replaceChildren();
-    venueStrip.classList.toggle("hidden", !opts.venues || opts.venues.length === 0);
-    if (opts.venues) {
-      for (const venue of opts.venues) {
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className = "venue-chip";
-        chip.dataset.venue = venue.id;
-        chip.textContent = venue.label;
-        chip.classList.toggle("on", venue.id === opts.venue);
-        chip.onclick = () => {
-          if (chip.classList.contains("on")) return;
-          for (const other of venueStrip.querySelectorAll(".venue-chip")) other.classList.remove("on");
-          chip.classList.add("on");
-          opts.onVenue?.(venue.id);
-        };
-        venueStrip.appendChild(chip);
-      }
-    }
+    venueStrip.classList.add("hidden");
+
     const back = this.selectEl.querySelector<HTMLButtonElement>("#btn-select-back")!;
     back.hidden = !opts.onBack;
     back.onclick = opts.onBack ? () => opts.onBack?.() : null;
     this.selTab = "character";
+    // Start the venue tab on the venue actually built behind this screen. Left
+    // at zero it would point at the first entry in the list — which is the
+    // premium one — so PLAY would offer to sell the sports hall to every player
+    // who never opened the tab, and commit them to it if they pressed it.
+    const startVenue = (opts.venues ?? []).findIndex((v) => v.id === opts.venue);
+    this.selIdx.venue = startVenue >= 0 ? startVenue : 0;
     tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === this.selTab));
-    const items = (): SelectItem[] => (this.selTab === "character" ? opts.characters : opts.balls);
+    const items = (): SelectItem[] =>
+      this.selTab === "character"
+        ? opts.characters
+        : this.selTab === "ball"
+          ? opts.balls
+          : (opts.venues ?? []);
 
     const footLabel = (foot: CharacterDef["strongFoot"]): string =>
       foot === "both" ? t("select.twoFooted") : foot === "left" ? t("select.left") : t("select.right");
-    const renderProfile = (player: CharacterDef | null): void => {
+    const renderProfile = (player: CharacterDef | null, base: CharacterDef | null = null): void => {
       if (!player) {
         profileEl.classList.add("hidden");
         return;
@@ -1971,9 +2086,13 @@ export class UI {
       profileStatsEl.replaceChildren();
       const stats = RATING_KEYS.map((key) => {
         const score = rating(player, key);
+        // The delta is against the same player without the ball, so a bar that
+        // has not moved says nothing at all rather than saying zero.
+        const shift = base ? score - rating(base, key) : 0;
         return {
           label: t(`select.abilities.${key}`),
           value: String(score),
+          shift,
           fill: score / 100,
           detail: RATING_DETAIL[key],
         };
@@ -1993,6 +2112,12 @@ export class UI {
         const value = document.createElement("strong");
         value.textContent = stat.value;
         row.append(label, meter, value);
+        if (stat.shift !== 0) {
+          const shift = document.createElement("em");
+          shift.className = `profile-shift ${stat.shift > 0 ? "up" : "down"}`;
+          shift.textContent = `${stat.shift > 0 ? "+" : ""}${stat.shift}`;
+          row.appendChild(shift);
+        }
         profileStatsEl.appendChild(row);
       }
       profileTraitsEl.replaceChildren();
@@ -2009,10 +2134,43 @@ export class UI {
       }
     };
 
+    const lockEl = this.selectEl.querySelector<HTMLDivElement>("#item-lock")!;
+    const startBtn = this.selectEl.querySelector<HTMLButtonElement>("#btn-start")!;
+    const lockNote = (id: string): string | undefined => opts.locked?.[id];
+
     const browse = () => {
       const item = items()[this.selIdx[this.selTab]];
       nameEl.textContent = item.label;
-      renderProfile(this.selTab === "character" ? opts.characters[this.selIdx.character] : null);
+      // On the ball tab the card keeps showing the chosen *player*, now holding
+      // the ball being browsed. Blanking it there would hide the only thing
+      // that makes one ball different from another.
+      if (this.selTab === "ball" && opts.withBall) {
+        const pair = opts.withBall(opts.characters[this.selIdx.character].id, item.id);
+        renderProfile(pair.withBall, pair.base);
+      } else {
+        renderProfile(this.selTab === "character" ? opts.characters[this.selIdx.character] : null);
+      }
+      // What is browsed decides how the stage reads; what is *chosen* decides
+      // whether PLAY works. They differ whenever somebody is looking at a
+      // locked player on the character tab with a playable one still selected
+      // on the other, and treating them as one thing disables the button under
+      // a perfectly legal line-up.
+      const browsedLock = lockNote(item.id);
+      lockEl.textContent = browsedLock ?? "";
+      lockEl.classList.toggle("hidden", browsedLock === undefined);
+      this.selectEl.classList.toggle("browsing-locked", browsedLock !== undefined);
+      // A locked *venue* is different from a locked player or ball: it is the
+      // thing that is for sale, and it is being previewed at full size right
+      // now. So PLAY turns into the offer rather than going grey — the screen
+      // that shows what you cannot have is the screen that should sell it.
+      const venue = opts.venues?.[this.selIdx.venue];
+      const venueLock = venue ? lockNote(venue.id) : undefined;
+      const chosenLock =
+        lockNote(opts.characters[this.selIdx.character].id) ??
+        lockNote(opts.balls[this.selIdx.ball].id);
+      startBtn.disabled = chosenLock !== undefined;
+      startBtn.textContent = venueLock && !chosenLock ? t("select.unlock") : t("select.play");
+      startBtn.classList.toggle("selling", Boolean(venueLock) && !chosenLock);
       const seq = ++this.browseSeq;
       statusEl.classList.remove("hidden");
       void Promise.resolve(opts.onBrowse(this.selTab, item.id)).then(() => {
@@ -2035,7 +2193,24 @@ export class UI {
         browse();
       };
     });
-    this.selectEl.querySelector<HTMLButtonElement>("#btn-start")!.onclick = () => {
+    startBtn.onclick = async () => {
+      if (startBtn.disabled) return;
+      const venue = opts.venues?.[this.selIdx.venue];
+      if (venue) {
+        // Commits the venue, and pays for it first when it needs paying for.
+        // Answering false means the player backed out of the store, which is a
+        // decision — the screen simply stays where it is and says nothing.
+        startBtn.disabled = true;
+        const kept = (await opts.onVenue?.(venue.id)) ?? true;
+        startBtn.disabled = false;
+        if (!kept) return;
+        if (lockNote(venue.id)) {
+          // Just bought: redraw so PLAY stops offering what they now own.
+          delete opts.locked?.[venue.id];
+          browse();
+          return;
+        }
+      }
       opts.onConfirm(opts.characters[this.selIdx.character].id, opts.balls[this.selIdx.ball].id);
     };
     browse();

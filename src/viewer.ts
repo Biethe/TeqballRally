@@ -12,6 +12,8 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { GlowLayer } from "@babylonjs/core/Layers/glowLayer";
+import { BlurPostProcess } from "@babylonjs/core/PostProcesses/blurPostProcess";
+import { Vector2 } from "@babylonjs/core/Maths/math.vector";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import { GLTFLoaderAnimationStartMode } from "@babylonjs/loaders/glTF/glTFFileLoader";
 import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent";
@@ -80,6 +82,9 @@ export class ModelViewer {
   private cache = new Map<string, Entry>();
   private current: Entry | null = null;
   private currentKey = "";
+  /** Separable gaussian, built on the first locked model and kept thereafter. */
+  private blur: [BlurPostProcess, BlurPostProcess] | null = null;
+  private blurred = false;
 
   constructor(engine: Engine, private canvas: HTMLCanvasElement) {
     this.scene = new Scene(engine);
@@ -128,6 +133,38 @@ export class ModelViewer {
     this.ballDisplay.setEnabled(false);
   }
 
+  /**
+   * Blur the studio, for a model the player does not own yet.
+   *
+   * A post-process rather than a CSS filter over the canvas: the viewer shares
+   * one canvas with the game, so anything applied in CSS would blur the court
+   * behind it too. It is also the cheaper of the two on a budget phone —
+   * `backdrop-filter` over a live WebGL surface forces a readback that a 2 GB
+   * device feels immediately.
+   *
+   * Built on first use and then attached and detached, because most players
+   * will browse a locked name in the first minute and never pay the cost
+   * again — and because a player who owns everything never builds it at all.
+   */
+  setBlurred(blurred: boolean): void {
+    if (blurred === this.blurred) return;
+    this.blurred = blurred;
+    if (blurred && !this.blur) {
+      // Half resolution: this is a heavy blur, so the halved buffer is free
+      // quality-wise and quarters the fill cost.
+      this.blur = [
+        new BlurPostProcess("viewer-blur-x", new Vector2(1, 0), 48, 0.5, this.camera),
+        new BlurPostProcess("viewer-blur-y", new Vector2(0, 1), 48, 0.5, this.camera),
+      ];
+      return; // constructing with a camera attaches it already
+    }
+    if (!this.blur) return;
+    for (const pass of this.blur) {
+      if (blurred) this.camera.attachPostProcess(pass);
+      else this.camera.detachPostProcess(pass);
+    }
+  }
+
   activate(): void {
     this.active = true;
     this.camera.attachControl(this.canvas, true);
@@ -136,6 +173,9 @@ export class ModelViewer {
   deactivate(): void {
     this.active = false;
     this.camera.detachControl();
+    // Left on, this would greet the next visit to the picker with a blurred
+    // model the player does own.
+    this.setBlurred(false);
     this.setCurrent(null);
   }
 

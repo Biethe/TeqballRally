@@ -409,8 +409,11 @@ describe("the portrait camera follows the player", () => {
    */
   const baseX = -SPAWN.x - CAMERA.portrait.back;
   const spawn = -SPAWN.x;
+  // Along the sight line, not across the ground: the camera is 6.6 m up, and
+  // the frame's width at a point is set by how far the lens is from it. This
+  // is the whole reason the shot fits inside a venue at all.
   const halfWidthAt = (playerX: number, camX: number) =>
-    Math.abs(playerX - camX) * Math.tan(CAMERA.portrait.fov / 2);
+    Math.hypot(playerX - camX, CAMERA.portrait.height) * Math.tan(CAMERA.portrait.fov / 2);
 
   it("stays put while the player is comfortably in shot", () => {
     expect(portraitCameraShot(spawn, 0, baseX)).toEqual({ x: baseX, z: 0 });
@@ -458,19 +461,26 @@ describe("the portrait camera follows the player", () => {
     }
   });
 
-  it("pulls back rather than only panning when the player comes close", () => {
-    const deep = portraitCameraShot(-COURT.maxX, 0, baseX);
-    const forward = portraitCameraShot(-COURT.minX, 0, baseX);
-
-    expect(deep.x).toBeLessThan(baseX);
-    // Up at the middle line there is depth to spare, so the shot is untouched.
-    expect(forward.x).toBe(baseX);
+  it("never moves along the court axis, from anywhere on the half", () => {
+    // The camera used to dolly backwards to fit a wide player and the table in
+    // one shot, and it went as far as x = -20.2 to do it. The outdoor venues
+    // are a 28.8 m site, so that is 5.8 m *outside* the fence — the lens ended
+    // up behind the scenery, filming the court through it. The distance is now
+    // solved once for the worst case, and nothing may add to it.
+    for (let x = -COURT.maxX; x <= -COURT.minX; x += 0.1) {
+      for (let z = -COURT.maxZ; z <= COURT.maxZ; z += 0.5) {
+        expect(portraitCameraShot(x, z, baseX).x).toBe(baseX);
+      }
+    }
   });
 
-  it("never pushes the camera closer than its resting distance", () => {
-    for (let x = -COURT.maxX; x <= -COURT.minX; x += 0.1) {
-      expect(portraitCameraShot(x, 0, baseX).x).toBeLessThanOrEqual(baseX);
-    }
+  it("stays inside the venue it is filming", () => {
+    // Every venue puts something solid a few metres past the end of the play
+    // area — stands in the sports hall, a goal on the pitch, a backboard on the
+    // blacktop. Solving the framing with distance instead of height put the
+    // lens at -13.7, which is behind all of them: the sports hall shot came
+    // back showing the underside of the roof and no court at all.
+    expect(Math.abs(baseX)).toBeLessThan(COURT.maxX + 3);
   });
 
   it("is symmetric", () => {

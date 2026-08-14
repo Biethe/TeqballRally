@@ -1,4 +1,5 @@
 import type { CameraMode } from "./config";
+import { BLANK_KIT, readKit, type Kit } from "./kit";
 import { isLanguage, type Language } from "./i18n";
 
 /**
@@ -30,6 +31,8 @@ export interface Preferences {
    * lesson is a menu item like any other, replayable whenever they want it.
    */
   coached: boolean;
+  /** Name, number and crest painted onto the player's shirt. */
+  kit: Kit;
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -39,6 +42,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   camera: "court",
   autoReception: true,
   coached: false,
+  kit: { ...BLANK_KIT },
 };
 
 const KEY = "teqopen.prefs";
@@ -61,6 +65,7 @@ export function readPreferences(): Preferences {
           ? stored.autoReception
           : DEFAULT_PREFERENCES.autoReception,
       coached: stored.coached === true,
+      kit: readKit(stored.kit),
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };
