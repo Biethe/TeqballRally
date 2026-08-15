@@ -3881,3 +3881,22 @@ button.pad-focus {
 .profile-shift.down {
   color: #ff8f6b;
 }
+
+/* The venue card: a photograph of the place, in the stage the model normally
+   stands in. Contained rather than cropped, because a venue is recognised by
+   its shape and cropping one is how they all start to look alike. */
+.venue-card {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* Fills the letterbox either side of the picture. Without it the live court
+     shows through and competes with the venue being offered. */
+  background: var(--ink);
+  pointer-events: none;
+}
+
+.venue-card.hidden {
+  display: none;
+}

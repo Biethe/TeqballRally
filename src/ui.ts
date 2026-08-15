@@ -471,6 +471,7 @@ export class UI {
         </div>
       </div>
       <div class="select-stage">
+        <img class="venue-card hidden" id="venue-card" alt="" />
         <aside class="player-profile hidden" id="player-profile" aria-live="polite">
           <div class="profile-stats"></div>
           <div class="profile-traits"></div>
@@ -2134,6 +2135,7 @@ export class UI {
       }
     };
 
+    const venueCard = this.selectEl.querySelector<HTMLImageElement>("#venue-card")!;
     const lockEl = this.selectEl.querySelector<HTMLDivElement>("#item-lock")!;
     const startBtn = this.selectEl.querySelector<HTMLButtonElement>("#btn-start")!;
     const lockNote = (id: string): string | undefined => opts.locked?.[id];
@@ -2141,9 +2143,12 @@ export class UI {
     const browse = () => {
       const item = items()[this.selIdx[this.selTab]];
       nameEl.textContent = item.label;
-      // On the ball tab the card keeps showing the chosen *player*, now holding
-      // the ball being browsed. Blanking it there would hide the only thing
-      // that makes one ball different from another.
+      // Venues are a photograph rather than the arena itself. Building a 4.8 MB
+      // model to answer "do I fancy playing there" is a lot of download for a
+      // decision made in two seconds, and the picture shows more of the place
+      // than the play camera ever does.
+      venueCard.classList.toggle("hidden", this.selTab !== "venue");
+      if (this.selTab === "venue") venueCard.src = `/venues/${item.id}.jpg`;
       if (this.selTab === "ball" && opts.withBall) {
         const pair = opts.withBall(opts.characters[this.selIdx.character].id, item.id);
         renderProfile(pair.withBall, pair.base);

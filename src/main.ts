@@ -2127,14 +2127,10 @@ async function boot(): Promise<void> {
       title,
       onBrowse: async (kind, id) => {
         if (kind === "venue") {
-          // Step out of the studio and let the real court show through. The
-          // venue is already built in the live scene behind this screen, so
-          // this previews the actual thing at full size rather than a second,
-          // smaller copy loaded into the viewer — and it costs no download.
-          const picked = VENUE_IDS.find((v) => v === id);
-          if (!picked) return false;
+          // Nothing to load: the tab shows a still, and the venue itself is
+          // only built when PLAY commits the choice. Browsing used to swap the
+          // live scene, which meant downloading an arena to look at a name.
           viewer.deactivate();
-          await gs.setVenue(venueFor(picked));
           return true;
         }
         viewer.activate();
