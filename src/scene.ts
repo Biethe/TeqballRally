@@ -43,6 +43,17 @@ import { buildSurroundings } from "./surroundings";
 // Meshopt-compressed GLBs are decoded locally so hosted builds do not depend
 // on a third-party CDN just to display a character or the arena.
 MeshoptCompression.Configuration = { decoder: { url: "/meshopt_decoder.js" } };
+/**
+ * How much light each kind of venue gets.
+ *
+ * The sports hall is lit by its own roof lights and its model carries that
+ * brightness in its textures; the outdoor grounds are lit only by these two,
+ * and at the hall's levels they read as overcast at dusk. So the lighting
+ * follows the venue rather than being one setting for all four.
+ */
+const INDOOR_LIGHT = { hemi: 0.8, sun: 1.15 };
+const OUTDOOR_LIGHT = { hemi: 1.25, sun: 1.75 };
+
 
 export interface GameScene {
   engine: Engine;
@@ -133,14 +144,14 @@ export async function createGameScene(
   grade.colorCurves = curves;
 
   const hemi = new HemisphericLight("hemi", new Vector3(0.2, 1, 0.1), scene);
-  hemi.intensity = 0.8;
+  hemi.intensity = INDOOR_LIGHT.hemi;
   // A blue-tinted bounce off the ground rather than a grey one: neutral fill
   // is what drains colour out of everything facing away from the sun.
   hemi.groundColor = new Color3(0.16, 0.19, 0.3);
 
   const sun = new DirectionalLight("sun", new Vector3(-0.35, -1, 0.25), scene);
   sun.position = new Vector3(3, 9, -3);
-  sun.intensity = 1.15;
+  sun.intensity = INDOOR_LIGHT.sun;
   sun.diffuse = new Color3(1, 0.96, 0.86);
   let shadows: ShadowGenerator | null = null;
   if (quality.shadowMapSize !== null) {
@@ -182,6 +193,11 @@ export async function createGameScene(
     }
     arenaPromise = null;
     built = next;
+    // An enclosed hall and an open-air court are not the same lighting problem,
+    // and one setting for both left the outdoor grounds looking overcast.
+    const level = next.id === "gym" ? INDOOR_LIGHT : OUTDOOR_LIGHT;
+    hemi.intensity = level.hemi;
+    sun.intensity = level.sun;
     const root = new TransformNode("venue-root", scene);
     venueRoot = root;
     const before = new Set<unknown>([...scene.meshes, ...scene.transformNodes]);

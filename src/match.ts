@@ -1224,7 +1224,7 @@ export class MatchController {
     // standing, not by where the ball is, so the stance is signed in the
     // player's own frame the same way `lateral` above is.
     const stance = c.position.z * (side === "player" ? -1 : 1);
-    let clip = chooseStrike(ballHeight, lateral, stance, c.def, nearMiddle, power);
+    let clip = chooseStrike(ballHeight, lateral, stance, c.def);
     // A model without the clip falls back to a kick rather than standing still.
     if (!c.groups.has(clip) && clip.startsWith("Backflip")) {
       clip = `${lateral >= 0 ? "Right" : "Left"}FootKick`;

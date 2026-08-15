@@ -226,10 +226,14 @@ const SIDE_SLANT = SIDE_HALF_WIDTH / Math.tan(SIDE_FOV / 2);
 /**
  * How far the side camera is tilted down, in radians.
  *
- * Shallow — about 31 degrees. Steeper reads as the top view this replaced, and
- * the point of a side view is to see the ball's height above the table.
+ * About 50 degrees: high, looking down the court. The first attempt was half
+ * that, on the theory that a side view exists to show the ball's height above
+ * the table — but from nearly level the two players overlap the table and each
+ * other, and what the shot gains in height it loses in being able to tell
+ * where anybody is. The lens distance is unchanged, so raising the pitch
+ * raises the camera rather than pulling it back.
  */
-const SIDE_PITCH = 0.55;
+const SIDE_PITCH = 0.87;
 
 const PORTRAIT_FOV = 0.88;
 /** Headroom beyond the bare "table and player both fit" solution. */

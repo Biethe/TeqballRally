@@ -184,7 +184,18 @@ export interface CrowdLibrary {
  * Returns an empty library rather than throwing: the caller already treats
  * that as "venue without a crowd", which beats a venue that will not open.
  */
+/**
+ * Whether spectators are placed at all.
+ *
+ * Off for this release, by decision: the crowd is going into a later version.
+ * Everything it needs is still here — the figures, their baked animation, the
+ * bake pipeline and the placement below — so turning it back on is this one
+ * flag, not a rebuild.
+ */
+const SHOW_CROWD = false;
+
 async function loadRiggedCrowdLibrary(scene: Scene): Promise<CrowdLibrary> {
+  if (!SHOW_CROWD) return { standing: [], seated: [], rigged: new Map() };
   const figures = await loadRiggedFigures(scene);
   driveCrowdClocks(scene, figures);
   const rigged = new Map<Mesh, RiggedFigure>();

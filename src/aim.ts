@@ -112,7 +112,9 @@ export function loftFloor(fromMiddle: number): number {
   // smoothly. Writing the start as `loftFor(1)` rather than as its value is
   // what keeps that true when the swipe curve is retuned — a literal here
   // would silently become a step the day loftFor changed.
-  return Math.min(1.6, loftFor(1) + past * 0.55);
+  // Halved. The old ramp threw a ball struck from the back of the half almost
+  // straight up — a shot nobody aimed and nobody enjoyed watching come down.
+  return Math.min(0.8, loftFor(1) + past * 0.28);
 }
 
 /** Whether the hard clips — foot volleys and backflips — are on from here. */
