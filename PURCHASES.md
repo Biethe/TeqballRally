@@ -87,6 +87,37 @@ exactly like this.
    it; it handles cancel, restore and refund requests without the game having
    to explain store policy.
 
+## Coins
+
+The supplies shelf — energy drinks and supplements, which are the only things
+that touch stamina — is priced in coins, and coins are earned by playing. The
+real purchase sells **coins**, not the items.
+
+That is deliberate. Selling the advantage directly would give the shop two
+prices for the same thing and make one of them money; selling the currency
+keeps one shelf, one set of prices, and leaves paying as a shortcut through the
+grind rather than a different game. A player who never spends anything can own
+everything on it.
+
+Coin packs are **consumables**, so RevenueCat keeps no balance for them: the
+credit is applied by the app and stored with the career. What has to exist in
+the dashboard:
+
+1. **Products** in Play, then imported: `coins_handful`, `coins_pocket`,
+   `coins_bag`, all one-time purchases.
+2. **An offering identified `coins`**, with a package per product. `coinPackages()`
+   reads `offerings.all.coins`, not the current offering — the current one
+   belongs to Teqie Pro.
+
+How many coins each is worth lives in `COIN_PACKS` in `src/purchases.ts`, never
+in the store: a product renamed or mispriced in the dashboard then credits
+nothing rather than guessing. Being wrong in the player's favour is still being
+wrong, and being wrong the other way takes their money.
+
+Nothing here is required for the game to run. With no `coins` offering the shop
+says there is nothing on sale, which is a fact about the account rather than a
+fault.
+
 ## The API key
 
 `API_KEY` defaults to the **Test Store** key, which is right for development and
