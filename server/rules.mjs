@@ -38,6 +38,10 @@ var SPAWN = {
   // extra y lift if a model's feet still sink into the floor
 };
 var CHARACTER_SCALE = 0.8 * TABLE_SCALE;
+var SIDE_FOV = 1;
+var SIDE_HALF_WIDTH = COURT.maxX + 0.6;
+var SIDE_SLANT = SIDE_HALF_WIDTH / Math.tan(SIDE_FOV / 2);
+var SIDE_PITCH = 0.55;
 var PORTRAIT_FOV = 0.88;
 var PORTRAIT_MARGIN = 0.5;
 var PORTRAIT_SPREAD = Math.tan(PORTRAIT_FOV / 2);
@@ -135,11 +139,19 @@ var CAMERA = {
   // Side-on and overhead presets. Side cameras use the clear, opposite
   // sideline of the imported arena; the old wider placement intersected a
   // concourse prop in the frame.
+  // Solved from the court, like the portrait shot, and for the same reason:
+  // the old numbers put the lens 9.1 m from the middle of an 18 m court, so a
+  // half-frame held 5.0 m of a half-court that is 6.8 m long and both ends
+  // were simply outside the picture.
+  //
+  // Side-on, the court's *length* runs across the screen, which on a phone
+  // held upright is its narrow dimension — so this view needs more distance
+  // than the one behind the baseline, not less.
   side: {
-    distance: 5,
-    height: 7.6,
+    distance: SIDE_SLANT * Math.cos(SIDE_PITCH),
+    height: SIDE_SLANT * Math.sin(SIDE_PITCH),
     lookY: 0.3,
-    fov: 1,
+    fov: SIDE_FOV,
     minZ: 0.1
   }
 };
@@ -165,9 +177,12 @@ var CHARACTERS = [
     stamina: 0.85,
     serve: 0.95,
     agility: 1.35,
-    volley: 1.2
+    volley: 1.2,
+    weakFoot: 82
   },
   // The powerhouse. A hammer and a serve, slow to get going, lasts all day.
+  // A hammer of a right foot and very little on the left, so the header is his
+  // answer to anything arriving on that side.
   {
     id: "EnglishPlayer",
     label: "ENGLAND",
@@ -180,7 +195,8 @@ var CHARACTERS = [
     stamina: 1.3,
     serve: 1.35,
     agility: 0.7,
-    volley: 0.85
+    volley: 0.85,
+    weakFoot: 45
   },
   // The all-rounder. Nothing to hide behind and nothing that lets him down.
   {
@@ -195,9 +211,11 @@ var CHARACTERS = [
     stamina: 1.05,
     serve: 1.05,
     agility: 1,
-    volley: 1
+    volley: 1,
+    weakFoot: 70
   },
   // The technician. Takes everything early and precisely, hits it softest.
+  // Two-footed: there is no weak side to exploit, so nothing forces a header.
   {
     id: "SpanishPlayer",
     label: "SPAIN",
@@ -210,7 +228,8 @@ var CHARACTERS = [
     stamina: 1,
     serve: 0.8,
     agility: 1.05,
-    volley: 1.35
+    volley: 1.35,
+    weakFoot: 100
   }
 ];
 

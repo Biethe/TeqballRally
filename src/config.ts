@@ -612,6 +612,19 @@ export interface CharacterDef {
   /** Dominant foot; "both" = two-footed (no weak-foot penalty, no strong-foot bonus). */
   strongFoot: Foot | "both";
   /**
+   * How good the other foot is, 0-100.
+   *
+   * Decides what a player does with a ball arriving on their weaker side. At
+   * 100 they simply kick it; at 0 they never trust it and head everything they
+   * can reach. In between it is the odds: 70 means the foot is used seven
+   * times in ten and the header is the other three.
+   *
+   * Two-footed players are 100 by definition, and it is set that way rather
+   * than special-cased so nothing downstream has to ask which kind of player
+   * this is.
+   */
+  weakFoot: number;
+  /**
    * Court movement speed in m/s. Above the original 4.1-4.9 spread — shifting
    * position was the heavy part of a rally, and it happens before every touch
    * — but backed off from the first attempt at it, which overshot into
@@ -670,16 +683,19 @@ export interface CharacterDef {
 export const CHARACTERS: CharacterDef[] = [
   // The acrobat. Quick and springy, and runs out of legs first.
   { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 5.4, power: 1.0, precision: 1.1, backflips: "both",
-    stamina: 0.85, serve: 0.95, agility: 1.35, volley: 1.2 },
+    stamina: 0.85, serve: 0.95, agility: 1.35, volley: 1.2, weakFoot: 82 },
   // The powerhouse. A hammer and a serve, slow to get going, lasts all day.
+  // A hammer of a right foot and very little on the left, so the header is his
+  // answer to anything arriving on that side.
   { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.5, power: 1.7, precision: 0.9, backflips: "none",
-    stamina: 1.3, serve: 1.35, agility: 0.7, volley: 0.85 },
+    stamina: 1.3, serve: 1.35, agility: 0.7, volley: 0.85, weakFoot: 45 },
   // The all-rounder. Nothing to hide behind and nothing that lets him down.
   { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5.0, power: 1.05, precision: 1.0, backflips: "strong",
-    stamina: 1.05, serve: 1.05, agility: 1.0, volley: 1.0 },
+    stamina: 1.05, serve: 1.05, agility: 1.0, volley: 1.0, weakFoot: 70 },
   // The technician. Takes everything early and precisely, hits it softest.
+  // Two-footed: there is no weak side to exploit, so nothing forces a header.
   { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 4.9, power: 0.95, precision: 1.2, backflips: "strong",
-    stamina: 1.0, serve: 0.8, agility: 1.05, volley: 1.35 },
+    stamina: 1.0, serve: 0.8, agility: 1.05, volley: 1.35, weakFoot: 100 },
 ];
 
 // Strong/weak-foot modifiers, applied to any clip that uses a specific foot

@@ -4,8 +4,11 @@ import {
   BLANK_KIT,
   CRESTS,
   FRONT_PANEL,
+  SHORTS_LEFT_LEG,
+  kitColour,
   kitIsBlank,
   paintKit,
+  paintShorts,
   readKit,
   type Kit,
 } from "../src/kit";
@@ -29,6 +32,10 @@ function fontPx(font: string): number {
 function recorder() {
   const strokes: { text: string; x: number; y: number }[] = [];
   const fills: { text: string; x: number; y: number }[] = [];
+  /** Font size at each fill, so "smaller on the front" can be checked. */
+  const sizes: number[] = [];
+  /** Every fill colour used, so the colour choice can be checked. */
+  const colours: string[] = [];
   const ctx = {
     font: "",
     fillStyle: "",
@@ -53,9 +60,13 @@ function recorder() {
     // the font string starts with the weight, so parseInt would return 900.
     measureText: (t: string) => ({ width: t.length * fontPx(ctx.font) * 0.6 }),
     strokeText: (text: string, x: number, y: number) => strokes.push({ text, x, y }),
-    fillText: (text: string, x: number, y: number) => fills.push({ text, x, y }),
+    fillText: (text: string, x: number, y: number) => {
+      fills.push({ text, x, y });
+      sizes.push(fontPx(ctx.font));
+      colours.push(String(ctx.fillStyle));
+    },
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, strokes, fills };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, strokes, fills, sizes, colours };
 }
 
 const SIZE = 1024;
@@ -106,17 +117,60 @@ describe("where the marks land", () => {
     y1: BACK_PANEL.v1 * SIZE,
   };
 
-  it("puts the name and number inside the back panel", () => {
+  const front = {
+    x0: FRONT_PANEL.u0 * SIZE,
+    x1: FRONT_PANEL.u1 * SIZE,
+  };
+
+  it("puts the name and the big number inside the back panel", () => {
     const { ctx, fills } = recorder();
     paintKit(ctx, SIZE, SIZE, kit({ name: "BIERHOFF", number: "10" }));
 
-    expect(fills).toHaveLength(2);
-    for (const mark of fills) {
-      expect(mark.x, `${mark.text} horizontally`).toBeGreaterThan(back.x0);
-      expect(mark.x, `${mark.text} horizontally`).toBeLessThan(back.x1);
+    // Name and number on the back, and the number again on the front.
+    const onBack = fills.filter((m) => m.x > back.x0 && m.x < back.x1);
+    expect(onBack).toHaveLength(2);
+    for (const mark of onBack) {
       expect(mark.y, `${mark.text} vertically`).toBeGreaterThan(back.y0);
       expect(mark.y, `${mark.text} vertically`).toBeLessThan(back.y1);
     }
+  });
+
+  it("prints the number on the front as well, and smaller", () => {
+    const { ctx, fills, sizes } = recorder();
+    paintKit(ctx, SIZE, SIZE, kit({ number: "10" }));
+
+    const onBack = fills.findIndex((m) => m.x > back.x0 && m.x < back.x1);
+    const onFront = fills.findIndex((m) => m.x > front.x0 && m.x < front.x1);
+    expect(onBack, "a number on the back").toBeGreaterThanOrEqual(0);
+    expect(onFront, "a number on the front").toBeGreaterThanOrEqual(0);
+    expect(sizes[onFront]).toBeLessThan(sizes[onBack]);
+  });
+
+  it("prints the number low on the back rather than between the shoulders", () => {
+    const { ctx, fills } = recorder();
+    paintKit(ctx, SIZE, SIZE, kit({ name: "ADA", number: "7" }));
+    const [name, number] = fills;
+
+    // Below the halfway line of the panel — the complaint was that it sat high.
+    expect(number.y).toBeGreaterThan(back.y0 + (back.y1 - back.y0) * 0.5);
+    expect(number.y).toBeGreaterThan(name.y);
+  });
+
+  it("puts a number and a crest on the shorts", () => {
+    const { ctx, fills } = recorder();
+    paintShorts(ctx, SIZE, SIZE, kit({ number: "7", crest: "shield" }));
+
+    expect(fills).toHaveLength(1);
+    const leg = { x0: SHORTS_LEFT_LEG.u0 * SIZE, x1: SHORTS_LEFT_LEG.u1 * SIZE };
+    expect(fills[0].x).toBeGreaterThan(leg.x0);
+    expect(fills[0].x).toBeLessThan(leg.x1);
+  });
+
+  it("prints in the colour that was chosen", () => {
+    const { ctx, colours } = recorder();
+    paintKit(ctx, SIZE, SIZE, kit({ number: "7", colour: "gold" }));
+
+    expect(colours).toContain(kitColour("gold"));
   });
 
   it("puts the number below the name", () => {

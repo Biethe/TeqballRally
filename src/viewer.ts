@@ -18,6 +18,8 @@ import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import { GLTFLoaderAnimationStartMode } from "@babylonjs/loaders/glTF/glTFFileLoader";
 import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent";
 import { importBall, brightenKit, fixMetallicMaterials } from "./scene";
+import { applyKit, BLANK_KIT, type Kit } from "./kit";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { trimIdleTail } from "./character";
 import { CHARACTER_SCALE, CHARACTERS } from "./config";
 
@@ -85,6 +87,8 @@ export class ModelViewer {
   /** Separable gaussian, built on the first locked model and kept thereafter. */
   private blur: [BlurPostProcess, BlurPostProcess] | null = null;
   private blurred = false;
+  /** The shirt the player has designed, painted onto whoever is on the stand. */
+  private kit: Kit = BLANK_KIT;
 
   constructor(engine: Engine, private canvas: HTMLCanvasElement) {
     this.scene = new Scene(engine);
@@ -162,6 +166,27 @@ export class ModelViewer {
     for (const pass of this.blur) {
       if (blurred) this.camera.attachPostProcess(pass);
       else this.camera.detachPostProcess(pass);
+    }
+  }
+
+  /**
+   * Tell the stand what the player's shirt looks like.
+   *
+   * Cached characters are dropped, because the kit is painted into the shirt's
+   * texture at load: a model already on the shelf is wearing the old one, and
+   * showing somebody their new number everywhere except the screen they chose
+   * it on is worse than not offering it.
+   */
+  setKit(kit: Kit): void {
+    if (kit.name === this.kit.name && kit.number === this.kit.number && kit.crest === this.kit.crest) {
+      return;
+    }
+    this.kit = { ...kit };
+    for (const [key, entry] of this.cache) {
+      if (entry.kind !== "character") continue;
+      if (this.current === entry) this.setCurrent(null);
+      entry.root.dispose(false, true);
+      this.cache.delete(key);
     }
   }
 
@@ -283,6 +308,18 @@ export class ModelViewer {
     // skin textures nearly black without an environment map.
     fixMetallicMaterials(res.meshes);
     brightenKit(res.meshes);
+    // Painted here as well as in the match: the picker is where somebody
+    // decides whether they like their own shirt, and a blank one there makes
+    // the whole feature look broken.
+    try {
+      await applyKit(res.meshes, this.kit, (url, invertY) => {
+        const painted = new Texture(url, this.scene, undefined, invertY);
+        painted.name = "shirt (kit)";
+        return painted;
+      });
+    } catch (error) {
+      console.warn("[viewer] could not paint the shirt:", error);
+    }
 
     // Menu display clip: one of the MenuPose* clips picked at random each
     // launch (models load once per session), falling back to Idle.

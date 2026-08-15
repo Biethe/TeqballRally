@@ -14,12 +14,11 @@ import {
   type Side,
 } from "./ball";
 import {
-  backflipFoot,
   Character,
   MIN_EFFORT,
   footFactor,
   pickReceptionClip,
-  pickStrikeClip,
+  chooseStrike,
   serveClipForAim,
   serveContactOffset,
   HEAD_CONTACT_PUSH,
@@ -1221,21 +1220,14 @@ export class MatchController {
     // Where they are standing decides which shots are even on the menu: the
     // hard ones need the middle line. See `canSmashFrom`.
     const nearMiddle = canSmashFrom(c.position.x);
-    let clip = pickStrikeClip(ballHeight, lateral, c.height, c.def.strongFoot, power, nearMiddle);
-    // Backflip finish: only reachable off a pop-up that left the ball high,
-    // and only with a foot this player's traits allow. If the natural foot is
-    // barred but the other one qualifies, a near-centre ball can still be
-    // flipped with it.
-    if (nearMiddle && popped && ballHeight > c.height * 0.7 && Math.random() < 0.65) {
-      // Which foot comes over is decided by where the player is standing, not
-      // by where the ball is: see `backflipFoot`. The stance is signed in the
-      // player's own frame, the same way `lateral` above is.
-      const stance = c.position.z * (side === "player" ? -1 : 1);
-      const foot = backflipFoot(stance, c.def);
-      if (foot) {
-        const flip = foot === "right" ? "BackflipRightFoot" : "BackflipLeftFoot";
-        if (c.groups.has(flip)) clip = flip;
-      }
+    // Which foot a flip comes over on is decided by where the player is
+    // standing, not by where the ball is, so the stance is signed in the
+    // player's own frame the same way `lateral` above is.
+    const stance = c.position.z * (side === "player" ? -1 : 1);
+    let clip = chooseStrike(ballHeight, lateral, stance, c.def, nearMiddle, power);
+    // A model without the clip falls back to a kick rather than standing still.
+    if (!c.groups.has(clip) && clip.startsWith("Backflip")) {
+      clip = `${lateral >= 0 ? "Right" : "Left"}FootKick`;
     }
     const plan = this.planContact(c, clip, STRIKE_SPEED, flight);
     const yawOffset = clip.startsWith("Backflip") ? Math.PI : 0;

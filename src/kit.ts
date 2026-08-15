@@ -19,18 +19,46 @@ export const BACK_PANEL = { u0: 0.125, u1: 0.375, v0: 0.125, v1: 0.5 };
 /** The front panel, same convention. */
 export const FRONT_PANEL = { u0: 0.625, u1: 0.875, v0: 0.125, v1: 0.5 };
 
+/**
+ * The shorts, which are their own material and their own texture.
+ *
+ * Calibrated the same way as the shirt, with a labelled grid: seen from the
+ * front, the wearer's left leg occupies columns B-C and their right F-G, both
+ * over rows 2-4.
+ */
+export const SHORTS_LEFT_LEG = { u0: 0.125, u1: 0.375, v0: 0.125, v1: 0.5 };
+
+/** What the printed marks are made of. */
+export const KIT_COLOURS = [
+  { id: "white", label: "WHITE", css: "#f5f7fa" },
+  { id: "black", label: "BLACK", css: "#12161c" },
+  { id: "gold", label: "GOLD", css: "#ffc233" },
+  { id: "red", label: "RED", css: "#e23b2e" },
+  { id: "blue", label: "BLUE", css: "#2f7ad6" },
+  { id: "green", label: "GREEN", css: "#39b56a" },
+] as const;
+
+export type KitColourId = (typeof KIT_COLOURS)[number]["id"];
+
+/** The CSS colour for an id, falling back to white for anything unknown. */
+export function kitColour(id: KitColourId): string {
+  return KIT_COLOURS.find((c) => c.id === id)?.css ?? KIT_COLOURS[0].css;
+}
+
 export const CRESTS = ["none", "shield", "disc", "star"] as const;
 export type CrestId = (typeof CRESTS)[number];
 
 export interface Kit {
   /** Across the shoulders. Empty leaves the shirt as the artist made it. */
   name: string;
-  /** Under the name. Empty means no number. */
+  /** Under the name, on the front, and on the left leg. Empty means none. */
   number: string;
   crest: CrestId;
+  /** What the marks are printed in. */
+  colour: KitColourId;
 }
 
-export const BLANK_KIT: Kit = { name: "", number: "", crest: "none" };
+export const BLANK_KIT: Kit = { name: "", number: "", crest: "none", colour: "white" };
 
 /** Whether this kit would draw anything at all. */
 export function kitIsBlank(kit: Kit): boolean {
@@ -45,11 +73,16 @@ export function kitIsBlank(kit: Kit): boolean {
  */
 const LAYOUT = {
   /** Name band: across the upper back, clear of the collar. */
-  name: { y: 0.16, height: 0.1, width: 0.82 },
-  /** Number: the big one, under the name. */
-  number: { y: 0.46, height: 0.34 },
-  /** Crest: small, on the wearer's left chest — the viewer's right. */
-  crest: { x: 0.68, y: 0.2, size: 0.2 },
+  name: { y: 0.14, height: 0.1, width: 0.82 },
+  /** The big number, low on the back rather than between the shoulders. */
+  number: { y: 0.56, height: 0.34 },
+  /** The front number: the same height up the body, printed smaller. */
+  frontNumber: { y: 0.56, height: 0.2 },
+  /** Crest: top left of the jersey. */
+  crest: { x: 0.26, y: 0.13, size: 0.18 },
+  /** Shorts: number on the left leg, crest under it. */
+  shortsNumber: { x: 0.5, y: 0.62, height: 0.22 },
+  shortsCrest: { x: 0.5, y: 0.86, size: 0.14 },
 };
 
 /** Fit text to a width by shrinking the font until it does. */
@@ -73,7 +106,8 @@ function drawCrest(
   crest: CrestId,
   cx: number,
   cy: number,
-  size: number
+  size: number,
+  colour: string
 ): void {
   if (crest === "none") return;
   const r = size / 2;
@@ -81,7 +115,7 @@ function drawCrest(
   ctx.translate(cx, cy);
   ctx.lineWidth = Math.max(2, size * 0.07);
   ctx.strokeStyle = "rgba(10, 20, 36, 0.85)";
-  ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+  ctx.fillStyle = colour;
   ctx.beginPath();
   if (crest === "disc") {
     ctx.arc(0, 0, r, 0, Math.PI * 2);
@@ -109,11 +143,46 @@ function drawCrest(
   ctx.restore();
 }
 
+/** A rectangle of texture, in pixels. */
+interface Panel {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const panelOf = (
+  p: { u0: number; u1: number; v0: number; v1: number },
+  width: number,
+  height: number
+): Panel => ({
+  x: p.u0 * width,
+  y: p.v0 * height,
+  w: (p.u1 - p.u0) * width,
+  h: (p.v1 - p.v0) * height,
+});
+
+/** Draw one piece of text centred in a panel, outlined so it reads on any kit. */
+function stamp(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  panel: Panel,
+  at: { x?: number; y: number; height: number },
+  maxWidthFraction: number,
+  colour: string
+): void {
+  const px = fitText(ctx, text, panel.w * maxWidthFraction, panel.h * at.height);
+  ctx.fillStyle = colour;
+  ctx.lineWidth = Math.max(2, px * 0.12);
+  const x = panel.x + panel.w * (at.x ?? 0.5);
+  const y = panel.y + panel.h * at.y;
+  ctx.strokeText(text, x, y);
+  ctx.fillText(text, x, y);
+}
+
 /**
- * Paint a kit onto a context already holding the shirt's own artwork.
- *
- * Exported separately from the texture plumbing so the layout can be tested,
- * and so the same code can draw a preview into a plain canvas.
+ * Paint the shirt: the name and the big number on the back, a smaller number
+ * on the front at the same height, and the crest at the top left.
  */
 export function paintKit(
   ctx: CanvasRenderingContext2D,
@@ -121,52 +190,67 @@ export function paintKit(
   height: number,
   kit: Kit
 ): void {
-  const back = {
-    x: BACK_PANEL.u0 * width,
-    y: BACK_PANEL.v0 * height,
-    w: (BACK_PANEL.u1 - BACK_PANEL.u0) * width,
-    h: (BACK_PANEL.v1 - BACK_PANEL.v0) * height,
-  };
+  const back = panelOf(BACK_PANEL, width, height);
+  const front = panelOf(FRONT_PANEL, width, height);
+  const colour = kitColour(kit.colour);
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillStyle = "#ffffff";
   ctx.strokeStyle = "rgba(10, 20, 36, 0.9)";
   ctx.lineJoin = "round";
 
   const name = kit.name.trim().toUpperCase();
-  if (name) {
-    const px = fitText(ctx, name, back.w * LAYOUT.name.width, back.h * LAYOUT.name.height);
-    ctx.lineWidth = Math.max(2, px * 0.12);
-    const x = back.x + back.w / 2;
-    const y = back.y + back.h * LAYOUT.name.y;
-    ctx.strokeText(name, x, y);
-    ctx.fillText(name, x, y);
-  }
+  if (name) stamp(ctx, name, back, LAYOUT.name, LAYOUT.name.width, colour);
 
   const number = kit.number.trim();
   if (number) {
-    const px = fitText(ctx, number, back.w * 0.7, back.h * LAYOUT.number.height);
-    ctx.lineWidth = Math.max(3, px * 0.1);
-    const x = back.x + back.w / 2;
-    const y = back.y + back.h * LAYOUT.number.y;
-    ctx.strokeText(number, x, y);
-    ctx.fillText(number, x, y);
+    stamp(ctx, number, back, LAYOUT.number, 0.7, colour);
+    // The front carries the same number at the same height up the body, and
+    // smaller — which is how a real shirt is printed.
+    stamp(ctx, number, front, LAYOUT.frontNumber, 0.4, colour);
   }
   ctx.restore();
 
-  const front = {
-    x: FRONT_PANEL.u0 * width,
-    y: FRONT_PANEL.v0 * height,
-    w: (FRONT_PANEL.u1 - FRONT_PANEL.u0) * width,
-    h: (FRONT_PANEL.v1 - FRONT_PANEL.v0) * height,
-  };
   drawCrest(
     ctx,
     kit.crest,
     front.x + front.w * LAYOUT.crest.x,
     front.y + front.h * LAYOUT.crest.y,
-    Math.min(front.w, front.h) * LAYOUT.crest.size
+    Math.min(front.w, front.h) * LAYOUT.crest.size,
+    colour
+  );
+}
+
+/**
+ * Paint the shorts: the number low on the wearer's left leg, crest under it.
+ *
+ * A separate texture from the shirt, so a separate pass — the two materials
+ * have nothing to do with each other beyond both being this player's kit.
+ */
+export function paintShorts(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  kit: Kit
+): void {
+  const leg = panelOf(SHORTS_LEFT_LEG, width, height);
+  const colour = kitColour(kit.colour);
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.strokeStyle = "rgba(10, 20, 36, 0.9)";
+  ctx.lineJoin = "round";
+  const number = kit.number.trim();
+  if (number) stamp(ctx, number, leg, LAYOUT.shortsNumber, 0.42, colour);
+  ctx.restore();
+
+  drawCrest(
+    ctx,
+    kit.crest,
+    leg.x + leg.w * LAYOUT.shortsCrest.x,
+    leg.y + leg.h * LAYOUT.shortsCrest.y,
+    Math.min(leg.w, leg.h) * LAYOUT.shortsCrest.size,
+    colour
   );
 }
 
@@ -175,7 +259,9 @@ export function readKit(stored: unknown): Kit {
   if (typeof stored !== "object" || stored === null) return { ...BLANK_KIT };
   const k = stored as Partial<Record<keyof Kit, unknown>>;
   const crest = CRESTS.find((c) => c === k.crest) ?? "none";
+  const colour = KIT_COLOURS.find((c) => c.id === k.colour)?.id ?? BLANK_KIT.colour;
   return {
+    colour,
     // Capped here rather than only at the input, because storage outlives any
     // validation the screen that wrote it happened to be doing that week.
     name: typeof k.name === "string" ? k.name.slice(0, 12) : "",
@@ -202,14 +288,41 @@ export async function applyKit(
   makeTexture: (dataUrl: string, invertY: boolean) => unknown
 ): Promise<boolean> {
   if (kitIsBlank(kit)) return false;
-  type Mat = { name?: string; albedoTexture?: AlbedoTexture | null };
-  interface AlbedoTexture {
-    getSize(): { width: number; height: number };
-    readPixels(): Promise<ArrayBufferView> | null;
-    invertY: boolean;
+  let painted = false;
+  // The shirt and the shorts are separate materials with separate textures.
+  for (const [material, paint] of [
+    ["shirt", paintKit],
+    ["Pants", paintShorts],
+  ] as const) {
+    if (await repaint(meshes, material, kit, paint, makeTexture)) painted = true;
   }
-  const shirt = meshes.find((m) => (m.material as Mat | null)?.name === "shirt");
-  const mat = shirt?.material as Mat | undefined;
+  return painted;
+}
+
+type Painter = (
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  kit: Kit
+) => void;
+
+interface AlbedoTexture {
+  getSize(): { width: number; height: number };
+  readPixels(): Promise<ArrayBufferView> | null;
+  invertY: boolean;
+}
+type Mat = { name?: string; albedoTexture?: AlbedoTexture | null };
+
+/** Composite one garment's marks into its own albedo and hand it back. */
+async function repaint(
+  meshes: { name: string; material: unknown }[],
+  materialName: string,
+  kit: Kit,
+  paint: Painter,
+  makeTexture: (dataUrl: string, invertY: boolean) => unknown
+): Promise<boolean> {
+  const owner = meshes.find((m) => (m.material as Mat | null)?.name === materialName);
+  const mat = owner?.material as Mat | undefined;
   const tex = mat?.albedoTexture;
   if (!mat || !tex) return false;
 
@@ -223,11 +336,7 @@ export async function applyKit(
   const ctx = canvas.getContext("2d");
   if (!ctx) return false;
 
-  const src = new Uint8ClampedArray(
-    pixels.buffer,
-    pixels.byteOffset,
-    pixels.byteLength
-  );
+  const src = new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength);
   const flipped = new Uint8ClampedArray(src.length);
   const stride = width * 4;
   for (let row = 0; row < height; row++) {
@@ -235,7 +344,7 @@ export async function applyKit(
   }
   ctx.putImageData(new ImageData(flipped, width, height), 0, 0);
 
-  paintKit(ctx, width, height, kit);
+  paint(ctx, width, height, kit);
   mat.albedoTexture = makeTexture(canvas.toDataURL(), tex.invertY) as never;
   return true;
 }
