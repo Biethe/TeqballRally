@@ -302,8 +302,8 @@ const CROWD: Rgb[] = [
 export const VENUES: Record<VenueId, Venue> = {
   gym: {
     id: "gym",
-    label: "SPORTS HALL",
-    sub: "Indoor court under the roof lights",
+    label: "THE COLISEUM",
+    sub: "Ten thousand seats, and all of them yours",
     premium: true,
     arena: {
       file: "indoor_arena_inside_out_improved_version.glb",
@@ -361,8 +361,8 @@ export const VENUES: Record<VenueId, Venue> = {
   },
   basketball: {
     id: "basketball",
-    label: "STREETBALL",
-    sub: "Outdoor blacktop under the hoops",
+    label: "THE CAGE",
+    sub: "Blacktop, chain-link and no excuses",
     premium: false,
     arena: { file: "Basketball.glb", ...OUTDOOR },
     court: {
@@ -407,8 +407,8 @@ export const VENUES: Record<VenueId, Venue> = {
   },
   football: {
     id: "football",
-    label: "TOUCHLINE",
-    sub: "Out on the pitch with the goals behind",
+    label: "THE PARK",
+    sub: "Cut grass, long shadows, nobody watching",
     premium: false,
     arena: { file: "Soccer.glb", ...OUTDOOR },
     // No boards: a pitch has touchlines, not barriers, and the goals already
@@ -451,8 +451,8 @@ export const VENUES: Record<VenueId, Venue> = {
   },
   tennis: {
     id: "tennis",
-    label: "CENTRE COURT",
-    sub: "Hard court under the floodlights",
+    label: "THE BASELINE",
+    sub: "Floodlit hard court, whites optional",
     premium: false,
     // Mat.3 and Mat.4 are the tennis net's cord and tape, used by nothing else
     // in the model. It stands across the middle of the court, at exactly the

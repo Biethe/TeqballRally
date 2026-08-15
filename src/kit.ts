@@ -73,17 +73,50 @@ export function kitIsBlank(kit: Kit): boolean {
  */
 const LAYOUT = {
   /** Name band: across the upper back, clear of the collar. */
-  name: { y: 0.14, height: 0.1, width: 0.82 },
-  /** The big number, low on the back rather than between the shoulders. */
-  number: { y: 0.56, height: 0.34 },
-  /** The front number: the same height up the body, printed smaller. */
-  frontNumber: { y: 0.56, height: 0.2 },
+  name: { y: 0.13, height: 0.11, width: 0.84 },
+  /** The big number: low on the back, and the largest thing on the shirt. */
+  number: { y: 0.72, height: 0.46 },
+  /** The front number: lower than the chest, and smaller than the back's. */
+  frontNumber: { y: 0.72, height: 0.28 },
   /** Crest: top left of the jersey. */
   crest: { x: 0.24, y: 0.24, size: 0.2 },
   /** Shorts: number on the left leg, crest under it. */
   shortsNumber: { x: 0.5, y: 0.62, height: 0.22 },
   shortsCrest: { x: 0.5, y: 0.86, size: 0.14 },
 };
+
+/** A `#rrggbb` colour as three 0-255 channels. */
+function channels(css: string): [number, number, number] {
+  const hex = css.replace("#", "");
+  return [
+    parseInt(hex.slice(0, 2), 16),
+    parseInt(hex.slice(2, 4), 16),
+    parseInt(hex.slice(4, 6), 16),
+  ];
+}
+
+/**
+ * Near-black for a light print, near-white for a dark one.
+ *
+ * The halo behind the print has to be the opposite of it, because the player
+ * chooses the print colour and the kit colour is whatever the character wears:
+ * white on a white shirt and black on a navy one are both invisible, and a
+ * single fixed outline colour can only ever fix one of them.
+ */
+function contrastOf(css: string): string {
+  const [r, g, b] = channels(css);
+  // Rec. 601 luma: close enough for deciding light from dark, and cheap.
+  const luma = (r * 299 + g * 587 + b * 114) / 255000;
+  return luma > 0.55 ? "rgba(14, 18, 26, 0.95)" : "rgba(246, 249, 255, 0.95)";
+}
+
+/** Move a colour toward white (positive) or black (negative). */
+function lighten(css: string, amount: number): string {
+  const mix = (c: number) =>
+    Math.round(amount >= 0 ? c + (255 - c) * amount : c * (1 + amount));
+  const [r, g, b] = channels(css).map(mix);
+  return `rgb(${r}, ${g}, ${b})`;
+}
 
 /** Fit text to a width by shrinking the font until it does. */
 function fitText(
@@ -92,11 +125,15 @@ function fitText(
   maxWidth: number,
   startPx: number
 ): number {
+  // Condensed, heavy, and wide-tracked: a squad number is set to be read from
+  // the back of a stand, and the stack falls back through the faces most
+  // likely to exist on a phone before it lands on plain sans.
+  const face = '"Arial Narrow", "Haettenschweiler", Impact, "Arial Black", sans-serif';
   let px = startPx;
-  ctx.font = `900 ${px}px "Arial Black", Impact, sans-serif`;
+  ctx.font = `900 ${px}px ${face}`;
   while (px > 6 && ctx.measureText(text).width > maxWidth) {
     px -= 2;
-    ctx.font = `900 ${px}px "Arial Black", Impact, sans-serif`;
+    ctx.font = `900 ${px}px ${face}`;
   }
   return px;
 }
@@ -162,7 +199,18 @@ const panelOf = (
   h: (p.v1 - p.v0) * height,
 });
 
-/** Draw one piece of text centred in a panel, outlined so it reads on any kit. */
+/**
+ * Print one piece of text, the way a shirt is actually printed.
+ *
+ * Four passes, and each earns its place. A drop shadow lifts the print off the
+ * cloth. A dark keyline holds the shape against a light kit, and a second,
+ * wider halo in the *contrast* colour holds it against a dark one — without
+ * that pair, white on white and black on navy are both invisible, and the
+ * player picks the colour. The fill is a vertical gradient rather than a flat
+ * colour: real flock and heat-press both catch the light along the top edge,
+ * and it is the single cheapest thing that stops the print looking like a
+ * screenshot of a text box.
+ */
 function stamp(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -172,12 +220,39 @@ function stamp(
   colour: string
 ): void {
   const px = fitText(ctx, text, panel.w * maxWidthFraction, panel.h * at.height);
-  ctx.fillStyle = colour;
-  ctx.lineWidth = Math.max(2, px * 0.12);
   const x = panel.x + panel.w * (at.x ?? 0.5);
   const y = panel.y + panel.h * at.y;
+
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+
+  // The halo: the opposite of the print, so it reads on a kit of either
+  // brightness without the player having to think about it.
+  ctx.lineWidth = px * 0.26;
+  ctx.strokeStyle = contrastOf(colour);
   ctx.strokeText(text, x, y);
+
+  // Shadow, thrown down and slightly right, under the keyline so the keyline
+  // stays crisp.
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+  ctx.shadowBlur = px * 0.14;
+  ctx.shadowOffsetX = px * 0.05;
+  ctx.shadowOffsetY = px * 0.07;
+  ctx.lineWidth = px * 0.13;
+  ctx.strokeStyle = "rgba(12, 16, 22, 0.92)";
+  ctx.strokeText(text, x, y);
+  ctx.restore();
+
+  // The fill, brighter along the top edge.
+  const gradient = ctx.createLinearGradient(0, y - px * 0.6, 0, y + px * 0.6);
+  gradient.addColorStop(0, lighten(colour, 0.28));
+  gradient.addColorStop(0.55, colour);
+  gradient.addColorStop(1, lighten(colour, -0.18));
+  ctx.fillStyle = gradient;
   ctx.fillText(text, x, y);
+  ctx.restore();
 }
 
 /**

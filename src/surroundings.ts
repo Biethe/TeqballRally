@@ -230,7 +230,7 @@ function buildCity(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[
         // Well clear of the fence. At 18.5 the trunk stood outside the site
         // but a six-metre canopy leaned in over the boards, and from the
         // raised camera that reads as a tree growing on the court.
-        count: 24, inner: 23, outer: 46, facing: "any", vary: 0.22, seed: 73, models: 5,
+        count: 24, inner: 28, outer: 46, facing: "any", vary: 0.22, seed: 73, models: 5,
       })
     );
   }
@@ -478,7 +478,10 @@ function buildBeach(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh
     out.push(...scatterProps(palms, { count: spec.count, inner: SITE_RADIUS + 3, outer: 30, facing: "any", vary: 0.2, seed: 12, models: 4 }));
     out.push(
       ...scatterProps(props.get("bush") ?? [], {
-        count: 24, inner: SITE_RADIUS + 2, outer: 31, facing: "any", vary: 0.3, seed: 44, models: 2,
+        // Bushes are small, but two of them still ended up on the centre
+        // court: the site radius is the fence, and a prop placed at it stands
+        // in the run-off inside. Everything starts outside the fence now.
+        count: 24, inner: SITE_RADIUS + 6, outer: 31, facing: "any", vary: 0.3, seed: 44, models: 2,
       })
     );
     return;

@@ -791,6 +791,14 @@ export function chooseStrike(
   lateral: number,
   stance: number,
   def: CharacterDef,
+  /**
+   * Whether this player has already taken a touch on the ball.
+   *
+   * A foot volley and a backflip are finishes: they are played on a ball you
+   * have set up for yourself, not on one arriving from the other end. Off the
+   * first touch the job is to control it.
+   */
+  received: boolean,
   rand: () => number = Math.random,
   relJitter: number = bandJitter()
 ): string {
@@ -813,12 +821,20 @@ export function chooseStrike(
     }
   }
 
-  // Otherwise the feet have it, hardest first.
-  if (rel >= STRIKE_BANDS.backflip) {
-    const foot = strikeBackflipFoot(stance, def);
-    if (foot) return foot === "right" ? "BackflipRightFoot" : "BackflipLeftFoot";
+  // Otherwise the feet have it, hardest first — but only on a ball this player
+  // set up. Off the first touch there is nothing to finish yet.
+  if (received) {
+    if (rel >= STRIKE_BANDS.backflip) {
+      const foot = strikeBackflipFoot(stance, def);
+      if (foot) return foot === "right" ? "BackflipRightFoot" : "BackflipLeftFoot";
+    }
+    if (rel >= STRIKE_BANDS.foot) return `${side}FootKick`;
+    return `Inner${side}FootReception`;
   }
-  if (rel >= STRIKE_BANDS.foot) return `${side}FootKick`;
+
+  // First touch: bring it down.
+  if (rel > 0.62) return "ChestKick";
+  if (rel > 0.45) return `${side}KneeReception`;
   return `Inner${side}FootReception`;
 }
 
