@@ -380,6 +380,7 @@ export class UI {
   private walletEl: HTMLDivElement;
   private bannerTimer: number | null = null;
   private meterEl: HTMLDivElement;
+  private staminaEl: HTMLDivElement;
   private meterFlashEl: HTMLDivElement;
   private meterFlashTimer: number | null = null;
   private practiceEl: HTMLDivElement;
@@ -521,6 +522,15 @@ export class UI {
     pauseBtn.setAttribute("aria-label", "Pause game — Escape or controller Start / Options");
     pauseBtn.title = "Pause — Escape or controller Start / Options";
     pauseBtn.onclick = () => this.onPauseRequest?.();
+    // Two bars under the score, one per player, in the same order the score
+    // reads. Legs are a resource here, and one that can be bought back — a
+    // player has to be able to watch it go.
+    this.staminaEl = document.createElement("div");
+    this.staminaEl.id = "stamina";
+    this.staminaEl.innerHTML = `
+      <div class="stamina-row"><span>YOU</span><i><b id="stamina-you"></b></i></div>
+      <div class="stamina-row"><span>CPU</span><i><b id="stamina-cpu"></b></i></div>`;
+
     this.meterEl = document.createElement("div");
     this.meterEl.id = "meter";
     this.meterEl.classList.add("hidden");
@@ -535,6 +545,7 @@ export class UI {
     this.practiceEl.classList.add("hidden");
     this.hudEl.append(
       this.scoreEl,
+      this.staminaEl,
       this.bannerEl,
       this.hintEl,
       this.introEl,
@@ -850,6 +861,27 @@ export class UI {
   /** Names shown in the score line and end screen ("YOU"/"CPU", "P1"/"P2", …). */
   setLabels(left: string, right: string): void {
     this.labels = [left, right];
+  }
+
+  /**
+   * Draw both players' remaining legs.
+   *
+   * Widths only — no reflow, no text — because this is called every simulation
+   * step and the HUD sits over a running match.
+   */
+  stamina(player: number, ai: number): void {
+    const you = this.staminaEl.querySelector<HTMLElement>("#stamina-you");
+    const cpu = this.staminaEl.querySelector<HTMLElement>("#stamina-cpu");
+    if (you) {
+      you.style.width = `${Math.round(Math.max(0, Math.min(1, player)) * 100)}%`;
+      // Colour is the warning: a bar that only shrinks is easy to miss on a
+      // phone while you are watching the ball.
+      you.dataset.low = String(player < 0.45);
+    }
+    if (cpu) {
+      cpu.style.width = `${Math.round(Math.max(0, Math.min(1, ai)) * 100)}%`;
+      cpu.dataset.low = String(ai < 0.45);
+    }
   }
 
   /** Update the compact HUD label and its accessible camera shortcut hint. */

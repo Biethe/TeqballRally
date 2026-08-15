@@ -364,6 +364,14 @@ export const CAMERA = {
     lookY: 0.3,
     fov: SIDE_FOV,
     minZ: 0.1,
+    /**
+     * Near plane inside a closed venue, in metres.
+     *
+     * Far enough to clip the hall's near wall and the stands in front of it,
+     * so a camera solved from the court can stand where the court needs it and
+     * still see in. Comfortably short of the table.
+     */
+    indoorMinZ: 7.5,
   },
 };
 
@@ -744,20 +752,20 @@ export interface BallDef {
 export const BALLS: BallDef[] = [
   // The honest one: no help and no trade. Owned from the start, and the
   // reference every other ball is read against.
-  { id: "RedBall", label: "RED", mods: {}, unlockAt: 0 },
+  { id: "RedBall", label: "THE CLASSIC", mods: {}, unlockAt: 0 },
   // Control at the cost of pace.
-  { id: "BlueBall", label: "BLUE", mods: { precision: 1.08, power: 0.96 }, unlockAt: 40 },
+  { id: "BlueBall", label: "THE SURGEON", mods: { precision: 1.08, power: 0.96 }, unlockAt: 40 },
   // Light and lively: takes the ball early and serves well, less settled.
   {
     id: "BlueAndRoseBall",
-    label: "BLUE & ROSE",
+    label: "THE FEATHER",
     mods: { volley: 1.1, serve: 1.06, precision: 0.96 },
     unlockAt: 120,
   },
   // The hammer. Everything a hard hitter wants and nothing a placer does.
   {
     id: "OrangeAndBlackBall",
-    label: "ORANGE & BLACK",
+    label: "THE HAMMER",
     mods: { power: 1.1, precision: 0.94 },
     unlockAt: 220,
   },

@@ -589,19 +589,19 @@ describe("chooseStrike", () => {
   it("flips rather than heads a high ball on the strong side", () => {
     // Feet first is the whole point: up at the table a teqball player kicks or
     // flips, and the header used to win every high ball by default.
-    const clip = chooseStrike(at(0.95), RIGHT, STRONG_SIDE, righty, () => 0.5, 0);
+    const clip = chooseStrike(at(0.95), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0);
 
     expect(clip).toBe("BackflipRightFoot");
   });
 
   it("kicks a mid ball rather than heading it", () => {
-    const clip = chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, () => 0.5, 0);
+    const clip = chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0);
 
     expect(clip).toBe("RightFootKick");
   });
 
   it("only takes a touch when the ball is too low for any of it", () => {
-    const clip = chooseStrike(at(0.05), RIGHT, STRONG_SIDE, righty, () => 0.5, 0);
+    const clip = chooseStrike(at(0.05), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0);
 
     expect(clip).toBe("InnerRightFootReception");
   });
@@ -614,13 +614,13 @@ describe("chooseStrike", () => {
 
     it("heads it when the roll beats the weak foot's score", () => {
       // 0.9 > 0.70, so the foot is not trusted this time.
-      const clip = chooseStrike(high, weakSide, STRONG_SIDE, righty, () => 0.9, 0);
+      const clip = chooseStrike(high, weakSide, STRONG_SIDE, righty, true, () => 0.9, 0);
 
       expect(clip).toBe("LeftHeadKick");
     });
 
     it("uses the foot when the roll is inside it", () => {
-      const clip = chooseStrike(high, weakSide, STRONG_SIDE, righty, () => 0.5, 0);
+      const clip = chooseStrike(high, weakSide, STRONG_SIDE, righty, true, () => 0.5, 0);
 
       expect(clip).not.toContain("HeadKick");
     });
@@ -631,7 +631,7 @@ describe("chooseStrike", () => {
       const headers = (def: typeof poor) => {
         let n = 0;
         for (let i = 0; i < 400; i++) {
-          if (chooseStrike(high, weakSide, STRONG_SIDE, def).includes("HeadKick")) n++;
+          if (chooseStrike(high, weakSide, STRONG_SIDE, def, true).includes("HeadKick")) n++;
         }
         return n;
       };
@@ -643,13 +643,13 @@ describe("chooseStrike", () => {
       // They have no weak side, so nothing about the ball's side matters.
       const ambi = player({ strongFoot: "both", weakFoot: 100, backflips: "none" });
       for (let i = 0; i < 200; i++) {
-        expect(chooseStrike(high, weakSide, STRONG_SIDE, ambi)).not.toContain("HeadKick");
+        expect(chooseStrike(high, weakSide, STRONG_SIDE, ambi, true)).not.toContain("HeadKick");
       }
     });
 
     it("does not head a ball that is too low to head", () => {
       // Weak side, but at knee height there is no header to play.
-      const clip = chooseStrike(at(0.4), weakSide, STRONG_SIDE, righty, () => 0.99, 0);
+      const clip = chooseStrike(at(0.4), weakSide, STRONG_SIDE, righty, true, () => 0.99, 0);
 
       expect(clip).not.toContain("HeadKick");
     });
@@ -657,7 +657,7 @@ describe("chooseStrike", () => {
 
   describe("backflips stay on one side of the court", () => {
     it("flips off the strong foot when standing on that side", () => {
-      expect(chooseStrike(at(0.9), RIGHT, 1, righty, () => 0.5, 0)).toBe(
+      expect(chooseStrike(at(0.9), RIGHT, 1, righty, true, () => 0.5, 0)).toBe(
         "BackflipRightFoot"
       );
     });
@@ -665,7 +665,7 @@ describe("chooseStrike", () => {
     it("will not flip from the weak side", () => {
       // The leg that comes over is the outside one, so the far side of the
       // court has no flip in it — that is what "only one side" means.
-      const clip = chooseStrike(at(0.9), RIGHT, -1, righty, () => 0.5, 0);
+      const clip = chooseStrike(at(0.9), RIGHT, -1, righty, true, () => 0.5, 0);
 
       expect(clip).not.toContain("Backflip");
     });
@@ -673,13 +673,13 @@ describe("chooseStrike", () => {
     it("gives a two-footed player a flip from either side", () => {
       const ambi = player({ strongFoot: "both", weakFoot: 100, backflips: "strong" });
 
-      expect(chooseStrike(at(0.9), RIGHT, 1, ambi, () => 0.5, 0)).toBe("BackflipRightFoot");
-      expect(chooseStrike(at(0.9), LEFT, -1, ambi, () => 0.5, 0)).toBe("BackflipLeftFoot");
+      expect(chooseStrike(at(0.9), RIGHT, 1, ambi, true, () => 0.5, 0)).toBe("BackflipRightFoot");
+      expect(chooseStrike(at(0.9), LEFT, -1, ambi, true, () => 0.5, 0)).toBe("BackflipLeftFoot");
     });
 
     it("gives nothing to a player who does not flip at all", () => {
       const grounded = player({ strongFoot: "right", weakFoot: 100, backflips: "none" });
-      const clip = chooseStrike(at(0.9), RIGHT, 1, grounded, () => 0.5, 0);
+      const clip = chooseStrike(at(0.9), RIGHT, 1, grounded, true, () => 0.5, 0);
 
       expect(clip).toBe("RightFootKick");
     });
@@ -696,7 +696,8 @@ describe("chooseStrike", () => {
         Math.random() * height * 1.2,
         Math.random() * 1.6 - 0.8,
         Math.random() * 2 - 1,
-        def
+        def,
+        i % 2 === 0
       );
       expect(CLIPS[clip], clip).toBeDefined();
       expect(CLIPS[clip].contact, clip).toBeGreaterThan(0);
@@ -737,5 +738,45 @@ describe("strikeBackflipFoot", () => {
     const grounded = player({ strongFoot: "right", backflips: "none" });
 
     expect(strikeBackflipFoot(1, grounded)).toBeNull();
+  });
+});
+
+describe("finishes need a reception first", () => {
+  const height = 1.8;
+  const at = (rel: number) => rel * height;
+  const righty = player({ strongFoot: "right", weakFoot: 100, backflips: "strong" });
+  const STRONG_SIDE = 1;
+  const RIGHT = 0.5;
+
+  it("does not volley a ball off the first touch", () => {
+    // A foot volley is a finish: it is played on a ball you set up for
+    // yourself, not on one arriving from the other end of the table.
+    const first = chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, false, () => 0.5, 0);
+
+    expect(first).not.toContain("FootKick");
+  });
+
+  it("does not backflip off the first touch either", () => {
+    const first = chooseStrike(at(0.9), RIGHT, STRONG_SIDE, righty, false, () => 0.5, 0);
+
+    expect(first).not.toContain("Backflip");
+  });
+
+  it("controls the ball instead", () => {
+    for (const rel of [0.2, 0.5, 0.7, 0.95]) {
+      const clip = chooseStrike(at(rel), RIGHT, STRONG_SIDE, righty, false, () => 0.5, 0);
+      expect(["ChestKick", "RightKneeReception", "InnerRightFootReception"], `rel ${rel}`).toContain(
+        clip
+      );
+    }
+  });
+
+  it("offers both once the ball has been set up", () => {
+    expect(chooseStrike(at(0.9), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0)).toContain(
+      "Backflip"
+    );
+    expect(chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0)).toContain(
+      "FootKick"
+    );
   });
 });

@@ -3900,3 +3900,143 @@ button.pad-focus {
 .venue-card.hidden {
   display: none;
 }
+
+/* Stamina: two bars under the score, in the order the score reads. */
+#stamina {
+  position: absolute;
+  top: 62px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.stamina-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stamina-row span {
+  width: 26px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+
+.stamina-row i {
+  display: block;
+  width: 78px;
+  height: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(6, 16, 32, 0.6);
+  overflow: hidden;
+}
+
+.stamina-row b {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4fd48a, #9be86a);
+  transition: width 0.12s linear;
+}
+
+.stamina-row b[data-low="true"] {
+  background: linear-gradient(90deg, #ff8f3c, #ff5a4a);
+}
+
+/* ------- landscape: give the model the screen back -------
+   A phone on its side has about 360px of height for a layout drawn for 430,
+   and the picker spends it on chrome: a 3px-bordered PLAY button with 13px of
+   padding, tabs at 16px, arrows at 54px and a stats card. The model ends up in
+   whatever is left, which was not much. Everything below is the same design
+   drawn tighter — nothing is hidden, because a control you cannot find is
+   worse than a small one. */
+@media (max-height: 500px) {
+  .big-btn {
+    font-size: clamp(14px, 2.2vw, 18px);
+    letter-spacing: 0.08em;
+    padding: 8px 30px;
+    border-width: 2px;
+    border-radius: 16px;
+  }
+
+  .tab-btn {
+    font-size: clamp(10px, 1.6vw, 12px);
+    padding: 5px 16px;
+    border-width: 2px;
+  }
+
+  .arrow-btn {
+    width: 42px;
+    height: 42px;
+  }
+
+  .arrow-btn::after {
+    width: 17px;
+    height: 17px;
+  }
+
+  .select-title {
+    font-size: clamp(11px, 1.8vw, 14px);
+    letter-spacing: 0.12em;
+  }
+
+  #item-name {
+    font-size: clamp(15px, 2.4vw, 20px);
+  }
+
+  /* The stats card floats over the model rather than pushing it up. Landscape
+     is the one orientation where there is width to spare and no height. */
+  .player-profile {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    /* Wide enough that the bars are still bars. At 40% the meter column
+       collapsed to a dot and the card became a list of numbers. */
+    width: 34%;
+    max-width: 250px;
+    padding: 7px 9px;
+    background: rgba(6, 18, 38, 0.72);
+  }
+
+  .profile-stat {
+    grid-template-columns: 46px minmax(46px, 1fr) auto 20px;
+    gap: 5px;
+  }
+
+  .select-bottom {
+    gap: 4px;
+    padding-bottom: 4px;
+  }
+}
+
+/* ------- the buttons themselves -------
+   A softer, deeper face and a thinner rim. The old three-pixel white border
+   and hard gradient read as a toy; this keeps the warm "do this" colour and
+   the lip that makes it feel pressable, and stops shouting. */
+.big-btn {
+  border-width: 2px;
+  border-color: rgba(255, 255, 255, 0.72);
+  background: linear-gradient(180deg, #ffb43a 0%, #f7841a 52%, #e35c04 100%);
+  text-shadow: 0 1px 0 rgba(120, 44, 0, 0.5);
+}
+
+.big-btn:active {
+  transform: translateY(3px);
+  box-shadow: var(--lip-press);
+}
+
+.tab-btn {
+  border-width: 2px;
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+.tab-btn.active {
+  border-color: rgba(255, 255, 255, 0.88);
+}

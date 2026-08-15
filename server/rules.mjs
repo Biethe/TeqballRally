@@ -152,7 +152,15 @@ var CAMERA = {
     height: SIDE_SLANT * Math.sin(SIDE_PITCH),
     lookY: 0.3,
     fov: SIDE_FOV,
-    minZ: 0.1
+    minZ: 0.1,
+    /**
+     * Near plane inside a closed venue, in metres.
+     *
+     * Far enough to clip the hall's near wall and the stands in front of it,
+     * so a camera solved from the court can stand where the court needs it and
+     * still see in. Comfortably short of the table.
+     */
+    indoorMinZ: 7.5
   }
 };
 var SIM_HZ = 60;

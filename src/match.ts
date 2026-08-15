@@ -125,6 +125,8 @@ export interface MatchUI {
   onMatchEnd(winner: Side): void;
   /** Precision bar: fill fraction (null hides it) plus the sweet zone bounds. */
   meter?(frac: number | null, sweetStart: number, sweetEnd: number): void;
+  /** How much is left in each player's legs, 0..1. */
+  stamina?(player: number, ai: number): void;
   /** Flash the graded quality of the strike press that was just committed. */
   meterResult?(quality: number): void;
 }
@@ -916,6 +918,11 @@ export class MatchController {
    */
   private walkReceiverHome(dt: number): void {
     const recvSide = other(this.serveOwner);
+    // Only a CPU receiver walks itself back. Doing it to a human's player took
+    // the controls off them while they were lining up a return, and because
+    // home is both further back *and* on the centre line, the character set off
+    // diagonally — which is exactly what it looks like: someone else driving.
+    if (recvSide === "player" || this.versus) return;
     const recv = this.chars[recvSide];
     if (recv.busy) return;
     const backX = Math.max(SPAWN.x, SERVE_X);
@@ -1077,6 +1084,16 @@ export class MatchController {
    * lunge can cover (LUNGE_MAX), so the reception still visibly connects.
    */
   autoFirstReception = true;
+  /**
+   * Whether the venue is an enclosed building.
+   *
+   * The side camera stands outside it when it is: the shot is solved from the
+   * court, and the court is inside a hall whose wall is nearer than the lens
+   * needs to be. Rather than move the camera in — which would stop the whole
+   * court fitting, the thing that view was fixed for — the near plane is
+   * pushed past the wall so the camera looks through it.
+   */
+  indoorVenue = false;
   private autoReceive(side: Side): void {
     if (!this.autoFirstReception || this.touchCount > 0 || this.ball.held) return;
     if (!this.canTouch(side, AUTO_RECEPTION_REACH)) return;
@@ -1224,13 +1241,19 @@ export class MatchController {
     // standing, not by where the ball is, so the stance is signed in the
     // player's own frame the same way `lateral` above is.
     const stance = c.position.z * (side === "player" ? -1 : 1);
-    let clip = chooseStrike(ballHeight, lateral, stance, c.def);
+    let clip = chooseStrike(ballHeight, lateral, stance, c.def, popped);
     // A model without the clip falls back to a kick rather than standing still.
     if (!c.groups.has(clip) && clip.startsWith("Backflip")) {
       clip = `${lateral >= 0 ? "Right" : "Left"}FootKick`;
     }
     const plan = this.planContact(c, clip, STRIKE_SPEED, flight);
-    const yawOffset = clip.startsWith("Backflip") ? Math.PI : 0;
+    // No yaw for a backflip, unlike every other kick.
+    //
+    // A backflip is performed with the player's back to the table, and the
+    // capture was shot front-to-camera like all the rest — so the clip already
+    // faces the right way and the half-turn that squares the other kicks up
+    // with the net turns this one the wrong way round.
+    const yawOffset = 0;
     // The ball leaves at the planned contact moment, from wherever its natural
     // flight put it — the lunge carried the limb there, so the visual contact
     // and the launch coincide. Fired by the countdown in update(); the
@@ -1571,6 +1594,10 @@ export class MatchController {
       const next = c.effort - drain / Math.max(0.2, c.def.stamina) + gain;
       c.effort = Math.max(MIN_EFFORT, Math.min(1, next));
     }
+    // Shown rather than only felt. A player who is losing because their legs
+    // have gone deserves to be able to see it happening, and it is the whole
+    // justification for anything sold to fix it.
+    this.ui.stamina?.(this.chars.player.effort, this.chars.ai.effort);
   }
 
   private finishPoint(): void {
@@ -2051,7 +2078,7 @@ export class MatchController {
       // The previous outer sideline crosses a concourse prop. Use the clear
       // opposite side, mirrored for each half of a local-versus match.
       camera.fov = CAMERA.side.fov;
-      camera.minZ = CAMERA.side.minZ;
+      camera.minZ = this.indoorVenue ? CAMERA.side.indoorMinZ : CAMERA.side.minZ;
       const target = new Vector3(0, GROUND_Y + CAMERA.side.lookY, 0);
       camera.position.set(0, GROUND_Y + CAMERA.side.height, mirror * CAMERA.side.distance);
       camera.setTarget(target);

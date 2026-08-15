@@ -36,6 +36,8 @@ function recorder() {
   const sizes: number[] = [];
   /** Every fill colour used, so the colour choice can be checked. */
   const colours: string[] = [];
+  /** Every stroke colour used, so the contrast halo can be checked. */
+  const strokeColours: string[] = [];
   const ctx = {
     font: "",
     fillStyle: "",
@@ -55,18 +57,31 @@ function recorder() {
     quadraticCurveTo: () => {},
     fill: () => {},
     stroke: () => {},
+    shadowColor: "",
+    shadowBlur: 0,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    miterLimit: 0,
+    // The fill is a gradient now, so the chosen colour arrives as a stop
+    // rather than as fillStyle.
+    createLinearGradient: () => ({
+      addColorStop: (_at: number, colour: string) => colours.push(colour),
+    }),
     // Width scales with the font size the code just set, so the fitter shrinks.
     // The size is read out of the shorthand rather than off the front of it:
     // the font string starts with the weight, so parseInt would return 900.
     measureText: (t: string) => ({ width: t.length * fontPx(ctx.font) * 0.6 }),
-    strokeText: (text: string, x: number, y: number) => strokes.push({ text, x, y }),
+    strokeText: (text: string, x: number, y: number) => {
+      strokes.push({ text, x, y });
+      strokeColours.push(String(ctx.strokeStyle));
+    },
     fillText: (text: string, x: number, y: number) => {
       fills.push({ text, x, y });
       sizes.push(fontPx(ctx.font));
       colours.push(String(ctx.fillStyle));
     },
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, strokes, fills, sizes, colours };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, strokes, fills, sizes, colours, strokeColours };
 }
 
 const SIZE = 1024;
@@ -171,6 +186,18 @@ describe("where the marks land", () => {
     paintKit(ctx, SIZE, SIZE, kit({ number: "7", colour: "gold" }));
 
     expect(colours).toContain(kitColour("gold"));
+  });
+
+  it("haloes a light print dark and a dark print light", () => {
+    // The player picks the print colour and the kit is whatever the character
+    // wears, so a single outline colour can only ever work for one of them.
+    const light = recorder();
+    paintKit(light.ctx, SIZE, SIZE, kit({ number: "7", colour: "white" }));
+    const dark = recorder();
+    paintKit(dark.ctx, SIZE, SIZE, kit({ number: "7", colour: "black" }));
+
+    expect(light.strokeColours.some((c) => /14, 18, 26/.test(c))).toBe(true);
+    expect(dark.strokeColours.some((c) => /246, 249, 255/.test(c))).toBe(true);
   });
 
   it("puts the number below the name", () => {
