@@ -16,7 +16,10 @@ import {
   locoStride,
   type LocoWeights,
   pickReceptionClip,
-  pickStrikeClip,
+  chooseStrike,
+  STRIKE_BANDS,
+  strikeBackflipFoot,
+  onWeakSide,
   serveClipForAim,
   serveContactOffset,
 } from "../src/character";
@@ -34,6 +37,7 @@ const player = (over: Partial<CharacterDef> = {}): CharacterDef => ({
   label: "TEST",
   height: 1.8,
   strongFoot: "right",
+  weakFoot: 70,
   speed: 4.5,
   power: 1,
   precision: 1,
@@ -228,86 +232,6 @@ describe("serveClipForAim", () => {
       const clip = serveClipForAim((i / 400) * 2 - 1);
       expect(SERVE_CLIPS as readonly string[]).toContain(clip);
     }
-  });
-});
-
-describe("pickStrikeClip", () => {
-  const height = 1.8;
-
-  it("heads a high ball and volleys a low one", () => {
-    stubRandom(0);
-    expect(pickStrikeClip(height * 0.9, 0.5, height, "both", 1, true, 0)).toBe("RightHeadKick");
-    expect(pickStrikeClip(height * 0.7, 0.5, height, "both", 1, true, 0)).toBe("RightHeadKick");
-    expect(pickStrikeClip(height * 0.5, 0.5, height, "both", 1, true, 0)).toBe("ChestKick");
-    expect(pickStrikeClip(height * 0.2, 0.5, height, "both", 1, true, 0)).toBe("RightFootKick");
-  });
-
-  it("plays the floated clip in each band when the kick is a soft one", () => {
-    // The animation has to agree with the ball that comes off it: a lofted
-    // kick is played with the inner foot or the knee, never drilled.
-    stubRandom(0);
-    expect(pickStrikeClip(height * 0.7, 0.5, height, "both", 0.1, true, 0)).toBe("ChestKick");
-    expect(pickStrikeClip(height * 0.5, 0.5, height, "both", 0.1, true, 0)).toBe("RightKneeReception");
-    expect(pickStrikeClip(height * 0.2, 0.5, height, "both", 0.1, true, 0)).toBe("InnerRightFootReception");
-  });
-
-  it("picks the side from the lateral offset", () => {
-    stubRandom(0);
-    expect(pickStrikeClip(height * 0.9, 0.5, height, "both", 1, true, 0)).toBe("RightHeadKick");
-    expect(pickStrikeClip(height * 0.9, -0.5, height, "both", 1, true, 0)).toBe("LeftHeadKick");
-  });
-
-  it("always heads a wide high ball rather than centring it", () => {
-    stubRandom(0);
-    expect(pickStrikeClip(height * 0.95, 0.5, height, "both", 1, true, 0)).toBe("RightHeadKick");
-    // Dead centre a driven ball is headed straight through.
-    expect(pickStrikeClip(height * 0.95, 0.1, height, "both", 1, true, 0)).toBe("CenterHeadKick");
-  });
-
-  it("favours the strong foot on a dead-centre ball", () => {
-    // |lateral| < 0.06 makes pickSide consume the first random: 0.5 < 0.75
-    // keeps the preferred side, then 0 takes the first option in the band.
-    stubRandom(0.5, 0);
-    expect(pickStrikeClip(height * 0.2, 0, height, "left", 1, true, 0)).toBe("LeftFootKick");
-
-    vi.restoreAllMocks();
-    stubRandom(0.5, 0);
-    expect(pickStrikeClip(height * 0.2, 0, height, "right", 0.6, true, 0)).toBe("RightFootKick");
-
-    // A roll past 0.75 crosses to the other foot.
-    vi.restoreAllMocks();
-    stubRandom(0.8, 0);
-    expect(pickStrikeClip(height * 0.2, 0, height, "left", 0.6, true, 0)).toBe("RightFootKick");
-  });
-
-  it("only ever returns a real clip with a contact frame", () => {
-    for (let i = 0; i < 2000; i++) {
-      const ballY = Math.random() * height * 1.2;
-      const lateral = Math.random() * 1.6 - 0.8;
-      const clip = pickStrikeClip(ballY, lateral, height, "right");
-      expect(CLIPS[clip], clip).toBeDefined();
-      expect(CLIPS[clip].contact, clip).toBeGreaterThan(0);
-    }
-  });
-
-  it("scales with the character's height, not absolute metres", () => {
-    stubRandom(0);
-    const tall = pickStrikeClip(1.7, 0.5, 2.0, "both", 0.6, true, 0); // rel 0.85 -> head
-    vi.restoreAllMocks();
-    stubRandom(0);
-    const shortPlayer = pickStrikeClip(1.7, 0.5, 1.6, "both", 0.6, true, 0); // rel > 1 -> also head
-
-    expect(tall).toBe("RightHeadKick");
-    expect(shortPlayer).toBe("RightHeadKick");
-
-    vi.restoreAllMocks();
-    stubRandom(0);
-    // The same ball height is a knee ball for a 2 m player...
-    expect(pickStrikeClip(1.0, 0.5, 2.0, "both", 0.1, true, 0)).toBe("RightKneeReception");
-    vi.restoreAllMocks();
-    stubRandom(0);
-    // ...and a chest ball for a 1.5 m one.
-    expect(pickStrikeClip(1.0, 0.5, 1.5, "both", 0.1, true, 0)).toBe("ChestKick");
   });
 });
 
@@ -649,5 +573,180 @@ describe("locomotion blending", () => {
   it("never drives the legs slower than the floor or past the ceiling", () => {
     expect(locoStride(locoBlend(0.5, 0, 0.5), 0.5)).toBeGreaterThanOrEqual(0.55);
     expect(locoStride(locoBlend(99, 0, 99), 99)).toBeLessThanOrEqual(1.6);
+  });
+});
+
+describe("chooseStrike", () => {
+  const height = 1.8;
+  /** Ball height, as a fraction of the player's own, with no band jitter. */
+  const at = (rel: number) => rel * height;
+  const righty = player({ strongFoot: "right", weakFoot: 70, backflips: "strong" });
+  /** Standing on their strong side, so a backflip is available. */
+  const STRONG_SIDE = 1;
+  const RIGHT = 0.5;
+  const LEFT = -0.5;
+
+  it("flips rather than heads a high ball on the strong side", () => {
+    // Feet first is the whole point: up at the table a teqball player kicks or
+    // flips, and the header used to win every high ball by default.
+    const clip = chooseStrike(at(0.95), RIGHT, STRONG_SIDE, righty, true, 1, () => 0.5, 0);
+
+    expect(clip).toBe("BackflipRightFoot");
+  });
+
+  it("kicks a mid ball rather than heading it", () => {
+    const clip = chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, true, 1, () => 0.5, 0);
+
+    expect(clip).toBe("RightFootKick");
+  });
+
+  it("only takes a touch when the ball is too low for any of it", () => {
+    const clip = chooseStrike(at(0.05), RIGHT, STRONG_SIDE, righty, true, 1, () => 0.5, 0);
+
+    expect(clip).toBe("InnerRightFootReception");
+  });
+
+  describe("the weak foot decides the header", () => {
+    // The ball has to be arriving on the weak side and be high enough; then it
+    // is the weak foot's own score that says how often the head is used.
+    const weakSide = LEFT; // a right-footed player's weak side
+    const high = at(0.95);
+
+    it("heads it when the roll beats the weak foot's score", () => {
+      // 0.9 > 0.70, so the foot is not trusted this time.
+      const clip = chooseStrike(high, weakSide, STRONG_SIDE, righty, true, 1, () => 0.9, 0);
+
+      expect(clip).toBe("LeftHeadKick");
+    });
+
+    it("uses the foot when the roll is inside it", () => {
+      const clip = chooseStrike(high, weakSide, STRONG_SIDE, righty, true, 1, () => 0.5, 0);
+
+      expect(clip).not.toContain("HeadKick");
+    });
+
+    it("heads a weak-side ball more often the worse that foot is", () => {
+      const poor = player({ strongFoot: "right", weakFoot: 20, backflips: "none" });
+      const good = player({ strongFoot: "right", weakFoot: 95, backflips: "none" });
+      const headers = (def: typeof poor) => {
+        let n = 0;
+        for (let i = 0; i < 400; i++) {
+          if (chooseStrike(high, weakSide, STRONG_SIDE, def, true, 1).includes("HeadKick")) n++;
+        }
+        return n;
+      };
+
+      expect(headers(poor)).toBeGreaterThan(headers(good));
+    });
+
+    it("never forces a header on a two-footed player", () => {
+      // They have no weak side, so nothing about the ball's side matters.
+      const ambi = player({ strongFoot: "both", weakFoot: 100, backflips: "none" });
+      for (let i = 0; i < 200; i++) {
+        expect(chooseStrike(high, weakSide, STRONG_SIDE, ambi, true, 1)).not.toContain("HeadKick");
+      }
+    });
+
+    it("does not head a ball that is too low to head", () => {
+      // Weak side, but at knee height there is no header to play.
+      const clip = chooseStrike(at(0.4), weakSide, STRONG_SIDE, righty, true, 1, () => 0.99, 0);
+
+      expect(clip).not.toContain("HeadKick");
+    });
+  });
+
+  describe("backflips stay on one side of the court", () => {
+    it("flips off the strong foot when standing on that side", () => {
+      expect(chooseStrike(at(0.9), RIGHT, 1, righty, true, 1, () => 0.5, 0)).toBe(
+        "BackflipRightFoot"
+      );
+    });
+
+    it("will not flip from the weak side", () => {
+      // The leg that comes over is the outside one, so the far side of the
+      // court has no flip in it — that is what "only one side" means.
+      const clip = chooseStrike(at(0.9), RIGHT, -1, righty, true, 1, () => 0.5, 0);
+
+      expect(clip).not.toContain("Backflip");
+    });
+
+    it("gives a two-footed player a flip from either side", () => {
+      const ambi = player({ strongFoot: "both", weakFoot: 100, backflips: "strong" });
+
+      expect(chooseStrike(at(0.9), RIGHT, 1, ambi, true, 1, () => 0.5, 0)).toBe("BackflipRightFoot");
+      expect(chooseStrike(at(0.9), LEFT, -1, ambi, true, 1, () => 0.5, 0)).toBe("BackflipLeftFoot");
+    });
+
+    it("gives nothing to a player who does not flip at all", () => {
+      const grounded = player({ strongFoot: "right", weakFoot: 100, backflips: "none" });
+      const clip = chooseStrike(at(0.9), RIGHT, 1, grounded, true, 1, () => 0.5, 0);
+
+      expect(clip).toBe("RightFootKick");
+    });
+  });
+
+  it("plays no hard shot from deep in the half", () => {
+    // There is no angle through which a driven ball from the baseline clears
+    // the net and lands, so the deep game stays a lofted one.
+    for (const rel of [0.2, 0.5, 0.95]) {
+      const clip = chooseStrike(at(rel), RIGHT, STRONG_SIDE, righty, false, 1, () => 0.5, 0);
+      expect(clip, `rel ${rel}`).not.toContain("Backflip");
+      expect(clip, `rel ${rel}`).not.toContain("FootKick");
+    }
+  });
+
+  it("only ever returns a real clip with a contact frame", () => {
+    for (let i = 0; i < 3000; i++) {
+      const def = player({
+        strongFoot: (["left", "right", "both"] as const)[i % 3],
+        weakFoot: (i * 7) % 101,
+        backflips: (["none", "strong", "both"] as const)[i % 3],
+      });
+      const clip = chooseStrike(
+        Math.random() * height * 1.2,
+        Math.random() * 1.6 - 0.8,
+        Math.random() * 2 - 1,
+        def,
+        i % 2 === 0
+      );
+      expect(CLIPS[clip], clip).toBeDefined();
+      expect(CLIPS[clip].contact, clip).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the bands in the order the shots happen in", () => {
+    expect(STRIKE_BANDS.header).toBeGreaterThan(STRIKE_BANDS.backflip);
+    expect(STRIKE_BANDS.backflip).toBeGreaterThan(STRIKE_BANDS.foot);
+  });
+});
+
+describe("onWeakSide", () => {
+  it("is the side away from the strong foot", () => {
+    const righty = player({ strongFoot: "right" });
+
+    expect(onWeakSide(0.5, righty)).toBe(false);
+    expect(onWeakSide(-0.5, righty)).toBe(true);
+  });
+
+  it("is never true for a two-footed player", () => {
+    const ambi = player({ strongFoot: "both" });
+
+    expect(onWeakSide(0.5, ambi)).toBe(false);
+    expect(onWeakSide(-0.5, ambi)).toBe(false);
+  });
+});
+
+describe("strikeBackflipFoot", () => {
+  it("is the strong foot, and only from that side", () => {
+    const lefty = player({ strongFoot: "left", backflips: "strong" });
+
+    expect(strikeBackflipFoot(-1, lefty)).toBe("left");
+    expect(strikeBackflipFoot(1, lefty)).toBeNull();
+  });
+
+  it("is null for a player who cannot flip", () => {
+    const grounded = player({ strongFoot: "right", backflips: "none" });
+
+    expect(strikeBackflipFoot(1, grounded)).toBeNull();
   });
 });

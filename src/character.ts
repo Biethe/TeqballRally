@@ -666,7 +666,7 @@ export function footFactor(def: CharacterDef, clip: string): { power: number; sp
  *
  * `stance` is the player's lateral position in their own frame — positive to
  * their right — so it is signed the same way as the `lateral` passed to
- * `pickStrikeClip`, and the two cannot drift apart.
+ * `chooseStrike`, and the two cannot drift apart.
  *
  * Returns null when neither foot is allowed by the character's traits, which
  * is how a player who cannot flip at all falls back to an ordinary kick.
@@ -736,52 +736,92 @@ function pickSide(lateral: number, prefer: Foot | "both" = "both"): "Left" | "Ri
 }
 
 /**
- * Pick the strike clip from the ball's height and lateral offset at contact.
- * Bands overlap with weighted randomness so rallies show the whole move set
- * (in play the ball is almost always above half body height, so strict
- * anatomical bands would leave most clips unused).
+ * How high the ball has to be, as a fraction of the player's own height, for
+ * each way of striking it to be available.
+ *
+ * Fractions rather than metres because a 1.72 m player and a 1.86 m one do not
+ * head the same ball, and a band in metres would quietly make one of them
+ * better at everything.
  */
-export function pickStrikeClip(
+export const STRIKE_BANDS = {
+  /** Head height. Below this there is no header to play. */
+  header: 0.78,
+  /** A backflip reaches above the player, so it starts lower than a header. */
+  backflip: 0.6,
+  /** Under this nothing can be struck at all and the ball is only controlled. */
+  foot: 0.12,
+};
+
+/**
+ * Which foot a backflip comes over on, or null if this player cannot flip here.
+ *
+ * Only the strong foot flips. That is what confines backflips to one side of
+ * the court: the leg that comes over is the outside one, so the player has to
+ * be standing on their strong side to use it. A two-footed player has no weak
+ * side and can flip from either.
+ */
+export function strikeBackflipFoot(stance: number, def: CharacterDef): Foot | null {
+  if (def.backflips === "none") return null;
+  const outside: Foot = stance >= 0 ? "right" : "left";
+  if (def.strongFoot === "both") return outside;
+  return outside === def.strongFoot ? outside : null;
+}
+
+/** Whether a ball arriving here is on the player's weaker side. */
+export function onWeakSide(lateral: number, def: CharacterDef): boolean {
+  if (def.strongFoot === "both") return false;
+  return (lateral >= 0 ? "right" : "left") !== def.strongFoot;
+}
+
+/**
+ * What a player does with a ball they can attack.
+ *
+ * Feet first. A teqball player up at the table kicks or flips; heading is what
+ * you do when the ball is coming to the side you do not trust, and even then
+ * only if it is high enough to head at all. So the header is not a height band
+ * any more — it is an admission, and how often it happens is the weak foot's
+ * own score: at 70 the foot is used seven times in ten and the head the other
+ * three.
+ *
+ * Below the table's own height none of that applies: there is no shot to play,
+ * only a touch to take, and the reception clips are what that looks like.
+ */
+export function chooseStrike(
   ballY: number,
   lateral: number,
-  height: number,
-  strongFoot: Foot | "both" = "both",
-  /**
-   * How hard the kick is meant to be struck, 0..1. Where the ball is decides
-   * what is reachable; this decides which of those the player is asking for.
-   * Driven at the top of the range, floated at the bottom — the animation has
-   * to agree with the ball that comes off it, or the shot reads as a bug.
-   */
+  stance: number,
+  def: CharacterDef,
+  /** Only near the middle line are the hard shots on the menu at all. */
+  nearMiddle: boolean,
   power = 0.6,
-  /**
-   * Whether the player is close enough to the middle line for the hard shots.
-   *
-   * The foot volley is a smash, and a smash from the back of the court is not
-   * a shot that exists — there is no angle through which it clears the net and
-   * lands. From deep the same ball is played as an inner-foot lob instead, so
-   * the animation still agrees with the flight that comes off it.
-   */
-  nearMiddle = true,
-  /**
-   * This contact's shift of the band edges. Defaults to a fresh random one —
-   * and because a default is only evaluated when the argument is missing,
-   * passing 0 draws no random number at all, which is what lets the tests pin
-   * an exact clip without their stubbed sequences moving under them.
-   */
+  rand: () => number = Math.random,
   relJitter: number = bandJitter()
 ): string {
-  const rel = ballY / height + relJitter; // normalised contact height
-  const side = pickSide(lateral, strongFoot);
-  const driven = power >= 0.5;
-  if (rel > 0.8) {
-    if (Math.abs(lateral) > 0.12) return `${side}HeadKick`;
-    return driven ? "CenterHeadKick" : `${side}HeadKick`;
+  const rel = ballY / def.height + relJitter;
+  const side = pickSide(lateral, def.strongFoot);
+
+  // Deep in the half there is no angle through which a driven ball clears the
+  // net and lands, so the choice there stays what it was: reach it, and loft it.
+  if (!nearMiddle) {
+    if (rel > STRIKE_BANDS.header) return `${side}HeadKick`;
+    if (rel > 0.45) return power >= 0.5 ? "ChestKick" : `${side}KneeReception`;
+    return `Inner${side}FootReception`;
   }
-  if (rel > 0.62) return driven ? `${side}HeadKick` : "ChestKick";
-  if (rel > 0.45) return driven ? "ChestKick" : `${side}KneeReception`;
-  // Low ball: a driven foot volley from up at the table, or an inner-foot
-  // touch played as a slow lob from anywhere.
-  return driven && nearMiddle ? `${side}FootKick` : `Inner${side}FootReception`;
+
+  // The weak side, high enough to head: the one case a header is the answer.
+  if (rel >= STRIKE_BANDS.header && onWeakSide(lateral, def)) {
+    if (rand() > def.weakFoot / 100) {
+      return Math.abs(lateral) > 0.12 ? `${side}HeadKick` : "CenterHeadKick";
+    }
+  }
+
+  // Otherwise the feet have it, hardest first.
+  if (rel >= STRIKE_BANDS.backflip) {
+    const foot = strikeBackflipFoot(stance, def);
+    if (foot) return foot === "right" ? "BackflipRightFoot" : "BackflipLeftFoot";
+  }
+  if (rel >= STRIKE_BANDS.foot) return `${side}FootKick`;
+  return `Inner${side}FootReception`;
 }
 
 /** Pick a control-touch (reception/prep) clip from the ball's height and lateral offset. */
@@ -790,7 +830,7 @@ export function pickReceptionClip(
   lateral: number,
   height: number,
   strongFoot: Foot | "both" = "both",
-  /** As `pickStrikeClip`: pass 0 for a deterministic pick and no random draw. */
+  /** As `chooseStrike`: pass 0 for a deterministic pick and no random draw. */
   relJitter: number = bandJitter()
 ): string {
   const rel = ballY / height + relJitter;

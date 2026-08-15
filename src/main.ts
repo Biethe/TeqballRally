@@ -25,7 +25,7 @@ import {
   venueFromSearch,
 } from "./venue";
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
-import { CRESTS, applyKit } from "./kit";
+import { CRESTS, KIT_COLOURS, applyKit } from "./kit";
 import {
   initPurchases,
   isPro,
@@ -1475,6 +1475,16 @@ async function boot(): Promise<void> {
             control: { kind: "action", label: tr("settings.kit.edit") },
           },
           {
+            id: "kit-colour",
+            label: tr("settings.kit.colour"),
+            hint: tr("settings.kit.colour.hint"),
+            control: {
+              kind: "choice",
+              value: prefs.kit.colour,
+              options: KIT_COLOURS.map((c) => ({ id: c.id, label: c.label })),
+            },
+          },
+          {
             id: "kit-crest",
             label: tr("settings.kit.crest"),
             hint: tr("settings.kit.crest.hint"),
@@ -1617,6 +1627,15 @@ async function boot(): Promise<void> {
               },
               onBack: () => render(),
             });
+            return;
+          }
+          if (id === "kit-colour" && typeof value === "string") {
+            const picked = KIT_COLOURS.find((c) => c.id === value);
+            if (picked) {
+              prefs.kit.colour = picked.id;
+              storePreferences(prefs);
+            }
+            render();
             return;
           }
           if (id === "kit-crest" && typeof value === "string") {
@@ -2042,6 +2061,8 @@ async function boot(): Promise<void> {
     onBack: () => void
   ) => {
     viewer.activate();
+    // The shirt may have been edited since the last visit to this screen.
+    viewer.setKit(prefs.kit);
     input.setTouchControlsEnabled(false);
     // The first ball is what the picker opens on, so it is the one most likely
     // to be played. Begin it at idle priority while the selected character
