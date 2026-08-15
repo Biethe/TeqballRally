@@ -94,6 +94,32 @@ export function consumeInput(latched: LatchedInput): InputState {
   return state;
 }
 
+/**
+ * Turn a screen-space stick into a world-space direction, for the view in use.
+ *
+ * Screen directions mean different world directions in different views, and
+ * treating them as fixed is what made the side view feel like the world had
+ * been rotated ninety degrees under the controls.
+ *
+ * COURT: the lens is behind the player at -x looking toward +x, so screen up
+ * is +x (toward the net) and screen right is -z.
+ *
+ * SIDE: the lens is off the sideline looking across, so screen up is +z (away
+ * from the camera) and screen right is +x (toward the net). The same tilt of a
+ * thumb then means what it looks like it means in both.
+ *
+ * Pure and exported so the mapping can be held to in a test: it is four signs,
+ * and getting one of them wrong is a control scheme nobody can play.
+ */
+export function moveForView(
+  sx: number,
+  sy: number,
+  cameraMode: CameraMode
+): { moveX: number; moveZ: number } {
+  if (cameraMode === "side") return { moveX: sx, moveZ: -sy };
+  return { moveX: -sy, moveZ: -sx };
+}
+
 export class Input {
   private keys = new Set<string>();
   private strikeQueued = false;
@@ -561,7 +587,7 @@ export class Input {
     if (this.portrait) this.pumpGestures();
     // The active view is passed into this concrete poll rather than cached on
     // Input, so a view that cycles this frame is already reflected here.
-    const rotateDpad = cameraMode === "side" || cameraMode === "top";
+    const rotateDpad = cameraMode === "side";
     let padStrike = false;
     let padPop = false;
     // Keyboard, touch and every connected pad, all feeding the one player.
@@ -584,11 +610,10 @@ export class Input {
     sx = Math.max(-1, Math.min(1, sx));
     sy = Math.max(-1, Math.min(1, sy));
 
+    const move = moveForView(sx, sy, cameraMode);
     const state: InputState = {
-      // Camera sits behind the player at -x looking toward +x, so screen up =
-      // +x (toward the net) and screen right = -z.
-      moveX: -sy,
-      moveZ: -sx,
+      moveX: move.moveX,
+      moveZ: move.moveZ,
       strikePressed: this.strikeQueued,
       strikeHeld: this.strikeDown,
       strikePower: this.gesturePower,

@@ -141,22 +141,6 @@ var CAMERA = {
     lookY: 0.3,
     fov: 1,
     minZ: 0.1
-  },
-  // A true 90° side orbit, pitched down by ~75° (7.20 m up over 1.93 m
-  // sideways). It brings the players about 11% closer than the first top
-  // camera while the slightly wider lens still frames the full 18 m × 13.4 m
-  // court in a half-width viewport. The larger near plane cleanly clips the
-  // arena roof trusses which otherwise cross the wide top-view lens.
-  top: {
-    offsetX: 0,
-    offsetZ: -1.93,
-    height: 7.45,
-    lookY: 0.25,
-    // Split-screen needs the wider lens to keep both court ends visible. Solo
-    // play has the full viewport, so tighten it for a more readable player size.
-    fov: 1.9,
-    soloFov: 1.74,
-    minZ: 2
   }
 };
 var SIM_HZ = 60;

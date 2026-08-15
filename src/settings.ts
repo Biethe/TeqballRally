@@ -47,7 +47,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
 
 const KEY = "teqopen.prefs";
 
-const isCameraMode = (v: unknown): v is CameraMode => v === "court" || v === "side" || v === "top";
+const isCameraMode = (v: unknown): v is CameraMode => v === "court" || v === "side";
 
 /** Everything remembered, with defaults for anything absent or unreadable. */
 export function readPreferences(): Preferences {

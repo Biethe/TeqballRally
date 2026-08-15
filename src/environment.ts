@@ -32,7 +32,7 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
-import { GROUND_Y } from "./config";
+import { COURT, GROUND_Y } from "./config";
 import type { Dressing, Rgb, Venue } from "./venue";
 
 /** A point on the court's perimeter, with the outward direction it faces. */
@@ -212,6 +212,19 @@ async function loadRiggedCrowdLibrary(scene: Scene): Promise<CrowdLibrary> {
  * peers of an online match and identical between runs when comparing
  * screenshots.
  */
+/**
+ * Whether somebody standing here would be in the camera's lap.
+ *
+ * The sidelines and the benches both run the whole length of the court, and
+ * the play camera sits behind the near baseline looking down it — so the last
+ * few seats at that end are between the lens and the game, and a spectator two
+ * metres from a wide portrait lens is a wall of hair at the edge of the frame.
+ * Nobody is placed nearer the camera than a player can stand.
+ */
+function inCameraNearField(x: number): boolean {
+  return x < -COURT.maxX + 2.5;
+}
+
 function placeCrowd(
   spec: NonNullable<Dressing["crowd"]>,
   library: Mesh[],
@@ -227,7 +240,15 @@ function placeCrowd(
     return n - Math.floor(n);
   };
 
-  for (const side of [1, -1]) {
+  // One sideline, not both, and deliberately the one opposite the side camera.
+  //
+  // From the sideline in portrait the geometry leaves no choice: framing an
+  // 18 m court across the narrow dimension of the screen puts the lens further
+  // out than the crowd ring, so a near row is always between the camera and
+  // the play — a wall of heads across the bottom of the frame. Standing people
+  // go on +z; the side camera looks from -z; the benches and the far row still
+  // read as a crowd from behind the baseline.
+  for (const side of [1]) {
     for (let row = 0; row < spec.rows; row++) {
       const z = side * (W + spec.gap + row * spec.spacing);
       const count = Math.round((L * 2) / spec.spacing);
@@ -238,6 +259,7 @@ function placeCrowd(
         if (seed > spec.density) continue;
         const jitter = noise(i, row * 5 + side * 11);
         const x = (i + 0.5 - count / 2) * spec.spacing + (jitter - 0.5) * spec.spacing * 0.5;
+        if (inCameraNearField(x)) continue;
         const matrix = Matrix.Compose(
           new Vector3(1, 0.94 + jitter * 0.13, 1),
           // Everyone faces the court, with enough spread that the row does not
@@ -381,6 +403,11 @@ function placeOnBenches(
     return n - Math.floor(n);
   };
   spec.seats.forEach(([x, z], i) => {
+    if (inCameraNearField(x)) return;
+    // The benches run down both touchlines; only the far one is used, for the
+    // same reason the standing rows are — the side camera looks across the
+    // near one, and a bench two metres from the lens is a row of backs.
+    if (z < 0) return;
     for (let k = 0; k < spec.perBench; k++) {
       const seed = noise(i * 5 + k, i);
       if (seed > spec.density) continue;
