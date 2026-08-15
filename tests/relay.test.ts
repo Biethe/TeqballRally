@@ -141,9 +141,15 @@ describe("relay seating", () => {
     const room = makeRoomCode();
     const a = await TestPeer.open();
     const b = await TestPeer.open();
+    // Seated one at a time on purpose. Sending both joins and only then
+    // awaiting them leaves it to the relay which arrives first, so the host
+    // seat goes to either peer — and this test then closes `b` expecting the
+    // *guest* seat to be the one freed. When the race went the other way the
+    // next peer came back as host and the assertion below failed in about
+    // fifty milliseconds, which is what made it look like a flake.
     a.join(room);
-    b.join(room);
     await a.waitForType("joined");
+    b.join(room);
     await b.waitForType("joined");
     await a.waitFor((m) => m.t === "peer");
 
