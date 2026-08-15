@@ -45,7 +45,18 @@
           document.body.appendChild(el);
         }
         window.addEventListener("error", function (e) {
-          show("Startup error", (e.message || "") + "\n" + (e.filename || "") + ":" + (e.lineno || 0));
+          // The stack, not just the message. A minified bundle's
+          // `index-*.js:138` names the file and nothing else — every line of
+          // the app is on line 138 — so the first report of a crash could only
+          // say *that* something was null, never which thing or who asked for
+          // it. The stack still carries the function names Rollup kept.
+          var stack = (e.error && e.error.stack) || "";
+          show(
+            "Startup error",
+            (e.message || "") +
+              "\n" + (e.filename || "") + ":" + (e.lineno || 0) + ":" + (e.colno || 0) +
+              (stack ? "\n\n" + stack : "")
+          );
         });
         window.addEventListener("unhandledrejection", function (e) {
           show("Unhandled rejection", String((e.reason && e.reason.stack) || e.reason));

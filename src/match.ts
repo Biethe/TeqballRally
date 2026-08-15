@@ -916,17 +916,27 @@ export class MatchController {
    * a far-out receiver mid-court with a stale velocity (jogging in place).
    * moveToward zeroes the velocity on arrival, which also stops the jog blend.
    */
+  /**
+   * Whether the player receiving is driven by the CPU.
+   *
+   * Only they may be steered once the serve is ready: a human at that point is
+   * setting themselves for the return, and moving their character for them is
+   * the game taking the controls away.
+   */
+  private receiverIsCpu(): boolean {
+    return other(this.serveOwner) === "ai" && !this.versus;
+  }
+
   private walkReceiverHome(dt: number): void {
     const recvSide = other(this.serveOwner);
-    // Only a CPU receiver walks itself back. Doing it to a human's player took
-    // the controls off them while they were lining up a return, and because
-    // home is both further back *and* on the centre line, the character set off
-    // diagonally — which is exactly what it looks like: someone else driving.
-    if (recvSide === "player" || this.versus) return;
     const recv = this.chars[recvSide];
     if (recv.busy) return;
-    const backX = Math.max(SPAWN.x, SERVE_X);
-    recv.moveToward(new Vector3(sign(recvSide) * backX, GROUND_Y, SPAWN.z), recv.def.speed, dt);
+    // Their own spawn, not the service line. The service line is 1.25 m further
+    // back and belongs to whoever is *serving*; walking the receiver to it sent
+    // them past where they started and, since it also pulls them to the centre,
+    // the trip there was a diagonal — which is what it looked like from the
+    // outside: the character setting off on its own.
+    recv.moveToward(new Vector3(sign(recvSide) * SPAWN.x, GROUND_Y, SPAWN.z), recv.def.speed, dt);
   }
 
   private handPos(c: Character): Vector3 {
@@ -1754,7 +1764,11 @@ export class MatchController {
       }
       case "serve_ready": {
         const server = this.chars[this.serveOwner];
-        this.walkReceiverHome(dt);
+        // Not walked here. Once the serve is ready the receiver can move, and
+        // steering them home while they are trying to set themselves is taking
+        // the controls away — the walk belongs to `serve_move`, which is the
+        // stroll back between points.
+        if (this.receiverIsCpu()) this.walkReceiverHome(dt);
         this.updatePlayerServeAim(input, true);
         this.updateVersusServeAim(true);
         this.ball.place(this.serveHandPos(server));
@@ -1767,7 +1781,7 @@ export class MatchController {
         break;
       }
       case "serve_anim": {
-        this.walkReceiverHome(dt);
+        if (this.receiverIsCpu()) this.walkReceiverHome(dt);
         // The clip is locked, but the landing aim stays live until contact.
         this.updatePlayerServeAim(input, false);
         this.updateVersusServeAim(false);

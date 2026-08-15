@@ -229,9 +229,15 @@ function stamp(
 
   // The halo: the opposite of the print, so it reads on a kit of either
   // brightness without the player having to think about it.
-  ctx.lineWidth = px * 0.26;
+  //
+  // Softened and narrowed from the first attempt, which drew a hard band of
+  // solid colour around every letter — that reads as a sticker laid on the
+  // shirt rather than as something printed into it. Thin, and let through.
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = px * 0.16;
   ctx.strokeStyle = contrastOf(colour);
   ctx.strokeText(text, x, y);
+  ctx.globalAlpha = 1;
 
   // Shadow, thrown down and slightly right, under the keyline so the keyline
   // stays crisp.
@@ -240,18 +246,23 @@ function stamp(
   ctx.shadowBlur = px * 0.14;
   ctx.shadowOffsetX = px * 0.05;
   ctx.shadowOffsetY = px * 0.07;
-  ctx.lineWidth = px * 0.13;
-  ctx.strokeStyle = "rgba(12, 16, 22, 0.92)";
+  ctx.lineWidth = px * 0.075;
+  ctx.strokeStyle = "rgba(12, 16, 22, 0.7)";
   ctx.strokeText(text, x, y);
   ctx.restore();
 
   // The fill, brighter along the top edge.
   const gradient = ctx.createLinearGradient(0, y - px * 0.6, 0, y + px * 0.6);
-  gradient.addColorStop(0, lighten(colour, 0.28));
+  gradient.addColorStop(0, lighten(colour, 0.18));
   gradient.addColorStop(0.55, colour);
-  gradient.addColorStop(1, lighten(colour, -0.18));
+  gradient.addColorStop(1, lighten(colour, -0.12));
   ctx.fillStyle = gradient;
+  // Just short of opaque. Real flock lets a little of the weave through, and
+  // that is most of the difference between print on cloth and text on a photo
+  // of cloth.
+  ctx.globalAlpha = 0.93;
   ctx.fillText(text, x, y);
+  ctx.globalAlpha = 1;
   ctx.restore();
 }
 
