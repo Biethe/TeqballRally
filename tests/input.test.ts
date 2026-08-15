@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { consumeInput, latchInput, newLatch, type InputState } from "../src/input";
+import type { CameraMode } from "../src/config";
+import { consumeInput, latchInput, newLatch, type InputState,
+  moveForView,
+} from "../src/input";
 
 const sample = (over: Partial<InputState> = {}): InputState => ({
   moveX: 0,
@@ -110,5 +113,53 @@ describe("input latching", () => {
     delivered.push(consumeInput(latch).strikePressed); // step
 
     expect(delivered).toEqual([true, false]);
+  });
+});
+
+describe("which way the screen points in each view", () => {
+  /**
+   * Four signs, and getting one wrong is a control scheme nobody can play.
+   *
+   * The side view is why this exists: the mapping was hard-coded to the camera
+   * behind the baseline, so playing from the sideline felt like the world had
+   * been rotated ninety degrees under the thumb.
+   */
+  const UP = { sx: 0, sy: -1 };
+  const RIGHT = { sx: 1, sy: 0 };
+  /** Negating a zero axis yields -0, which toEqual treats as a different value. */
+  const move = (sx: number, sy: number, view: CameraMode) => {
+    const m = moveForView(sx, sy, view);
+    return { moveX: m.moveX + 0, moveZ: m.moveZ + 0 };
+  };
+
+  it("sends screen-up toward the net in the court view", () => {
+    expect(move(UP.sx, UP.sy, "court")).toEqual({ moveX: 1, moveZ: 0 });
+  });
+
+  it("sends screen-right across the court in the court view", () => {
+    expect(move(RIGHT.sx, RIGHT.sy, "court")).toEqual({ moveX: 0, moveZ: -1 });
+  });
+
+  it("sends screen-right toward the net in the side view", () => {
+    // The court's length runs across the screen when seen from the sideline.
+    expect(move(RIGHT.sx, RIGHT.sy, "side")).toEqual({ moveX: 1, moveZ: 0 });
+  });
+
+  it("sends screen-up away from the camera in the side view", () => {
+    expect(move(UP.sx, UP.sy, "side")).toEqual({ moveX: 0, moveZ: 1 });
+  });
+
+  it("turns the same stick a quarter turn between the two views", () => {
+    // Whatever the signs are, the two views must not agree — that was the bug.
+    for (const stick of [UP, RIGHT, { sx: 0.6, sy: 0.4 }]) {
+      const court = move(stick.sx, stick.sy, "court");
+      const side = move(stick.sx, stick.sy, "side");
+      expect(side).not.toEqual(court);
+      // A rotation preserves length: neither view may be stronger than the other.
+      expect(Math.hypot(side.moveX, side.moveZ)).toBeCloseTo(
+        Math.hypot(court.moveX, court.moveZ),
+        6
+      );
+    }
   });
 });

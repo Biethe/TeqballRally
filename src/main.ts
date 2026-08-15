@@ -521,7 +521,7 @@ async function boot(): Promise<void> {
   };
   const cycleCameraMode = () => {
     if (!match || paused || freecam || viewer.active) return;
-    const modes: CameraMode[] = ["court", "side", "top"];
+    const modes: CameraMode[] = ["court", "side"];
     cameraMode = modes[(modes.indexOf(cameraMode) + 1) % modes.length];
     ui.setCameraMode(cameraMode);
     const label = cameraMode === "court" ? "COURT VIEW" : cameraMode === "side" ? "SIDE VIEW" : "TOP VIEW";
@@ -1552,7 +1552,6 @@ async function boot(): Promise<void> {
               options: [
                 { id: "court", label: tr("settings.camera.court") },
                 { id: "side", label: tr("settings.camera.side") },
-                { id: "top", label: tr("settings.camera.top") },
               ],
             },
           },
@@ -1676,7 +1675,7 @@ async function boot(): Promise<void> {
             return;
           }
           if (id === "camera" && typeof value === "string") {
-            const picked = (["court", "side", "top"] as CameraMode[]).find((mode) => mode === value);
+            const picked = (["court", "side"] as CameraMode[]).find((mode) => mode === value);
             if (picked) {
               prefs.camera = picked;
               cameraMode = picked;

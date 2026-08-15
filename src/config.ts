@@ -187,7 +187,7 @@ export const REACH_ASSIST = {
   strength: 0.5, // 0 = off, 1 = full auto-run when pushing straight at the ball
 };
 
-export type CameraMode = "court" | "side" | "top";
+export type CameraMode = "court" | "side";
 
 /**
  * Portrait framing, solved from the court rather than tuned by eye.
@@ -218,6 +218,19 @@ export type CameraMode = "court" | "side" | "top";
  * inside the building, looking over the goals and backboards that a low camera
  * this far out would have been staring straight into.
  */
+/** The side view's lens, and the shot solved for it. */
+const SIDE_FOV = 1.0;
+/** Half the court's length, plus room so the baselines are not flush. */
+const SIDE_HALF_WIDTH = COURT.maxX + 0.6;
+const SIDE_SLANT = SIDE_HALF_WIDTH / Math.tan(SIDE_FOV / 2);
+/**
+ * How far the side camera is tilted down, in radians.
+ *
+ * Shallow — about 31 degrees. Steeper reads as the top view this replaced, and
+ * the point of a side view is to see the ball's height above the table.
+ */
+const SIDE_PITCH = 0.55;
+
 const PORTRAIT_FOV = 0.88;
 /** Headroom beyond the bare "table and player both fit" solution. */
 const PORTRAIT_MARGIN = 0.5;
@@ -333,28 +346,20 @@ export const CAMERA = {
   // Side-on and overhead presets. Side cameras use the clear, opposite
   // sideline of the imported arena; the old wider placement intersected a
   // concourse prop in the frame.
+  // Solved from the court, like the portrait shot, and for the same reason:
+  // the old numbers put the lens 9.1 m from the middle of an 18 m court, so a
+  // half-frame held 5.0 m of a half-court that is 6.8 m long and both ends
+  // were simply outside the picture.
+  //
+  // Side-on, the court's *length* runs across the screen, which on a phone
+  // held upright is its narrow dimension — so this view needs more distance
+  // than the one behind the baseline, not less.
   side: {
-    distance: 5.0,
-    height: 7.6,
+    distance: SIDE_SLANT * Math.cos(SIDE_PITCH),
+    height: SIDE_SLANT * Math.sin(SIDE_PITCH),
     lookY: 0.3,
-    fov: 1.0,
+    fov: SIDE_FOV,
     minZ: 0.1,
-  },
-  // A true 90° side orbit, pitched down by ~75° (7.20 m up over 1.93 m
-  // sideways). It brings the players about 11% closer than the first top
-  // camera while the slightly wider lens still frames the full 18 m × 13.4 m
-  // court in a half-width viewport. The larger near plane cleanly clips the
-  // arena roof trusses which otherwise cross the wide top-view lens.
-  top: {
-    offsetX: 0,
-    offsetZ: -1.93,
-    height: 7.45,
-    lookY: 0.25,
-    // Split-screen needs the wider lens to keep both court ends visible. Solo
-    // play has the full viewport, so tighten it for a more readable player size.
-    fov: 1.9,
-    soloFov: 1.74,
-    minZ: 2.0,
   },
 };
 

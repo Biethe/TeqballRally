@@ -2066,20 +2066,6 @@ export class MatchController {
       return;
     }
 
-    // A high 90° side orbit. Its ~75° downward pitch and wide lens retain the
-    // entire court in each half-width viewport; the near plane hides the
-    // nearby roof trusses without affecting players, table, or ball.
-    // A full-width solo view can use a tighter lens so players remain legible;
-    // each half of local versus keeps the wider split-safe framing.
-    camera.fov = this.versus ? CAMERA.top.fov : CAMERA.top.soloFov;
-    camera.minZ = CAMERA.top.minZ;
-    const target = new Vector3(0, GROUND_Y + CAMERA.top.lookY, 0);
-    camera.position.set(
-      mirror * CAMERA.top.offsetX,
-      GROUND_Y + CAMERA.top.height,
-      mirror * CAMERA.top.offsetZ
-    );
-    camera.setTarget(target);
   }
 
   /**

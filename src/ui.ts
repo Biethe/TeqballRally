@@ -853,7 +853,7 @@ export class UI {
 
   /** Update the compact HUD label and its accessible camera shortcut hint. */
   setCameraMode(mode: CameraMode): void {
-    const label = mode === "court" ? "COURT" : mode === "side" ? "SIDE" : "TOP";
+    const label = mode === "court" ? "COURT" : "SIDE";
     this.cameraBtn.textContent = `CAM · ${label}`;
     this.cameraBtn.dataset.short = label;
     this.cameraBtn.setAttribute("aria-label", `Camera view: ${label}. Switch with C or Y / Triangle.`);

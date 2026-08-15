@@ -57,13 +57,42 @@ export interface RiggedFigure {
  * scattered an earlier crowd across the pitch. Measured from the posed mesh,
  * since that is the shape actually drawn.
  */
-function groundingMatrix(mesh: Mesh): Matrix {
-  mesh.refreshBoundingInfo({ applySkeleton: true });
-  const box = mesh.getBoundingInfo().boundingBox;
-  return Matrix.Translation(
-    -(box.minimum.x + box.maximum.x) / 2,
-    -box.minimum.y,
-    -(box.minimum.z + box.maximum.z) / 2
+/**
+ * How tall a spectator ends up, in metres.
+ *
+ * Normalised rather than trusted, the way props are. A pack authored in
+ * centimetres, or around a different rig height, otherwise puts giants in the
+ * stands — and nothing about the placement code would say so.
+ */
+const CROWD_HEIGHT = 1.74;
+
+/**
+ * Centre a figure over the origin, stand it on the floor, and size it.
+ *
+ * Measured across *every* piece of the figure, which is the whole point. Taken
+ * from one mesh it is measured from whichever piece that happens to be, and on
+ * these models the largest mesh is the hair: grounding on it put the hair's
+ * underside on the floor and buried the rest of the person, which is exactly
+ * what the stands looked like.
+ */
+function groundingMatrix(parts: Mesh[]): Matrix {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const part of parts) {
+    part.refreshBoundingInfo({ applySkeleton: true });
+    const box = part.getBoundingInfo().boundingBox;
+    minX = Math.min(minX, box.minimum.x);
+    minY = Math.min(minY, box.minimum.y);
+    minZ = Math.min(minZ, box.minimum.z);
+    maxX = Math.max(maxX, box.maximum.x);
+    maxY = Math.max(maxY, box.maximum.y);
+    maxZ = Math.max(maxZ, box.maximum.z);
+  }
+  const scale = CROWD_HEIGHT / Math.max(0.001, maxY - minY);
+  // Centre and ground first, then scale about the origin the feet now sit on,
+  // so scaling cannot lift anybody off the floor or push them through it.
+  return Matrix.Translation(-(minX + maxX) / 2, -minY, -(minZ + maxZ) / 2).multiply(
+    Matrix.Scaling(scale, scale, scale)
   );
 }
 
@@ -98,8 +127,10 @@ async function loadFigure(scene: Scene, spec: CrowdFigure): Promise<RiggedFigure
   const drawable = res.meshes.filter(
     (m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0
   );
-  // The biggest piece leads, because grounding is measured off it and a
-  // bounding box taken from an eyelash would put the figure underground.
+  // Biggest first, so `mesh` is the body rather than an eyelash for anything
+  // that wants one representative piece. Grounding does not depend on it — it
+  // measures every piece — because on these models the largest mesh is the
+  // hair, and grounding on that buried the person wearing it.
   drawable.sort((a, b) => b.getTotalVertices() - a.getTotalVertices());
   const mesh = drawable[0];
   if (!mesh) {
@@ -108,12 +139,10 @@ async function loadFigure(scene: Scene, spec: CrowdFigure): Promise<RiggedFigure
     return null;
   }
 
-  // Render the mesh with no node transform of its own, matching the bake:
-  // baked matrices are only valid for the mesh they were taken from. The
-  // geometry is already life-sized — 1.74 m top to toe — so nothing is lost.
-  // Every piece, not just the leader: the baked matrices were taken with all
-  // transforms at identity, so a piece left under its exported node would be
-  // animated as though it were somewhere else.
+  // Render every piece with no node transform of its own, matching the bake:
+  // baked matrices are only valid for the mesh they were taken from, and a
+  // piece left under its exported node is animated as though it were somewhere
+  // else. Size is put back by the grounding matrix, which normalises it.
   for (const part of drawable) {
     part.parent = null;
     part.position.setAll(0);
@@ -123,7 +152,7 @@ async function loadFigure(scene: Scene, spec: CrowdFigure): Promise<RiggedFigure
     part.computeWorldMatrix(true);
   }
 
-  const grounding = groundingMatrix(mesh);
+  const grounding = groundingMatrix(drawable);
 
   const manager = new BakedVertexAnimationManager(scene);
   manager.texture = texture;
