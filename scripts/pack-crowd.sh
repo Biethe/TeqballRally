@@ -37,6 +37,12 @@ trap 'rm -rf "$TMP"' EXIT
 # Simplify first: decimating before the textures are touched keeps the UV
 # seams the simplifier has to preserve aligned with the maps that survive.
 npx --yes "$CLI" simplify "$IN" "$TMP/a.glb" --ratio 0.015 --error "$ERROR"
+# No `join` pass. These figures are six meshes split by material, which is six
+# draws per spectator kind, and merging them would take the crowd from 29 draw
+# calls to about 14 — but they are skinned, and gltf-transform will not join
+# meshes that carry different skins. Merging them at runtime is possible and is
+# the place to try next; it is an optimisation on a crowd that renders
+# correctly, so it is not worth risking one that does.
 npx --yes "$CLI" resize --width "$LIMIT" --height "$LIMIT" "$TMP/a.glb" "$TMP/b.glb"
 npx --yes "$CLI" webp --quality 85 "$TMP/b.glb" "$TMP/c.glb"
 npx --yes "$CLI" meshopt --level medium "$TMP/c.glb" "$OUT"

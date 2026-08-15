@@ -91,20 +91,25 @@ const SOURCES: PropSource[] = [
     kindOf: (n) => (/^bina(\.\d+)?$/i.test(n) ? "house" : null),
     keepMaterials: true,
   },
-  // The new planting kit is NOT here yet, deliberately. Its trees come through
-  // as bare trunks: the foliage is separate geometry with alphaMode BLEND leaf
-  // cards, and neither grouping the parts under one prop nor switching them to
-  // alpha test brought the leaves back. Until that is understood, trees and
-  // bushes stay on the pack that works — a stick is worse than an old tree.
-  // The packed asset is in place at assets/models/Plants/Plants.glb.
+  {
+    dir: "/models/Plants/",
+    file: "Plants.glb",
+    provides: ["tree", "bush"],
+    // Tree-01-1 … Tree-03-4, plus Hedge-01 and Bush-01…05. The kit's ground
+    // cover — clover, grass, flowers — is deliberately left out: it is metres
+    // across at this scale and never seen from the court.
+    kindOf: (n) =>
+      /^tree-/i.test(n) ? "tree" : /^(bush|hedge)-/i.test(n) ? "bush" : null,
+    keepMaterials: true,
+  },
   {
     dir: "/models/Props/",
     file: "Props.glb",
-    provides: ["tree", "bush", "car", "palm"],
-    // The original pack: everything except the buildings.
+    provides: ["car", "palm"],
+    // The original pack, still the only source of parked cars and palms.
     kindOf: (n) => {
       const kind = KINDS.find((k) => new RegExp(`^${k}_\\d+$`).test(n));
-      return kind && kind !== "house" ? kind : null;
+      return kind === "car" || kind === "palm" ? kind : null;
     },
     keepMaterials: false,
   },
@@ -179,7 +184,14 @@ export async function loadProps(scene: Scene, kinds: PropKind[]): Promise<PropLi
     // on how the file was packed.
     for (let node: { name: string; parent: unknown } | null = m; node; node = node.parent as never) {
       const kind = src.kindOf(node.name);
-      if (kind) return { kind, name: node.name };
+      // The suffix has to come off before the name is used as a prop's
+      // identity. A glTF mesh with several materials arrives as one Babylon
+      // mesh per primitive — `Tree-01-1_primitive0`, `_primitive1`, `_2` — and
+      // keeping those apart made one tree into three props, after which the
+      // scatter picked a spread of them and disposed the rest. It kept the
+      // trunks and threw the branches away, which is why every tree was a
+      // bare stick.
+      if (kind) return { kind, name: node.name.replace(/_primitive\d+$/, "") };
     }
     return null;
   };

@@ -79,7 +79,7 @@ const LAYOUT = {
   /** The front number: the same height up the body, printed smaller. */
   frontNumber: { y: 0.56, height: 0.2 },
   /** Crest: top left of the jersey. */
-  crest: { x: 0.26, y: 0.13, size: 0.18 },
+  crest: { x: 0.24, y: 0.24, size: 0.2 },
   /** Shorts: number on the left leg, crest under it. */
   shortsNumber: { x: 0.5, y: 0.62, height: 0.22 },
   shortsCrest: { x: 0.5, y: 0.86, size: 0.14 },
@@ -337,14 +337,45 @@ async function repaint(
   if (!ctx) return false;
 
   const src = new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength);
-  const flipped = new Uint8ClampedArray(src.length);
+  const out = new Uint8ClampedArray(src.length);
   const stride = width * 4;
   for (let row = 0; row < height; row++) {
-    flipped.set(src.subarray(row * stride, row * stride + stride), (height - 1 - row) * stride);
+    const from = row * stride;
+    // Not flipped. `readPixels` is documented as bottom-up and that is what
+    // the first version assumed, but these textures were uploaded with
+    // invertY false, so what comes back is already in image order. Flipping it
+    // landed the texture's black UV gutter over the body panels — which is the
+    // dark band that appeared across the shoulders and down the shorts, while
+    // the printed marks stayed correctly placed because they are drawn in
+    // canvas space afterwards.
+    const to = row * stride;
+    for (let i = 0; i < stride; i += 4) {
+      out[to + i] = src[from + i];
+      out[to + i + 1] = src[from + i + 1];
+      out[to + i + 2] = src[from + i + 2];
+      // Forced opaque. The kit textures carry an alpha channel that the
+      // original material ignores, and a canvas PNG hands that alpha back to
+      // Babylon — which then blends the shirt against the scene wherever the
+      // artist happened to leave it low. That is what put a dark band across
+      // the shoulders and black panels down the shorts.
+      out[to + i + 3] = 255;
+    }
   }
-  ctx.putImageData(new ImageData(flipped, width, height), 0, 0);
+  ctx.putImageData(new ImageData(out, width, height), 0, 0);
 
   paint(ctx, width, height, kit);
-  mat.albedoTexture = makeTexture(canvas.toDataURL(), tex.invertY) as never;
+  const painted = makeTexture(canvas.toDataURL(), tex.invertY) as Record<string, unknown>;
+  // A replacement texture starts with Babylon's defaults, not the ones the
+  // glTF gave this one. Anything left behind here shows up as the garment
+  // being tiled, offset, or lit differently from the rest of the model.
+  // Deliberately not `gammaSpace`: a canvas is always sRGB, so the replacement
+  // must be read as sRGB whatever the original was. Inheriting a linear flag
+  // told Babylon not to decode it and washed the garment out.
+  for (const key of ["coordinatesIndex", "wrapU", "wrapV", "uScale", "vScale", "uOffset", "vOffset", "level"] as const) {
+    const value = (tex as unknown as Record<string, unknown>)[key];
+    if (value !== undefined) painted[key] = value;
+  }
+  painted.hasAlpha = false;
+  mat.albedoTexture = painted as never;
   return true;
 }
