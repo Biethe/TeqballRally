@@ -791,22 +791,20 @@ export function chooseStrike(
   lateral: number,
   stance: number,
   def: CharacterDef,
-  /** Only near the middle line are the hard shots on the menu at all. */
-  nearMiddle: boolean,
-  power = 0.6,
   rand: () => number = Math.random,
   relJitter: number = bandJitter()
 ): string {
   const rel = ballY / def.height + relJitter;
   const side = pickSide(lateral, def.strongFoot);
 
-  // Deep in the half there is no angle through which a driven ball clears the
-  // net and lands, so the choice there stays what it was: reach it, and loft it.
-  if (!nearMiddle) {
-    if (rel > STRIKE_BANDS.header) return `${side}HeadKick`;
-    if (rel > 0.45) return power >= 0.5 ? "ChestKick" : `${side}KneeReception`;
-    return `Inner${side}FootReception`;
-  }
+  // The same ladder wherever the player is standing.
+  //
+  // It used to fall back to a header for anything played from outside smash
+  // range, and smash range is 1.9 m from the net while players receive from
+  // three to seven metres out — so nearly every touch in a rally took that
+  // branch and the whole game was headers. How high a ball has to be sent from
+  // deep is a question for the flight, not for the animation, and `loftFloor`
+  // already answers it.
 
   // The weak side, high enough to head: the one case a header is the answer.
   if (rel >= STRIKE_BANDS.header && onWeakSide(lateral, def)) {

@@ -227,7 +227,10 @@ function buildCity(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[
     );
     out.push(
       ...scatterProps(props.get("tree") ?? [], {
-        count: 24, inner: 18.5, outer: 46, facing: "any", vary: 0.22, seed: 73, models: 5,
+        // Well clear of the fence. At 18.5 the trunk stood outside the site
+        // but a six-metre canopy leaned in over the boards, and from the
+        // raised camera that reads as a tree growing on the court.
+        count: 24, inner: 23, outer: 46, facing: "any", vary: 0.22, seed: 73, models: 5,
       })
     );
   }
@@ -495,7 +498,9 @@ function buildPark(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[
   if (trees.length > 0) {
     out.push(
       ...scatterProps(trees, {
-        count: spec.count, inner: SITE_RADIUS + 4, outer: SITE_RADIUS + 42, facing: "any", vary: 0.28, seed: 9, models: 6,
+        // Same clearance as the city's trees: a canopy that overhangs the
+        // fence reads as a tree standing on the court.
+        count: spec.count, inner: SITE_RADIUS + 8, outer: SITE_RADIUS + 42, facing: "any", vary: 0.28, seed: 9, models: 6,
       })
     );
     // Undergrowth close in, doing the job the hedge ring below was built for:

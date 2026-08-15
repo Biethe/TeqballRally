@@ -39,7 +39,7 @@ for (const venue of VENUES) {
   // picture of an empty court.
   await page.waitForTimeout(20000);
 
-  await page.evaluate(() => {
+  await page.evaluate((indoor) => {
     // No HUD, no menus, no coach: this is a photograph of the venue.
     const ui = document.getElementById("ui-root");
     if (ui) ui.style.display = "none";
@@ -47,10 +47,21 @@ for (const venue of VENUES) {
     const camera = scene.activeCamera;
     // Off the corner and high, looking at the table. Far enough out that the
     // stands or the street read, near enough that the court is the subject.
-    camera.position.set(-11, 8.5, -9);
+    //
+    // The sports hall is a closed building, so that position is outside its
+    // wall and photographs the roof. It gets a viewpoint inside the arena
+    // instead — lower, tighter, and far enough back to take in the stands.
+    // Kept near the play camera's own line, which is known to clear the stands
+    // — off to one side is far enough inside a closed hall to be behind them.
+    if (indoor) camera.position.set(-11, 7.5, -3.5);
+    else camera.position.set(-11, 8.5, -9);
     camera.setTarget(new (camera.position.constructor)(0, 1.2, 0));
-    camera.fov = 0.9;
-  });
+    camera.fov = indoor ? 1.0 : 0.9;
+    // Inside the hall the roof trusses cross the lens. Pushing the near plane
+    // out clips them without touching the court, the table or the players —
+    // the same trick the old overhead camera used for the same beams.
+    camera.minZ = indoor ? 4.5 : 0.1;
+  }, venue === "gym");
   await page.waitForTimeout(3000);
   await page.screenshot({ path: `${OUT}/${venue}.jpg`, type: "jpeg", quality: 82 });
   console.log(`${OUT}/${venue}.jpg`);
