@@ -336,3 +336,66 @@ function describe(error: unknown): string {
   }
   return String(error);
 }
+
+/**
+ * Coin packs.
+ *
+ * Deliberately coins rather than the items themselves. Everything on the
+ * supplies shelf is earnable by playing, and selling the *advantage* directly
+ * would mean the shop had two prices for the same thing and one of them was
+ * money. Selling the currency keeps one shelf, one set of prices, and leaves
+ * paying as a shortcut through the grind rather than a different game.
+ *
+ * These are consumables: RevenueCat does not keep a balance for them, so the
+ * credit is applied here and stored with the career. The product identifiers
+ * have to exist in Play and be attached to an offering named `coins`.
+ */
+export const COIN_PACKS: Record<string, number> = {
+  coins_handful: 1200,
+  coins_pocket: 3500,
+  coins_bag: 9000,
+};
+
+/** How many coins a bought package is worth, or 0 if it is not a coin pack. */
+export function coinsForProduct(productId: string): number {
+  return COIN_PACKS[productId] ?? 0;
+}
+
+/**
+ * The coin packs on sale, cheapest first.
+ *
+ * Empty off-device and empty when the dashboard has no `coins` offering, which
+ * the caller shows as "not available" rather than an error: a shop with
+ * nothing in it is a fact about the account, not a fault.
+ */
+export async function coinPackages(): Promise<PurchasesPackage[]> {
+  if (!purchasesAvailable()) return [];
+  try {
+    const offerings = (await Purchases.getOfferings()) as {
+      all?: Record<string, PurchasesOffering | undefined>;
+    };
+    const coins = offerings.all?.coins;
+    return [...(coins?.availablePackages ?? [])].sort(
+      (a, b) => (a.product.price ?? 0) - (b.product.price ?? 0)
+    );
+  } catch (error) {
+    console.warn("[purchases] no coin offering:", describe(error));
+    return [];
+  }
+}
+
+/**
+ * Buy a coin pack, and say how many coins it is worth.
+ *
+ * The count comes from `COIN_PACKS` rather than from anything the store says,
+ * so a product that is mispriced or renamed in the dashboard credits nothing
+ * instead of guessing — being wrong in the player's favour is still being
+ * wrong, and being wrong the other way takes their money.
+ */
+export async function purchaseCoins(
+  pkg: PurchasesPackage
+): Promise<PurchaseOutcome & { coins?: number }> {
+  const outcome = await purchasePro(pkg);
+  if (!outcome.ok) return outcome;
+  return { ...outcome, coins: coinsForProduct(pkg.product.identifier) };
+}

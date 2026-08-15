@@ -48,6 +48,12 @@ export interface Career {
   seasonBest: number;
   /** Seasons already finished, oldest first. */
   titles: Title[];
+  /** Drinks in the bag, by supply id. Used up one per match. */
+  drinks: Record<string, number>;
+  /** Supplements already taken. Permanent, so a list rather than a count. */
+  taken: string[];
+  /** The drink armed for the next match, or null. */
+  armed: string | null;
 }
 
 export const STARTING_CHAMPION = CHARACTERS[0].id;
@@ -75,6 +81,9 @@ export function freshCareer(day: string, season: string = day.slice(0, 7)): Care
     season,
     seasonBest: 0,
     titles: [],
+    drinks: {},
+    taken: [],
+    armed: null,
   };
 }
 
@@ -130,6 +139,17 @@ export function levelOf(career: Career, id: string): number {
 export function isUnlocked(career: Career, id: string): boolean {
   if (career.champions[id]) return true;
   return career.best >= (UNLOCK_AT[id] ?? Infinity);
+}
+
+/** Whole, non-negative counts keyed by id, from whatever was in storage. */
+function readCounts(v: unknown): Record<string, number> {
+  if (!isRecord(v)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(v)) {
+    const n = Math.max(0, Math.floor(num(value, 0)));
+    if (n > 0) out[key] = n;
+  }
+  return out;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -197,6 +217,9 @@ function loadCareer(now: Date): Career {
     const champions = readChampions(stored.champions);
     const career: Career = {
       coins: Math.max(0, Math.round(num(stored.coins, 0))),
+      drinks: readCounts(stored.drinks),
+      taken: Array.isArray(stored.taken) ? stored.taken.filter((t): t is string => typeof t === "string") : [],
+      armed: typeof stored.armed === "string" ? stored.armed : null,
       trophies: Math.max(0, Math.round(num(stored.trophies, 0))),
       best: Math.max(0, Math.round(num(stored.best, 0))),
       champions: Object.keys(champions).length ? champions : freshCareer(today).champions,

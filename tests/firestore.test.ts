@@ -202,6 +202,9 @@ const record = (over: Record<string, unknown> = {}) => ({
     season: "2026-08",
     seasonBest: 0,
     titles: [],
+    drinks: {},
+    taken: [],
+    armed: null,
   },
   ...over,
 });

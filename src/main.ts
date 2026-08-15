@@ -27,6 +27,12 @@ import {
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
 import { CRESTS, KIT_COLOURS, applyKit } from "./kit";
 import {
+  SUPPLIES,
+  buy as buySupply,
+  consumeArmed,
+  staminaMultiplier,
+} from "./supplies";
+import {
   initPurchases,
   isPro,
   proStatus,
@@ -35,6 +41,9 @@ import {
   showCustomerCenter,
   showPaywallIfNeeded,
   subscribeToPro,
+  coinPackages,
+  coinsForProduct,
+  purchaseCoins,
 } from "./purchases";
 import { INTRO_SECONDS, introPose } from "./intro";
 import { Ball, type Side } from "./ball";
@@ -832,6 +841,7 @@ async function boot(): Promise<void> {
       },
       onChampions: showChampions,
       onChallenges: showChallenges,
+      onSupplies: () => showSupplies(showTitle),
       onProfile: () => showProfile(),
       profileLabel: identity?.name ?? null,
       onSettings: () => showSettings(showTitle),
@@ -1452,6 +1462,127 @@ async function boot(): Promise<void> {
       return false;
     }
     return showPaywallIfNeeded();
+  };
+
+  /**
+   * The supplies shelf.
+   *
+   * Built out of the settings rows rather than a screen of its own: a shop item
+   * is a name, a line about what it does, and one button — which is exactly
+   * what a settings row already is. A second layout that looked almost the same
+   * would be two things to keep looking alike.
+   */
+  /**
+   * Offer the coin packs, priced by the store in the player's own currency.
+   *
+   * A chooser rather than a paywall: these are three of the same thing in
+   * different sizes, and RevenueCat's paywall is built for picking between
+   * tiers of a subscription. Off-device it says so instead of doing nothing.
+   */
+  const showCoinShop = (back: () => void): void => {
+    if (!purchasesAvailable()) {
+      ui.notice(tr("pro.unavailable.title"), tr("pro.unavailable.body"), tr("pro.ok"), back);
+      return;
+    }
+    void coinPackages().then((packages) => {
+      if (packages.length === 0) {
+        ui.notice(tr("supplies.coins.none.title"), tr("supplies.coins.none.body"), tr("pro.ok"), back);
+        return;
+      }
+      ui.showOnlinePause(
+        tr("supplies.coins.title"),
+        tr("supplies.coins.body"),
+        [
+          ...packages.map((pkg): [string, () => void] => [
+            // The store's own localised price, never one formatted here.
+            `${coinsForProduct(pkg.product.identifier)} · ${pkg.product.priceString}`,
+            () => {
+              ui.hideOnlinePause();
+              void purchaseCoins(pkg).then((outcome) => {
+                if (outcome.ok && outcome.coins) {
+                  career.coins += outcome.coins;
+                  storeCareer(career);
+                  ui.setWallet(career.coins, career.trophies, tierFor(career.trophies).label);
+                } else if (!outcome.ok && !outcome.cancelled) {
+                  ui.notice(tr("pro.failed.title"), outcome.message, tr("pro.ok"));
+                }
+                back();
+              });
+            },
+          ]),
+          [tr("settings.restart.cancel"), () => { ui.hideOnlinePause(); back(); }],
+        ]
+      );
+    });
+  };
+
+  const showSupplies = (back: () => void) => {
+    viewer.deactivate();
+    input.setTouchControlsEnabled(false);
+    const render = (): void => {
+      const legs = Math.round(staminaMultiplier(career.taken, career.armed) * 100);
+      const rows: SettingRow[] = [
+        {
+          id: "supplies-wallet",
+          label: tf("supplies.cost", { coins: career.coins }),
+          hint: tf("supplies.legs", { percent: legs }),
+          control: { kind: "action", label: tr("supplies.more") },
+        },
+        ...SUPPLIES.map((supply): SettingRow => {
+          const owned = career.drinks[supply.id] ?? 0;
+          const taken = career.taken.includes(supply.id);
+          const armed = career.armed === supply.id;
+          // Three states, and the button says which one it is in: take a
+          // supplement once, arm a drink already owned, or buy either.
+          const action = taken
+            ? { label: tr("supplies.taken"), disabled: true }
+            : supply.kind === "drink" && owned > 0
+              ? { label: armed ? tr("supplies.armed") : tr("supplies.arm"), disabled: armed }
+              : {
+                  label: supply.kind === "supplement" ? tr("supplies.take") : tr("supplies.buy"),
+                  disabled: career.coins < supply.coins,
+                };
+          const hint = taken
+            ? supply.blurb
+            : supply.kind === "drink" && owned > 0
+              ? `${supply.blurb} · ${tf("supplies.owned", { n: owned })}`
+              : `${supply.blurb} · ${tf("supplies.cost", { coins: supply.coins })}`;
+          return {
+            id: `supply-${supply.id}`,
+            label: supply.label,
+            hint,
+            warning: !taken && career.coins < supply.coins && owned === 0 ? tr("supplies.short") : undefined,
+            control: { kind: "action", ...action },
+          };
+        }),
+      ];
+      ui.showSettings(tr("supplies.title"), rows, (id) => {
+        if (id === "supplies-wallet") {
+          showCoinShop(() => render());
+          return;
+        }
+        const supply = SUPPLIES.find((s) => `supply-${s.id}` === id);
+        if (!supply) return;
+        const owned = career.drinks[supply.id] ?? 0;
+        // Arming costs nothing and is reversible; buying is the one that
+        // spends, so it only happens when there is nothing to arm.
+        if (supply.kind === "drink" && owned > 0) {
+          career.armed = career.armed === supply.id ? null : supply.id;
+        } else {
+          const after = buySupply(
+            { coins: career.coins, drinks: career.drinks, taken: career.taken },
+            supply.id
+          );
+          career.coins = after.coins;
+          career.drinks = after.drinks;
+          career.taken = after.taken;
+        }
+        storeCareer(career);
+        ui.setWallet(career.coins, career.trophies, tierFor(career.trophies).label);
+        render();
+      }, () => back());
+    };
+    render();
   };
 
   /** One focused screen of settings, and the rows that belong on it. */
@@ -2320,7 +2451,28 @@ async function boot(): Promise<void> {
     // reason the career level is: four call sites reach this one, and a trait
     // that only counts in three of them is worse than one that counts in none.
     // Only the human's ball is theirs — the opponent plays their own game.
-    const playerDef = withBall(player, ballFor(ballId));
+    // Legs first, then the ball. The armed drink is taken out of the bag here,
+    // at the start of the match rather than the end: a player who quits after
+    // drinking it has still drunk it, and refunding it would make a free retry
+    // out of every hard game.
+    const { wallet, drank } = consumeArmed(
+      { coins: career.coins, drinks: career.drinks, taken: career.taken },
+      career.armed
+    );
+    if (drank) {
+      career.coins = wallet.coins;
+      career.drinks = wallet.drinks;
+      career.taken = wallet.taken;
+      // Nothing left to arm once it is drunk.
+      if ((career.drinks[drank] ?? 0) === 0) career.armed = null;
+      storeCareer(career);
+      ui.setWallet(career.coins, career.trophies, tierFor(career.trophies).label);
+    }
+    const supplied: CharacterDef = {
+      ...player,
+      stamina: player.stamina * staminaMultiplier(career.taken, drank),
+    };
+    const playerDef = withBall(supplied, ballFor(ballId));
     ui.showLoading("Loading the court…");
     input.setTouchControlsEnabled(true);
     practiceCoach?.dispose();

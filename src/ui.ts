@@ -450,6 +450,7 @@ export class UI {
         <nav class="title-hub" aria-label="Career">
           <button class="ghost-btn" id="btn-title-champions" type="button"></button>
           <button class="ghost-btn" id="btn-title-challenges" type="button"></button>
+          <button class="ghost-btn" id="btn-title-supplies" type="button"></button>
           <button class="ghost-btn" id="btn-title-profile" type="button"></button>
           <button class="ghost-btn" id="btn-title-settings" type="button">SETTINGS</button>
         </nav>
@@ -1184,6 +1185,7 @@ export class UI {
     onPlay: () => void;
     onChampions: () => void;
     onChallenges: () => void;
+    onSupplies: () => void;
     onProfile: () => void;
     onSettings: () => void;
     /** The player's name, when this device has an account. */
@@ -1211,6 +1213,7 @@ export class UI {
       "has-dot",
       actions.challengeReady === true
     );
+    wire("#btn-title-supplies", t("career.supplies"), actions.onSupplies);
     // The profile chip wears the player's own name once they have one: it is
     // the shortest way to say the account is real and it is theirs.
     wire("#btn-title-profile", actions.profileLabel ?? t("profile.title"), actions.onProfile);

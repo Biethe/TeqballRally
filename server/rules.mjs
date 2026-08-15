@@ -397,7 +397,10 @@ function freshCareer(day, season = day.slice(0, 7)) {
     claimed: [],
     season,
     seasonBest: 0,
-    titles: []
+    titles: [],
+    drinks: {},
+    taken: [],
+    armed: null
   };
 }
 var UNLOCK_AT = {
