@@ -512,7 +512,7 @@ export const KICK_SPEED_CAP_DEFAULT = 10;
  * fifteen clip constants is how the clips stop agreeing with each other. Raise
  * it to quicken everything and keep their relative pace intact.
  */
-export const BALL_PACE = 1.12;
+export const BALL_PACE = 1.26;
 
 /**
  * How much the players' kit is lifted above the source models. See
