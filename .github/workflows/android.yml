@@ -35,10 +35,13 @@ env:
   # relay, because nothing had ever set the repository variable the push builds
   # fall back to. Set `VITE_RELAY_URL` under Settings -> Secrets and variables
   # -> Actions -> Variables to point every build somewhere else.
-  # The Cloud Run service, in europe-west9 alongside Firestore, verified end to
-  # end on 2026-08-13: two clients played a full match through it with real
-  # Firestore behind them. This replaces the Render address, which predates
-  # that deploy.
+  # The Cloud Run service, in europe-west9 alongside Firestore — the database
+  # with the real player records behind it. Do NOT judge it by /healthz: that
+  # path is intercepted on some home/carrier networks and answers a Google 404
+  # while the service is fine. `curl .../api/leaderboard` is the honest check
+  # (verified live 2026-08-16). The old Render relay still answers too, but
+  # against an empty file store — pointing a build there splits the
+  # leaderboard.
   DEFAULT_RELAY: wss://teqrallly-rpvbgjr3wa-od.a.run.app
 
 # Scoped to the calling workflow as well as the branch: without that, a push

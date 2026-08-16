@@ -44,6 +44,12 @@ for (const venue of VENUES) {
     const ui = document.getElementById("ui-root");
     if (ui) ui.style.display = "none";
     const scene = window.__teq.scene ?? window.__teq.engine.scenes[0];
+    // The page under this is a live practice match, and its aim ring hovers
+    // over the table mid-serve. Disposed rather than disabled, because the
+    // match re-enables it every frame.
+    for (const name of ["aim-marker", "landing-marker", "tap-marker"]) {
+      scene.getMeshByName(name)?.dispose();
+    }
     const camera = scene.activeCamera;
     // Off the corner and high, looking at the table. Far enough out that the
     // stands or the street read, near enough that the court is the subject.
@@ -53,10 +59,10 @@ for (const venue of VENUES) {
     // instead — lower, tighter, and far enough back to take in the stands.
     // Kept near the play camera's own line, which is known to clear the stands
     // — off to one side is far enough inside a closed hall to be behind them.
-    if (indoor) camera.position.set(-11, 7.5, -3.5);
-    else camera.position.set(-11, 8.5, -9);
-    camera.setTarget(new (camera.position.constructor)(0, 1.2, 0));
-    camera.fov = indoor ? 1.0 : 0.9;
+    if (indoor) camera.position.set(-9, 5.5, -3);
+    else camera.position.set(-10.5, 7.5, 8.5);
+    camera.setTarget(new (camera.position.constructor)(0, 1.0, 0));
+    camera.fov = indoor ? 0.92 : 0.82;
     // Inside the hall the roof trusses cross the lens. Pushing the near plane
     // out clips them without touching the court, the table or the players —
     // the same trick the old overhead camera used for the same beams.

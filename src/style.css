@@ -320,6 +320,10 @@ button.pad-focus {
 
 /* ------- TeqRallly welcome screen ------- */
 .title-content {
+  /* Above the animated stage: without a stacking context of its own, the
+     bouncing ball paints over the nav chips it happens to cross. */
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1300,6 +1304,20 @@ button.pad-focus {
   font-size: clamp(14px, 2.3vw, 17px);
   font-weight: 800;
   line-height: 1.25;
+}
+
+/* The input the step needs, kept visible after the one-time coach card. */
+.practice-control {
+  margin-top: 6px;
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: rgba(10, 16, 28, 0.55);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  color: #9fd8ff;
 }
 
 @keyframes pulse {

@@ -113,6 +113,8 @@ export interface MenuOption {
 export interface PracticePanelState {
   title: string;
   goal: string;
+  /** The input this step needs, e.g. "HOLD STRIKE" — shown under the goal. */
+  control?: string;
 }
 
 /** One roster card on the CHAMPIONS screen. */
@@ -361,8 +363,6 @@ export class UI {
   private endEl: HTMLDivElement;
   private endTitle: HTMLDivElement;
   private pauseEl: HTMLDivElement;
-  /** First press on the development-server action only arms the confirmation. */
-  private shutdownArmed = false;
   private menuEl: HTMLDivElement;
   private settingsEl: HTMLDivElement;
   private standingsEl: HTMLDivElement;
@@ -567,9 +567,6 @@ export class UI {
           </button>
           <button class="pause-action" id="btn-restart"><strong>RESTART MATCH</strong></button>
           <button class="pause-action" id="btn-change-player"><strong>EXIT TO MODES</strong></button>
-          <button class="pause-action" id="btn-shutdown-server" hidden>
-            <strong>SHUT DOWN LOCAL SERVER</strong>
-          </button>
         </div>
       </section>`;
 
@@ -1023,42 +1020,16 @@ export class UI {
   }
 
   /** Pause overlay on top of the HUD (which stays visible behind it). */
-  showPause(
-    onResume: () => void,
-    onRestart: () => void,
-    onChangePlayer: () => void,
-    onShutdownServer?: () => void
-  ): void {
+  showPause(onResume: () => void, onRestart: () => void, onChangePlayer: () => void): void {
     this.pauseEl.querySelector<HTMLHeadingElement>("#pause-title")!.textContent = t("pause.title");
     this.pauseEl.querySelector<HTMLElement>("#pause-resume-label")!.textContent = t("pause.resume");
     this.pauseEl.querySelector<HTMLButtonElement>("#btn-resume")!.onclick = () => onResume();
     this.pauseEl.querySelector<HTMLButtonElement>("#btn-restart")!.onclick = () => onRestart();
     this.pauseEl.querySelector<HTMLButtonElement>("#btn-change-player")!.onclick = () => onChangePlayer();
-    const shutdown = this.pauseEl.querySelector<HTMLButtonElement>("#btn-shutdown-server")!;
-    this.shutdownArmed = false;
-    shutdown.hidden = !onShutdownServer;
-    shutdown.disabled = false;
-    shutdown.innerHTML = "<strong>SHUT DOWN LOCAL SERVER</strong>";
-    shutdown.title = onShutdownServer
-      ? "Stop this local development server — press once to confirm"
-      : "Server shutdown is available only from the local development build";
-    shutdown.onclick = () => {
-      if (!onShutdownServer) return;
-      if (!this.shutdownArmed) {
-        this.shutdownArmed = true;
-        shutdown.innerHTML = "<strong>PRESS AGAIN TO CONFIRM</strong>";
-        shutdown.title = "Press again to stop the local development server";
-        return;
-      }
-      shutdown.disabled = true;
-      shutdown.innerHTML = "<strong>STOPPING SERVER…</strong>";
-      onShutdownServer();
-    };
     this.pauseEl.classList.remove("hidden");
   }
 
   hidePause(): void {
-    this.shutdownArmed = false;
     this.pauseEl.classList.add("hidden");
   }
 
@@ -2244,7 +2215,13 @@ export class UI {
         const kept = (await opts.onVenue?.(venue.id)) ?? true;
         startBtn.disabled = false;
         if (!kept) return;
-        if (lockNote(venue.id)) {
+        // "Kept" with the lock still listed means a purchase just went
+        // through — unless this venue was already the one built behind the
+        // screen, where there was nothing to buy and the press meant PLAY.
+        // That case is real: a pro player whose entitlement has not resolved
+        // yet still has their remembered premium venue on stage, and eating
+        // their first press made PLAY look broken.
+        if (lockNote(venue.id) && venue.id !== opts.venue) {
           // Just bought: redraw so PLAY stops offering what they now own.
           delete opts.locked?.[venue.id];
           browse();
@@ -2280,7 +2257,8 @@ export class UI {
 
     this.practiceEl.innerHTML = `
       <div class="practice-title">${state.title}</div>
-      <div class="practice-goal">${state.goal}</div>`;
+      <div class="practice-goal">${state.goal}</div>
+      ${state.control ? `<div class="practice-control">${state.control}</div>` : ""}`;
     this.practiceEl.classList.remove("hidden");
   }
 

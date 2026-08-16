@@ -89,6 +89,17 @@ export class PracticeCoach {
   private resumeGuardFrames = 0;
   private moveTime = 0;
   private struckFromClose = false;
+  /**
+   * Steps whose card has already been shown.
+   *
+   * Each step stops the world exactly once — the moment it becomes relevant —
+   * and never again. The first version paused on *every* possession until the
+   * step was passed, which turned a missed strike into the same card three
+   * rallies running: the lesson kept interrupting the practising. After the
+   * introduction the instruction lives on in the corner panel, where it can be
+   * read without the world stopping for it.
+   */
+  private introduced = new Set<DrillStep>();
   private unsubscribe: () => void;
 
   constructor(
@@ -122,6 +133,7 @@ export class PracticeCoach {
     this.step = "serve";
     this.moveTime = 0;
     this.struckFromClose = false;
+    this.introduced.clear();
     this.ui.hideTrainingPause();
     this.refreshPanel();
   }
@@ -213,6 +225,10 @@ export class PracticeCoach {
 
   private pause(): void {
     if (this.paused || this.step === "free") return;
+    // Once per step. A card the player has already read is not worth stopping
+    // a live ball for; the corner panel keeps saying it.
+    if (this.introduced.has(this.step)) return;
+    this.introduced.add(this.step);
     this.paused = true;
     this.resumeGuardFrames = 2;
     this.match.setTutorialFrozen(true);
@@ -294,6 +310,9 @@ export class PracticeCoach {
         ? `${t(`practice.chapter.${chapter}` as StringKey)} · ${done} / ${COACHED.length}`
         : `${t("practice.title")} · ${done} / ${COACHED.length}`,
       goal: t(`practice.${step}.action` as StringKey),
+      // The card only shows once, so the input it named has to survive here —
+      // the panel is now the only place a stuck player can re-read it.
+      control: this.controlFor(step),
     });
   }
 

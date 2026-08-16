@@ -34,38 +34,68 @@ await page.goto(`http://localhost:${PORT}/?q=low&intro=0`, { waitUntil: "load" }
 await page.waitForTimeout(2500);
 
 // ---------------------------------------------------------------- the picker
+//
+// Venues live on their own tab of the picker now — the chip strip this file
+// used to drive is gone. The gate shows as PLAY turning into UNLOCK while the
+// locked venue is browsed, and pressing it is what opens the paywall (or, in a
+// browser with no store, the notice standing in for it).
 
 await page.locator("#btn-play").click();
 await page.locator("#btn-mode-friendly").click();
 await page.locator("#btn-diff-normal").click();
 await page.waitForTimeout(2500);
-
-const gym = page.locator('.venue-chip[data-venue="gym"]');
-const free = page.locator('.venue-chip[data-venue="tennis"]');
-
-const gymLocked = await gym.evaluate((el) => el.classList.contains("locked"));
-const freeLocked = await free.evaluate((el) => el.classList.contains("locked"));
-// A new install must not open on the venue it cannot play.
-const openedFree = await page.evaluate(
-  () => !document.querySelector('.venue-chip[data-venue="gym"]').classList.contains("on")
-);
-
-// Tapping the locked one in a browser: there is no store, so the game says so
-// and the chip stays off. The equivalent tap in the app opens the paywall.
-await gym.click();
+await page.locator('.tab-btn[data-tab="venue"]').click();
 await page.waitForTimeout(600);
+
+// The tab opens on whatever venue is actually built behind the screen, which
+// for a new install must be a free court — never the one it cannot play.
+const openedOn = await page.locator("#item-name").textContent();
+const openedFree = openedOn !== "THE COLISEUM";
+const openedUnlocked = await page.locator("#item-lock").isHidden();
+
+/** Browse the carousel until the named venue is the one on stage. */
+const browseTo = async (label) => {
+  for (let i = 0; i < 6; i++) {
+    if ((await page.locator("#item-name").textContent()) === label) return true;
+    await page.locator("#btn-next").click();
+    await page.waitForTimeout(400);
+  }
+  return false;
+};
+
+await browseTo("THE COLISEUM");
+const gymLocked =
+  (await page.locator("#item-lock").isVisible()) &&
+  (await page.locator("#btn-start").evaluate((el) => el.classList.contains("selling")));
+
+// Pressing UNLOCK in a browser: there is no store, so the game says so and
+// nothing is committed. The equivalent press in the app opens the paywall.
+await page.locator("#btn-start").click();
+await page.waitForTimeout(800);
 const noticeShown = await page
   .locator(".pause-card")
   .isVisible()
   .catch(() => false);
-const gymStayedOff = await gym.evaluate((el) => !el.classList.contains("on"));
 await page.locator(".pause-actions .big-btn").first().click();
 await page.waitForTimeout(300);
+const gymStayedOff = await page
+  .locator("#btn-start")
+  .evaluate((el) => el.classList.contains("selling"));
 
-// A free venue is unaffected by any of this and still switches.
-await free.click();
+// A free venue is unaffected by any of this: browsing to it takes the offer
+// off PLAY, and pressing PLAY commits it and starts the match.
+await browseTo("THE BASELINE");
+const freeLocked = await page.locator("#item-lock").isVisible();
+const freeSells = await page
+  .locator("#btn-start")
+  .evaluate((el) => el.classList.contains("selling"));
+await page.locator("#btn-start").click();
 await page.waitForTimeout(2500);
-const freeSwitched = await free.evaluate((el) => el.classList.contains("on"));
+const freeSwitched = await page.evaluate(
+  () =>
+    !document.getElementById("loading-screen")?.classList.contains("hidden") ||
+    "__teq" in window
+);
 
 // -------------------------------------------------------------- the settings
 
@@ -102,12 +132,12 @@ const overflow = await page.evaluate(() =>
 await browser.close();
 
 const checks = [
-  ["the sports hall is locked", gymLocked],
-  ["an outdoor court is not", !freeLocked],
-  ["a new install opens on a free court", openedFree],
-  ["tapping the locked venue answers", noticeShown],
-  ["and does not select it", gymStayedOff],
-  ["a free venue still switches", freeSwitched],
+  ["the sports hall is locked, and PLAY offers it", gymLocked],
+  ["an outdoor court is not", !freeLocked && !freeSells],
+  ["a new install opens on a free court", openedFree && openedUnlocked],
+  ["pressing UNLOCK answers", noticeShown],
+  ["and commits nothing", gymStayedOff],
+  ["a free venue still plays", freeSwitched],
   ["settings has a membership screen", rowIds.length === 3],
   ["restore is reachable without buying", restoreVisible],
   ["and says what it found", restoreAnswered],

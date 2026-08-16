@@ -95,27 +95,34 @@ function channels(css: string): [number, number, number] {
   ];
 }
 
-/**
- * Near-black for a light print, near-white for a dark one.
- *
- * The halo behind the print has to be the opposite of it, because the player
- * chooses the print colour and the kit colour is whatever the character wears:
- * white on a white shirt and black on a navy one are both invisible, and a
- * single fixed outline colour can only ever fix one of them.
- */
-function contrastOf(css: string): string {
+/** Rec. 601 luma of a `#rrggbb` colour, 0..1. Cheap, and enough to rank tones. */
+function lumaOf(css: string): number {
   const [r, g, b] = channels(css);
-  // Rec. 601 luma: close enough for deciding light from dark, and cheap.
-  const luma = (r * 299 + g * 587 + b * 114) / 255000;
-  return luma > 0.55 ? "rgba(14, 18, 26, 0.95)" : "rgba(246, 249, 255, 0.95)";
+  return (r * 299 + g * 587 + b * 114) / 255000;
 }
 
-/** Move a colour toward white (positive) or black (negative). */
-function lighten(css: string, amount: number): string {
-  const mix = (c: number) =>
-    Math.round(amount >= 0 ? c + (255 - c) * amount : c * (1 + amount));
-  const [r, g, b] = channels(css).map(mix);
-  return `rgb(${r}, ${g}, ${b})`;
+/**
+ * Average luma of the artwork inside a rectangle, 0..1.
+ *
+ * Sampled from the canvas the shirt has already been copied onto, so it is the
+ * real cloth under the mark — panel colour, trim, whatever the artist painted
+ * — rather than a guess about it.
+ */
+function lumaUnder(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  w: number,
+  h: number
+): number {
+  const x = Math.max(0, Math.round(cx - w / 2));
+  const y = Math.max(0, Math.round(cy - h / 2));
+  const data = ctx.getImageData(x, y, Math.max(1, Math.round(w)), Math.max(1, Math.round(h))).data;
+  let sum = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    sum += data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114;
+  }
+  return data.length === 0 ? 0.5 : sum / ((data.length / 4) * 255000);
 }
 
 /** Fit text to a width by shrinking the font until it does. */
@@ -125,10 +132,11 @@ function fitText(
   maxWidth: number,
   startPx: number
 ): number {
-  // Condensed, heavy, and wide-tracked: a squad number is set to be read from
-  // the back of a stand, and the stack falls back through the faces most
-  // likely to exist on a phone before it lands on plain sans.
-  const face = '"Arial Narrow", "Haettenschweiler", Impact, "Arial Black", sans-serif';
+  // The game's own Exo 2, which is always bundled — the reference kits set
+  // their names and numbers in one heavy, normal-width sans, and the previous
+  // condensed stack (Arial Narrow, Impact) is what made the print look pasted
+  // on from a different sport.
+  const face = '"Exo 2", "Arial Black", Arial, sans-serif';
   let px = startPx;
   ctx.font = `900 ${px}px ${face}`;
   while (px > 6 && ctx.measureText(text).width > maxWidth) {
@@ -200,16 +208,21 @@ const panelOf = (
 });
 
 /**
- * Print one piece of text, the way a shirt is actually printed.
+ * Print one piece of text the way the reference kits print theirs: one flat,
+ * fully opaque colour and nothing else.
  *
- * Four passes, and each earns its place. A drop shadow lifts the print off the
- * cloth. A dark keyline holds the shape against a light kit, and a second,
- * wider halo in the *contrast* colour holds it against a dark one — without
- * that pair, white on white and black on navy are both invisible, and the
- * player picks the colour. The fill is a vertical gradient rather than a flat
- * colour: real flock and heat-press both catch the light along the top edge,
- * and it is the single cheapest thing that stops the print looking like a
- * screenshot of a text box.
+ * The previous version dressed every mark in a contrast halo, a drop shadow
+ * and a vertical gradient, and that costume is exactly what made the print
+ * read as a sticker laid over the shirt — the supplied national kits
+ * (Brazil.glb and friends) set a plain green NAME and 7 straight onto the
+ * yellow, and they read as printed cloth precisely because nothing lifts them
+ * off it.
+ *
+ * The one thing flat ink cannot do is survive being the same tone as the
+ * shirt — the player picks the colour, so white on a white kit has to remain
+ * legible. The cloth under the mark is *measured* (not assumed), and only
+ * when the two tones genuinely sink together does a thin keyline in the
+ * opposite tone appear. On any sane pairing the mark is ink and nothing more.
  */
 function stamp(
   ctx: CanvasRenderingContext2D,
@@ -227,42 +240,17 @@ function stamp(
   ctx.lineJoin = "round";
   ctx.miterLimit = 2;
 
-  // The halo: the opposite of the print, so it reads on a kit of either
-  // brightness without the player having to think about it.
-  //
-  // Softened and narrowed from the first attempt, which drew a hard band of
-  // solid colour around every letter — that reads as a sticker laid on the
-  // shirt rather than as something printed into it. Thin, and let through.
-  ctx.globalAlpha = 0.55;
-  ctx.lineWidth = px * 0.16;
-  ctx.strokeStyle = contrastOf(colour);
-  ctx.strokeText(text, x, y);
-  ctx.globalAlpha = 1;
+  const width = ctx.measureText(text).width;
+  const cloth = lumaUnder(ctx, x, y, Math.max(width, px), px);
+  const ink = lumaOf(colour);
+  if (Math.abs(cloth - ink) < 0.22) {
+    ctx.lineWidth = px * 0.07;
+    ctx.strokeStyle = ink > 0.55 ? "rgba(15, 20, 28, 0.9)" : "rgba(245, 248, 255, 0.9)";
+    ctx.strokeText(text, x, y);
+  }
 
-  // Shadow, thrown down and slightly right, under the keyline so the keyline
-  // stays crisp.
-  ctx.save();
-  ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
-  ctx.shadowBlur = px * 0.14;
-  ctx.shadowOffsetX = px * 0.05;
-  ctx.shadowOffsetY = px * 0.07;
-  ctx.lineWidth = px * 0.075;
-  ctx.strokeStyle = "rgba(12, 16, 22, 0.7)";
-  ctx.strokeText(text, x, y);
-  ctx.restore();
-
-  // The fill, brighter along the top edge.
-  const gradient = ctx.createLinearGradient(0, y - px * 0.6, 0, y + px * 0.6);
-  gradient.addColorStop(0, lighten(colour, 0.18));
-  gradient.addColorStop(0.55, colour);
-  gradient.addColorStop(1, lighten(colour, -0.12));
-  ctx.fillStyle = gradient;
-  // Just short of opaque. Real flock lets a little of the weave through, and
-  // that is most of the difference between print on cloth and text on a photo
-  // of cloth.
-  ctx.globalAlpha = 0.93;
+  ctx.fillStyle = colour;
   ctx.fillText(text, x, y);
-  ctx.globalAlpha = 1;
   ctx.restore();
 }
 
@@ -286,7 +274,15 @@ export function paintKit(
   ctx.lineJoin = "round";
 
   const name = kit.name.trim().toUpperCase();
-  if (name) stamp(ctx, name, back, LAYOUT.name, LAYOUT.name.width, colour);
+  if (name) {
+    // Tracked out the way the reference kits set theirs. `letterSpacing` is
+    // missing from older WebViews; without it the name is simply set solid.
+    const spaced = ctx as CanvasRenderingContext2D & { letterSpacing?: string };
+    const supported = "letterSpacing" in spaced;
+    if (supported) spaced.letterSpacing = `${Math.round(back.h * LAYOUT.name.height * 0.14)}px`;
+    stamp(ctx, name, back, LAYOUT.name, LAYOUT.name.width, colour);
+    if (supported) spaced.letterSpacing = "0px";
+  }
 
   const number = kit.number.trim();
   if (number) {
@@ -374,6 +370,16 @@ export async function applyKit(
   makeTexture: (dataUrl: string, invertY: boolean) => unknown
 ): Promise<boolean> {
   if (kitIsBlank(kit)) return false;
+  // The print is set in the game's own bundled face, and a canvas silently
+  // substitutes the fallback for a font that has not finished loading — which
+  // on a cold start is exactly when a match is being built.
+  try {
+    if (typeof document !== "undefined" && "fonts" in document) {
+      await document.fonts.load('900 64px "Exo 2"');
+    }
+  } catch {
+    // No FontFaceSet: the fallback stack prints instead, which still works.
+  }
   let painted = false;
   // The shirt and the shorts are separate materials with separate textures.
   for (const [material, paint] of [

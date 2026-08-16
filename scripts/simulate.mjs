@@ -1,6 +1,7 @@
 // Dev helper: lets the match run headless (CPU vs idle player) and logs state.
 // Usage: node scripts/simulate.mjs [seconds]
 import { chromium } from "playwright-core";
+import { asReturningPlayer } from "./returning-player.mjs";
 
 // Set CHROMIUM_PATH if playwright-core cannot find a browser on its own.
 const browser = await chromium.launch({
@@ -9,6 +10,8 @@ const browser = await chromium.launch({
 });
 // Viewport must be big enough for the select screen's PLAY button to be on-screen.
 const page = await browser.newPage({ viewport: { width: 640, height: 360 } });
+// A first launch goes straight into the coached lesson; this drives the menus.
+await asReturningPlayer(page);
 page.on("pageerror", (e) => console.log("[pageerror]", e.message));
 page.on("console", (m) => { if (m.type() === "error") console.log("[console]", m.text()); });
 
