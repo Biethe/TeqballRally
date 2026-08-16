@@ -278,30 +278,51 @@ console.log("\nportrait: the screen is the controller");
 
   // The reported symptom, checked directly: a tap that meant a touch must not
   // survive as a destination and release the player across the court later.
+  // Committing the set-up is what spends it, so this drives the real touch
+  // rather than assembling the state by hand.
   const noStray = await page.evaluate(() => {
     const m = window.__teq.match;
     const c = m.chars.player;
     const V = m.aimSpot.player.constructor;
     m.state = "rally";
     m.strikeableSide = "player";
-    m.touchCount = 1;
-    m.selfSetupSpot = new V(c.position.x, 0.4, c.position.z);
+    m.touchCount = 0;
+    m.pendingTouch = null;
+    c.stopAction();
+    // A ball at chest height, close enough to play.
+    m.ball.held = false;
+    m.ball.state.pos.set(c.position.x, c.position.y + c.height * 0.55, c.position.z);
+    m.ball.state.vel.set(0, -1, 0);
     m.setMoveTarget(new V(c.position.x + 3, 0.4, c.position.z + 3));
+    const played = m.tryControlTouch("player", 0.4, 0.4);
+    return { played, target: m.moveTarget };
+  });
+  check(noStray.played, "the set-up touch was taken");
+  check(noStray.target === null, "and it spent the destination stored before it");
+
+  // …but the auto-run is a convenience, not a seizure of the controls. A tap
+  // made *during* it is the player asking to be somewhere, and it has to win —
+  // an auto-run that outranks the stick is exactly what "my player moves on
+  // its own" describes.
+  const tapWins = await page.evaluate(() => {
+    const m = window.__teq.match;
+    const c = m.chars.player;
+    const V = m.aimSpot.player.constructor;
+    m.state = "rally";
+    m.strikeableSide = "player";
+    m.touchCount = 1;
+    m.tapSteering = true;
+    m.selfSetupSpot = new V(c.position.x, 0.4, c.position.z);
+    m.setMoveTarget(new V(c.position.x + 1.5, 0.4, c.position.z + 1.5));
     const idle = {
-      moveX: 0,
-      moveZ: 0,
-      strikePressed: false,
-      strikeHeld: false,
-      strikePower: 0,
-      popPressed: false,
-      confirmPressed: false,
-      isPortrait: true,
-      isTouch: true,
+      moveX: 0, moveZ: 0, strikePressed: false, strikeHeld: false,
+      strikePower: 0, popPressed: false, confirmPressed: false,
     };
     m.update(1 / 60, idle, () => {});
-    return m.moveTarget === null;
+    return { selfSetup: m.selfSetupSpot, target: m.moveTarget };
   });
-  check(noStray, "a stored destination is dropped when the auto-run takes over");
+  check(tapWins.selfSetup === null, "a fresh tap calls the auto-run off");
+  check(tapWins.target !== null, "and keeps the place it asked for");
 
   // The camera has to hold the player wherever the court lets them go. The
   // half now runs to the middle line, so they cover far more of it than the

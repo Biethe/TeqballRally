@@ -316,12 +316,32 @@ or the rank means nothing. A loss also still *pays* coins: the twenty minutes
 were spent either way, and a game that pays nothing for a losing match teaches
 the player to quit as soon as they fall behind.
 
-**Characters** (`src/progress.ts`). Playing with a character levels it, win or
-lose; coins level it now. A level buys **precision**, which is what the kick
-spread divides by (`src/aim.ts`) — so an improved player is one whose hard
-kicks stay in, not one who kicks harder. That is what the spread was for. The
-roster unlocks against the *best* trophy count ever reached, so relegation
-never takes a character away from someone who already earned it.
+**Characters** (`src/progress.ts`). The roster is a **ladder**: BRAZIL is free
+and is the weakest player in the game, and each unlock above them — ENGLAND at
+60 trophies, FRANCE at 160, SPAIN at 300 — is plainly better than the one
+below. Not "differently good", better, and `totalPower` on the card says so.
+That is a deliberate reversal of how it used to be. Four equals give a player
+nothing to want, and everything else in the career — the trophies, the coins,
+the levels — hangs off wanting the next one.
+
+They still have shapes, or the ladder is one number four times: ENGLAND is a
+hammer with no acceleration, SPAIN is quick and technical, FRANCE is even.
+`tests/config.test.ts` holds both halves of that — every rung strictly above
+the last on total power, and every rung giving something up somewhere.
+
+Playing with a character levels it slowly (five matches); coins level it now,
+and the first level costs about two wins. A level lifts precision most —
+that is what the kick spread divides by (`src/aim.ts`), so an improved player
+is one whose hard kicks stay in — and agility, stamina, a little speed and
+reach with it. Power and the serve are left alone: they are what make ENGLAND
+ENGLAND, and training out of them would flatten the roster back into one
+character. The roster unlocks against the *best* trophy count ever reached, so
+relegation never takes a character away from someone who already earned it.
+
+Because the roster is a ladder, the CPU opponent is no longer drawn at random:
+`matchedOpponent` in `src/main.ts` weights the draw toward the rung nearest
+the player's own total power. A beginner handed SPAIN would be playing someone
+better at everything, and the difficulty they picked would mean nothing.
 
 **Daily challenges** (`src/challenges.ts`). Three a day, drawn from a fixed
 pool by the date itself: the date is the seed and the seed is the whole
@@ -334,6 +354,59 @@ that is depends on where they are.
 Practice pays nothing, because it cannot be lost. Everything else does,
 including online — see below for how a result between two strangers is made
 trustworthy enough to count.
+
+## Legs, and what is sold for them
+
+Stamina is the one trait a match takes away from you. It drains as you run,
+comes back between points, and when it is gone you are slow to start, slow to
+turn and a little slower flat out (`EFFORT` in `src/match.ts`, and `legs` in
+`Character.move`). The drain is steep enough to be felt inside a single long
+rally — at the old rate a player could run flat out for a set and never notice
+it, which made the trait, and everything sold for it, pointless.
+
+Most of the cost is acceleration rather than top speed. A model that took real
+reach away would make one brave point lose a whole game, and attacking already
+means coming forward and getting back; the small top-speed term exists so the
+drain is visible in a straight chase, which is where a player actually notices
+they have run out.
+
+The shelf (`src/supplies.ts`) is **three** items, down from five. The old one
+had two drinks and two supplements that differed only by how much stamina they
+bought, which is four prices for one decision. What is left is one of each kind
+a player can tell apart: ISOTONIC is fitness, DOUBLE ESPRESSO is fitness *and*
+sharpness, and RECOVERY PROTOCOL is the permanent one you save up for. Each
+carries a `boost` over several traits rather than stamina alone, applied
+through `withSupplies` — shaped like `withBall` and `withCareer`, so the
+physics, the AI and the card all read one already-modified `CharacterDef`.
+
+Deliberately no `power` on the shelf. Pace belongs to the character and to the
+ball; a shop that sells a harder ball is a shop that decides matches.
+
+## Protecting the models
+
+Every `.glb` in a built game is a finished 3D asset sitting in a folder, and an
+APK is a zip anybody can open. `scripts/protect-assets.mjs` scrambles them at
+build time into `.teq` files and `src/protected.ts` unscrambles them on the way
+into Babylon, so a public repository or an unzipped build contains nothing a 3D
+tool will open. `npm run build` does both; `npm run dev` serves `assets/`
+plain, because there is nothing to undo there.
+
+**This is obfuscation, not encryption, and the difference matters.** The key
+ships inside the bundle — the game has to read its own models offline, with no
+server to ask — so anybody willing to read the JavaScript can recover it. What
+it buys is that nothing is one drag-and-drop away from being in somebody else's
+project, and that the licensed packs are not sitting in the open in "a file
+format usable by any 3D application", which is the specific thing their licence
+forbids distributing. What it does not buy is protection from somebody who
+actually wants them; that would need the models never to reach the client in a
+usable form, which for a WebGL game is not a thing that exists.
+
+`VITE_ASSET_KEY` sets the key per release, so at least it is not the one
+written in the repository. The algorithm exists twice — once in the bundle,
+once in Node, because the build script runs before a bundle exists — and
+`tests/protected.test.ts` holds the two to producing identical bytes. Drift
+there fails as *every model refusing to load at once*, with nothing in any
+build log to explain why.
 
 ## Accounts and the backend
 
@@ -549,13 +622,22 @@ minute costs a player a moment and never a match.
 ## Ratings
 
 `src/ratings.ts` turns the balance values in `config.ts` — metres per second, a
-multiplier on a spread radius — into REACTIVITY / POWER / CONTROL on a 0–100
-scale, plus a TOTAL POWER that is just the three added up. The scale runs from
-the weakest any character starts at to the strongest any character can be
-trained to, so a fresh roster has nobody at 100: the top of the bar is a place
-to get to. The floor is 40, because none of these characters is bad at
-anything — they are differently good, and a bar reading zero says the opposite
-of what the roster means.
+multiplier on a spread radius — into seven traits on a 0–100 scale, plus a
+TOTAL POWER that is just those added up.
+
+**The bar is marked out of 100 and stops at 95.** The last five points are not
+for sale: not at the level cap, not with any ball, not on any character. A
+scale whose top is reachable stops saying anything the moment somebody gets
+there, and "maxed" is a worse thing for a player to feel than "nearly". The
+floor is 40, so no bar reads zero.
+
+The span each trait is measured against is **fixed** rather than derived from
+the roster. Deriving it meant every number on every card moved whenever a
+character was added or retuned — a player who had trained BRAZIL to 71 CONTROL
+would open the game after an update to find it said 64, having lost nothing.
+Fixed bounds also leave headroom above the best character in the game, which is
+what makes the ladder legible: SPAIN is near the top of the bar because SPAIN
+is near the top of the roster, not because SPAIN defines it.
 
 The same numbers appear in three places: the picker, the roster cards, and the
 head-to-head on the card before the whistle. That last one is the only moment a
@@ -981,6 +1063,28 @@ vertical axis on the way in and out, and swaps the two seats with it.
 npm run relay        # PORT=8787, health check on /healthz
 ```
 
+**A dropped socket is not a lost match.** A handover from Wi-Fi to cellular, a
+lift, a tunnel, a notification that backgrounds the tab — a phone's socket dies
+for a few seconds constantly, and before this each one cost the game. The relay
+needs no part in the fix: a closed socket frees its seat while the room lives
+on for the opponent, so rejoining by the same code lands back in the same room
+against the same person. `NetConnection` retries six times over about twenty
+seconds (`RECONNECT_BACKOFF_MS`), long enough to outlast a handover and well
+short of somebody who has actually gone.
+
+The room code is kept rather than re-derived because in a quick match the
+player never knew it — the relay minted it and named it in the `joined` frame.
+`close()` flags the leave as deliberate, so a player who quits is never chased.
+And `OnlineSession` holds the forfeit clock while a reconnect is in flight:
+silence on a socket that is *our own* problem says nothing about the opponent,
+and awarding ourselves a walkover because our phone changed network would hand
+the match to the player who actually left.
+
+The connect timeout is deliberately generous (45 s). A container host that
+scales to zero takes the better part of a minute to answer the first
+connection, and a ten-second deadline turned "your first online game of the
+day" into "online play is broken".
+
 ### Deploying with only a phone
 
 Everything below can be done from a mobile browser.
@@ -1066,11 +1170,24 @@ typecheck and pass every unit test.
 
 ## Purchases
 
-Everything paid hangs off one entitlement, **Teqie Pro**, and `src/purchases.ts`
-is the only module that imports the SDK — so there is one answer to "is this
-player pro" rather than one per call site. Products are `monthly`, `yearly` and
-`lifetime`; the game never asks which one somebody bought, because all three
-mean the same thing to a locked arena.
+**Real money buys two things: the arena, once, and coins. There are no
+subscriptions.** Everything else in the game — characters, balls, levels,
+supplies — is bought with coins and trophies, and both are earned by playing.
+A game that rents out its content has to keep being paid to stay the same game.
+
+`src/purchases.ts` is the only module that imports the SDK, so there is one
+answer to "does this player own the arena" rather than one per call site. The
+entitlement identifier is still the one the dashboard was configured with, on
+purpose: renaming it would strip the arena from everybody who already bought
+it. A legacy subscription still carrying somebody's entitlement keeps working
+until it lapses, and RevenueCat drops it out of `entitlements.active` itself.
+
+Coins have a second source that needs no store at all: **trophies**.
+`tradeTrophies` in `src/progress.ts` sells them at `COINS_PER_TROPHY`, on the
+same screen as the packs. It is a real decision rather than a discount —
+trophies are rank, rank is the coin bonus on every match, so cashing in trades
+tomorrow's earning rate for something to spend tonight. `best` is untouched, so
+trading down never takes back a character already unlocked.
 
 It goes through `@revenuecat/purchases-capacitor` rather than Kotlin because the
 game is TypeScript in a WebView: the plugin *is* the native Android SDK

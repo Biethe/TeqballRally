@@ -40,6 +40,8 @@ export type NetState =
   | "waiting"
   /** Both seats filled — the match can run. */
   | "ready"
+  /** The socket dropped mid-match and the seat is being reclaimed. */
+  | "reconnecting"
   | "closed";
 
 export interface NetHandlers {
@@ -50,14 +52,43 @@ export interface NetHandlers {
   onPeer?: (present: boolean, who?: PeerIdentity | null, matchId?: string | null) => void;
   /** Quick match only: still waiting, with this many players ahead. */
   onQueued?: (ahead: number) => void;
+  /** The socket dropped and the seat is being reclaimed; `attempt` is 1-based. */
+  onReconnecting?: (attempt: number, of: number) => void;
+  /** The seat was reclaimed and play can continue. */
+  onReconnected?: () => void;
   /** Fatal: the room was refused, or the socket died. */
   onError?: (reason: string) => void;
 }
 
 /** How often to measure the round trip, in ms. */
 const PING_INTERVAL_MS = 2000;
-const CONNECT_TIMEOUT_MS = 10_000;
+/**
+ * How long to wait for the socket to open.
+ *
+ * Generous, because the relay is allowed to be asleep. A container host that
+ * scales to zero takes the better part of a minute to answer the first
+ * connection, and a ten-second deadline turned "your first online game of the
+ * day" into "online play is broken".
+ */
+const CONNECT_TIMEOUT_MS = 45_000;
 const JOIN_TIMEOUT_MS = 10_000;
+
+/**
+ * How hard to try to get back into a match after the socket drops.
+ *
+ * This is the difference between a phone game and a desktop one. A handover
+ * from Wi-Fi to cellular, a lift, a tunnel, a notification that backgrounds
+ * the tab for a moment — a mobile socket dies for a few seconds all the time,
+ * and none of those should cost somebody the match they were winning.
+ *
+ * The relay makes this possible without knowing about it: a closed socket
+ * frees its seat but the room survives while the other player still holds
+ * theirs, so rejoining by the same code lands in the same room, against the
+ * same opponent. Six attempts over roughly twenty seconds, which comfortably
+ * outlasts a handover and stops well short of a player who has actually gone.
+ */
+const RECONNECT_TRIES = 6;
+const RECONNECT_BACKOFF_MS = [400, 900, 1800, 3000, 5000, 8000];
 /**
  * Waiting for a stranger is not the same as waiting for a server. Quick match
  * gets a long deadline because an empty queue is a normal state, not a fault —
@@ -152,9 +183,23 @@ export class NetConnection {
     this.pendingJoin = null;
   }
 
+  /**
+   * True while a dropped socket is being retried.
+   *
+   * The session asks, so it can hold the forfeit clock: a player who is
+   * fighting their way back onto the network has not walked out, and awarding
+   * the match against them while they do is the worst possible reading of a
+   * tunnel.
+   */
+  get isReconnecting(): boolean {
+    return this.reconnecting;
+  }
+
   private async handshake(
     opening: NetMessage,
-    timeoutMs = JOIN_TIMEOUT_MS
+    timeoutMs = JOIN_TIMEOUT_MS,
+    /** A retry reports through `onReconnecting` rather than failing the match. */
+    quiet = false
   ): Promise<{ role: PeerRole; ready: boolean }> {
     if (this.socket) throw new Error("already connected");
     this.setState("connecting");
@@ -181,14 +226,21 @@ export class NetConnection {
         { once: true }
       );
     }).catch((e: unknown) => {
-      this.fail(e instanceof Error ? e.message : "connection failed");
+      this.teardown();
+      if (!quiet) this.fail(e instanceof Error ? e.message : "connection failed");
       throw e;
     });
 
     socket.addEventListener("message", (ev) => this.receive(String(ev.data)));
     socket.addEventListener("close", () => {
-      if (this.state !== "closed") this.setState("closed", "disconnected");
       this.teardown();
+      // A seat that was live in a room is worth trying to take back; anything
+      // else — a deliberate leave, a lobby that never seated — is just closed.
+      if (this.deliberate || this.room === null || this.state === "closed") {
+        if (this.state !== "closed") this.setState("closed", "disconnected");
+        return;
+      }
+      void this.reclaimSeat();
     });
 
     this.setState("joining");
@@ -218,6 +270,46 @@ export class NetConnection {
     resolve: (v: { role: PeerRole; ready: boolean }) => void;
     reject: (e: Error) => void;
   } | null = null;
+
+  /** Set by `close()`, so a leave the player asked for is never retried. */
+  private deliberate = false;
+  private reconnecting = false;
+
+  /**
+   * Take the seat back after the socket dropped.
+   *
+   * Rejoining by the same room code is all it takes: the relay frees a closed
+   * socket's seat but keeps the room while the opponent still holds theirs, so
+   * the same code lands in the same room against the same person. The room is
+   * kept rather than re-derived because for a quick match the player never
+   * knew the code — the relay minted it and named it in the `joined` frame.
+   */
+  private async reclaimSeat(): Promise<void> {
+    if (this.reconnecting || this.room === null) return;
+    this.reconnecting = true;
+    const room = this.room;
+    this.setState("reconnecting", "connection lost");
+    for (let attempt = 1; attempt <= RECONNECT_TRIES; attempt++) {
+      this.handlers.onReconnecting?.(attempt, RECONNECT_TRIES);
+      await new Promise((r) => setTimeout(r, RECONNECT_BACKOFF_MS[attempt - 1]));
+      if (this.deliberate) break;
+      try {
+        await this.handshake(
+          { t: "join", v: PROTOCOL_VERSION, room, token: this.token },
+          JOIN_TIMEOUT_MS,
+          true
+        );
+        this.reconnecting = false;
+        this.handlers.onReconnected?.();
+        return;
+      } catch {
+        // Out of attempts is the only failure that matters; every other one
+        // is a phone still looking for a network.
+      }
+    }
+    this.reconnecting = false;
+    if (!this.deliberate) this.fail("lost connection");
+  }
 
   private receive(raw: string): void {
     const msg = decode(raw);
@@ -310,9 +402,13 @@ export class NetConnection {
   }
 
   close(): void {
+    // Flagged before the socket goes, so its own close handler does not read
+    // a deliberate leave as a drop and start chasing the room again.
+    this.deliberate = true;
     this.stopPinging();
     const socket = this.socket;
     this.socket = null;
+    this.room = null;
     this.setState("closed");
     socket?.close();
   }

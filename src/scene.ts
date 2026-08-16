@@ -14,7 +14,6 @@ import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { MeshoptCompression } from "@babylonjs/core/Meshes/Compression/meshoptCompression";
@@ -40,6 +39,7 @@ import type { QualitySettings } from "./quality";
 import { VENUES, type ArenaModel, type CourtStyle, type Rgb, type Venue } from "./venue";
 import { buildEnvironment } from "./environment";
 import { buildSurroundings } from "./surroundings";
+import { importModel } from "./protected";
 
 // Meshopt-compressed GLBs are decoded locally so hosted builds do not depend
 // on a third-party CDN just to display a character or the arena.
@@ -581,7 +581,7 @@ function mergeEnabled(): boolean {
 
 /** Venue backdrop, normalised to surround the court and grounded at y = 0. */
 async function loadArena(scene: Scene, model: ArenaModel): Promise<void> {
-  const res = await SceneLoader.ImportMeshAsync("", "/models/Arena/", model.file, scene);
+  const res = await importModel(scene, "/models/Arena/", model.file);
   const hidden = new Set(model.hideMaterials ?? []);
   const kept = res.meshes.filter((m) => {
     if (!m.material || !hidden.has(m.material.name)) return true;
@@ -609,7 +609,7 @@ async function loadArena(scene: Scene, model: ArenaModel): Promise<void> {
 }
 
 async function loadTable(scene: Scene): Promise<AbstractMesh[]> {
-  const res = await SceneLoader.ImportMeshAsync("", "/models/Ball_and_Table/", "Teqball_Table.glb", scene);
+  const res = await importModel(scene, "/models/Ball_and_Table/", "Teqball_Table.glb");
   // The same repair the balls get, for the same reason: the export leaves
   // metallicFactor at glTF's default of 1, and metal with no environment map
   // renders as a black mirror. It is the difference between the centrepiece of
@@ -654,7 +654,7 @@ const BALL_KEEP_NODE: Record<string, string> = {
 
 /** Import a ball file, discard sibling balls bundled in the same export, and wrap it. */
 export async function importBall(scene: Scene, file: string): Promise<Mesh> {
-  const res = await SceneLoader.ImportMeshAsync("", "/models/Ball_and_Table/", `${file}.glb`, scene);
+  const res = await importModel(scene, "/models/Ball_and_Table/", `${file}.glb`);
   const keep = BALL_KEEP_NODE[file];
   if (keep) {
     const nodes = [...res.transformNodes, ...res.meshes];

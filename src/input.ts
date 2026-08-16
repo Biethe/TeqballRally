@@ -392,9 +392,14 @@ export class Input {
         }
         return;
       }
-      if (this.joyActive) return;
       const center = joyCenter();
       if (!center || Math.hypot(e.clientX - center.x, e.clientY - center.y) > center.hitRadius) return;
+      // A fresh finger on the stick always takes it, even if the last one was
+      // never seen to lift. Refusing here is what turns a single missed
+      // pointerup into a stick nobody can retrieve: the old id still owns it,
+      // every new press is ignored, and the player is left holding a control
+      // that does nothing while their character walks away.
+      if (this.joyActive && e.pointerId !== this.joyId) this.clearJoystick();
       e.preventDefault();
       this.joyActive = true;
       this.joyId = e.pointerId;
@@ -426,6 +431,36 @@ export class Input {
       // track here keeps a swipe that outran its capture from being stranded.
       if (this.portrait) this.gestures.end(e.pointerId, at(e));
       else endJoy(e);
+    });
+
+    /**
+     * The same ends, watched on the window.
+     *
+     * A stick is held by *not* sending events — a finger resting still on it
+     * produces nothing at all — so there is no timeout that can tell a held
+     * stick from an abandoned one. That makes the lift the only thing that
+     * stops it, and a lift the zone never hears is a stick that stays pushed
+     * for the rest of the match: the character walks off in the last direction
+     * it was given and no input takes it back. It is the exact shape of
+     * "the controlled player keeps moving by itself, mostly diagonally".
+     *
+     * The zone misses lifts more often than it looks. A finger that leaves the
+     * viewport, a pointer the browser cancels while the layer is being hidden
+     * between screens, a second touch that steals capture — each ends the
+     * gesture somewhere the zone is not listening. The window hears all of
+     * them, and both handlers are id-matched, so this never ends a stick that
+     * is genuinely still down.
+     */
+    const endEverywhere = (e: PointerEvent) => {
+      if (this.portrait) this.gestures.end(e.pointerId, at(e));
+      else endJoy(e);
+    };
+    window.addEventListener("pointerup", endEverywhere);
+    window.addEventListener("pointercancel", endEverywhere);
+    // A phone that locks, a call, a notification pulled down: the finger is
+    // gone and no pointer event says so.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") this.resetTouchState();
     });
 
     uiRoot.appendChild(zone);

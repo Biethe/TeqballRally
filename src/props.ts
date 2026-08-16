@@ -20,11 +20,11 @@
  */
 
 import type { Scene } from "@babylonjs/core/scene";
-import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Material } from "@babylonjs/core/Materials/material";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { importModel } from "./protected";
 
 /** Prop families in `Props.glb`, by the prefix their nodes are named with. */
 export type PropKind = "house" | "tree" | "car" | "palm" | "bush";
@@ -129,7 +129,7 @@ export async function loadProps(scene: Scene, kinds: PropKind[]): Promise<PropLi
   const wanted = SOURCES.filter((src) => src.provides.some((k) => kinds.includes(k)));
   const loaded = await Promise.all(
     wanted.map((src) =>
-      SceneLoader.ImportMeshAsync("", src.dir, src.file, scene).then(
+      importModel(scene, src.dir, src.file).then(
         (res) => ({ res, src }),
         (error: unknown) => {
           // A missing pack costs its own props and nothing else: a venue with

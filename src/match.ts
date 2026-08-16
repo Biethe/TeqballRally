@@ -159,12 +159,18 @@ const LUNGE_MAX = 1.0 * TABLE_SCALE;
 /**
  * How fast the legs empty and fill, per second at a flat run.
  *
- * Tuned so a short exchange costs almost nothing and a long, wide rally is
- * felt — and so the gap between points hands most of it back, because a game
- * where the third set is played by two exhausted players is a worse game, not
- * a more realistic one.
+ * The drain is steep enough to be felt inside a single long rally — that is
+ * the whole point of the trait, and at the old rate a player could run flat
+ * out for a set and never notice it. Chasing wide balls now costs something
+ * while the point is still being played.
+ *
+ * The gap between points still hands most of it back, because a game whose
+ * third set is played by two exhausted players is a worse game rather than a
+ * more realistic one — but not all of it, so a punishing rally is still being
+ * paid for two points later. That is what makes stamina, and everything sold
+ * for it, worth having.
  */
-const EFFORT = { drain: 0.11, rest: 0.05, restBetweenPoints: 0.55 };
+const EFFORT = { drain: 0.3, rest: 0.06, restBetweenPoints: 0.42 };
 // Final polish only: nudge the ball at most this far onto the limb at the
 // contact frame (covers prediction drift). Bigger misses stay visible.
 const CONTACT_SNAP = 0.18 * TABLE_SCALE;
@@ -380,9 +386,10 @@ export class MatchController {
     char: Character,
     clip: string,
     speed: number,
-    flight: FlightSample[]
+    flight: FlightSample[],
+    yawOffset = 0
   ): { t: number; pos: Vector3; startFrac: number } {
-    const cp = char.clipContactPoint(clip);
+    const cp = char.clipContactPoint(clip, yawOffset);
     const contactY = cp ? cp.y : char.position.y + char.height * 0.5;
     // The clip can't wind up longer than its pre-contact frames allow.
     // Volley is how early a ball can be taken: it widens the window in which a
@@ -943,26 +950,45 @@ export class MatchController {
   }
 
   /**
-   * Walk the receiver behind their own service line, through every serve
-   * phase.
+   * Walk the receiver back behind their own service line between points.
    *
    * Behind the line because the rulebook puts the receiver there too, and
-   * because the player asked to *start* each point from it. Through every
-   * phase because the walk used to stop the moment the server arrived, which
-   * stranded a far-out receiver mid-court — halfway through a trip they never
-   * asked for, which is exactly what "my player moves on its own" looks like.
-   * No control is being taken away by finishing it: outside the rally state
-   * the stick does not drive the characters at all, so the only choice is
-   * between a walk that completes and one that abandons them somewhere
-   * diagonal to everything. moveToward zeroes the velocity on arrival, which
-   * also stops the jog blend.
+   * because every point should start from the same place rather than from
+   * wherever the last one happened to end.
+   *
+   * `steerable` is the receiver's own controls, when a human holds them. Given
+   * a direction they drive themselves and the walk stands down: a player
+   * setting themselves for the return is doing something deliberate, and
+   * hauling them back to a mark while they do it is the game wrestling the
+   * stick. Left alone they finish the walk — an abandoned half-trip is what
+   * strands somebody mid-court, diagonal to everything, looking like the
+   * character set off on its own. moveToward zeroes the velocity on arrival,
+   * which also stops the jog blend.
    */
-  private walkReceiverHome(dt: number): void {
+  private walkReceiverHome(dt: number, steerable: InputState | null = null): void {
     const recvSide = other(this.serveOwner);
     const recv = this.chars[recvSide];
     if (recv.busy) return;
+    if (steerable && Math.hypot(steerable.moveX, steerable.moveZ) > 0.25) {
+      recv.move(steerable.moveX, steerable.moveZ, recv.def.speed, dt);
+      return;
+    }
     const mark = new Vector3(sign(recvSide) * (SERVE_X + 0.15), GROUND_Y, SPAWN.z);
     recv.moveToward(mark, recv.def.speed, dt);
+  }
+
+  /**
+   * The receiver's own controls, if a human is holding them and may use them.
+   *
+   * Null while the CPU receives, and null in portrait, where the axes carry a
+   * swipe's leftover aim rather than anywhere the player asked to stand.
+   */
+  private receiverInput(input: InputState): InputState | null {
+    if (this.tapSteering) return null;
+    const recvSide = other(this.serveOwner);
+    if (recvSide === "player") return input;
+    if (recvSide === "ai" && this.versus) return this.versusInput;
+    return null;
   }
 
   private handPos(c: Character): Vector3 {
@@ -1282,14 +1308,25 @@ export class MatchController {
     if (!c.groups.has(clip) && clip.startsWith("Backflip")) {
       clip = `${lateral >= 0 ? "Right" : "Left"}FootKick`;
     }
-    const plan = this.planContact(c, clip, STRIKE_SPEED, flight);
-    // No yaw for a backflip, unlike every other kick.
+    // No clip is turned, backflips included — measured rather than assumed.
     //
-    // A backflip is performed with the player's back to the table, and the
-    // capture was shot front-to-camera like all the rest — so the clip already
-    // faces the right way and the half-turn that squares the other kicks up
-    // with the net turns this one the wrong way round.
+    // Turning the flip a half-turn to "square it up with the other kicks" is
+    // the obvious-looking fix and it is backwards. The striking foot at the
+    // backflip's contact frame sits 1.28 m in **front** of the player, 1.9 m
+    // up: over the head and toward the table, which is exactly where a
+    // bicycle kick meets the ball. A half-turn puts that foot 1.28 m behind
+    // them instead, so the ball would be steered to a point at their back and
+    // then launched forward through them, and the lunge would drag them away
+    // from the table to reach it.
+    //
+    // Every clip is authored in the same rig space and `setSide` already
+    // squares the whole character up with the net, so nothing needs a
+    // per-clip correction. The parameter is threaded through `planContact`
+    // anyway: if a future clip does need one, the plan has to be made with the
+    // same yaw the clip will be played at, or the limb is planned for one side
+    // of the player and struck on the other.
     const yawOffset = 0;
+    const plan = this.planContact(c, clip, STRIKE_SPEED, flight, yawOffset);
     // The ball leaves at the planned contact moment, from wherever its natural
     // flight put it — the lunge carried the limb there, so the visual contact
     // and the launch coincide. Fired by the countdown in update(); the
@@ -1408,7 +1445,16 @@ export class MatchController {
 
     this.touchCount++;
     this.pointTouches++;
-    if (side === "player") this.ui.hint(null);
+    if (side === "player") {
+      this.ui.hint(null);
+      // Committing to a set-up spends any destination the player had stored.
+      // A tap made while chasing the ball meant "be there for this ball", and
+      // once the ball has been played it is stale — left queued it used to
+      // release the player across the court the moment the auto-run ended.
+      // Anything tapped *after* this point is fresh, and `update` lets it
+      // cancel the auto-run.
+      this.moveTarget = null;
+    }
 
     // Pop the ball at the planned contact moment so it rises and comes down
     // at the aimed spot (clamped to this side's half of the court). Fired by
@@ -1790,7 +1836,10 @@ export class MatchController {
       }
       case "serve_ready": {
         const server = this.chars[this.serveOwner];
-        this.walkReceiverHome(dt);
+        // Once the serve is ready a human receiver may set themselves. The
+        // axes are free to say so: aiming a serve belongs to whoever is
+        // serving, and that is the other side of the table.
+        this.walkReceiverHome(dt, this.receiverInput(input));
         this.updatePlayerServeAim(input, true);
         this.updateVersusServeAim(true);
         this.ball.place(this.serveHandPos(server));
@@ -1803,7 +1852,7 @@ export class MatchController {
         break;
       }
       case "serve_anim": {
-        this.walkReceiverHome(dt);
+        this.walkReceiverHome(dt, this.receiverInput(input));
         // The clip is locked, but the landing aim stays live until contact.
         this.updatePlayerServeAim(input, false);
         this.updateVersusServeAim(false);
@@ -1841,6 +1890,19 @@ export class MatchController {
         // After the player's own pop, run to the drop spot automatically —
         // the stick then only aims the finish (the direction that steered the
         // pop would otherwise keep carrying the player past the ball).
+        //
+        // Asking to move cancels it. The auto-run used to outrank the controls
+        // entirely, so for the second and third touch of every possession the
+        // character walked its own line and the stick did nothing — which is
+        // precisely what "my player moves on its own" is. It is a convenience,
+        // and a convenience that cannot be overridden is a control being taken
+        // away. What counts as asking differs by scheme: a stick push in
+        // landscape, and a tap in portrait, where the axes carry a swipe's aim
+        // rather than any intention to walk.
+        const askedToMove = this.tapSteering
+          ? this.moveTarget !== null
+          : Math.hypot(input.moveX, input.moveZ) > 0.25;
+        if (askedToMove) this.selfSetupSpot = null;
         const selfSetup =
           this.strikeableSide === "player" && this.touchCount > 0 && this.selfSetupSpot !== null;
         // The auto-run owns the feet while it lasts, so anywhere the player had

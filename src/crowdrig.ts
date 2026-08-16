@@ -1,12 +1,12 @@
 import type { Scene } from "@babylonjs/core/scene";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
-import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
 import { Matrix } from "@babylonjs/core/Maths/math.vector";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { BakedVertexAnimationManager } from "@babylonjs/core/BakedVertexAnimation/bakedVertexAnimationManager";
 import { CROWD_FIGURES, CROWD_FPS, CROWD_FRAMES, type CrowdFigure } from "./crowdclips";
+import { importModel } from "./protected";
 
 /**
  * Skinned spectators that cost one draw call each, however many are on screen.
@@ -121,7 +121,7 @@ async function loadBakedTexture(scene: Scene, file: string): Promise<RawTexture>
 
 async function loadFigure(scene: Scene, spec: CrowdFigure): Promise<RiggedFigure | null> {
   const [res, texture] = await Promise.all([
-    SceneLoader.ImportMeshAsync("", "/models/Crowd/", spec.file, scene),
+    importModel(scene, "/models/Crowd/", spec.file),
     loadBakedTexture(scene, spec.file),
   ]);
   const drawable = res.meshes.filter(

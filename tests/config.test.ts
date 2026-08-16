@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { RATING_KEYS, rating, totalPower } from "../src/ratings";
 import {
   BALLS,
   CAMERA,
@@ -367,24 +368,55 @@ describe("CHARACTERS", () => {
   it("matches the documented identities", () => {
     const byLabel = Object.fromEntries(CHARACTERS.map((c) => [c.label, c]));
 
-    // ENGLAND — the powerhouse: tallest, strongest, slowest, no flips.
+    // ENGLAND — the powerhouse: tallest, strongest, best serve, heaviest on
+    // his feet, and no flips.
     expect(byLabel.ENGLAND.power).toBe(Math.max(...CHARACTERS.map((c) => c.power)));
     expect(byLabel.ENGLAND.height).toBe(Math.max(...CHARACTERS.map((c) => c.height)));
-    expect(byLabel.ENGLAND.speed).toBe(Math.min(...CHARACTERS.map((c) => c.speed)));
+    expect(byLabel.ENGLAND.serve).toBe(Math.max(...CHARACTERS.map((c) => c.serve)));
+    expect(byLabel.ENGLAND.agility).toBe(Math.min(...CHARACTERS.map((c) => c.agility)));
     expect(byLabel.ENGLAND.backflips).toBe("none");
 
-    // BRAZIL — the acrobat: quickest, flips off either foot.
-    expect(byLabel.BRAZIL.speed).toBe(Math.max(...CHARACTERS.map((c) => c.speed)));
-    expect(byLabel.BRAZIL.backflips).toBe("both");
-
-    // SPAIN — the technician: most precise, softest ball, two-footed.
+    // SPAIN — the technician at the top of the ladder: quickest, most precise,
+    // takes it earliest, two-footed so either foot can flip.
+    expect(byLabel.SPAIN.speed).toBe(Math.max(...CHARACTERS.map((c) => c.speed)));
     expect(byLabel.SPAIN.precision).toBe(Math.max(...CHARACTERS.map((c) => c.precision)));
-    expect(byLabel.SPAIN.power).toBe(Math.min(...CHARACTERS.map((c) => c.power)));
+    expect(byLabel.SPAIN.volley).toBe(Math.max(...CHARACTERS.map((c) => c.volley)));
     expect(byLabel.SPAIN.strongFoot).toBe("both");
+    expect(byLabel.SPAIN.backflips).toBe("both");
 
     // FRANCE — the lefty all-rounder: flips off the strong foot only.
     expect(byLabel.FRANCE.strongFoot).toBe("left");
     expect(byLabel.FRANCE.backflips).toBe("strong");
+  });
+
+  /**
+   * The roster is a ladder, and this is the whole of that claim.
+   *
+   * Every character unlocks above the one before it and has to be plainly
+   * better than it — that is what the trophies are being spent on. A roster
+   * that drifts back toward four equals gives a player nothing to want, and it
+   * drifts one trait at a time, which is exactly the kind of change nobody
+   * notices until the career stops meaning anything.
+   */
+  it("gets better at every rung, and the card says so", () => {
+    const totals = CHARACTERS.map((c) => totalPower(c));
+    for (let i = 1; i < CHARACTERS.length; i++) {
+      expect(totals[i], `${CHARACTERS[i].label} vs ${CHARACTERS[i - 1].label}`).toBeGreaterThan(
+        totals[i - 1]
+      );
+    }
+  });
+
+  it("still gives each of them a shape rather than one number four times", () => {
+    // Better overall, not better at everything: the rung above has to give
+    // something up, or the four of them are one character at four prices.
+    for (let i = 1; i < CHARACTERS.length; i++) {
+      const below = CHARACTERS[i - 1];
+      const above = CHARACTERS[i];
+      const traitsGivenUp = RATING_KEYS.filter((key) => rating(above, key) < rating(below, key));
+      expect(traitsGivenUp.length, `${above.label} is strictly better than ${below.label}`)
+        .toBeGreaterThan(0);
+    }
   });
 });
 

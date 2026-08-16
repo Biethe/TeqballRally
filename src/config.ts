@@ -684,30 +684,48 @@ export interface CharacterDef {
   volley: number;
 }
 
-// Per-player identities:
-// BRAZIL — the acrobat: quick, precise, flips off either foot (weak-foot flips hit softer).
-// ENGLAND — the powerhouse: tall, slower, no flips, but a hammer of a right foot.
-// FRANCE — the lefty all-rounder: flips off the strong (left) foot only.
-// SPAIN — the technician: two-footed and the most precise, softest ball, strong-foot-rule
-//         flips (two-footed, so either foot qualifies).
-// Every character is above average at something and below at something else:
-// the four new traits are what stop the roster being one axis of "better".
+/**
+ * The roster, in the order it unlocks — and it is a **ladder**.
+ *
+ * Every character is globally better than the one before it: not "differently
+ * good", plainly better, and the totals on the card say so. That is a
+ * deliberate reversal. A roster of four equals gives a player nothing to want,
+ * and the whole of the career — the trophies, the coins, the levels — hangs
+ * off wanting the next one. Unlocking SPAIN has to feel like being handed a
+ * better player, because that is what was being played for.
+ *
+ * They still have shapes, which is what stops the ladder being one number four
+ * times. ENGLAND is a hammer with no acceleration; FRANCE is even; SPAIN is
+ * quick and technical. What changes as you climb is the *floor* under those
+ * shapes, not the shape.
+ *
+ * The spread between rungs is wide on purpose. The traits are what a player is
+ * paying attention to when they choose, and a roster whose speeds run
+ * 4.5–5.4 m/s is one where nobody can feel the difference they bought.
+ *
+ * BRAZIL   free      the beginner: nothing is good yet, and that is the point
+ * ENGLAND  60        the powerhouse: a hammer and a serve, heavy on his feet
+ * FRANCE   160       the all-rounder: better than the two below at everything
+ * SPAIN    300       the technician: quickest, most precise, takes it earliest
+ */
 export const CHARACTERS: CharacterDef[] = [
-  // The acrobat. Quick and springy, and runs out of legs first.
-  { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 5.4, power: 1.0, precision: 1.1, backflips: "both",
-    stamina: 0.85, serve: 0.95, agility: 1.35, volley: 1.2, weakFoot: 82 },
-  // The powerhouse. A hammer and a serve, slow to get going, lasts all day.
-  // A hammer of a right foot and very little on the left, so the header is his
-  // answer to anything arriving on that side.
-  { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.5, power: 1.7, precision: 0.9, backflips: "none",
-    stamina: 1.3, serve: 1.35, agility: 0.7, volley: 0.85, weakFoot: 45 },
-  // The all-rounder. Nothing to hide behind and nothing that lets him down.
-  { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5.0, power: 1.05, precision: 1.0, backflips: "strong",
-    stamina: 1.05, serve: 1.05, agility: 1.0, volley: 1.0, weakFoot: 70 },
-  // The technician. Takes everything early and precisely, hits it softest.
-  // Two-footed: there is no weak side to exploit, so nothing forces a header.
-  { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 4.9, power: 0.95, precision: 1.2, backflips: "strong",
-    stamina: 1.0, serve: 0.8, agility: 1.05, volley: 1.35, weakFoot: 100 },
+  // The beginner. Every trait sits at the bottom of its span, so every later
+  // character and every level bought is felt against this one.
+  { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 4.5, power: 0.9, precision: 0.88, backflips: "strong",
+    stamina: 0.82, serve: 0.85, agility: 0.95, volley: 0.88, weakFoot: 55 },
+  // The powerhouse. The hardest ball and the best serve in the game, and the
+  // slowest to get going — a hammer of a right foot and very little on the
+  // left, so the header is his answer to anything on that side.
+  { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.7, power: 1.38, precision: 0.95, backflips: "none",
+    stamina: 1.18, serve: 1.28, agility: 0.8, volley: 0.95, weakFoot: 50 },
+  // The all-rounder. Nothing to hide behind and nothing that lets him down,
+  // and comfortably better than either player below him.
+  { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5.3, power: 1.12, precision: 1.12, backflips: "strong",
+    stamina: 1.1, serve: 1.1, agility: 1.15, volley: 1.12, weakFoot: 75 },
+  // The technician, and the top of the ladder. Two-footed, so there is no weak
+  // side to exploit and nothing forces a header.
+  { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 5.6, power: 1.05, precision: 1.34, backflips: "both",
+    stamina: 1.16, serve: 1.05, agility: 1.3, volley: 1.4, weakFoot: 100 },
 ];
 
 // Strong/weak-foot modifiers, applied to any clip that uses a specific foot

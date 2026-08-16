@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
-  STAMINA_CAP,
+  BOOST_CAP,
   SUPPLIES,
   buy,
   canBuy,
   consumeArmed,
   staminaMultiplier,
+  supplyBoost,
   supplyFor,
+  withSupplies,
   type Wallet,
 } from "../src/supplies";
+import { CHARACTERS } from "../src/config";
 
 /**
  * The shop, and the only place in the game where coins leave a player.
@@ -41,20 +44,37 @@ describe("the shelf", () => {
   });
 
   it("only ever helps", () => {
-    for (const supply of SUPPLIES) expect(supply.stamina, supply.id).toBeGreaterThan(1);
+    // Every multiplier a supply carries lifts the trait it names. A boost
+    // below 1 would be an item that quietly made a player worse for money.
+    for (const supply of SUPPLIES) {
+      const values = Object.values(supply.boost);
+      expect(values.length, supply.id).toBeGreaterThan(0);
+      for (const value of values) expect(value, supply.id).toBeGreaterThan(1);
+    }
   });
 
   it("charges more for more", () => {
     // Within a kind, a bigger lift costs more. Otherwise one item is strictly
-    // the right answer and the rest are decoration.
+    // the right answer and the rest are decoration. Compared on everything a
+    // supply does, since the dearer drink buys sharpness as well as legs.
+    const worth = (id: string): number => {
+      const boost = SUPPLIES.find((s) => s.id === id)!.boost;
+      return (boost.stamina ?? 1) * (boost.agility ?? 1) * (boost.precision ?? 1);
+    };
     for (const kind of ["drink", "supplement"] as const) {
       const sorted = SUPPLIES.filter((s) => s.kind === kind).sort((a, b) => a.coins - b.coins);
       for (let i = 1; i < sorted.length; i++) {
-        expect(sorted[i].stamina, `${sorted[i].id} vs ${sorted[i - 1].id}`).toBeGreaterThan(
-          sorted[i - 1].stamina
+        expect(worth(sorted[i].id), `${sorted[i].id} vs ${sorted[i - 1].id}`).toBeGreaterThan(
+          worth(sorted[i - 1].id)
         );
       }
     }
+  });
+
+  it("keeps the shelf short enough to read", () => {
+    // Five items that differed only by how much stamina they bought was four
+    // prices for one decision.
+    expect(SUPPLIES.length).toBeLessThanOrEqual(3);
   });
 });
 
@@ -87,16 +107,16 @@ describe("buying", () => {
 
   it("stacks drinks and does not stack supplements", () => {
     let bag = wallet();
-    bag = buy(bag, "water");
-    bag = buy(bag, "water");
-    expect(bag.drinks.water).toBe(2);
+    bag = buy(bag, "isotonic");
+    bag = buy(bag, "isotonic");
+    expect(bag.drinks.isotonic).toBe(2);
 
     let shelf = wallet();
-    shelf = buy(shelf, "creatine");
+    shelf = buy(shelf, "protocol");
     const spent = shelf.coins;
-    shelf = buy(shelf, "creatine");
+    shelf = buy(shelf, "protocol");
 
-    expect(shelf.taken).toEqual(["creatine"]);
+    expect(shelf.taken).toEqual(["protocol"]);
     expect(shelf.coins, "charged twice for a one-off").toBe(spent);
   });
 
@@ -119,58 +139,89 @@ describe("what it does to the legs", () => {
   });
 
   it("stacks supplements with each other", () => {
-    const both = staminaMultiplier(["creatine", "protocol"], null);
-    const one = staminaMultiplier(["creatine"], null);
+    const both = staminaMultiplier(["protocol"], "espresso");
+    const one = staminaMultiplier(["protocol"], null);
 
     expect(both).toBeGreaterThan(one);
   });
 
   it("adds the armed drink on top", () => {
-    expect(staminaMultiplier(["creatine"], "espresso")).toBeGreaterThan(
-      staminaMultiplier(["creatine"], null)
+    expect(staminaMultiplier(["protocol"], "espresso")).toBeGreaterThan(
+      staminaMultiplier(["protocol"], null)
     );
   });
 
   it("caps, so fitness never stops mattering", () => {
     const everything = SUPPLIES.filter((s) => s.kind === "supplement").map((s) => s.id);
 
-    expect(staminaMultiplier(everything, "espresso")).toBeLessThanOrEqual(STAMINA_CAP);
+    expect(staminaMultiplier(everything, "espresso")).toBeLessThanOrEqual(BOOST_CAP.stamina);
   });
 
   it("ignores a drink in the taken list and a supplement in the armed slot", () => {
     // Storage outlives a shelf change, and the two kinds are not interchangeable.
     expect(staminaMultiplier(["espresso"], null)).toBe(1);
-    expect(staminaMultiplier([], "creatine")).toBe(1);
+    expect(staminaMultiplier([], "protocol")).toBe(1);
   });
 });
 
 describe("drinking it", () => {
   it("takes one out of the bag", () => {
-    const bag = wallet({ drinks: { water: 2 } });
-    const { wallet: after, drank } = consumeArmed(bag, "water");
+    const bag = wallet({ drinks: { isotonic: 2 } });
+    const { wallet: after, drank } = consumeArmed(bag, "isotonic");
 
-    expect(drank).toBe("water");
-    expect(after.drinks.water).toBe(1);
+    expect(drank).toBe("isotonic");
+    expect(after.drinks.isotonic).toBe(1);
   });
 
   it("removes the entry entirely on the last one", () => {
-    const bag = wallet({ drinks: { water: 1 } });
+    const bag = wallet({ drinks: { isotonic: 1 } });
 
-    expect(consumeArmed(bag, "water").wallet.drinks).toEqual({});
+    expect(consumeArmed(bag, "isotonic").wallet.drinks).toEqual({});
   });
 
   it("does nothing when the bag is empty", () => {
     const bag = wallet({ drinks: {} });
-    const { wallet: after, drank } = consumeArmed(bag, "water");
+    const { wallet: after, drank } = consumeArmed(bag, "isotonic");
 
     expect(drank).toBeNull();
     expect(after).toEqual(bag);
   });
 
   it("does nothing when nothing is armed", () => {
-    const bag = wallet({ drinks: { water: 1 } });
+    const bag = wallet({ drinks: { isotonic: 1 } });
 
     expect(consumeArmed(bag, null).drank).toBeNull();
-    expect(consumeArmed(bag, null).wallet.drinks.water).toBe(1);
+    expect(consumeArmed(bag, null).wallet.drinks.isotonic).toBe(1);
+  });
+});
+
+describe("what the bag is worth on court", () => {
+  it("changes nothing at all with an empty bag", () => {
+    const base = CHARACTERS[0];
+
+    expect(withSupplies(base, [], null)).toEqual(base);
+  });
+
+  it("lifts every trait the supplies name, and nothing else", () => {
+    const base = CHARACTERS[0];
+    const doped = withSupplies(base, ["protocol"], "espresso");
+
+    expect(doped.stamina).toBeGreaterThan(base.stamina);
+    expect(doped.agility).toBeGreaterThan(base.agility);
+    expect(doped.precision).toBeGreaterThan(base.precision);
+    // Pace belongs to the character and the ball. A shelf that sells a harder
+    // ball is a shelf that decides matches by itself.
+    expect(doped.power).toBe(base.power);
+    expect(doped.speed).toBe(base.speed);
+    expect(doped.serve).toBe(base.serve);
+  });
+
+  it("caps each trait separately", () => {
+    const supplements = SUPPLIES.filter((s) => s.kind === "supplement").map((s) => s.id);
+    const boost = supplyBoost(supplements, "espresso");
+
+    for (const key of ["stamina", "agility", "precision"] as const) {
+      expect(boost[key], key).toBeLessThanOrEqual(BOOST_CAP[key]);
+    }
   });
 });

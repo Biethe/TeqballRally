@@ -97,11 +97,26 @@ export const UNLOCK_AT: Record<string, number> = {
   [CHARACTERS[3].id]: 300,
 };
 
-/** Matches with a character needed to take it to the next level. */
-export const XP_PER_LEVEL = 3;
-/** Coins the next level costs, growing with the level already reached. */
+/**
+ * Matches with a character needed to take it to the next level.
+ *
+ * Five, which is deliberately slow. Levelling by playing is the floor under a
+ * career — nobody can be stuck forever — but it is not meant to be the way
+ * anybody actually improves, because a level that arrives on its own is not
+ * something a player *wanted*. Coins are the fast route, and the first one
+ * costs about two wins, which is close enough to reach for.
+ */
+export const XP_PER_LEVEL = 5;
+/**
+ * Coins the next level costs.
+ *
+ * The first is cheap on purpose: a player two matches in can afford it, feel
+ * the character get better, and now knows what coins are for. It climbs
+ * steeply after that, so the last level on a character is a real target rather
+ * than an afternoon's change.
+ */
 export function upgradeCost(level: number): number {
-  return 150 + (level - 1) * 120;
+  return 120 + (level - 1) * (120 + (level - 1) * 40);
 }
 /** A character stops improving here, so a long career is not an unbeatable one. */
 export const MAX_LEVEL = 6;
@@ -109,24 +124,26 @@ export const MAX_LEVEL = 6;
 /**
  * The character as this career has made it.
  *
- * Levels buy precision, which is the trait the spread divides by (`src/aim.ts`)
- * — so an improved player is one whose hard kicks stay in, not one who kicks
- * harder. That was the point of making the spread the cost of pace: it leaves
- * something worth improving that does not simply make the ball faster.
+ * A level lifts most of what a player can feel — how straight the hard kicks
+ * go, how quickly they get moving, how long the legs last, and a little top
+ * speed and reach with it. Broader than it used to be, and on purpose: a level
+ * that only tightened the kick spread was correct and invisible, and a player
+ * who cannot feel what they bought stops buying.
+ *
+ * Precision still leads, because it is the trait the spread divides by
+ * (`src/aim.ts`): an improved player is one whose hard kicks stay in rather
+ * than one who simply kicks harder. Power is left alone entirely — that
+ * belongs to the character, and it is what makes ENGLAND ENGLAND.
  */
 export function withCareer(def: CharacterDef, level: number): CharacterDef {
   const steps = Math.max(0, Math.min(MAX_LEVEL, level) - 1);
   return {
     ...def,
-    precision: def.precision * (1 + 0.09 * steps),
-    // Training also buys the two traits that are about *effort* rather than
-    // technique: how quickly you get moving and how long you keep it up. They
-    // rise more slowly than precision, because a levelled player should still
-    // be recognisably the character that was picked — the point of the roster
-    // is that they are differently good, and levelling everything at the same
-    // rate flattens four characters into one.
-    agility: def.agility * (1 + 0.045 * steps),
-    stamina: def.stamina * (1 + 0.05 * steps),
+    precision: def.precision * (1 + 0.1 * steps),
+    agility: def.agility * (1 + 0.06 * steps),
+    stamina: def.stamina * (1 + 0.07 * steps),
+    speed: def.speed * (1 + 0.022 * steps),
+    volley: def.volley * (1 + 0.03 * steps),
   };
 }
 
@@ -409,6 +426,39 @@ export function claimChallenge(career: Career, id: string): Career {
   if (!challenge) return career;
   if (!isComplete(challenge, career.progress[id] ?? 0)) return career;
   return { ...career, coins: career.coins + challenge.reward, claimed: [...career.claimed, id] };
+}
+
+/**
+ * Coins a trophy is worth at the exchange.
+ *
+ * The second way to get coins, and the one that costs no money. Trophies are
+ * the only thing a player has that is worth spending: they buy rank, rank buys
+ * a bigger purse, and cashing them in trades tomorrow's earning rate for
+ * something to use tonight. That is a real decision rather than a discount —
+ * which is exactly what a currency needs to be interesting.
+ */
+export const COINS_PER_TROPHY = 12;
+
+/**
+ * Sell trophies for coins.
+ *
+ * `best` is deliberately left alone. It is what unlocks the roster
+ * (`isUnlocked`), so a player who cashes in keeps every character they have
+ * already earned — dropping down the ladder must never take a player away.
+ * What it costs is the rank itself, and the tier bonus that comes with it.
+ *
+ * Refuses rather than throws when there are not enough trophies, like every
+ * other purchase here: a screen out of step with the wallet cannot spend what
+ * is not there.
+ */
+export function tradeTrophies(career: Career, trophies: number): Career {
+  const spend = Math.floor(trophies);
+  if (spend <= 0 || career.trophies < spend) return career;
+  return {
+    ...career,
+    trophies: career.trophies - spend,
+    coins: career.coins + spend * COINS_PER_TROPHY,
+  };
 }
 
 /** Spend coins to take a character up a level. A no-op if it cannot be afforded. */
