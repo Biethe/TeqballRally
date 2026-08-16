@@ -357,18 +357,34 @@ trustworthy enough to count.
 
 ## Legs, and what is sold for them
 
-Stamina is the one trait a match takes away from you. It drains as you run,
-comes back between points, and when it is gone you are slow to start, slow to
-turn and a little slower flat out (`EFFORT` in `src/match.ts`, and `legs` in
-`Character.move`). The drain is steep enough to be felt inside a single long
-rally — at the old rate a player could run flat out for a set and never notice
-it, which made the trait, and everything sold for it, pointless.
+Stamina is the one trait a match takes away from you, and it is a **one-way
+ratchet**. A player carries two numbers (`src/character.ts`): `effort`, what is
+in the legs right now, and `reserve`, the ceiling recovery can reach. Running
+costs both. Standing still buys back some `effort` — never `reserve`, which
+only ever falls.
+
+That is the whole model, and it is what stops a match being a sawtooth. Without
+the ceiling, resting returned a player to exactly where they started and every
+point was independent; with it, the first set is genuinely paid for in the
+third. Measured over a full match of ~3.5 s of chasing per point:
+
+| | fresh | 3 points | 6 | 9 | 12 | 15 |
+| --- | --- | --- | --- | --- | --- | --- |
+| legs left | 100% | 90% | 80% | 69% | 59% | 49% |
+
+A player who chases absolutely everything can empty the tank inside a rally and
+reach the floor (`MIN_EFFORT`), which is about a third of their pace with the
+acceleration penalty on top — they can still reach a ball played at them, and
+no longer one played away from them. `MIN_RESERVE` stops a long match ending
+with two players unable to cross their own half.
 
 Most of the cost is acceleration rather than top speed. A model that took real
 reach away would make one brave point lose a whole game, and attacking already
-means coming forward and getting back; the small top-speed term exists so the
-drain is visible in a straight chase, which is where a player actually notices
-they have run out.
+means coming forward and getting back; the top-speed term exists so the drain
+is visible in a straight chase, which is where a player actually notices they
+have run out. The HUD bar shows both numbers — the fill is `effort`, and the
+hatched part on the right is the reserve this match has taken for good, so
+nobody waits for a bar that is never coming back.
 
 The shelf (`src/supplies.ts`) is **three** items, down from five. The old one
 had two drinks and two supplements that differed only by how much stamina they
@@ -382,31 +398,41 @@ physics, the AI and the card all read one already-modified `CharacterDef`.
 Deliberately no `power` on the shelf. Pace belongs to the character and to the
 ball; a shop that sells a harder ball is a shop that decides matches.
 
-## Protecting the models
+## Encrypting the models
 
 Every `.glb` in a built game is a finished 3D asset sitting in a folder, and an
-APK is a zip anybody can open. `scripts/protect-assets.mjs` scrambles them at
-build time into `.teq` files and `src/protected.ts` unscrambles them on the way
+APK is a zip anybody can open. `scripts/protect-assets.mjs` encrypts them at
+build time into `.teq` files and `src/protected.ts` decrypts them on the way
 into Babylon, so a public repository or an unzipped build contains nothing a 3D
 tool will open. `npm run build` does both; `npm run dev` serves `assets/`
 plain, because there is nothing to undo there.
 
-**This is obfuscation, not encryption, and the difference matters.** The key
-ships inside the bundle — the game has to read its own models offline, with no
-server to ask — so anybody willing to read the JavaScript can recover it. What
-it buys is that nothing is one drag-and-drop away from being in somebody else's
-project, and that the licensed packs are not sitting in the open in "a file
-format usable by any 3D application", which is the specific thing their licence
-forbids distributing. What it does not buy is protection from somebody who
-actually wants them; that would need the models never to reach the client in a
-usable form, which for a WebGL game is not a thing that exists.
+It is **AES-256-GCM**, through WebCrypto: real, authenticated encryption. An
+encrypted model is indistinguishable from random bytes — no header to
+recognise, no structure to guess at, nothing to unpick from the file alone —
+and a single altered byte fails the authentication tag rather than decrypting
+to plausible rubbish. Each file gets a fresh random IV, which GCM requires and
+which matters here because every model starts with the same glTF header. The
+cost is 28 bytes per file and, on the hardware AES every ARMv8 phone has, a
+fraction of a second across the whole 37 MB set.
 
-`VITE_ASSET_KEY` sets the key per release, so at least it is not the one
-written in the repository. The algorithm exists twice — once in the bundle,
-once in Node, because the build script runs before a bundle exists — and
-`tests/protected.test.ts` holds the two to producing identical bytes. Drift
-there fails as *every model refusing to load at once*, with nothing in any
-build log to explain why.
+**The honest caveat is key distribution, not the cipher.** A packaged game has
+to decrypt its own models on a phone in a tunnel, so the key ships inside the
+bundle, and anybody willing to read the JavaScript and drive WebCrypto
+themselves can recover it. That is a property of client-side decryption in
+general, not of this scheme: the only design without it is one where the models
+never reach the client in usable form, which for a WebGL game does not exist.
+What it does buy over the keystream XOR it replaced is that the key cannot be
+recovered from the *files* — only from the bundle, which is a far higher bar
+than reading a header — and that tampering is detected rather than loaded.
+
+`VITE_ASSET_KEY` sets the passphrase per release, so a shipped build is not
+encrypted with the string written in this repository. The format exists twice —
+`scripts/scramble.mjs` for the build, which runs before a bundle exists, and
+`src/protected.ts` for the game — and `tests/protected.test.ts` crosses that
+boundary for real: Node encrypts, WebCrypto decrypts. Drift there fails as
+*every model refusing to load at once*, with nothing in any build log to say
+why.
 
 ## Accounts and the backend
 
@@ -1058,6 +1084,21 @@ because guessing at any of them is what broke.
 The guest's world is mirrored so both players see themselves on the near side;
 `reframe` in `src/net/protocol.ts` rotates every message 180° about the
 vertical axis on the way in and out, and swaps the two seats with it.
+
+**Everything in a snapshot is fast-forwarded by half the measured round trip
+before it is shown**, and that is what makes a guest's screen agree with
+itself. Without it a guest ran two clocks: its own character simulated at 60 Hz
+from its own controls, live, and the ball snapped twenty times a second to
+where it had been half a trip ago. The player moved smoothly and the ball
+stuttered against them — worse on a *better* phone with a worse connection,
+which is exactly why it looked like a graphics fault and could not be fixed by
+turning the graphics down. The ball is projected through the same pure
+`stepBall` both peers run, so the catch-up reproduces the host's physics rather
+than guessing; the characters are carried along their reported velocities. The
+residual positional error is then eased away rather than snapped
+(`BALL_CORRECT`), except when it is too large to be anything but a correction
+(`BALL_SNAP`) or the ball is being held, where easing would drag it out of a
+hand.
 
 ```bash
 npm run relay        # PORT=8787, health check on /healthz

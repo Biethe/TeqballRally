@@ -1,10 +1,16 @@
-/** Types for the shared model scrambler. See the note in `scripts/scramble.mjs`. */
+/** Types for the shared model encryption. See the note in `scripts/scramble.mjs`. */
 
-/** A 32-bit hash of the key and the file's own name. Never zero. */
-export declare function seedFor(key: string, name: string): number;
-
-/** XOR a buffer with the keystream for `name`, in place. Its own inverse. */
-export declare function scramble(bytes: Uint8Array, key: string, name: string): Uint8Array;
-
-/** The extension a scrambled model wears. */
+/** The extension an encrypted model wears. */
 export declare const PROTECTED_EXT: string;
+/** Bytes of IV on the front, and authentication tag on the end. */
+export declare const IV_BYTES: number;
+export declare const TAG_BYTES: number;
+
+/** A 256-bit key from a passphrase of any length. */
+export declare function keyFrom(passphrase: string): Uint8Array;
+
+/** Encrypt one model with AES-256-GCM. Returns `[IV][ciphertext][tag]`. */
+export declare function encryptModel(bytes: Uint8Array, passphrase: string): Uint8Array;
+
+/** Decrypt one model. Throws if the file has been altered. */
+export declare function decryptModel(bytes: Uint8Array, passphrase: string): Uint8Array;

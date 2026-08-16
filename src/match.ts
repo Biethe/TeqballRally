@@ -8,7 +8,9 @@ import {
   sampleFlight,
   solveLaunch,
   solveLaunchClearingNet,
+  stepBall,
   type BallEvent,
+  type BallState,
   type BodyCollider,
   type FlightSample,
   type Side,
@@ -16,6 +18,7 @@ import {
 import {
   Character,
   MIN_EFFORT,
+  MIN_RESERVE,
   footFactor,
   pickReceptionClip,
   chooseStrike,
@@ -53,6 +56,7 @@ import {
   SERVE_POWER,
   SERVE_X,
   SETS_TO_WIN,
+  SIM_DT,
   SPAWN,
   TABLE_SCALE,
   WIN_SCORE,
@@ -126,7 +130,13 @@ export interface MatchUI {
   /** Precision bar: fill fraction (null hides it) plus the sweet zone bounds. */
   meter?(frac: number | null, sweetStart: number, sweetEnd: number): void;
   /** How much is left in each player's legs, 0..1. */
-  stamina?(player: number, ai: number): void;
+  /**
+   * How much is left in each player's legs, 0..1, and the ceiling it can
+   * recover to. The ceiling is shown because a player has to be able to see
+   * that part of the bar is gone for the rest of the match rather than merely
+   * waiting to come back.
+   */
+  stamina?(player: number, ai: number, playerMax: number, aiMax: number): void;
   /** Flash the graded quality of the strike press that was just committed. */
   meterResult?(quality: number): void;
 }
@@ -157,20 +167,27 @@ const CONTACT_WINDOW = { min: 0.1, max: 0.4 };
 const LUNGE_MAX = 1.0 * TABLE_SCALE;
 
 /**
- * How fast the legs empty and fill, per second at a flat run.
+ * How the legs empty and fill, per second at a flat run.
  *
- * The drain is steep enough to be felt inside a single long rally — that is
- * the whole point of the trait, and at the old rate a player could run flat
- * out for a set and never notice it. Chasing wide balls now costs something
- * while the point is still being played.
+ * A match is meant to be a slow decline, not a sawtooth. Three numbers do it:
  *
- * The gap between points still hands most of it back, because a game whose
- * third set is played by two exhausted players is a worse game rather than a
- * more realistic one — but not all of it, so a punishing rally is still being
- * paid for two points later. That is what makes stamina, and everything sold
- * for it, worth having.
+ * `drain` is what running costs, and it is steep enough to be felt inside a
+ * single long rally. `rest` is what standing still buys back — deliberately a
+ * fifth of the drain, so recovery is a breather rather than a reset, and it
+ * only applies while a player is genuinely still. And `reserveLoss` is the
+ * fraction of every drained drop that never comes back at all: it comes off
+ * the ceiling recovery works up to (`Character.reserve`), which only ever
+ * falls.
+ *
+ * That last one is the whole model. Without it, resting returned a player to
+ * exactly where they started and a match was a series of independent points;
+ * with it, the first set is genuinely paid for in the third, a player who
+ * chased everything early is visibly labouring later, and fitness — with
+ * everything sold for it — is worth having.
  */
-const EFFORT = { drain: 0.3, rest: 0.06, restBetweenPoints: 0.42 };
+const EFFORT = { drain: 0.05, rest: 0.03, restBetweenPoints: 0.08, reserveLoss: 0.16 };
+/** Below this fraction of top speed a player counts as standing still. */
+const STILL_ENOUGH = 0.2;
 // Final polish only: nudge the ball at most this far onto the limb at the
 // contact frame (covers prediction drift). Bigger misses stay visible.
 const CONTACT_SNAP = 0.18 * TABLE_SCALE;
@@ -817,9 +834,39 @@ export class MatchController {
   }
 
   /**
+   * How far a snapshot's ball may be from the predicted one before the
+   * correction is taken all at once, in metres.
+   *
+   * Under it the error is eased away; over it easing would read as the ball
+   * sliding sideways through the air, which is worse than a jump.
+   */
+  private static readonly BALL_SNAP = 0.9;
+  /** Fraction of the remaining ball error taken per snapshot. */
+  private static readonly BALL_CORRECT = 0.45;
+
+  /**
    * Apply an authoritative frame from the host. Everything here is already in
    * this peer's own coordinates — the wire layer reflects and swaps seats
    * before it arrives.
+   *
+   * `lead` is how many simulation ticks old the frame is: half the measured
+   * round trip. **Everything in it is fast-forwarded by that much before it is
+   * shown**, and that is the whole of what makes a guest's screen agree with
+   * itself.
+   *
+   * Without it the guest ran two clocks. Its own character was simulated at 60
+   * Hz from its own controls, live; the ball was snapped twenty times a second
+   * to where it had been half a round trip ago. So the player moved smoothly
+   * and the ball stuttered backwards against them — on a good phone with a bad
+   * enough connection, badly. It is not a rendering problem and it is not
+   * fixed by turning the graphics down, which is exactly why it looked like
+   * one: the ball was simply being shown at a different moment in time from
+   * the player chasing it.
+   *
+   * The ball is projected with the same pure `stepBall` both peers run, so the
+   * fast-forward reproduces the host's own physics rather than guessing at it.
+   * Characters are carried forward along their reported velocity, which is
+   * what they were doing when the frame was taken.
    */
   applySnapshot(snap: {
     ballPos: { x: number; y: number; z: number };
@@ -835,13 +882,44 @@ export class MatchController {
     sets: [number, number];
     serveOwner: Side;
     phase: string;
-  }): void {
+  }, lead = 0): void {
     this.followerPhase = snap.phase;
-    this.ball.state.pos.set(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z);
-    this.ball.state.vel.set(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z);
-    this.ball.held = snap.ballHeld;
-    this.applyFollowerSide("player", snap.selfPos, snap.selfVel, snap.selfClip);
-    this.applyFollowerSide("ai", snap.opponentPos, snap.opponentVel, snap.opponentClip);
+
+    // Where the host's ball would be *now*, run forward through the same pure
+    // physics both peers share.
+    const ahead: BallState = {
+      pos: new Vector3(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z),
+      vel: new Vector3(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z),
+    };
+    if (!snap.ballHeld) {
+      for (let i = 0; i < lead; i++) stepBall(ahead, SIM_DT);
+    }
+    const held = snap.ballHeld;
+    this.ball.held = held;
+    this.ball.state.vel.copyFrom(ahead.vel);
+    // A held ball is sitting in somebody's hand: there is nothing to predict
+    // and any easing would drag it out of the palm. Otherwise the correction
+    // is eased, because a ball that is only a few centimetres out is better
+    // walked back than teleported — and after the fast-forward above, a few
+    // centimetres is what it normally is.
+    const gap = Vector3.Distance(this.ball.state.pos, ahead.pos);
+    if (held || gap > MatchController.BALL_SNAP) {
+      this.ball.state.pos.copyFrom(ahead.pos);
+    } else {
+      this.ball.state.pos.addInPlace(
+        ahead.pos.subtract(this.ball.state.pos).scale(MatchController.BALL_CORRECT)
+      );
+    }
+
+    // The characters are carried forward the same way, so the three things
+    // moving on screen are all being shown at the same instant.
+    const seconds = lead * SIM_DT;
+    const carried = (p: { x: number; z: number }, v: { x: number; z: number }) => ({
+      x: p.x + v.x * seconds,
+      z: p.z + v.z * seconds,
+    });
+    this.applyFollowerSide("player", carried(snap.selfPos, snap.selfVel), snap.selfVel, snap.selfClip);
+    this.applyFollowerSide("ai", carried(snap.opponentPos, snap.opponentVel), snap.opponentVel, snap.opponentClip);
     const changed =
       this.score.player !== snap.score[0] ||
       this.score.ai !== snap.score[1] ||
@@ -1669,17 +1747,30 @@ export class MatchController {
   private stepEffort(dt: number): void {
     for (const side of ["player", "ai"] as Side[]) {
       const c = this.chars[side];
-      const running = Math.hypot(c.velocity.x, c.velocity.z);
-      const resting = this.state !== "rally";
-      const drain = (running / Math.max(0.1, c.def.speed)) * EFFORT.drain * dt;
-      const gain = (resting ? EFFORT.restBetweenPoints : EFFORT.rest) * dt;
-      const next = c.effort - drain / Math.max(0.2, c.def.stamina) + gain;
-      c.effort = Math.max(MIN_EFFORT, Math.min(1, next));
+      const effortLevel = Math.hypot(c.velocity.x, c.velocity.z) / Math.max(0.1, c.def.speed);
+      // What this instant cost, softened by how fit the character is. Stamina
+      // is the trait, so it divides the cost rather than topping up the tank.
+      const drain =
+        (effortLevel * EFFORT.drain * dt) / Math.max(0.2, c.def.stamina);
+      // Recovery is only for a player who is actually standing still, and
+      // between points it is a breather rather than a restart.
+      const still = effortLevel < STILL_ENOUGH;
+      const gain = still ? (this.state === "rally" ? EFFORT.rest : EFFORT.restBetweenPoints) * dt : 0;
+      // The ceiling falls with the work done and never rises again. This is
+      // what stops a match being a sawtooth and makes the third set the third
+      // set.
+      c.reserve = Math.max(MIN_RESERVE, c.reserve - drain * EFFORT.reserveLoss);
+      c.effort = Math.max(MIN_EFFORT, Math.min(c.reserve, c.effort - drain + gain));
     }
     // Shown rather than only felt. A player who is losing because their legs
     // have gone deserves to be able to see it happening, and it is the whole
     // justification for anything sold to fix it.
-    this.ui.stamina?.(this.chars.player.effort, this.chars.ai.effort);
+    this.ui.stamina?.(
+      this.chars.player.effort,
+      this.chars.ai.effort,
+      this.chars.player.reserve,
+      this.chars.ai.reserve
+    );
   }
 
   private finishPoint(): void {
@@ -1739,8 +1830,12 @@ export class MatchController {
     this.serveOwner = this.initialServer;
     this.pointWinner = null;
     // A new match starts both players fresh, whatever the last one cost them.
-    this.chars.player.effort = 1;
-    this.chars.ai.effort = 1;
+    // The reserve as well as the level: a new match is a fresh pair of legs,
+    // and it is the one thing that puts the ceiling back.
+    for (const c of [this.chars.player, this.chars.ai]) {
+      c.effort = 1;
+      c.reserve = 1;
+    }
     this.chars.player.stopAction();
     this.chars.ai.stopAction();
     this.ui.setScore(0, 0, this.serveOwner, 0, 0);

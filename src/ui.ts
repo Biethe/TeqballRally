@@ -529,8 +529,8 @@ export class UI {
     this.staminaEl = document.createElement("div");
     this.staminaEl.id = "stamina";
     this.staminaEl.innerHTML = `
-      <div class="stamina-row"><span>YOU</span><i><b id="stamina-you"></b></i></div>
-      <div class="stamina-row"><span>CPU</span><i><b id="stamina-cpu"></b></i></div>`;
+      <div class="stamina-row"><span>YOU</span><i><b id="stamina-you"></b><u id="stamina-you-spent"></u></i></div>
+      <div class="stamina-row"><span>CPU</span><i><b id="stamina-cpu"></b><u id="stamina-cpu-spent"></u></i></div>`;
 
     this.meterEl = document.createElement("div");
     this.meterEl.id = "meter";
@@ -867,19 +867,24 @@ export class UI {
    * Widths only — no reflow, no text — because this is called every simulation
    * step and the HUD sits over a running match.
    */
-  stamina(player: number, ai: number): void {
-    const you = this.staminaEl.querySelector<HTMLElement>("#stamina-you");
-    const cpu = this.staminaEl.querySelector<HTMLElement>("#stamina-cpu");
-    if (you) {
-      you.style.width = `${Math.round(Math.max(0, Math.min(1, player)) * 100)}%`;
-      // Colour is the warning: a bar that only shrinks is easy to miss on a
-      // phone while you are watching the ball.
-      you.dataset.low = String(player < 0.45);
-    }
-    if (cpu) {
-      cpu.style.width = `${Math.round(Math.max(0, Math.min(1, ai)) * 100)}%`;
-      cpu.dataset.low = String(ai < 0.45);
-    }
+  stamina(player: number, ai: number, playerMax = 1, aiMax = 1): void {
+    const pct = (n: number) => `${Math.round(Math.max(0, Math.min(1, n)) * 100)}%`;
+    const paint = (id: string, level: number, ceiling: number) => {
+      const bar = this.staminaEl.querySelector<HTMLElement>(`#stamina-${id}`);
+      if (bar) {
+        bar.style.width = pct(level);
+        // Colour is the warning: a bar that only shrinks is easy to miss on a
+        // phone while you are watching the ball.
+        bar.dataset.low = String(level < 0.45);
+      }
+      // The part of the bar this match has taken for good. Drawn from the
+      // right, so what is left to recover into is the gap between them —
+      // otherwise a player waits for a bar that is never coming back.
+      const spent = this.staminaEl.querySelector<HTMLElement>(`#stamina-${id}-spent`);
+      if (spent) spent.style.width = pct(1 - ceiling);
+    };
+    paint("you", player, playerMax);
+    paint("cpu", ai, aiMax);
   }
 
   /** Update the compact HUD label and its accessible camera shortcut hint. */
