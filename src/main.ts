@@ -31,16 +31,16 @@ import {
   buy as buySupply,
   consumeArmed,
   staminaMultiplier,
+  withSupplies,
 } from "./supplies";
 import {
   initPurchases,
-  isPro,
-  proStatus,
+  ownsArena,
+  arenaStatus,
   purchasesAvailable,
-  restorePro,
-  showCustomerCenter,
-  showPaywallIfNeeded,
-  subscribeToPro,
+  restorePurchases,
+  offerArena,
+  subscribeToArena,
   coinPackages,
   coinsForProduct,
   purchaseCoins,
@@ -75,6 +75,7 @@ import { ModelViewer } from "./viewer";
 import { PRACTICE_DIFFICULTY, PracticeCoach } from "./practice";
 import { readPreferences, storePreferences, type Preferences } from "./settings";
 import {
+  COINS_PER_TROPHY,
   MAX_LEVEL,
   UNLOCK_AT,
   XP_PER_LEVEL,
@@ -85,6 +86,7 @@ import {
   openCareer,
   settleMatch,
   storeCareer,
+  tradeTrophies,
   upgradeCost,
   withCareer,
   type Career,
@@ -190,7 +192,7 @@ async function boot(): Promise<void> {
   const audio = new AudioManager();
   const input = new Input(uiRoot);
   // Not awaited: the store is never allowed to hold up the game starting, and
-  // every gate reads the entitlement through subscribeToPro, which fires again
+  // every gate reads the entitlement through subscribeToArena, which fires again
   // when the real answer lands. Off-device this settles immediately on "no
   // store", so the browser and the harnesses are unaffected.
   void initPurchases();
@@ -286,9 +288,9 @@ async function boot(): Promise<void> {
   // member a downgrade while their entitlement loads is the version that reads
   // as the game taking something away. A `?venue=` override is left alone —
   // it is a harness hook, not a way to buy anything.
-  subscribeToPro((status) => {
+  subscribeToArena((status) => {
     if (!status.ready || venueFromSearch(location.search)) return;
-    const allowed = permittedVenue(venueId, status.pro);
+    const allowed = permittedVenue(venueId, status.owned);
     if (allowed === venueId) return;
     venueId = allowed;
     storeVenue(allowed);
@@ -1427,12 +1429,12 @@ async function boot(): Promise<void> {
    * case is handled once: in a browser this says so plainly instead of a
    * button doing nothing, which is the version that gets reported as a bug.
    */
-  const unlockPro = async (): Promise<boolean> => {
+  const unlockArena = async (): Promise<boolean> => {
     if (!purchasesAvailable()) {
       ui.notice(tr("pro.unavailable.title"), tr("pro.unavailable.body"), tr("pro.ok"));
       return false;
     }
-    return showPaywallIfNeeded();
+    return offerArena();
   };
 
   /**
@@ -1450,40 +1452,70 @@ async function boot(): Promise<void> {
    * different sizes, and RevenueCat's paywall is built for picking between
    * tiers of a subscription. Off-device it says so instead of doing nothing.
    */
+  /**
+   * How many trophies the exchange offers to take in one go.
+   *
+   * A fixed lot rather than a slider: the decision worth making is "do I cash
+   * in", not "how many exactly", and a slider turns a two-second choice into
+   * arithmetic. Capped at what the player actually holds so the row can never
+   * offer a trade that will be refused.
+   */
+  const tradeLot = (): number => Math.min(50, career.trophies);
+
   const showCoinShop = (back: () => void): void => {
-    if (!purchasesAvailable()) {
-      ui.notice(tr("pro.unavailable.title"), tr("pro.unavailable.body"), tr("pro.ok"), back);
-      return;
+    // Trophies buy coins whether or not there is a store, so the exchange is
+    // built first and the packs are added to it if a store answers. A player
+    // in a browser, or offline, still has a way to turn a good week into
+    // something to spend.
+    const rows: [string, () => void][] = [];
+    const lot = tradeLot();
+    if (lot > 0) {
+      rows.push([
+        tf("supplies.coins.trade", { trophies: lot, coins: lot * COINS_PER_TROPHY }),
+        () => {
+          ui.hideOnlinePause();
+          saveCareer(tradeTrophies(career, lot));
+          back();
+        },
+      ]);
     }
-    void coinPackages().then((packages) => {
-      if (packages.length === 0) {
+
+    const present = (): void => {
+      if (rows.length === 0) {
         ui.notice(tr("supplies.coins.none.title"), tr("supplies.coins.none.body"), tr("pro.ok"), back);
         return;
       }
-      ui.showOnlinePause(
-        tr("supplies.coins.title"),
-        tr("supplies.coins.body"),
-        [
-          ...packages.map((pkg): [string, () => void] => [
-            // The store's own localised price, never one formatted here.
-            `${coinsForProduct(pkg.product.identifier)} · ${pkg.product.priceString}`,
-            () => {
-              ui.hideOnlinePause();
-              void purchaseCoins(pkg).then((outcome) => {
-                if (outcome.ok && outcome.coins) {
-                  career.coins += outcome.coins;
-                  storeCareer(career);
-                  ui.setWallet(career.coins, career.trophies, tierFor(career.trophies).label);
-                } else if (!outcome.ok && !outcome.cancelled) {
-                  ui.notice(tr("pro.failed.title"), outcome.message, tr("pro.ok"));
-                }
-                back();
-              });
-            },
-          ]),
-          [tr("settings.restart.cancel"), () => { ui.hideOnlinePause(); back(); }],
-        ]
-      );
+      ui.showOnlinePause(tr("supplies.coins.title"), tr("supplies.coins.body"), [
+        ...rows,
+        [tr("settings.restart.cancel"), () => { ui.hideOnlinePause(); back(); }],
+      ]);
+    };
+
+    if (!purchasesAvailable()) {
+      present();
+      return;
+    }
+    void coinPackages().then((packages) => {
+      for (const pkg of packages) {
+        rows.push([
+          // The store's own localised price, never one formatted here.
+          `${coinsForProduct(pkg.product.identifier)} · ${pkg.product.priceString}`,
+          () => {
+            ui.hideOnlinePause();
+            void purchaseCoins(pkg).then((outcome) => {
+              if (outcome.ok && outcome.coins) {
+                career.coins += outcome.coins;
+                storeCareer(career);
+                ui.setWallet(career.coins, career.trophies, tierFor(career.trophies).label);
+              } else if (!outcome.ok && !outcome.cancelled) {
+                ui.notice(tr("pro.failed.title"), outcome.message, tr("pro.ok"));
+              }
+              back();
+            });
+          },
+        ]);
+      }
+      present();
     });
   };
 
@@ -1599,39 +1631,29 @@ async function boot(): Promise<void> {
         ];
       }
       if (group === "pro") {
-        const status = proStatus();
-        // Lifetime has no expiry date; a subscription has one that means
-        // opposite things depending on whether it is going to renew, and
-        // "ends" is the one a player needs to see coming.
-        const when = status.expires ? new Date(status.expires).toLocaleDateString() : null;
-        const term = when
-          ? tf(status.willRenew ? "pro.renews" : "pro.lapses", { date: when })
-          : tr("pro.lifetime");
+        const status = arenaStatus();
+        // One thing to say and at most one thing to do. Nothing here renews,
+        // lapses or needs managing, so there is no term to explain and no
+        // subscription screen to hand anybody off to.
         return [
           {
             id: "pro-status",
-            label: status.pro ? tr("pro.status.active") : tr("pro.status.inactive"),
-            hint: status.pro
-              ? `${tr("pro.status.hint.active")} ${term}`
-              : tr("pro.status.hint.inactive"),
+            label: status.owned ? tr("pro.status.active") : tr("pro.status.inactive"),
+            hint: status.owned ? tr("pro.status.hint.active") : tr("pro.status.hint.inactive"),
           },
-          // A member is not sold to again; they are given the store's own
-          // screen for changing or cancelling, which is where that belongs.
-          status.pro
-            ? {
-                id: "pro-manage",
-                label: tr("pro.manage"),
-                hint: tr("pro.manage.hint"),
-                control: { kind: "action", label: tr("pro.manage.action") },
-              }
-            : {
-                id: "pro-unlock",
-                label: tr("pro.unlock"),
-                hint: tr("pro.unlock.hint"),
-                control: { kind: "action", label: tr("pro.unlock.action") },
-              },
-          // Reachable without buying anything first, and without already being
-          // a member: somebody who reinstalled has no other way back in, and
+          // Somebody who already owns it is not sold to again.
+          ...(status.owned
+            ? []
+            : [
+                {
+                  id: "pro-unlock",
+                  label: tr("pro.unlock"),
+                  hint: tr("pro.unlock.hint"),
+                  control: { kind: "action" as const, label: tr("pro.unlock.action") },
+                },
+              ]),
+          // Reachable without buying anything first, and without already
+          // owning it: somebody who reinstalled has no other way back in, and
           // both stores require the path to exist.
           {
             id: "pro-restore",
@@ -1750,13 +1772,7 @@ async function boot(): Promise<void> {
             return;
           }
           if (id === "pro-unlock") {
-            void unlockPro().then(render);
-            return;
-          }
-          if (id === "pro-manage") {
-            // Anything can happen in there, including a cancellation, so the
-            // screen is redrawn from the entitlement rather than assumed.
-            void showCustomerCenter().then(render);
+            void unlockArena().then(render);
             return;
           }
           if (id === "pro-restore") {
@@ -1764,9 +1780,9 @@ async function boot(): Promise<void> {
               ui.notice(tr("pro.unavailable.title"), tr("pro.unavailable.body"), tr("pro.ok"));
               return;
             }
-            void restorePro().then((outcome) => {
+            void restorePurchases().then((outcome) => {
               render();
-              if (outcome.ok && outcome.pro) {
+              if (outcome.ok && outcome.owned) {
                 ui.notice(tr("pro.restored.title"), tr("pro.restored.body"), tr("pro.ok"));
               } else if (outcome.ok) {
                 // A restore that finds nothing is not an error, and saying so
@@ -1871,6 +1887,12 @@ async function boot(): Promise<void> {
         theirs = { character: msg.character, ball: msg.ball };
         launch();
       },
+      // A phone drops its socket for a few seconds all the time. Say what is
+      // happening rather than freezing silently, and say when it is over —
+      // an unexplained pause in a live match reads as the game hanging.
+      onReconnecting: (attempt, of) =>
+        ui.banner(tr("net.reconnecting"), tf("net.reconnecting.sub", { n: attempt, of })),
+      onReconnected: () => ui.banner(tr("net.reconnected")),
     });
 
     showSelect(tr("select.title"), (charId, ballId) => {
@@ -2096,6 +2118,35 @@ async function boot(): Promise<void> {
     showSelect(tr("select.title"), begin, showModes);
   };
 
+  /**
+   * An opponent worth playing, given who the player brought.
+   *
+   * The roster is a ladder now, so a random draw is not a fair fight: a
+   * beginner on BRAZIL could be handed SPAIN, who is better at everything, and
+   * the difficulty setting they chose would mean nothing. Nor is the reverse
+   * any better — a fully trained player wants the game to keep up.
+   *
+   * So the draw is weighted toward the nearest rung rather than pinned to it.
+   * Nearest-only would mean facing one character forever, which is the other
+   * way to make a roster boring; this keeps the field open and simply makes a
+   * mismatch rare. The scale is TOTAL POWER, the same number the card in front
+   * of the player shows, so the match they get agrees with the comparison they
+   * were just looking at.
+   */
+  const matchedOpponent = (playerDef: CharacterDef, ownId: string): CharacterDef => {
+    const others = CHARACTERS.filter((c) => c.id !== ownId);
+    const mine = totalPower(playerDef);
+    // A gap of one rung is roughly 40 points of total power, so this leaves
+    // the neighbour clearly likeliest and the far end of the roster possible.
+    const weights = others.map((c) => 1 / (1 + Math.abs(totalPower(c) - mine) / 25));
+    let roll = Math.random() * weights.reduce((sum, w) => sum + w, 0);
+    for (let i = 0; i < others.length; i++) {
+      roll -= weights[i];
+      if (roll <= 0) return others[i];
+    }
+    return others[others.length - 1];
+  };
+
   const showDifficulty = () => {
     ui.showMenu(
       tr("difficulty.title"),
@@ -2112,8 +2163,7 @@ async function boot(): Promise<void> {
           // one place a match is built, so an upgrade is felt in the next game
           // rather than being a number on a card.
           const playerDef = withCareer(base, levelOf(career, base.id));
-          const others = CHARACTERS.filter((c) => c.id !== charId);
-          const opponent = others[Math.floor(Math.random() * others.length)];
+          const opponent = matchedOpponent(playerDef, charId);
           void startMatch(playerDef, ballId, {
             opponent,
             difficulty: diff,
@@ -2189,7 +2239,7 @@ async function boot(): Promise<void> {
         // The premium venue is locked by the entitlement rather than by
         // trophies, so it says something different — but it goes through the
         // same map, which is what makes PLAY turn into the offer on its tab.
-        ...VENUE_IDS.filter((id) => isPremiumVenue(id) && !isPro()).map(
+        ...VENUE_IDS.filter((id) => isPremiumVenue(id) && !ownsArena()).map(
           (id): [string, string] => [id, tr("select.venuePro")]
         ),
       ]),
@@ -2203,7 +2253,7 @@ async function boot(): Promise<void> {
       venues: VENUE_IDS.map((id) => ({
         id,
         label: venueFor(id).label,
-        locked: isPremiumVenue(id) && !isPro(),
+        locked: isPremiumVenue(id) && !ownsArena(),
       })),
       venue: venueId,
       // Called when PLAY is pressed, to commit whatever the venue tab is
@@ -2216,10 +2266,10 @@ async function boot(): Promise<void> {
         // refusal. Answering false here would have made PLAY do nothing at all
         // for anyone who had not changed venue since opening the screen.
         if (picked === venueId) return true;
-        if (isPremiumVenue(picked) && !isPro()) {
+        if (isPremiumVenue(picked) && !ownsArena()) {
           // Backing out of the paywall is a decision, not a failure: the screen
           // stays where it is and says nothing about it.
-          if (!(await unlockPro())) return false;
+          if (!(await unlockArena())) return false;
         }
         storeVenue(picked);
         venueId = picked;
@@ -2439,10 +2489,10 @@ async function boot(): Promise<void> {
       storeCareer(career);
       ui.setWallet(career.coins, career.trophies, tierFor(career.trophies).label);
     }
-    const supplied: CharacterDef = {
-      ...player,
-      stamina: player.stamina * staminaMultiplier(career.taken, drank),
-    };
+    // What the shelf bought, then what the ball does — legs and sharpness
+    // first, because a supply is something the player brought with them and a
+    // ball is what they picked up on the way out.
+    const supplied = withSupplies(player, career.taken, drank);
     const playerDef = withBall(supplied, ballFor(ballId));
     ui.showLoading("Loading the court…");
     input.setTouchControlsEnabled(true);

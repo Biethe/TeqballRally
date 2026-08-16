@@ -256,15 +256,22 @@ describe("a career", () => {
     expect(levelOf(career, CHARACTERS[0].id)).toBe(MAX_LEVEL);
   });
 
-  it("spends the level on precision, which is what the spread divides by", () => {
+  it("spends the level on precision first, and on being felt at all", () => {
     const base = CHARACTERS[0];
 
     expect(withCareer(base, 1).precision).toBe(base.precision);
     expect(withCareer(base, 3).precision).toBeGreaterThan(base.precision);
-    // And nothing else moves: a levelled player keeps their ball in, they do
-    // not kick it harder than the character they picked.
-    expect(withCareer(base, MAX_LEVEL).power).toBe(base.power);
-    expect(withCareer(base, MAX_LEVEL).speed).toBe(base.speed);
+    // Precision leads, because it is what the kick spread divides by. But a
+    // level that moved nothing else was correct and invisible, and a player
+    // who cannot feel what they bought stops buying.
+    const maxed = withCareer(base, MAX_LEVEL);
+    const gain = (a: number, b: number) => b / a - 1;
+    expect(gain(base.precision, maxed.precision)).toBeGreaterThan(
+      gain(base.agility, maxed.agility)
+    );
+    // Pace is the character's, not the career's.
+    expect(maxed.power).toBe(base.power);
+    expect(maxed.serve).toBe(base.serve);
   });
 
   it("locks the roster behind trophies, and keeps it unlocked", () => {

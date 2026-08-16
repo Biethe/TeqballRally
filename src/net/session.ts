@@ -383,6 +383,12 @@ export class OnlineSession {
   private trackPresence(dt: number): void {
     if (this.forfeited) return;
     this.sinceMessage += dt;
+    // Our own socket is down and being retried. Nothing can arrive through it,
+    // so the silence says nothing about the opponent — and awarding ourselves
+    // the match because our phone changed network would be a walkover claimed
+    // by the player who actually left. The clock is held, not reset: if the
+    // retries run out the connection fails on its own terms.
+    if (this.conn.isReconnecting) return;
     const absent = !this.peerPresent || this.sinceMessage > ABSENT_AFTER_SECONDS;
 
     if (!absent) {

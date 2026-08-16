@@ -198,11 +198,14 @@ describe("backflipAllowed", () => {
   it("matches the roster's documented flip abilities", () => {
     const byLabel = Object.fromEntries(CHARACTERS.map((c) => [c.label, c]));
 
-    expect(backflipAllowed(byLabel.BRAZIL, "left")).toBe(true);
+    // BRAZIL flips off the strong foot only — the starter is allowed the
+    // trick, not the mastery of it.
     expect(backflipAllowed(byLabel.BRAZIL, "right")).toBe(true);
+    expect(backflipAllowed(byLabel.BRAZIL, "left")).toBe(false);
     expect(backflipAllowed(byLabel.ENGLAND, "right")).toBe(false);
     expect(backflipAllowed(byLabel.FRANCE, "left")).toBe(true);
     expect(backflipAllowed(byLabel.FRANCE, "right")).toBe(false);
+    // SPAIN is two-footed, so either foot qualifies as the strong one.
     expect(backflipAllowed(byLabel.SPAIN, "left")).toBe(true);
     expect(backflipAllowed(byLabel.SPAIN, "right")).toBe(true);
   });
@@ -462,21 +465,25 @@ describe("the traits that decide a rally", () => {
     // Levelling lifts them…
     expect(trainedBrazil.agility).toBeGreaterThan(brazil.agility);
     expect(trainedBrazil.stamina).toBeGreaterThan(brazil.stamina);
-    // …and the acrobat is still quicker than the powerhouse, and the
-    // powerhouse still lasts longer, after both have trained to the cap.
-    expect(trainedBrazil.agility).toBeGreaterThan(trainedEngland.agility);
+    // …and training does not reorder the roster: ENGLAND is a rung above
+    // BRAZIL on the ladder and stays there with both trained to the cap.
+    expect(trainedEngland.agility).toBeLessThan(trainedBrazil.agility);
     expect(trainedEngland.stamina).toBeGreaterThan(trainedBrazil.stamina);
   });
 
-  it("leaves the traits that are technique alone when levelling", () => {
-    // Serve and volley are things you can do, not effort you can put in.
+  it("leaves power and the serve to the character when levelling", () => {
+    // A level has to be felt, so it lifts most of what a player notices —
+    // precision, agility, stamina, and a little speed and reach with it. Pace
+    // and the serve are what make ENGLAND ENGLAND, and training out of them
+    // would turn four characters into one.
     const def = CHARACTERS[0];
     const trained = withCareer(def, MAX_LEVEL);
 
-    expect(trained.serve).toBe(def.serve);
-    expect(trained.volley).toBe(def.volley);
     expect(trained.power).toBe(def.power);
-    expect(trained.speed).toBe(def.speed);
+    expect(trained.serve).toBe(def.serve);
+    expect(trained.precision).toBeGreaterThan(def.precision);
+    expect(trained.speed).toBeGreaterThan(def.speed);
+    expect(trained.volley).toBeGreaterThan(def.volley);
   });
 });
 

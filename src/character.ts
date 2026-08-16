@@ -3,7 +3,6 @@ import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import type { Scene } from "@babylonjs/core/scene";
-import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
 import {
   clearTable,
   clipStartFraction,
@@ -15,6 +14,7 @@ import {
   type Foot,
 } from "./config";
 import { brightenKit, fixMetallicMaterials } from "./scene";
+import { importModel } from "./protected";
 
 /**
  * The clips locomotion blends between.
@@ -241,7 +241,7 @@ export class Character {
   static async load(scene: Scene, def: CharacterDef): Promise<Character> {
     const file = def.id;
     const h = def.height * CHARACTER_SCALE;
-    const res = await SceneLoader.ImportMeshAsync("", "/models/characters/", `${file}.glb`, scene);
+    const res = await importModel(scene, "/models/characters/", `${file}.glb`);
     // Two-level rig: the wrapper origin is the character's foot point (what the
     // game moves around), the inner node carries the scale + grounding offset.
     // Baking the offset into an inner node means position.set(...) on the
@@ -351,11 +351,20 @@ export class Character {
     }
   }
 
-  /** World-space point where `clip` will make contact, for the current position/yaw. */
-  clipContactPoint(clip: string): Vector3 | null {
+  /**
+   * World-space point where `clip` will make contact, for the current
+   * position and yaw.
+   *
+   * `extraYaw` is for asking about a clip that is *about* to be played with a
+   * yaw offset of its own — a backflip is turned to face the table, and a plan
+   * made before the turn would place the limb on the wrong side of the player.
+   * Once the clip is running the offset is already in the root's rotation and
+   * this takes no argument.
+   */
+  clipContactPoint(clip: string, extraYaw = 0): Vector3 | null {
     const off = this.contactOffsets.get(clip);
     if (!off) return null;
-    const yaw = this.root.rotation.y;
+    const yaw = this.root.rotation.y + extraYaw;
     const cos = Math.cos(yaw);
     const sin = Math.sin(yaw);
     return new Vector3(
@@ -412,8 +421,15 @@ export class Character {
     // instead would make one aggressive point cost a whole game, and the sharp
     // shots now need coming forward and getting back.
     const tau = MOVE_TAU / (this.def.agility * this.effort);
-    this.velocity.x = approachVelocity(this.velocity.x, dirX * speed, dt, tau);
-    this.velocity.z = approachVelocity(this.velocity.z, dirZ * speed, dt, tau);
+    // Tired legs are also slower legs, but only a little: at empty this is
+    // still 85% of top speed. Acceleration remains where most of the cost
+    // lands — taking real reach away would make one brave point lose a game,
+    // and attacking already means coming forward and getting back. A small
+    // top-speed term is what makes the drain visible in a straight chase,
+    // which is where a player actually notices they have run out.
+    const legs = 0.6 + 0.4 * this.effort;
+    this.velocity.x = approachVelocity(this.velocity.x, dirX * speed * legs, dt, tau);
+    this.velocity.z = approachVelocity(this.velocity.z, dirZ * speed * legs, dt, tau);
     this.velocity.y = 0;
     const p = this.position;
     p.x += this.velocity.x * dt;

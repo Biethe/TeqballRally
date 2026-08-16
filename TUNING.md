@@ -31,7 +31,12 @@ Permanent camera placements:
 | Table size | `TABLE.length / width / hCenter / hEnd / netTop` | The *real* table: physics and model scale together. |
 | Table model nudge | `TABLE_VISUAL.scale / offsetX / offsetY / offsetZ` | Visual-only; offsets are relative to `GROUND_Y`. Keep small or the ball will bounce where the table isn't. |
 | Player size | `CHARACTERS[…].height`, `CHARACTER_SCALE` | Per-player height and a global multiplier; gameplay proportions scale with it. |
-| Player traits | `CHARACTERS[…]` | Per-player `strongFoot` (left/right/both), court `speed` (m/s), kick `power`, aim `precision` (>1 = tighter), and `backflips` (none / strong foot only / both feet). |
+| Player traits | `CHARACTERS[…]` | Per-player `strongFoot` (left/right/both), court `speed` (m/s), kick `power`, aim `precision` (>1 = tighter), `stamina`, `serve`, `agility`, `volley`, `weakFoot` (0-100) and `backflips` (none / strong foot only / both feet). **The roster is a ladder** — each entry unlocks later and must be plainly better overall than the one before it; `tests/config.test.ts` fails if that stops being true, or if a rung stops giving anything up. |
+| Trait bars | `SPAN` / `RATING_FLOOR` / `RATING_CAP` in `src/ratings.ts` | What each 0-100 bar is measured against. Fixed bounds, not derived from the roster, so retuning a character does not move everybody else's numbers. The bar stops at 95: nobody is ever finished. |
+| Levels | `withCareer` / `upgradeCost` / `XP_PER_LEVEL` / `MAX_LEVEL` in `src/progress.ts` | What a level buys and what it costs. Power and serve are deliberately untouched by levelling — they belong to the character. |
+| Stamina | `EFFORT` in `src/match.ts`, `MIN_EFFORT` and `legs` in `src/character.ts` | How fast the legs empty, how fast they come back, and what being empty costs (mostly acceleration, a little top speed). |
+| Supplies | `SUPPLIES` / `BOOST_CAP` in `src/supplies.ts` | The shop shelf. Each item's `boost` multiplies stamina/agility/precision; `power` is deliberately not for sale. |
+| Coin economy | `PURSE` / `STAKE` in `src/league.ts`, `COINS_PER_TROPHY` in `src/progress.ts` | What a match pays, and what a trophy is worth at the exchange. |
 | Foot handedness | `FOOT_FACTOR` | Power/spray modifiers a footed player gets on strong- vs weak-foot clips (foot kicks, inner lobs, backflips, foot serves). |
 | Procedural court | `COURT.floorHalfLen / floorHalfWid` | The dark-blue floor and boards (drawn at `GROUND_Y`). |
 | Movement bounds | `COURT.minX / maxX / maxZ` | How far players can roam. |

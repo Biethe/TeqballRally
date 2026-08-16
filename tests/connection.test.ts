@@ -129,6 +129,56 @@ describe("joining", () => {
   });
 });
 
+describe("getting back in after a drop", () => {
+  /**
+   * The failure this exists for is a phone, not a server.
+   *
+   * A handover from Wi-Fi to cellular, a lift, a tunnel: a mobile socket dies
+   * for a few seconds constantly, and before this it cost the match. The relay
+   * needs no part in it — a closed socket frees its seat while the room lives
+   * on for the opponent, so rejoining by the same code lands back in the same
+   * room against the same person.
+   */
+  it("reclaims its seat and keeps the opponent", async () => {
+    const room = makeRoomCode();
+    let backIn = false;
+    const host = track(
+      new NetConnection(URL, { onReconnected: () => (backIn = true) })
+    );
+    const guest = track(new NetConnection(URL));
+    await host.join(room);
+    await guest.join(room);
+    await waitFor(() => (host.status === "ready" ? true : null));
+
+    // Kill the socket the way a network does: without telling anybody.
+    (host as unknown as { socket: WebSocket | null }).socket?.close();
+
+    await waitFor(() => (backIn ? true : null), 8000);
+    expect(host.status).toBe("ready");
+    expect(host.room).toBe(room);
+
+    // And the room is the same one: a message still reaches the opponent.
+    const heard: GameMessage[] = [];
+    guest.setHandlers({ onMessage: (m) => heard.push(m) });
+    const ball = { pos: new Vector3(0, 1, 0), vel: new Vector3(1, 2, 0), spin: 1 };
+    host.send(makeStrike(0, ball, "RightFootKick"));
+    await waitFor(() => (heard.length ? heard : null));
+    expect(heard[0].t).toBe("strike");
+  }, 20_000);
+
+  it("does not chase a room the player deliberately left", async () => {
+    const room = makeRoomCode();
+    let tried = false;
+    const conn = track(new NetConnection(URL, { onReconnecting: () => (tried = true) }));
+    await conn.join(room);
+    conn.close();
+    await new Promise((r) => setTimeout(r, 1200));
+
+    expect(tried).toBe(false);
+    expect(conn.status).toBe("closed");
+  }, 10_000);
+});
+
 describe("messaging", () => {
   async function pair(): Promise<[NetConnection, NetConnection, GameMessage[], GameMessage[]]> {
     const room = makeRoomCode();

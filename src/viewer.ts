@@ -22,6 +22,7 @@ import { applyKit, BLANK_KIT, type Kit } from "./kit";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { trimIdleTail } from "./character";
 import { CHARACTER_SCALE, CHARACTERS } from "./config";
+import { protectedSource } from "./protected";
 
 export type ViewerKind = "character" | "ball";
 
@@ -288,7 +289,10 @@ export class ModelViewer {
     // Do not supply a custom root here: doing so bypasses Babylon's automatic
     // glTF right-handed-to-scene conversion, which mirrors the kit and flips
     // its normals. The default importer root retains that conversion.
-    const res = await ImportMeshAsync(`${id}.glb`, this.scene, {
+    // A scrambled build hands the loader the bytes instead of a URL; the root
+    // stays set either way, and is simply unused when there is a File.
+    const source = (await protectedSource("/models/characters/", `${id}.glb`)) ?? `${id}.glb`;
+    const res = await ImportMeshAsync(source, this.scene, {
       rootUrl: "/models/characters/",
       pluginOptions: {
         gltf: {

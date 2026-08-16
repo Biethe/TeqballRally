@@ -30,22 +30,23 @@ import {
 import { PAYWALL_RESULT, RevenueCatUI } from "@revenuecat/purchases-capacitor-ui";
 
 /**
- * The entitlement everything paid hangs off.
+ * The entitlement the arena hangs off.
  *
- * Deliberately the only one. Entitlements are what the app should check;
- * products are what the store sells, and which product granted access — a month,
- * a year, or once and for all — is RevenueCat's problem rather than the game's.
+ * **There are no subscriptions.** Real money buys exactly two things in this
+ * game: the arena, once and for all, and coins. Everything else — characters,
+ * balls, supplies, levels — is bought with coins and trophies, which are
+ * earned by playing. A game that rents out its content has to keep being paid
+ * to stay the same game, and that is not the deal this one makes.
+ *
+ * The identifier is still the string RevenueCat's dashboard was configured
+ * with, deliberately: renaming it would strip the arena from everybody who has
+ * already bought it. What changed is the offer behind it — a single
+ * non-consumable — not the key the app checks.
  */
-export const PRO_ENTITLEMENT = "Teqie Pro";
+export const ARENA_ENTITLEMENT = "Teqie Pro";
 
-/** The products behind that entitlement, as configured in RevenueCat. */
-export const PRO_PRODUCTS = {
-  lifetime: "lifetime",
-  yearly: "yearly",
-  monthly: "monthly",
-} as const;
-
-export type ProProductId = (typeof PRO_PRODUCTS)[keyof typeof PRO_PRODUCTS];
+/** The one-time product behind that entitlement, as configured in RevenueCat. */
+export const ARENA_PRODUCT = "lifetime";
 
 /**
  * The public SDK key.
@@ -59,32 +60,22 @@ export type ProProductId = (typeof PRO_PRODUCTS)[keyof typeof PRO_PRODUCTS];
  */
 const API_KEY = import.meta.env.VITE_REVENUECAT_KEY ?? "test_rZiGyRrwNBacPnBmcSMZaaOkcyh";
 
-export interface ProStatus {
+export interface ArenaStatus {
   /**
    * Whether RevenueCat has answered yet.
    *
-   * Distinct from `pro` being false: before the first answer the honest state
-   * is "unknown", and a paywall shown to a subscriber because their status had
-   * not loaded is the worst version of this feature.
+   * Distinct from `owned` being false: before the first answer the honest
+   * state is "unknown", and an offer shown to somebody who already paid
+   * because their status had not loaded is the worst version of this feature.
    */
   ready: boolean;
-  /** Whether the Teqie Pro entitlement is active right now. */
-  pro: boolean;
-  /** Which product is carrying it, when RevenueCat says. */
+  /** Whether this player owns the arena. */
+  owned: boolean;
+  /** Which product carried it, when RevenueCat says. */
   productId: string | null;
-  /** False on a subscription heading for expiry — the prompt to win them back. */
-  willRenew: boolean;
-  /** ISO date the access lapses, or null for lifetime. */
-  expires: string | null;
 }
 
-const UNKNOWN: ProStatus = {
-  ready: false,
-  pro: false,
-  productId: null,
-  willRenew: false,
-  expires: null,
-};
+const UNKNOWN: ArenaStatus = { ready: false, owned: false, productId: null };
 
 /**
  * Read the entitlement out of a customer info payload.
@@ -93,45 +84,44 @@ const UNKNOWN: ProStatus = {
  * `entitlements.active` is keyed by entitlement identifier, and getting that
  * lookup wrong fails in the one direction nobody notices: silently, for paying
  * players only.
+ *
+ * An expiry date is deliberately not read. Nothing sold here expires; if a
+ * legacy subscription from before the change is still carrying somebody's
+ * entitlement, RevenueCat drops it out of `active` when it lapses and this
+ * answers false the same way it would for anybody else.
  */
-export function readProStatus(info: CustomerInfo | null | undefined): ProStatus {
-  const entitlement = info?.entitlements?.active?.[PRO_ENTITLEMENT];
+export function readArenaStatus(info: CustomerInfo | null | undefined): ArenaStatus {
+  const entitlement = info?.entitlements?.active?.[ARENA_ENTITLEMENT];
   if (!entitlement) return { ...UNKNOWN, ready: info != null };
-  return {
-    ready: true,
-    pro: true,
-    productId: entitlement.productIdentifier ?? null,
-    willRenew: entitlement.willRenew ?? false,
-    expires: entitlement.expirationDate ?? null,
-  };
+  return { ready: true, owned: true, productId: entitlement.productIdentifier ?? null };
 }
 
-let status: ProStatus = { ...UNKNOWN };
-const listeners = new Set<(s: ProStatus) => void>();
+let status: ArenaStatus = { ...UNKNOWN };
+const listeners = new Set<(s: ArenaStatus) => void>();
 
-function publish(next: ProStatus): void {
+function publish(next: ArenaStatus): void {
   status = next;
   for (const listener of listeners) listener(status);
 }
 
 /** The last known entitlement state. Synchronous, for gating a screen as it draws. */
-export function proStatus(): ProStatus {
+export function arenaStatus(): ArenaStatus {
   return status;
 }
 
 /** Shorthand for the common question. */
-export function isPro(): boolean {
-  return status.pro;
+export function ownsArena(): boolean {
+  return status.owned;
 }
 
 /**
  * Watch the entitlement.
  *
  * Fires immediately with the current value, so a caller never has to handle
- * "subscribed before the first update" as a separate case. Returns an
+ * "already owned before the first update" as a separate case. Returns an
  * unsubscribe, matching MatchController.subscribe.
  */
-export function subscribeToPro(listener: (s: ProStatus) => void): () => void {
+export function subscribeToArena(listener: (s: ArenaStatus) => void): () => void {
   listeners.add(listener);
   listener(status);
   return () => listeners.delete(listener);
@@ -163,10 +153,10 @@ export function initPurchases(): Promise<boolean> {
     try {
       await Purchases.setLogLevel({ level: import.meta.env.DEV ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN });
       await Purchases.configure({ apiKey: API_KEY });
-      // The listener is what keeps a renewal, a lapse or a purchase made on
-      // another device honest without the game polling for it.
-      await Purchases.addCustomerInfoUpdateListener((info) => publish(readProStatus(info)));
-      await refreshPro();
+      // The listener is what keeps a refund, or a purchase made on another
+      // device, honest without the game polling for it.
+      await Purchases.addCustomerInfoUpdateListener((info) => publish(readArenaStatus(info)));
+      await refreshArena();
       return true;
     } catch (error) {
       console.warn("[purchases] unavailable:", describe(error));
@@ -178,36 +168,19 @@ export function initPurchases(): Promise<boolean> {
 }
 
 /** Ask the store where things stand. Cheap: RevenueCat caches and dedupes. */
-export async function refreshPro(): Promise<ProStatus> {
+export async function refreshArena(): Promise<ArenaStatus> {
   if (!purchasesAvailable()) return status;
   try {
     const { customerInfo } = await Purchases.getCustomerInfo();
-    publish(readProStatus(customerInfo));
+    publish(readArenaStatus(customerInfo));
   } catch (error) {
     console.warn("[purchases] could not read customer info:", describe(error));
   }
   return status;
 }
 
-/**
- * The current offering's packages, for a shop built in the game's own UI.
- *
- * Returns an empty list rather than throwing, so a shop screen can render its
- * "unavailable" state instead of failing to open.
- */
-export async function proPackages(): Promise<PurchasesPackage[]> {
-  if (!purchasesAvailable()) return [];
-  try {
-    const { current } = (await Purchases.getOfferings()) as { current: PurchasesOffering | null };
-    return current?.availablePackages ?? [];
-  } catch (error) {
-    console.warn("[purchases] no offerings:", describe(error));
-    return [];
-  }
-}
-
 export type PurchaseOutcome =
-  | { ok: true; pro: boolean }
+  | { ok: true; owned: boolean }
   /** The player closed the sheet. Not a failure, and must not be shown as one. */
   | { ok: false; cancelled: true }
   | { ok: false; cancelled: false; message: string };
@@ -219,14 +192,14 @@ export type PurchaseOutcome =
  * an error message after someone deliberately backed out of a purchase reads as
  * the app arguing with them.
  */
-export async function purchasePro(pkg: PurchasesPackage): Promise<PurchaseOutcome> {
+async function purchasePackage(pkg: PurchasesPackage): Promise<PurchaseOutcome> {
   if (!purchasesAvailable()) {
     return { ok: false, cancelled: false, message: "Purchases are only available in the app." };
   }
   try {
     const { customerInfo } = await Purchases.purchasePackage({ aPackage: pkg });
-    publish(readProStatus(customerInfo));
-    return { ok: true, pro: status.pro };
+    publish(readArenaStatus(customerInfo));
+    return { ok: true, owned: status.owned };
   } catch (error) {
     if (wasCancelled(error)) return { ok: false, cancelled: true };
     return { ok: false, cancelled: false, message: describe(error) };
@@ -240,76 +213,38 @@ export async function purchasePro(pkg: PurchasesPackage): Promise<PurchaseOutcom
  * device, has no other way back to what they paid for, and both stores require
  * the path to exist.
  */
-export async function restorePro(): Promise<PurchaseOutcome> {
+export async function restorePurchases(): Promise<PurchaseOutcome> {
   if (!purchasesAvailable()) {
     return { ok: false, cancelled: false, message: "Purchases are only available in the app." };
   }
   try {
     const { customerInfo } = await Purchases.restorePurchases();
-    publish(readProStatus(customerInfo));
-    return { ok: true, pro: status.pro };
+    publish(readArenaStatus(customerInfo));
+    return { ok: true, owned: status.owned };
   } catch (error) {
     return { ok: false, cancelled: false, message: describe(error) };
   }
 }
 
 /**
- * Show RevenueCat's own paywall.
+ * Offer the arena to somebody who does not own it.
  *
- * Worth preferring over a hand-built screen: its contents, prices and copy are
- * configured in the dashboard, so changing the offer does not mean shipping a
- * build and waiting on review.
+ * A single call that does nothing for a player who already bought it, so no
+ * caller needs an `ownsArena()` check of its own to avoid selling the same
+ * thing twice. The screen itself is RevenueCat's, configured in the dashboard,
+ * so the price and the copy can change without shipping a build.
  */
-export async function showPaywall(offering?: PurchasesOffering): Promise<boolean> {
-  if (!purchasesAvailable()) return false;
-  try {
-    // Omitting the offering shows the current one, which is the whole point of
-    // configuring it in the dashboard; passing one is for a targeted offer.
-    const { result } = await RevenueCatUI.presentPaywall(offering ? { offering } : {});
-    await refreshPro();
-    return result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED;
-  } catch (error) {
-    console.warn("[purchases] paywall failed to present:", describe(error));
-    return false;
-  }
-}
-
-/**
- * Show the paywall only to players who do not already have the entitlement.
- *
- * The right call for a gate on a feature: it is a single call that does nothing
- * to a subscriber, so callers need no `isPro()` check of their own to avoid
- * selling something twice.
- */
-export async function showPaywallIfNeeded(): Promise<boolean> {
+export async function offerArena(): Promise<boolean> {
   if (!purchasesAvailable()) return false;
   try {
     const { result } = await RevenueCatUI.presentPaywallIfNeeded({
-      requiredEntitlementIdentifier: PRO_ENTITLEMENT,
+      requiredEntitlementIdentifier: ARENA_ENTITLEMENT,
     });
-    await refreshPro();
+    await refreshArena();
     return result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED;
   } catch (error) {
     console.warn("[purchases] paywall failed to present:", describe(error));
     return false;
-  }
-}
-
-/**
- * Show the Customer Center — manage, cancel, restore, request a refund.
- *
- * Handing subscription management to RevenueCat's own screen is what keeps the
- * game out of the business of explaining store policy, and it is where a
- * cancellation can be met with an offer rather than a shrug.
- */
-export async function showCustomerCenter(): Promise<void> {
-  if (!purchasesAvailable()) return;
-  try {
-    await RevenueCatUI.presentCustomerCenter();
-    // Anything could have happened in there, including a cancellation.
-    await refreshPro();
-  } catch (error) {
-    console.warn("[purchases] customer center failed to present:", describe(error));
   }
 }
 
@@ -395,7 +330,7 @@ export async function coinPackages(): Promise<PurchasesPackage[]> {
 export async function purchaseCoins(
   pkg: PurchasesPackage
 ): Promise<PurchaseOutcome & { coins?: number }> {
-  const outcome = await purchasePro(pkg);
+  const outcome = await purchasePackage(pkg);
   if (!outcome.ok) return outcome;
   return { ...outcome, coins: coinsForProduct(pkg.product.identifier) };
 }

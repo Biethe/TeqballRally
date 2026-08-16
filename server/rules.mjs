@@ -172,71 +172,73 @@ var AI_REACH = 1.2 * TABLE_SCALE;
 var WIN_SCORE = 3;
 var SETS_TO_WIN = 2;
 var CHARACTERS = [
-  // The acrobat. Quick and springy, and runs out of legs first.
+  // The beginner. Every trait sits at the bottom of its span, so every later
+  // character and every level bought is felt against this one.
   {
     id: "BrazilianPlayer",
     label: "BRAZIL",
     height: 1.76,
     strongFoot: "right",
-    speed: 5.4,
-    power: 1,
-    precision: 1.1,
-    backflips: "both",
-    stamina: 0.85,
-    serve: 0.95,
-    agility: 1.35,
-    volley: 1.2,
-    weakFoot: 82
+    speed: 4.5,
+    power: 0.9,
+    precision: 0.88,
+    backflips: "strong",
+    stamina: 0.82,
+    serve: 0.85,
+    agility: 0.95,
+    volley: 0.88,
+    weakFoot: 55
   },
-  // The powerhouse. A hammer and a serve, slow to get going, lasts all day.
-  // A hammer of a right foot and very little on the left, so the header is his
-  // answer to anything arriving on that side.
+  // The powerhouse. The hardest ball and the best serve in the game, and the
+  // slowest to get going — a hammer of a right foot and very little on the
+  // left, so the header is his answer to anything on that side.
   {
     id: "EnglishPlayer",
     label: "ENGLAND",
     height: 1.86,
     strongFoot: "right",
-    speed: 4.5,
-    power: 1.7,
-    precision: 0.9,
+    speed: 4.7,
+    power: 1.38,
+    precision: 0.95,
     backflips: "none",
-    stamina: 1.3,
-    serve: 1.35,
-    agility: 0.7,
-    volley: 0.85,
-    weakFoot: 45
+    stamina: 1.18,
+    serve: 1.28,
+    agility: 0.8,
+    volley: 0.95,
+    weakFoot: 50
   },
-  // The all-rounder. Nothing to hide behind and nothing that lets him down.
+  // The all-rounder. Nothing to hide behind and nothing that lets him down,
+  // and comfortably better than either player below him.
   {
     id: "FrenchPlayer",
     label: "FRANCE",
     height: 1.8,
     strongFoot: "left",
-    speed: 5,
-    power: 1.05,
-    precision: 1,
+    speed: 5.3,
+    power: 1.12,
+    precision: 1.12,
     backflips: "strong",
-    stamina: 1.05,
-    serve: 1.05,
-    agility: 1,
-    volley: 1,
-    weakFoot: 70
+    stamina: 1.1,
+    serve: 1.1,
+    agility: 1.15,
+    volley: 1.12,
+    weakFoot: 75
   },
-  // The technician. Takes everything early and precisely, hits it softest.
-  // Two-footed: there is no weak side to exploit, so nothing forces a header.
+  // The technician, and the top of the ladder. Two-footed, so there is no weak
+  // side to exploit and nothing forces a header.
   {
     id: "SpanishPlayer",
     label: "SPAIN",
     height: 1.72,
     strongFoot: "both",
-    speed: 4.9,
-    power: 0.95,
-    precision: 1.2,
-    backflips: "strong",
-    stamina: 1,
-    serve: 0.8,
-    agility: 1.05,
-    volley: 1.35,
+    speed: 5.6,
+    power: 1.05,
+    precision: 1.34,
+    backflips: "both",
+    stamina: 1.16,
+    serve: 1.05,
+    agility: 1.3,
+    volley: 1.4,
     weakFoot: 100
   }
 ];
@@ -409,24 +411,20 @@ var UNLOCK_AT = {
   [CHARACTERS[2].id]: 160,
   [CHARACTERS[3].id]: 300
 };
-var XP_PER_LEVEL = 3;
+var XP_PER_LEVEL = 5;
 function upgradeCost(level) {
-  return 150 + (level - 1) * 120;
+  return 120 + (level - 1) * (120 + (level - 1) * 40);
 }
 var MAX_LEVEL = 6;
 function withCareer(def, level) {
   const steps = Math.max(0, Math.min(MAX_LEVEL, level) - 1);
   return {
     ...def,
-    precision: def.precision * (1 + 0.09 * steps),
-    // Training also buys the two traits that are about *effort* rather than
-    // technique: how quickly you get moving and how long you keep it up. They
-    // rise more slowly than precision, because a levelled player should still
-    // be recognisably the character that was picked — the point of the roster
-    // is that they are differently good, and levelling everything at the same
-    // rate flattens four characters into one.
-    agility: def.agility * (1 + 0.045 * steps),
-    stamina: def.stamina * (1 + 0.05 * steps)
+    precision: def.precision * (1 + 0.1 * steps),
+    agility: def.agility * (1 + 0.06 * steps),
+    stamina: def.stamina * (1 + 0.07 * steps),
+    speed: def.speed * (1 + 0.022 * steps),
+    volley: def.volley * (1 + 0.03 * steps)
   };
 }
 function levelOf(career, id) {

@@ -1,5 +1,4 @@
-import { CHARACTERS, type CharacterDef } from "./config";
-import { MAX_LEVEL, withCareer } from "./progress";
+import { type CharacterDef } from "./config";
 
 /**
  * Character traits as numbers a player can compare.
@@ -10,9 +9,13 @@ import { MAX_LEVEL, withCareer } from "./progress";
  * be held up against each other and a level can be seen to have done
  * something.
  *
- * The scale runs from the weakest any character starts at to the strongest any
- * character can ever be trained to, which is why a fresh roster does not have
- * anybody sitting at 100: the top of the bar is a place to get to.
+ * The span each trait is measured against is **fixed** rather than read off
+ * the roster. Deriving it meant every number on every card moved whenever a
+ * character was added or retuned — a player who had trained BRAZIL to 71
+ * CONTROL would open the game after an update to find it said 64, having lost
+ * nothing. Fixed bounds also leave room above the best character in the game,
+ * which is what makes the ladder legible: SPAIN is near the top of the bar
+ * because SPAIN is near the top of the roster, not because SPAIN defines it.
  */
 
 export type RatingKey =
@@ -44,28 +47,41 @@ const READ: Record<RatingKey, (def: CharacterDef) => number> = {
   volley: (d) => d.volley,
 };
 
-/** The weakest start and the strongest finish, per trait, across the roster. */
-const SPAN: Record<RatingKey, { min: number; max: number }> = Object.fromEntries(
-  RATING_KEYS.map((key) => {
-    const read = READ[key];
-    const starts = CHARACTERS.map(read);
-    const ceilings = CHARACTERS.map((c) => read(withCareer(c, MAX_LEVEL)));
-    return [key, { min: Math.min(...starts), max: Math.max(...ceilings) }];
-  })
-) as Record<RatingKey, { min: number; max: number }>;
-
 /**
- * One trait, 40–100.
+ * What each trait's bar runs between, in the units `config.ts` uses.
  *
- * The floor is 40 rather than 0 because none of these characters is bad at
- * anything — they are differently good, and a bar reading zero says the
- * opposite of what the roster means.
+ * Chosen to sit outside the roster on both ends: below the starter so a
+ * beginner does not read as a flat wall of minimums, and above the best a
+ * trained SPAIN reaches so the top of the bar keeps meaning something.
  */
+const SPAN: Record<RatingKey, { min: number; max: number }> = {
+  reactivity: { min: 3.8, max: 6.6 },
+  power: { min: 0.7, max: 1.8 },
+  control: { min: 0.7, max: 1.9 },
+  stamina: { min: 0.65, max: 1.8 },
+  serve: { min: 0.7, max: 1.6 },
+  agility: { min: 0.65, max: 1.8 },
+  volley: { min: 0.7, max: 1.85 },
+};
+
+/** Nobody is bad at everything, so no bar reads zero. */
+export const RATING_FLOOR = 40;
+/**
+ * And nobody is perfect.
+ *
+ * The bar is marked out of 100 and stops at 95 — the last five points are not
+ * for sale, at any level, with any ball, on any character. A scale whose top
+ * is reachable is a scale that stops saying anything the moment somebody gets
+ * there, and "maxed" is a worse thing for a player to feel than "nearly".
+ */
+export const RATING_CAP = 95;
+
+/** One trait, `RATING_FLOOR`–`RATING_CAP`, on a bar marked out of 100. */
 export function rating(def: CharacterDef, key: RatingKey): number {
   const { min, max } = SPAN[key];
   const value = READ[key](def);
-  if (max === min) return 100;
-  return Math.round(40 + Math.min(1, Math.max(0, (value - min) / (max - min))) * 60);
+  const t = Math.min(1, Math.max(0, (value - min) / (max - min)));
+  return Math.round(RATING_FLOOR + t * (RATING_CAP - RATING_FLOOR));
 }
 
 /** The three traits added up: one number to compare two players by. */
