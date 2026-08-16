@@ -8,6 +8,7 @@ import {
   SERVE_TOSS_HAND,
   approachVelocity,
   MIN_EFFORT,
+  MIN_RESERVE,
   backflipAllowed,
   backflipFoot,
   clipFoot,
@@ -447,13 +448,22 @@ describe("the traits that decide a rally", () => {
     expect(quick).toBeGreaterThan(heavy);
   });
 
-  it("never lets tiredness stop a player moving at all", () => {
-    // The floor matters more than the drain. Attacking means running to the
-    // middle line and back, so a punishing stamina model would make one brave
-    // point cost the game.
-    expect(MIN_EFFORT).toBeGreaterThan(0.5);
+  it("leaves an emptied player labouring rather than frozen", () => {
+    // Running out is meant to be a state a player can see happening to them,
+    // so the floor is low — but never zero. A character who cannot move at all
+    // is one standing still watching the ball go past, which is worse to watch
+    // than a slow one chasing it.
+    expect(MIN_EFFORT).toBeGreaterThan(0);
+    expect(MIN_EFFORT).toBeLessThan(0.3);
     const spent = approachVelocity(0, 5, 1 / 60, MOVE_TAU / MIN_EFFORT);
     expect(spent).toBeGreaterThan(0);
+  });
+
+  it("never grinds the reserve below the floor", () => {
+    // The ceiling only falls, so without a floor a long match would end with
+    // two players unable to cross their own half.
+    expect(MIN_RESERVE).toBeGreaterThan(MIN_EFFORT);
+    expect(MIN_RESERVE).toBeLessThan(1);
   });
 
   it("trains effort without erasing the character that was picked", () => {

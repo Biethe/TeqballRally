@@ -22,12 +22,18 @@ function fakeConn() {
     tick: 0,
     send: (m: GameMessage) => sent.push(m),
     setHandlers: (next: Partial<NetHandlers>) => (handlers = { ...handlers, ...next }),
+    // How stale an arriving frame is, and whether our own socket is the thing
+    // that is missing. The session reads both.
+    latencyTicks: 0,
+    isReconnecting: false,
   };
   return {
     conn: conn as unknown as NetConnection,
     sent,
     deliver: (m: GameMessage) => handlers.onMessage?.(m),
     setPeer: (present: boolean) => handlers.onPeer?.(present),
+    setLatency: (ticks: number) => (conn.latencyTicks = ticks),
+    setReconnecting: (on: boolean) => (conn.isReconnecting = on),
   };
 }
 
@@ -521,5 +527,93 @@ describe("pausing an online match", () => {
     run(ctx.s, ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 2);
 
     expect(onOpponentForfeit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("showing everything at the same moment", () => {
+  /**
+   * The bug this exists for looked like a graphics fault and was not one.
+   *
+   * A guest simulates its own character at 60 Hz from its own controls, live,
+   * and used to be handed the ball twenty times a second at wherever it had
+   * been half a round trip ago. The player moved smoothly and the ball
+   * stuttered against them — on the better phone with the worse connection,
+   * worse. The frame's age has to travel with it so everything can be drawn at
+   * one instant.
+   */
+  it("tells the match how old each frame is", () => {
+    const net = fakeConn();
+    const match = fakeMatch();
+    net.setLatency(7);
+    new OnlineSession(net.conn, match.match, "guest");
+
+    net.deliver(snapshot());
+
+    expect(match.applySnapshot).toHaveBeenCalledTimes(1);
+    expect(match.applySnapshot.mock.calls[0][1]).toBe(7);
+  });
+
+  it("reports no age at all before the first round trip is measured", () => {
+    // `latencyTicks` is 0 until a pong lands. Extrapolating by a guess would
+    // be worse than not extrapolating.
+    const net = fakeConn();
+    const match = fakeMatch();
+    new OnlineSession(net.conn, match.match, "guest");
+
+    net.deliver(snapshot());
+
+    expect(match.applySnapshot.mock.calls[0][1]).toBe(0);
+  });
+
+  it("keeps the age current as the connection changes", () => {
+    const net = fakeConn();
+    const match = fakeMatch();
+    const session = new OnlineSession(net.conn, match.match, "guest");
+    void session;
+
+    net.setLatency(3);
+    net.deliver(snapshot());
+    net.setLatency(11);
+    net.deliver(snapshot());
+
+    expect(match.applySnapshot.mock.calls[0][1]).toBe(3);
+    expect(match.applySnapshot.mock.calls[1][1]).toBe(11);
+  });
+});
+
+describe("a socket that is our own problem", () => {
+  it("holds the forfeit clock while we are the ones reconnecting", () => {
+    // Silence on a socket we are still rebuilding says nothing about the
+    // opponent. Claiming a walkover here hands the match to whoever left.
+    const net = fakeConn();
+    const match = fakeMatch();
+    let forfeited = false;
+    const session = new OnlineSession(net.conn, match.match, "host", {
+      onOpponentForfeit: () => (forfeited = true),
+    });
+    net.setReconnecting(true);
+
+    for (let i = 0; i < (ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 5) / SIM_DT; i++) {
+      session.step(SIM_DT);
+    }
+
+    expect(forfeited).toBe(false);
+  });
+
+  it("resumes counting once our own socket is back", () => {
+    const net = fakeConn();
+    const match = fakeMatch();
+    let forfeited = false;
+    const session = new OnlineSession(net.conn, match.match, "host", {
+      onOpponentForfeit: () => (forfeited = true),
+    });
+    net.setReconnecting(true);
+    for (let i = 0; i < 60; i++) session.step(SIM_DT);
+    net.setReconnecting(false);
+    for (let i = 0; i < (ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 1) / SIM_DT; i++) {
+      session.step(SIM_DT);
+    }
+
+    expect(forfeited).toBe(true);
   });
 });

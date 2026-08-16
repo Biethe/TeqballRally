@@ -186,15 +186,26 @@ export function approachVelocity(
 }
 
 /**
- * The least of their legs a player can be left with, as a multiplier on how
- * quickly they get moving.
+ * The least of their legs a player can be left with.
  *
- * Not zero, and not close to it. Stamina is meant to make a long rally hurt,
- * not to strand somebody next to a ball they can see — and since attacking now
- * means running to the middle line and back, a punishing floor would turn one
- * brave point into a lost game.
+ * Low enough that running out is a real state and not a nuisance: at the floor
+ * a player is down to about a third of their pace and takes an age to reach
+ * it, which is somebody who has emptied the tank rather than somebody mildly
+ * inconvenienced. Not zero, because a character who cannot move at all is a
+ * character standing still watching a ball go past, and that is a worse thing
+ * to watch than a slow one chasing it.
  */
-export const MIN_EFFORT = 0.62;
+export const MIN_EFFORT = 0.16;
+
+/**
+ * The least of the *reserve* a match can grind a player down to.
+ *
+ * The reserve is the ceiling recovery works up to, and it only ever falls. A
+ * player who has run a hard first set does not get a fresh pair of legs for
+ * the second — they get whatever is left of the ones they started with, which
+ * is the whole reason fitness, and everything sold for it, is worth having.
+ */
+export const MIN_RESERVE = 0.45;
 
 /**
  * A loaded, rigged character: kinematic movement plus a two-layer animation
@@ -225,12 +236,22 @@ export class Character {
   private lungeState: { from: Vector3; to: Vector3; dur: number; t: number } | null = null;
 
   /**
-   * What is left in the legs, from 1 (fresh) down to `MIN_EFFORT`.
+   * What is left in the legs right now, from 1 (fresh) down to `MIN_EFFORT`.
    *
    * Owned by the match, which drains and restores it — a character on the
    * selection carousel has no rally behind it and is always fresh.
    */
   effort = 1;
+
+  /**
+   * The most `effort` can recover to, from 1 down to `MIN_RESERVE`.
+   *
+   * A one-way ratchet: every metre run takes a little off it and nothing puts
+   * it back inside a match. Standing still buys back some of what the last
+   * rally cost, but never all of it, and never past this — so a match is a
+   * slow slide rather than a sawtooth that resets between every point.
+   */
+  reserve = 1;
 
   private constructor(root: TransformNode, height: number, def: CharacterDef) {
     this.root = root;
@@ -421,13 +442,12 @@ export class Character {
     // instead would make one aggressive point cost a whole game, and the sharp
     // shots now need coming forward and getting back.
     const tau = MOVE_TAU / (this.def.agility * this.effort);
-    // Tired legs are also slower legs, but only a little: at empty this is
-    // still 85% of top speed. Acceleration remains where most of the cost
-    // lands — taking real reach away would make one brave point lose a game,
-    // and attacking already means coming forward and getting back. A small
-    // top-speed term is what makes the drain visible in a straight chase,
-    // which is where a player actually notices they have run out.
-    const legs = 0.6 + 0.4 * this.effort;
+    // Tired legs are slower legs. Running out has to be something a player can
+    // see happening to them rather than a number on a bar: at the floor this
+    // is about a third of top speed, and with the acceleration term above it
+    // on top, an empty player is visibly labouring — they can still reach a
+    // ball played at them, and no longer one played away from them.
+    const legs = 0.25 + 0.75 * this.effort;
     this.velocity.x = approachVelocity(this.velocity.x, dirX * speed * legs, dt, tau);
     this.velocity.z = approachVelocity(this.velocity.z, dirZ * speed * legs, dt, tau);
     this.velocity.y = 0;

@@ -2569,7 +2569,7 @@ async function boot(): Promise<void> {
       hint: (t) => ui.hint(t),
       meter: (f, s0, s1) => ui.meter(f, s0, s1),
       meterResult: (q) => ui.meterResult(q),
-      stamina: (p, a) => ui.stamina(p, a),
+      stamina: (p, a, pMax, aMax) => ui.stamina(p, a, pMax, aMax),
       onMatchEnd: (winner) => {
         const sets: [number, number] = [controller.sets.player, controller.sets.ai];
         window.setTimeout(() => opts.onEnd(winner, sets), 1800);

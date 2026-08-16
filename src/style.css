@@ -3945,6 +3945,7 @@ button.pad-focus {
 }
 
 .stamina-row i {
+  position: relative;
   display: block;
   width: 78px;
   height: 6px;
@@ -3952,6 +3953,23 @@ button.pad-focus {
   border-radius: 999px;
   background: rgba(6, 16, 32, 0.6);
   overflow: hidden;
+}
+
+/* What this match has taken for good, hatched off the right-hand end. The
+   gap between the fill and this is what is left to recover into — without it
+   a player waits for a bar that is never coming back. */
+.stamina-row u {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 0;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.16) 0 2px,
+    rgba(0, 0, 0, 0.28) 2px 4px
+  );
+  transition: width 0.3s linear;
 }
 
 .stamina-row b {

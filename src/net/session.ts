@@ -232,6 +232,10 @@ export class OnlineSession {
       // reframe, so it is in this peer's own coordinates.
       case "snap": {
         if (this.isHost || !isValidSnapshot(msg)) return;
+        // How old this frame already is: half the measured round trip, in
+        // simulation ticks. The match fast-forwards everything in it by that
+        // much, so the ball and both players are drawn at the same instant
+        // rather than the ball being shown half a trip in the past.
         this.match.applySnapshot({
           ballPos: msg.ballPos,
           ballVel: msg.ballVel,
@@ -247,7 +251,7 @@ export class OnlineSession {
           sets: msg.sets,
           serveOwner: msg.serveOwner,
           phase: msg.phase,
-        });
+        }, this.conn.latencyTicks);
         this.handlers.onScore?.({
           player: msg.score[0],
           ai: msg.score[1],

@@ -1,44 +1,64 @@
 /**
- * The model scrambler, in plain JavaScript so Node can run it.
+ * Model encryption, in plain JavaScript so Node can run it.
  *
- * The game needs this inside its bundle (`src/protected.ts`) and the build
- * script needs it before a bundle exists, which is two copies of one
- * algorithm — and two copies that drift apart produce a build scrambled with
- * one keystream and unscrambled with another, which fails as *every model in
- * the game refusing to load at once*. This is the copy Node uses;
- * `tests/protected.test.ts` holds the two to producing identical bytes.
+ * **AES-256-GCM**, which is real, authenticated encryption: without the key
+ * the ciphertext is indistinguishable from noise, and a single altered byte
+ * makes decryption fail rather than yield rubbish. That is a different claim
+ * from the keystream XOR this replaced, which anybody could unpick from the
+ * file alone by guessing at the glTF header.
+ *
+ * The honest caveat is unchanged and is about **key distribution, not the
+ * cipher**: a packaged game has to decrypt its own models on a device with no
+ * network, so the key ships with it. See `src/protected.ts`.
+ *
+ * The game needs this inside its bundle and the build script needs it before a
+ * bundle exists, so the algorithm is written twice. Two copies that drift
+ * apart produce a build encrypted with one key and decrypted with another,
+ * which fails as *every model in the game refusing to load at once*;
+ * `tests/protected.test.ts` holds the two to agreeing.
  */
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 
-/** A 32-bit hash of the key and the file's own name. Never zero. */
-export function seedFor(key, name) {
-  let h = 2166136261;
-  for (const text of [key, name]) {
-    for (let i = 0; i < text.length; i++) {
-      h ^= text.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-  }
-  return h >>> 0 || 1;
+/** The extension an encrypted model wears. Deliberately not `.glb`. */
+export const PROTECTED_EXT = ".teq";
+
+/** Bytes of IV and authentication tag on the front of every encrypted file. */
+export const IV_BYTES = 12;
+export const TAG_BYTES = 16;
+
+/**
+ * A 256-bit key from a passphrase of any length.
+ *
+ * SHA-256 rather than a KDF with a work factor on purpose: a work factor
+ * protects a *secret* passphrase from being brute-forced, and this one is not
+ * secret — it ships in the bundle. Stretching it would cost startup time on a
+ * phone and buy nothing.
+ */
+export function keyFrom(passphrase) {
+  return createHash("sha256").update(String(passphrase), "utf8").digest();
 }
 
 /**
- * XOR a buffer with the keystream for `name`, in place. Its own inverse.
+ * Encrypt one model. Returns `[IV][ciphertext][tag]`.
  *
- * xorshift32, with `Math.imul` and `>>> 0` keeping the arithmetic exact in
- * both Node and a WebView.
+ * A fresh random IV per file, which is what GCM requires: the same key with a
+ * repeated IV leaks the relationship between the two plaintexts, and every
+ * model here begins with the same glTF header.
  */
-export function scramble(bytes, key, name) {
-  let state = seedFor(key, name);
-  for (let i = 0; i < bytes.length; i++) {
-    state ^= state << 13;
-    state >>>= 0;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    state >>>= 0;
-    bytes[i] ^= state & 0xff;
-  }
-  return bytes;
+export function encryptModel(bytes, passphrase) {
+  const iv = randomBytes(IV_BYTES);
+  const cipher = createCipheriv("aes-256-gcm", keyFrom(passphrase), iv);
+  const body = Buffer.concat([cipher.update(bytes), cipher.final()]);
+  return Buffer.concat([iv, body, cipher.getAuthTag()]);
 }
 
-/** The extension a scrambled model wears. Deliberately not `.glb`. */
-export const PROTECTED_EXT = ".teq";
+/** Decrypt one model, for the test that proves the round trip. Throws if tampered. */
+export function decryptModel(bytes, passphrase) {
+  const buf = Buffer.from(bytes);
+  const iv = buf.subarray(0, IV_BYTES);
+  const tag = buf.subarray(buf.length - TAG_BYTES);
+  const body = buf.subarray(IV_BYTES, buf.length - TAG_BYTES);
+  const decipher = createDecipheriv("aes-256-gcm", keyFrom(passphrase), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(body), decipher.final()]);
+}
