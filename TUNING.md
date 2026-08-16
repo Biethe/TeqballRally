@@ -41,7 +41,7 @@ Permanent camera placements:
 | Contact planning | `CONTACT_WINDOW / LUNGE_MAX / CONTACT_SNAP` (top of `src/match.ts`) | The ball flies its natural path; the player lunges to meet it. Window of allowed contact times, max lunge glide distance, max final ball nudge onto the limb. |
 | Reach assist | `REACH_ASSIST.radius / strength` | Soft magnetism: pushing the stick roughly toward the incoming ball bends the run onto its interception point. `strength: 0` disables it. |
 | Serve aim | `serveClipForAim` (in `src/character.ts`) / `launchServe` (in `src/match.ts`) | Hold a direction before/while serving: aim left → right-foot serve, right → left-foot serve, centre → head serve. The 0.25 band threshold lives in `serveClipForAim`. |
-| AI difficulty | `DIFFICULTIES` in `src/ai.ts` | easy/normal/hard presets: `speed` (fraction of the character's own speed), `aimError`, `reactionTime`, `whiffChance`, `popChance`. Friendly games pick one; competitions use normal, then hard for finals / the last league round. |
+| AI difficulty | `DIFFICULTIES` in `src/ai.ts` | easy/normal/hard presets: `speed` (fraction of the character's own speed), `aimError`, `reactionTime` (spent twice — once before the run starts, once before the touch), `misjudge` (metres of drop-point misread, the thing that loses it a ball), `popChance`, `maxPopTouches`. Friendly games pick one; competitions use normal, then hard for finals / the last league round. |
 
 ## Rules of thumb
 

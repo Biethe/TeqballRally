@@ -1,6 +1,7 @@
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
 import { ColorCurves } from "@babylonjs/core/Materials/colorCurves";
+import { ImageProcessingConfiguration } from "@babylonjs/core/Materials/imageProcessingConfiguration";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Camera } from "@babylonjs/core/Cameras/camera";
@@ -127,8 +128,15 @@ export async function createGameScene(
   // GPU.
   const grade = scene.imageProcessingConfiguration;
   grade.applyByPostProcess = false;
-  grade.contrast = 1.08;
-  grade.exposure = 1.03;
+  // ACES is most of what separates "3D viewport" from "broadcast": highlights
+  // roll off instead of clipping, and saturated court colours stop looking
+  // like paint. It runs in the same material pass, so it costs shader
+  // instructions rather than a full-screen pass. It also darkens, which the
+  // exposure below buys back.
+  grade.toneMappingEnabled = true;
+  grade.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
+  grade.contrast = 1.04;
+  grade.exposure = 1.32;
   grade.colorCurvesEnabled = true;
   const curves = new ColorCurves();
   // Saturation does the heavy lifting; the warm mid-tone lift keeps skin and
@@ -156,8 +164,14 @@ export async function createGameScene(
   let shadows: ShadowGenerator | null = null;
   if (quality.shadowMapSize !== null) {
     shadows = new ShadowGenerator(quality.shadowMapSize, sun);
-    shadows.useExponentialShadowMap = true;
-    shadows.darkness = 0.45;
+    // PCF over the old exponential map: the exponential filter smeared every
+    // contact into a grey blob, and a player's feet never quite touched the
+    // floor. PCF keeps the contact tight at the same map size.
+    shadows.usePercentageCloserFiltering = true;
+    shadows.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
+    shadows.bias = 0.0012;
+    shadows.normalBias = 0.02;
+    shadows.darkness = 0.4;
   }
 
   // A venue that plays on its backdrop's surface still needs a floor painted
@@ -596,6 +610,25 @@ async function loadArena(scene: Scene, model: ArenaModel): Promise<void> {
 
 async function loadTable(scene: Scene): Promise<AbstractMesh[]> {
   const res = await SceneLoader.ImportMeshAsync("", "/models/Ball_and_Table/", "Teqball_Table.glb", scene);
+  // The same repair the balls get, for the same reason: the export leaves
+  // metallicFactor at glTF's default of 1, and metal with no environment map
+  // renders as a black mirror. It is the difference between the centrepiece of
+  // every camera angle reading as a teqball table and reading as a burnt slab.
+  fixMetallicMaterials(res.meshes);
+  // The dark parts must stay dark. Under the outdoor rig the scene carries
+  // roughly three suns' worth of light, so the export's charcoal 0.13 renders
+  // as mid grey — and the real table in the reference footage is matte
+  // near-black, with the white trim and orange legs doing the talking. The
+  // albedo is pulled down to survive that light, and the specular sheen is
+  // flattened so the top does not read as wet.
+  for (const m of res.meshes) {
+    const mat = m.material;
+    if (mat instanceof PBRMaterial && (mat.name === "Surface1" || mat.name === "Black")) {
+      mat.albedoColor = mat.albedoColor.scale(0.4);
+      mat.roughness = Math.max(mat.roughness ?? 0, 0.85);
+      mat.specularIntensity = 0.35;
+    }
+  }
   const wrapper = new TransformNode("table-wrapper", scene);
   for (const m of res.meshes) if (!m.parent) m.parent = wrapper;
   const { min, max } = wrapper.getHierarchyBoundingVectors(true);

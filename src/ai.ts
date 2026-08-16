@@ -36,33 +36,37 @@ export interface AIDifficulty {
 
 // Difficulty presets. Friendly games let the player pick; competitions use
 // "normal" and step up to "hard" for finals / the last league round.
+//
+// The reaction time is spent twice, on purpose: once before the AI starts its
+// run (see `runDelay` on the controller) and once before it plays the touch.
+// The run delay is what makes these numbers matter — an opponent that begins
+// walking the instant the ball is struck arrives at everything however wrong
+// its read was, which is exactly the opponent every playtest called unbeatable.
 export const DIFFICULTIES = {
   easy: {
-    speed: 0.55,
-    aimError: 0.65,
-    reactionTime: 0.32,
-    // Two thirds of a metre of misread is enough to lose a ball it had to
-    // stretch for, and never enough to lose one played straight at it.
-    misjudge: 0.66,
-    popChance: 0.28,
+    speed: 0.5,
+    aimError: 0.7,
+    reactionTime: 0.5,
+    // The full metre the sanity test allows: with the squared distribution
+    // most reads are still nearly right, and the occasional badly wrong one is
+    // what an easy opponent is for.
+    misjudge: 1.0,
+    popChance: 0.25,
     maxPopTouches: 1,
   },
-  // Normal and hard still make human-looking mistakes through their aim and
-  // reaction delay, but they should not give away a routine reception simply
-  // because they were walking at an artificially low cruise speed.
   normal: {
-    speed: 0.78,
+    speed: 0.7,
     aimError: 0.45,
-    reactionTime: 0.18,
-    misjudge: 0.3,
+    reactionTime: 0.3,
+    misjudge: 0.62,
     popChance: 0.5,
     maxPopTouches: 1,
   },
   hard: {
-    speed: 0.94,
+    speed: 0.9,
     aimError: 0.22,
-    reactionTime: 0.08,
-    misjudge: 0.12,
+    reactionTime: 0.14,
+    misjudge: 0.24,
     popChance: 0.9,
     maxPopTouches: 2,
   },
@@ -120,6 +124,16 @@ export class AIController {
   private prediction: Prediction | null = null;
   private repredictIn = 0;
   private reaction = 0;
+  /**
+   * Seconds before the AI starts running to a fresh inbound ball.
+   *
+   * A human's mistake happens before their feet move: they watch the shot for
+   * a beat, and the beat is where a well-placed ball wins. Without this the AI
+   * set off on the frame the ball was struck, and no realistic misread or
+   * cruise speed could stop it arriving — which is what made it feel like it
+   * retrieved everything.
+   */
+  private runDelay = 0;
   /**
    * How far off this possession's read of the drop point is, in metres.
    *
@@ -181,6 +195,7 @@ export class AIController {
     this.chaseSpot = null;
     this.chaseGrace = 0;
     this.reaction = this.diff.reactionTime;
+    this.runDelay = this.diff.reactionTime;
   }
 
   update(dt: number): void {
@@ -204,6 +219,15 @@ export class AIController {
       this.chaseSpot = null;
       this.chaseGrace = 0;
       ai.moveToward(this.home, cruiseSpeed * 0.8, dt);
+      return;
+    }
+
+    // The beat before the feet move. The ball is watched, not chased: the
+    // prediction below still runs, so the run that eventually starts heads for
+    // the (mis)read drop point rather than the ball's old shadow.
+    if (this.runDelay > 0) {
+      this.runDelay -= dt;
+      ai.moveToward(this.home, cruiseSpeed * 0.35, dt);
       return;
     }
 

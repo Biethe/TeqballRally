@@ -38,7 +38,7 @@ import {
 import { seasonKey, seasonReward, seasonTier, seasonTierId, softReset } from "../src/season";
 import { CHARACTERS, SETS_TO_WIN, WIN_SCORE } from "../src/config";
 import { RATING_KEYS, rating, totalPower } from "../src/ratings";
-import { ALL_TIP_KEYS, randomTip } from "../src/tips";
+import { ALL_TIP_KEYS, randomTip, tipPool } from "../src/tips";
 import { t } from "../src/i18n";
 
 const DAY = "2026-08-10";
@@ -395,9 +395,21 @@ describe("loading tips", () => {
     }
   });
 
-  it("can reach every tip", () => {
-    const seen = new Set(ALL_TIP_KEYS.map((_, i) => randomTip(() => i / ALL_TIP_KEYS.length)));
+  it("can reach every tip across the device pools", () => {
+    // No single device sees every tip — the gesture tips are meaningless at a
+    // keyboard and the charge-bar tip never applies to portrait swipes — but
+    // between the pools nothing in the catalogue is unreachable.
+    const seen = new Set<string>();
+    for (const pool of [tipPool(false, false), tipPool(true, false), tipPool(true, true)]) {
+      for (let i = 0; i < pool.length; i++) seen.add(randomTip(() => i / pool.length, pool));
+    }
     expect(seen.size).toBe(ALL_TIP_KEYS.length);
+  });
+
+  it("never hands a keyboard player a swipe", () => {
+    for (const key of tipPool(false, false)) {
+      expect(t(key).toLowerCase(), key).not.toContain("swipe");
+    }
   });
 
   it("survives a random that returns exactly 1", () => {

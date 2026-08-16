@@ -455,8 +455,6 @@ async function boot(): Promise<void> {
 
   // ---- pause ----
   let paused = false;
-  let shutdownInProgress = false;
-  const canShutdownLocalServer = import.meta.env.DEV;
   const leaveMatch = () => {
     session?.dispose();
     session = null;
@@ -471,33 +469,6 @@ async function boot(): Promise<void> {
     audio.startMusic();
     showModes();
   };
-  /**
-   * The browser is never allowed to stop a production host. In a Vite dev
-   * session this reaches the explicitly scoped same-origin endpoint supplied
-   * by vite.config.ts, then stops the local game loop after Vite acknowledges
-   * the request.
-   */
-  const shutdownLocalServer = async () => {
-    if (!canShutdownLocalServer || shutdownInProgress) return;
-    shutdownInProgress = true;
-    audio.stopMusic();
-    try {
-      const response = await fetch("/__teqopen/dev/shutdown", {
-        method: "POST",
-        credentials: "same-origin",
-      });
-      if (!response.ok) throw new Error(`shutdown endpoint returned ${response.status}`);
-      ui.hidePause();
-      ui.showLoading("Local server stopped. You can close this tab.");
-      gs.engine.stopRenderLoop();
-    } catch (error) {
-      // Keep the match frozen and return the player to a usable pause menu if
-      // the dev process disappeared before it could acknowledge the request.
-      console.warn("[shutdown] local server did not acknowledge request:", error);
-      shutdownInProgress = false;
-      showPauseMenu();
-    }
-  };
   const showPauseMenu = () => {
     ui.showPause(
       () => setPaused(false),
@@ -511,9 +482,7 @@ async function boot(): Promise<void> {
         paused = false;
         ui.hidePause();
         leaveMatch();
-      },
-      // Fire-and-forget: shutdownLocalServer reports its own failures.
-      canShutdownLocalServer ? () => void shutdownLocalServer() : undefined
+      }
     );
   };
   const setPaused = (v: boolean) => {
@@ -684,7 +653,9 @@ async function boot(): Promise<void> {
         const stepInput = consumeInput(latchedP1);
         // A guest's controls belong to the host's match, so they go to the
         // wire before the local update — which, as a follower, ignores them.
-        session?.setLocalInput(stepInput);
+        // Resolved first: portrait taps become the stick direction the wire
+        // can actually carry (see resolveFollowerInput).
+        session?.setLocalInput(match.resolveFollowerInput(stepInput));
         // A negotiated pause freezes the match on both peers, but not the
         // session: traffic has to keep flowing or a pause would look exactly
         // like a disconnect and forfeit the game it was meant to interrupt.

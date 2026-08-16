@@ -30,9 +30,39 @@ const TIP_KEYS: StringKey[] = [
   "tip.strength",
 ];
 
-/** A tip, chosen at random. Translated, like everything else a player reads. */
-export function randomTip(rand: () => number = Math.random): string {
-  return t(TIP_KEYS[Math.floor(rand() * TIP_KEYS.length)] ?? TIP_KEYS[0]);
+/**
+ * Tips that name the touch gestures, meaningless to somebody at a keyboard.
+ *
+ * "A slow swipe lifts the ball" shown over a WASD session is the kind of tip
+ * that made players say the tips make no sense — the sentence was fine, it was
+ * just addressed to a different device.
+ */
+const TOUCH_TIPS: ReadonlySet<StringKey> = new Set(["tip.power", "tip.setup"]);
+
+/** Tips about the charge bar, which portrait's swipe play never shows. */
+const CHARGE_TIPS: ReadonlySet<StringKey> = new Set(["tip.vary"]);
+
+/** The tips that make sense on this kind of screen. */
+export function tipPool(touch: boolean, portrait: boolean): StringKey[] {
+  return TIP_KEYS.filter((key) => {
+    if (!touch && TOUCH_TIPS.has(key)) return false;
+    if (touch && portrait && CHARGE_TIPS.has(key)) return false;
+    return true;
+  });
+}
+
+const defaultPool = (): StringKey[] => {
+  if (typeof window === "undefined") return tipPool(false, false);
+  const touch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+  return tipPool(touch, window.innerHeight > window.innerWidth);
+};
+
+/** A tip, chosen at random from the device-appropriate pool. Translated. */
+export function randomTip(
+  rand: () => number = Math.random,
+  pool: StringKey[] = defaultPool()
+): string {
+  return t(pool[Math.floor(rand() * pool.length)] ?? pool[0]);
 }
 
 /** Every tip key, so a test can hold the catalogue to having all of them. */

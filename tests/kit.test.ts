@@ -29,16 +29,28 @@ function fontPx(font: string): number {
   return Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? 10);
 }
 
-function recorder() {
+function recorder(clothLuma = 0.5) {
   const strokes: { text: string; x: number; y: number }[] = [];
   const fills: { text: string; x: number; y: number }[] = [];
   /** Font size at each fill, so "smaller on the front" can be checked. */
   const sizes: number[] = [];
   /** Every fill colour used, so the colour choice can be checked. */
   const colours: string[] = [];
-  /** Every stroke colour used, so the contrast halo can be checked. */
+  /** Every stroke colour used, so the contrast keyline can be checked. */
   const strokeColours: string[] = [];
+  /** The cloth the printer measures under a mark, as one flat grey. */
+  const grey = Math.round(clothLuma * 255);
   const ctx = {
+    getImageData: (_x: number, _y: number, w: number, h: number) => {
+      const data = new Uint8ClampedArray(Math.max(1, w) * Math.max(1, h) * 4);
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = grey;
+        data[i + 1] = grey;
+        data[i + 2] = grey;
+        data[i + 3] = 255;
+      }
+      return { data };
+    },
     font: "",
     fillStyle: "",
     strokeStyle: "",
@@ -188,16 +200,26 @@ describe("where the marks land", () => {
     expect(colours).toContain(kitColour("gold"));
   });
 
-  it("haloes a light print dark and a dark print light", () => {
-    // The player picks the print colour and the kit is whatever the character
-    // wears, so a single outline colour can only ever work for one of them.
-    const light = recorder();
+  it("prints flat ink when the colour reads against the cloth", () => {
+    // The reference kits print one flat colour and nothing else, and the
+    // sticker look this replaced came from dressing every mark up regardless.
+    const { ctx, strokes, fills } = recorder(0.15); // dark cloth
+    paintKit(ctx, SIZE, SIZE, kit({ number: "7", colour: "white" }));
+
+    expect(fills.length).toBeGreaterThan(0);
+    expect(strokes.filter((s) => s.text === "7")).toHaveLength(0);
+  });
+
+  it("keylines only the print that would sink into the cloth", () => {
+    // The player picks the colour, so white on a white shirt has to survive —
+    // and it is the measured cloth, not the colour name, that decides.
+    const light = recorder(0.92); // white cloth, white ink
     paintKit(light.ctx, SIZE, SIZE, kit({ number: "7", colour: "white" }));
-    const dark = recorder();
+    const dark = recorder(0.08); // dark cloth, black ink
     paintKit(dark.ctx, SIZE, SIZE, kit({ number: "7", colour: "black" }));
 
-    expect(light.strokeColours.some((c) => /14, 18, 26/.test(c))).toBe(true);
-    expect(dark.strokeColours.some((c) => /246, 249, 255/.test(c))).toBe(true);
+    expect(light.strokeColours.some((c) => /15, 20, 28/.test(c))).toBe(true);
+    expect(dark.strokeColours.some((c) => /245, 248, 255/.test(c))).toBe(true);
   });
 
   it("puts the number below the name", () => {

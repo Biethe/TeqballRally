@@ -705,7 +705,13 @@ export class MatchController {
       // and receive spots, and predicting from a stick that is not driving
       // that would fight it the whole way.
       if (side === "player" && !c.busy && this.followerPhase === "rally") {
-        c.move(input.moveX, input.moveZ, c.def.speed, dt);
+        // Portrait predicts from the tap target, not the axes: in portrait the
+        // axes only ever carry a swipe's leftover aim, and walking on that is
+        // the player drifting diagonally after every kick.
+        if (this.tapSteering) {
+          if (this.moveTarget) c.moveToward(this.moveTarget, c.def.speed, dt);
+          else c.move(0, 0, 0, dt);
+        } else c.move(input.moveX, input.moveZ, c.def.speed, dt);
         if (target) {
           const fixed = reconcile({ x: c.position.x, z: c.position.z }, target, dt);
           c.position.x = fixed.x;
@@ -738,6 +744,33 @@ export class MatchController {
       }
       c.update(dt);
     }
+  }
+
+  /**
+   * The controls a guest actually sends, given what its taps asked for.
+   *
+   * The wire carries a stick, and portrait has no stick: its taps become a
+   * local move target that the host can never see. So the target is turned
+   * back into the stick direction that walks there, here, each step before the
+   * frame is sent — and the leftover swipe aim is scrubbed from the axes,
+   * because on the host those axes are *movement*, and aim leaking into them
+   * marched the guest diagonally after every kick.
+   */
+  resolveFollowerInput(input: InputState): InputState {
+    if (!this.netFollower || !this.tapSteering) return input;
+    // On the frame of a press the axes are that press's aim, and the host
+    // reads them as exactly that. Scrubbing would un-aim every swipe.
+    if (input.strikePressed || input.popPressed) return input;
+    const target = this.moveTarget;
+    const c = this.chars.player;
+    if (target) {
+      const dx = target.x - c.position.x;
+      const dz = target.z - c.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 0.12) return { ...input, moveX: dx / d, moveZ: dz / d };
+      this.moveTarget = null;
+    }
+    return { ...input, moveX: 0, moveZ: 0 };
   }
 
   /** Latest reported pose, court velocity and action clip, per side. */
@@ -910,33 +943,26 @@ export class MatchController {
   }
 
   /**
-   * Walk the receiver behind their own service line during every serve phase
-   * (per the rules, the receiver must stand behind it too, like the server) —
-   * the serve used to become "ready" the moment the server arrived, stranding
-   * a far-out receiver mid-court with a stale velocity (jogging in place).
-   * moveToward zeroes the velocity on arrival, which also stops the jog blend.
-   */
-  /**
-   * Whether the player receiving is driven by the CPU.
+   * Walk the receiver behind their own service line, through every serve
+   * phase.
    *
-   * Only they may be steered once the serve is ready: a human at that point is
-   * setting themselves for the return, and moving their character for them is
-   * the game taking the controls away.
+   * Behind the line because the rulebook puts the receiver there too, and
+   * because the player asked to *start* each point from it. Through every
+   * phase because the walk used to stop the moment the server arrived, which
+   * stranded a far-out receiver mid-court — halfway through a trip they never
+   * asked for, which is exactly what "my player moves on its own" looks like.
+   * No control is being taken away by finishing it: outside the rally state
+   * the stick does not drive the characters at all, so the only choice is
+   * between a walk that completes and one that abandons them somewhere
+   * diagonal to everything. moveToward zeroes the velocity on arrival, which
+   * also stops the jog blend.
    */
-  private receiverIsCpu(): boolean {
-    return other(this.serveOwner) === "ai" && !this.versus;
-  }
-
   private walkReceiverHome(dt: number): void {
     const recvSide = other(this.serveOwner);
     const recv = this.chars[recvSide];
     if (recv.busy) return;
-    // Their own spawn, not the service line. The service line is 1.25 m further
-    // back and belongs to whoever is *serving*; walking the receiver to it sent
-    // them past where they started and, since it also pulls them to the centre,
-    // the trip there was a diagonal — which is what it looked like from the
-    // outside: the character setting off on its own.
-    recv.moveToward(new Vector3(sign(recvSide) * SPAWN.x, GROUND_Y, SPAWN.z), recv.def.speed, dt);
+    const mark = new Vector3(sign(recvSide) * (SERVE_X + 0.15), GROUND_Y, SPAWN.z);
+    recv.moveToward(mark, recv.def.speed, dt);
   }
 
   private handPos(c: Character): Vector3 {
@@ -1764,11 +1790,7 @@ export class MatchController {
       }
       case "serve_ready": {
         const server = this.chars[this.serveOwner];
-        // Not walked here. Once the serve is ready the receiver can move, and
-        // steering them home while they are trying to set themselves is taking
-        // the controls away — the walk belongs to `serve_move`, which is the
-        // stroll back between points.
-        if (this.receiverIsCpu()) this.walkReceiverHome(dt);
+        this.walkReceiverHome(dt);
         this.updatePlayerServeAim(input, true);
         this.updateVersusServeAim(true);
         this.ball.place(this.serveHandPos(server));
@@ -1781,7 +1803,7 @@ export class MatchController {
         break;
       }
       case "serve_anim": {
-        if (this.receiverIsCpu()) this.walkReceiverHome(dt);
+        this.walkReceiverHome(dt);
         // The clip is locked, but the landing aim stays live until contact.
         this.updatePlayerServeAim(input, false);
         this.updateVersusServeAim(false);

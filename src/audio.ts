@@ -2,6 +2,7 @@ const MUSIC_LOOPS = [
   "/audio/music/music_loop_1.mp3",
   "/audio/music/music_loop_2.mp3",
   "/audio/music/music_loop_3.mp3",
+  "/audio/music/music_loop_4.mp3",
 ] as const;
 
 /** Tiny HTMLAudio wrapper: overlapping SFX plus rotating seamless menu music. */
