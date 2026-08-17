@@ -502,6 +502,33 @@ What it does buy:
 And the part that is *not* a caveat: reading this repository, however
 carefully, yields the scheme and no art to apply it to.
 
+### Purging the history
+
+Removing the art from the working tree does nothing on its own. `git clone`
+reconstructs every commit, so the 67 MB stayed fully available from the fifty
+commits behind the tip. `scripts/purge-art-history.sh` rewrites every ref to
+strip it, and must be run before the repository is made public:
+
+```sh
+./scripts/purge-art-history.sh           # rewrite and verify, push nothing
+./scripts/purge-art-history.sh --push    # then force-push branches and tags
+```
+
+Two things about it are easy to get wrong and both are silent. **Tags count**:
+this repository has ~70 `build-*` tags, and one left pointing at a pre-purge
+commit keeps that entire history reachable and buys nothing. And **a normal
+clone here is shallow** — rewriting one gets the recent half of history and
+leaves the rest, which is why the script mirror-clones.
+
+Run it while the repository is still private. GitHub keeps unreachable objects
+after a force-push and serves them to anyone who knows an object SHA; while
+the repository is private nobody outside can have learned one, so purging
+first closes the window completely. Purging after going public does not, and
+takes a support request to finish.
+
+Every existing clone is stale afterwards and must be re-cloned. A `git pull`
+onto the old history merges the two and puts the art back.
+
 ## Accounts and the backend
 
 `server/` is one process serving two things on one port: the match relay, and
