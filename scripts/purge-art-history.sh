@@ -4,6 +4,15 @@
 #
 #   ./scripts/purge-art-history.sh            # rewrite and verify, push nothing
 #   ./scripts/purge-art-history.sh --push     # rewrite, verify, then force-push
+#   ./scripts/purge-art-history.sh --drop-tags  # delete every remote tag instead
+#
+# If the branches have already been purged and only the tags are stale — which
+# is the state this repository was left in, because the session that rewrote
+# the branches was denied tag writes by policy — then `--drop-tags` is the
+# whole job. Deleting a tag makes the commit it pinned unreachable, and no
+# rewrite is needed for history that is already clean. The cost is the
+# build-N-to-commit mapping, which nothing reads. Use `--push` instead to keep
+# the tags, repointed at the rewritten commits.
 #
 # Taking the art out of the working tree is not enough. Until this has run,
 # `git clone` still yields all 67 MB of it: a deleted file is deleted from the
@@ -44,6 +53,24 @@ PATHS=(
   assets/source-animations
   art-source
 )
+
+# The fast path, for a repository whose branches are already clean. Nothing is
+# rewritten and nothing is cloned: the tags are simply removed, which is what
+# makes the commits they pinned unreachable.
+if [ "$PUSH" = "--drop-tags" ]; then
+  tags=$(git ls-remote --tags "$REMOTE" | awk '{print $2}' | grep -v '\^{}$' || true)
+  if [ -z "$tags" ]; then
+    echo "No remote tags. Nothing to do."
+    exit 0
+  fi
+  count=$(echo "$tags" | wc -l | tr -d ' ')
+  echo "==> Deleting $count remote tags from $REMOTE"
+  echo "$tags" | xargs -n 50 git push --delete "$REMOTE"
+  echo
+  echo "Done. Re-check with:"
+  echo "  git ls-remote --tags $REMOTE"
+  exit 0
+fi
 
 echo "==> Mirror-cloning $REMOTE"
 echo "    (a mirror, not a normal clone: a normal clone of this repository is"
