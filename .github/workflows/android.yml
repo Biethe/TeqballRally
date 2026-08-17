@@ -91,7 +91,13 @@ jobs:
         env:
           ASSET_BUNDLE_URL: ${{ secrets.ASSET_BUNDLE_URL }}
           ASSET_BUNDLE_KEY: ${{ secrets.ASSET_BUNDLE_KEY }}
-          ASSET_BUNDLE_TOKEN: ${{ secrets.ASSET_BUNDLE_TOKEN }}
+          # Falls back to this run's own token, which is what makes a release
+          # asset on this private repository work with no token secret at all:
+          # the bundle lives in the same repo the job is already authorised
+          # for. An unauthenticated request for a private asset answers 404,
+          # not 403, so without this the setup fails looking like a wrong URL.
+          # An explicit secret still wins, for a bundle hosted anywhere else.
+          ASSET_BUNDLE_TOKEN: ${{ secrets.ASSET_BUNDLE_TOKEN || github.token }}
         run: npm run assets:fetch
 
       - name: Build web assets and sync into the native project

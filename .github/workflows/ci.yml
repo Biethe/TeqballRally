@@ -44,7 +44,12 @@ jobs:
         env:
           ASSET_BUNDLE_URL: ${{ secrets.ASSET_BUNDLE_URL }}
           ASSET_BUNDLE_KEY: ${{ secrets.ASSET_BUNDLE_KEY }}
-          ASSET_BUNDLE_TOKEN: ${{ secrets.ASSET_BUNDLE_TOKEN }}
+          # See android.yml: the run's own token reads a release asset on this
+          # private repository, so hosting the bundle here needs no extra
+          # secret. An explicit secret still wins for a bundle hosted anywhere
+          # else, and a fork gets a token that simply cannot read it — which is
+          # the no-art path this step already handles.
+          ASSET_BUNDLE_TOKEN: ${{ secrets.ASSET_BUNDLE_TOKEN || github.token }}
         run: |
           if [ -z "$ASSET_BUNDLE_URL" ] || [ -z "$ASSET_BUNDLE_KEY" ]; then
             echo "::notice::No art bundle secrets — building the code without assets."
