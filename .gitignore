@@ -39,3 +39,23 @@ android/keystore.properties
 # so the unpacked originals are kept out of the repo rather than committed
 # alongside the packed ones.
 raw/
+
+# The art. None of it is committed, and this is the load-bearing part of
+# protecting it — not the AES in scripts/scramble.mjs.
+#
+# The models, textures, venue cards, audio and video are licensed packs whose
+# terms forbid redistributing them in a form other tools can open. A public
+# repository is exactly that, and it does not matter how good the cipher in the
+# build step is if the plaintext is one `git clone` away beside it. Everything
+# here comes from the bundle instead: `npm run assets:fetch`, or
+# scripts/pack-assets.mjs to make a new one.
+#
+# The fonts and the meshopt decoder are the exceptions and stay committed: Exo
+# 2 is under the Open Font Licence and the decoder is a public third-party
+# script, so neither is anybody's to withhold, and both are needed for the page
+# to render at all.
+assets/*
+!assets/fonts/
+!assets/meshopt_decoder.js
+art-source/
+art-bundle.teq

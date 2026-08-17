@@ -31,6 +31,7 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { GROUND_Y } from "./config";
+import { assetUrl, PROTECTED } from "./protected";
 import { loadProps, type PropKind, type PropLibrary } from "./props";
 import type { Rgb, Surrounds, Tile, Venue } from "./venue";
 
@@ -92,7 +93,17 @@ function tiled(
   surfaceMetres: number
 ): StandardMaterial {
   if (!tile) return material;
-  const texture = new Texture(`/textures/${tile.name}.webp`, scene);
+  const path = `/textures/${tile.name}.webp`;
+  // A plain build hands Babylon the path and it fetches the image itself,
+  // exactly as before. A protected build cannot: the file at that path is
+  // `.teq` noise. So the texture starts empty and is pointed at a decrypted
+  // blob a moment later — `forcedExtension` because a `blob:` URL carries no
+  // extension for Babylon to pick a loader from, and the material already
+  // shows the right base colour while it lands.
+  const texture = PROTECTED ? new Texture(null, scene) : new Texture(path, scene);
+  if (PROTECTED) {
+    void assetUrl(path).then((url) => texture.updateURL(url, undefined, undefined, ".webp"));
+  }
   const repeats = Math.max(1, surfaceMetres / tile.metres);
   texture.uScale = repeats;
   texture.vScale = repeats;

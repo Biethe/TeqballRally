@@ -6,7 +6,7 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { BakedVertexAnimationManager } from "@babylonjs/core/BakedVertexAnimation/bakedVertexAnimationManager";
 import { CROWD_FIGURES, CROWD_FPS, CROWD_FRAMES, type CrowdFigure } from "./crowdclips";
-import { importModel } from "./protected";
+import { assetBuffer, importModel } from "./protected";
 
 /**
  * Skinned spectators that cost one draw call each, however many are on screen.
@@ -98,9 +98,10 @@ function groundingMatrix(parts: Mesh[]): Matrix {
 
 /** Load one figure's baked matrices and hand back the texture they form. */
 async function loadBakedTexture(scene: Scene, file: string): Promise<RawTexture> {
-  const response = await fetch(`/models/Crowd/${file.replace(/\.glb$/, "")}.vat`);
-  if (!response.ok) throw new Error(`${response.status} fetching baked crowd data`);
-  const buffer = await response.arrayBuffer();
+  // Through `assetBuffer` rather than `fetch`: the `.vat` files are encrypted
+  // alongside the models they animate, and they are the one asset the game
+  // parses as raw bytes instead of pointing an element at.
+  const buffer = await assetBuffer(`/models/Crowd/${file.replace(/\.glb$/, "")}.vat`);
   const header = new Uint32Array(buffer, 0, 2);
   const [width, height] = [header[0], header[1]];
   const data = new Float32Array(buffer, 8);

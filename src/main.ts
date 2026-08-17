@@ -59,6 +59,7 @@ import {
 } from "./input";
 import { UI, type SettingRow } from "./ui";
 import { AudioManager } from "./audio";
+import { assetUrl, prefetchAsset } from "./protected";
 import { NetConnection } from "./net/connection";
 import { OnlineSession } from "./net/session";
 import { looksReachable, relayUrl } from "./net/endpoint";
@@ -239,8 +240,14 @@ async function boot(): Promise<void> {
   let preloaded = 0;
   const preload = Promise.all(
     preloadUrls.map((url) =>
-      fetch(url)
-        .then((r) => r.arrayBuffer())
+      // `assetUrl` rather than `fetch`: in a protected build these paths do
+      // not exist — the files are `.teq` — so every one of these fetches 404ed
+      // and the progress bar counted failures to 100%. The picker then opened
+      // on a model it still had to download, which is the exact wait the clip
+      // exists to hide. It also caches the decrypted blob, so the real load
+      // that follows costs nothing rather than merely being warm in the HTTP
+      // cache.
+      assetUrl(url)
         .catch(() => undefined)
         .finally(() => {
           preloaded++;
@@ -326,11 +333,11 @@ async function boot(): Promise<void> {
   // Dev knob: ?ts=8 speeds up game time for headless testing.
   const timeScale = Number(new URLSearchParams(location.search).get("ts") ?? 1) || 1;
 
-  // Low-priority browser prefetches let the next picker item download while
-  // the player reads the menu. Do not spend a metered/very-slow connection's
-  // bandwidth on a speculative 20–60 MB model; on-demand loading remains the
-  // fallback in that case.
-  const prefetchLinks = new Set<string>();
+  // Prefetching the next picker item lets it download while the player reads
+  // the menu. Do not spend a metered/very-slow connection's bandwidth on a
+  // speculative 20–60 MB model; on-demand loading remains the fallback in that
+  // case.
+  const prefetched = new Set<string>();
   const scheduleAssetPrefetch = (url: string, delayMs = 1200): void => {
     if (typeof document === "undefined" || typeof navigator === "undefined") return;
     const connection = (navigator as Navigator & {
@@ -339,17 +346,15 @@ async function boot(): Promise<void> {
     if (connection?.saveData || connection?.effectiveType === "slow-2g" || connection?.effectiveType === "2g") {
       return;
     }
-    if (prefetchLinks.has(url)) return;
-    prefetchLinks.add(url);
-    window.setTimeout(() => {
-      const link = document.createElement("link");
-      link.rel = "prefetch";
-      link.as = "fetch";
-      link.href = url;
-      link.crossOrigin = "anonymous";
-      link.dataset.teqopenPrefetch = "true";
-      document.head.appendChild(link);
-    }, delayMs);
+    if (prefetched.has(url)) return;
+    prefetched.add(url);
+    // Was a `<link rel=prefetch>` at the `.glb` path. In a protected build
+    // nothing lives there, so every prefetch in every release was a 404 —
+    // invisible, because a prefetch that fails is meant to be. Going through
+    // `prefetchAsset` warms the same cache `importModel` will read, and warms
+    // it with the *decrypted* bytes, so the model is ready rather than merely
+    // downloaded.
+    window.setTimeout(() => prefetchAsset(url), delayMs);
   };
 
   // ---- split screen (versus mode) ----

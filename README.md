@@ -8,10 +8,18 @@ league, or take someone on online.
 
 ```bash
 npm install
-npm run dev                 # open the printed URL
+npm run assets:fetch       # the art is not in this repo — see below
+npm run dev                # open the printed URL
 npm run dev -- --host      # make the dev build reachable from a phone
-npm run build              # production files in dist/
+npm run build              # production files in dist/, needs VITE_ASSET_KEY
 ```
+
+**The models, textures, audio and video are not committed.** They are licensed
+packs, and this repository is public; `npm run assets:fetch` pulls them from
+private storage given `ASSET_BUNDLE_URL` and `ASSET_BUNDLE_KEY`. Without them
+you still get a repository that typechecks, lints, passes its tests and builds
+with `npm run build:plain` — everything except a playable stage. See
+[Protecting the art](#protecting-the-art).
 
 The game supports keyboard, touch, and Gamepad API controllers, and plays
 either way up on a phone.
@@ -398,41 +406,101 @@ physics, the AI and the card all read one already-modified `CharacterDef`.
 Deliberately no `power` on the shelf. Pace belongs to the character and to the
 ball; a shop that sells a harder ball is a shop that decides matches.
 
-## Encrypting the models
+## Protecting the art
 
-Every `.glb` in a built game is a finished 3D asset sitting in a folder, and an
-APK is a zip anybody can open. `scripts/protect-assets.mjs` encrypts them at
-build time into `.teq` files and `src/protected.ts` decrypts them on the way
-into Babylon, so a public repository or an unzipped build contains nothing a 3D
-tool will open. `npm run build` does both; `npm run dev` serves `assets/`
-plain, because there is nothing to undo there.
+**The art is not in this repository.** That is the load-bearing part, and it is
+worth stating before the cryptography, because for most of this project's life
+the cryptography was the only part and it protected nothing.
+
+`assets/` was committed in full — 39 MB of plaintext `.glb`, plus the Mixamo
+`.fbx` rigs and the crowd's `.vat` bakes. `scripts/protect-assets.mjs` ran over
+`dist/`, which is never committed, so the encryption applied only to build
+output while the originals sat in git beside it. Making the repository public
+would have handed over every model with one `git clone`. No cipher fixes that,
+and no amount of care reading the code was needed to defeat it.
+
+So the models, textures, venue cards, audio and video are gitignored and live
+in an encrypted bundle in private storage:
+
+```sh
+ASSET_BUNDLE_URL=… ASSET_BUNDLE_KEY=… npm run assets:fetch   # get the art
+ASSET_BUNDLE_KEY=… npm run assets:pack                       # publish a new bundle
+```
+
+`assets.manifest.json` **is** committed. It is paths, sizes and SHA-256 digests
+— it gives up nothing, and it turns a truncated download into an error at fetch
+time instead of a texture that silently never appears. The Exo 2 fonts and
+`meshopt_decoder.js` stay committed too: an OFL font and a public third-party
+script are not anybody's to withhold, and the page needs both to render.
+
+A clone with no bundle still typechecks, lints, passes all 674 tests and builds
+with `npm run build:plain`. It cannot produce a *playable* build, which is
+deliberate rather than an oversight: these are licensed packs whose terms
+forbid redistributing them in a form other tools can open.
+
+Raw art also lives in `art-source/` rather than `assets/source-animations/`,
+because Vite copies all of `publicDir` to the root of `dist/` with no way to
+exclude a subdirectory. While the rigs sat there, every deployed build served
+them at `/source-animations/crowd/Idle.fbx` — unencrypted, and the most
+directly reusable files in the project.
+
+### The cipher
+
+`scripts/protect-assets.mjs` encrypts everything under `dist/{models,textures,
+venues,video,audio}` into `.teq` files at build time, and `src/protected.ts`
+decrypts them on the way into Babylon, the audio element and the DOM. It covers
+**every shipped asset**, not the `.glb` files alone — encrypting the models
+while serving the music and the venue photographs in the open beside them
+protected the expensive third of a build and left the rest in a folder for
+anybody who typed the path.
 
 It is **AES-256-GCM**, through WebCrypto: real, authenticated encryption. An
-encrypted model is indistinguishable from random bytes — no header to
+encrypted asset is indistinguishable from random bytes — no header to
 recognise, no structure to guess at, nothing to unpick from the file alone —
 and a single altered byte fails the authentication tag rather than decrypting
 to plausible rubbish. Each file gets a fresh random IV, which GCM requires and
-which matters here because every model starts with the same glTF header. The
-cost is 28 bytes per file and, on the hardware AES every ARMv8 phone has, a
-fraction of a second across the whole 37 MB set.
+which matters here because these files come in groups sharing a header byte for
+byte: the glTF magic on every model, the WebP one on every texture. The cost is
+28 bytes per file and, on the hardware AES every ARMv8 phone has, a fraction of
+a second across the whole 43 MB set.
+
+`VITE_ASSET_KEY` sets the passphrase, and there is **no fallback**: both halves
+refuse to run without it. There used to be one — `"teqrallly-default-key"`,
+written in this repository — and since no workflow ever set the variable, it
+was the passphrase every shipped build actually used.
+
+The scheme exists twice — `scripts/scramble.mjs` for the build, which runs
+before a bundle exists, and `src/protected.ts` for the game — and both the
+cipher *and* the list of protected extensions are duplicated.
+`tests/protected.test.ts` crosses that boundary for real: Node encrypts,
+WebCrypto decrypts. Cipher drift fails as every asset refusing to load at once.
+List drift is worse because it is partial — an extension the build encrypts and
+the game does not is a 404 in release builds only, with nothing in any log to
+say why, which is exactly how the `.glb` prefetches in `src/main.ts` went
+unnoticed through twenty-odd releases.
+
+### What this does and does not achieve
 
 **The honest caveat is key distribution, not the cipher.** A packaged game has
-to decrypt its own models on a phone in a tunnel, so the key ships inside the
+to decrypt its own assets on a phone in a tunnel, so the key ships inside the
 bundle, and anybody willing to read the JavaScript and drive WebCrypto
 themselves can recover it. That is a property of client-side decryption in
-general, not of this scheme: the only design without it is one where the models
+general, not of this scheme: the only design without it is one where the assets
 never reach the client in usable form, which for a WebGL game does not exist.
-What it does buy over the keystream XOR it replaced is that the key cannot be
-recovered from the *files* — only from the bundle, which is a far higher bar
-than reading a header — and that tampering is detected rather than loaded.
+**Nothing here makes a build unrippable, and it should not be described as if
+it did.**
 
-`VITE_ASSET_KEY` sets the passphrase per release, so a shipped build is not
-encrypted with the string written in this repository. The format exists twice —
-`scripts/scramble.mjs` for the build, which runs before a bundle exists, and
-`src/protected.ts` for the game — and `tests/protected.test.ts` crosses that
-boundary for real: Node encrypts, WebCrypto decrypts. Drift there fails as
-*every model refusing to load at once*, with nothing in any build log to say
-why.
+What it does buy:
+
+- a `.teq` is noise, so nothing is one rename away from being openable;
+- the key cannot be recovered from the *files*, only from the bundle, which is
+  a far higher bar than reading a header;
+- tampering is detected rather than silently loaded;
+- the licensed packs are not distributed in "a file format usable by any 3D
+  application", which is the specific thing their licence forbids.
+
+And the part that is *not* a caveat: reading this repository, however
+carefully, yields the scheme and no art to apply it to.
 
 ## Accounts and the backend
 

@@ -1,0 +1,327 @@
+{
+  "version": 1,
+  "generated": "2026-08-17",
+  "note": "bundle is null until scripts/pack-assets.mjs is run with the real ASSET_BUNDLE_KEY; the hash covers one specific upload (fresh IV per pack) so it cannot be committed ahead of it. The per-file digests below are the durable part and are checked on every fetch.",
+  "roots": [
+    "assets",
+    "art-source"
+  ],
+  "bundle": null,
+  "files": [
+    {
+      "path": "assets/audio/music/.gitkeep",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "assets/audio/music/music_loop_1.mp3",
+      "bytes": 992256,
+      "sha256": "9a470e9127faff162bc3ff5ada7bc4f041cbf076b50b1f6d08b0a2d5e18e149c"
+    },
+    {
+      "path": "assets/audio/music/music_loop_2.mp3",
+      "bytes": 992256,
+      "sha256": "e2f05df346f3837acbaa11d3fc8a405fd134ac3c12155a4c1a0c6896073965cc"
+    },
+    {
+      "path": "assets/audio/music/music_loop_3.mp3",
+      "bytes": 480653,
+      "sha256": "3440594de5dbc75f68e5cb8c037c4dc8192666d5d9099b7932f0ed4aaa4be70d"
+    },
+    {
+      "path": "assets/audio/music/music_loop_4.mp3",
+      "bytes": 241580,
+      "sha256": "8ac324fe1fbec27f33d0722d811253566d632090e77b961238a87b3084ea3952"
+    },
+    {
+      "path": "assets/audio/sfx/.gitkeep",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "assets/audio/sfx/crowd_applause.wav",
+      "bytes": 695446,
+      "sha256": "d33bd2fe1bf625d1da0b78f91bffc685aea4da12c6fc4002b20103b2bb408005"
+    },
+    {
+      "path": "assets/audio/sfx/kick.wav",
+      "bytes": 81118,
+      "sha256": "02333d52e0e297a6bc2e8586ed75f6a8e92337ed269b1c6fa6de538d04392d7f"
+    },
+    {
+      "path": "assets/fonts/OFL.txt",
+      "bytes": 4382,
+      "sha256": "3619061acf566cbd3c1f77b016d2f8a03992c503210790b032dd0038a6d542f9"
+    },
+    {
+      "path": "assets/fonts/exo2-latin-ext.woff2",
+      "bytes": 30832,
+      "sha256": "a3b66800e9aa36bd8f3cc59f29024c9e063a2ac607d955dd27e149c29cac8410"
+    },
+    {
+      "path": "assets/fonts/exo2-latin.woff2",
+      "bytes": 40896,
+      "sha256": "4a259dde317e08aa5d37e6eb684e222ae833516b2a0fccba36ee5e36224f16be"
+    },
+    {
+      "path": "assets/meshopt_decoder.js",
+      "bytes": 32733,
+      "sha256": "74188840936594a7161be0bb8822927279ec72ed9e4585e482f2c47c40d1aa80"
+    },
+    {
+      "path": "assets/models/Arena/Basketball.glb",
+      "bytes": 1223532,
+      "sha256": "4ed6e47342b3f861a6f852e8b651b17a092d14b8a09a15cb78fe26812e5f9341"
+    },
+    {
+      "path": "assets/models/Arena/Soccer.glb",
+      "bytes": 1448168,
+      "sha256": "fde5b087c4c47a39d58800ba860769dcb8d948d5142bb015c92c2d9a0a6219bc"
+    },
+    {
+      "path": "assets/models/Arena/Tennis.glb",
+      "bytes": 1095800,
+      "sha256": "ee182f6572fa4d26fdb31364021037d48b5966e66d3f3df6a2212502f5f3fd8f"
+    },
+    {
+      "path": "assets/models/Arena/indoor_arena_inside_out_improved_version.glb",
+      "bytes": 4958140,
+      "sha256": "e1ba2803acfc152ce568d867319b9fc3822bdbfd116d77b2b7b30cb6a7525db7"
+    },
+    {
+      "path": "assets/models/Ball_and_Table/BlueAndRoseBall.glb",
+      "bytes": 211560,
+      "sha256": "ff8b4dce02fa31073a8ef0eb68891890b1d5d6f81dc92534967220a79fb3618f"
+    },
+    {
+      "path": "assets/models/Ball_and_Table/BlueBall.glb",
+      "bytes": 300984,
+      "sha256": "4e1c08424b283427414e72f18cc12b5cd9c5fb5aba66b8e48e357459d1bf5983"
+    },
+    {
+      "path": "assets/models/Ball_and_Table/OrangeAndBlackBall.glb",
+      "bytes": 235364,
+      "sha256": "2d8452b7ad6102262f48560f3249ffb15f2d8526fc09b420044d75ad77bb1940"
+    },
+    {
+      "path": "assets/models/Ball_and_Table/RedBall.glb",
+      "bytes": 224288,
+      "sha256": "35719b0165309bbd69b5445ad1d59e8e9c0282179a1ea4f77b63c921f7c62188"
+    },
+    {
+      "path": "assets/models/Ball_and_Table/Teqball_Table.glb",
+      "bytes": 42928,
+      "sha256": "2aea8f39d57851ae00e27817bcfb340da337f18dbc05aeab283e25a96330db7b"
+    },
+    {
+      "path": "assets/models/Buildings/Buildings.glb",
+      "bytes": 2404508,
+      "sha256": "9d5a73660eafbfc274f542ea39763e568c22ea4c04ec0d2cabae7a1f78a1c669"
+    },
+    {
+      "path": "assets/models/Crowd/Caleb.glb",
+      "bytes": 804552,
+      "sha256": "02692638abdac03cb3faedf7d0bed5eb2ab6e1013e9cf3fb78a984df252b8b67"
+    },
+    {
+      "path": "assets/models/Crowd/Caleb.vat",
+      "bytes": 202760,
+      "sha256": "4b2e7c57dfd0a6f6fb90aea0dd33e374d52364d8848494482fd008ead58b441d"
+    },
+    {
+      "path": "assets/models/Crowd/Judith.glb",
+      "bytes": 778116,
+      "sha256": "fe3460335a158579b1ab7e570cd9b69df43399b940216852b356cc695df8d6cc"
+    },
+    {
+      "path": "assets/models/Crowd/Judith.vat",
+      "bytes": 202760,
+      "sha256": "a91e6af7981baf50ac27bd932be399f6184003ce00ea72843c25c66f755b1ab0"
+    },
+    {
+      "path": "assets/models/Crowd/Lea.glb",
+      "bytes": 787056,
+      "sha256": "5f0066e9dc5a515236787cf1b1b039bc25fd0ab687920547ffefaa06692a0070"
+    },
+    {
+      "path": "assets/models/Crowd/Lea.vat",
+      "bytes": 202760,
+      "sha256": "b248c981743421f082669c9e3d165a77de9bc45ae1b5c66cbbf8e3dd3facead4"
+    },
+    {
+      "path": "assets/models/Crowd/Leo.glb",
+      "bytes": 675524,
+      "sha256": "faf2e1ca01db137e6c896b455a1dc28a36e20b3d99002041cad88dadc02eea85"
+    },
+    {
+      "path": "assets/models/Crowd/Leo.vat",
+      "bytes": 202760,
+      "sha256": "b3301ed98aca44b285753e219d9107ddedcbad8e2e1054fb169044feb8440066"
+    },
+    {
+      "path": "assets/models/Crowd/Megan.glb",
+      "bytes": 752104,
+      "sha256": "c4d264b4a11cac68c5e391849d9ba8d98ff8bee295eaddb78a7977a4d3c3461b"
+    },
+    {
+      "path": "assets/models/Crowd/Megan.vat",
+      "bytes": 202760,
+      "sha256": "53e44f5914a0d93778cbcf9f7c9b0a73c3810f3cae0ae784abbd4f1dd9257ff3"
+    },
+    {
+      "path": "assets/models/Crowd/Simone.glb",
+      "bytes": 839588,
+      "sha256": "854e647a5304389cb3709e48acf414c74294b5b7cf02406fb52e8f316f3ad432"
+    },
+    {
+      "path": "assets/models/Crowd/Simone.vat",
+      "bytes": 202760,
+      "sha256": "c4d31a3d8dc2f8ca5e1a3c59cd1257fdbddf29fe6257d67af0de8d41594f619e"
+    },
+    {
+      "path": "assets/models/Crowd/Tebby.glb",
+      "bytes": 715268,
+      "sha256": "219c73f068cf1f7d138f7033009fd478b54d9d55aecbcbd5b35dc40badf8c97d"
+    },
+    {
+      "path": "assets/models/Crowd/Tebby.vat",
+      "bytes": 202760,
+      "sha256": "23e151aad409dfe4b10f3999d0befe66ea1f9bccbcdadbaaad054d2e233b4948"
+    },
+    {
+      "path": "assets/models/Plants/Plants.glb",
+      "bytes": 2239692,
+      "sha256": "7e99d2d9e708466e28832d78e3cec733c7a79681db2bb75298680750b6015860"
+    },
+    {
+      "path": "assets/models/Props/Props.glb",
+      "bytes": 458220,
+      "sha256": "e1b792ec1316c8642847b75f0097311ee58e53ee13327ea3ab10452ef2ccb6cd"
+    },
+    {
+      "path": "assets/models/characters/.gitkeep",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "assets/models/characters/BrazilianPlayer.glb",
+      "bytes": 4924940,
+      "sha256": "f6399e809ea62937606eb07e92bbeaa5b4e422a4f4bebe23c8bc22a9c3aec261"
+    },
+    {
+      "path": "assets/models/characters/EnglishPlayer.glb",
+      "bytes": 5109708,
+      "sha256": "355c1e69000c7b517c09425f30f2482a3952af9fbf2da4e71403a362bbbba73c"
+    },
+    {
+      "path": "assets/models/characters/FrenchPlayer.glb",
+      "bytes": 4827800,
+      "sha256": "a11f7359f54eb562ababc976be6aa551221132786ebcee9562252c840dd40b62"
+    },
+    {
+      "path": "assets/models/characters/SpanishPlayer.glb",
+      "bytes": 3736916,
+      "sha256": "8ea61ffd9bb2c80464867ddc2c137a7bafed0e9b3fb9131787a7e8b6e1972157"
+    },
+    {
+      "path": "assets/textures/asphalt.webp",
+      "bytes": 97998,
+      "sha256": "17ce95a0d1d0f5fdb6974278cb469f78ec792677002afadb0dc86b4e89c97435"
+    },
+    {
+      "path": "assets/textures/brick.webp",
+      "bytes": 84838,
+      "sha256": "a66ab43dd2820655faa23989d816eaaa58ad32ae4801a543bef0c00bb86b3839"
+    },
+    {
+      "path": "assets/textures/concrete.webp",
+      "bytes": 58312,
+      "sha256": "fc3fe63fbaff5d3d8aaca33a29f16e37a6692f72d637ce94a49643424e57ed9f"
+    },
+    {
+      "path": "assets/textures/grass.webp",
+      "bytes": 135434,
+      "sha256": "23759361bad82f43748620c4dc90fda37b6c6c9045045b2e91ee4a738df45efb"
+    },
+    {
+      "path": "assets/textures/marble.webp",
+      "bytes": 17590,
+      "sha256": "1c2d44a0a4bd1b0ca54b766706adb567bd522234e25526d489d6c784282280cf"
+    },
+    {
+      "path": "assets/textures/plaster.webp",
+      "bytes": 46790,
+      "sha256": "401eb9655e867f2c14296bbecaba58b8a5a2e65a4fea53c99ae24a6a63b828b9"
+    },
+    {
+      "path": "assets/textures/sand.webp",
+      "bytes": 56962,
+      "sha256": "a07bfbf83d2a6e0b0e680ab76b41eb3242a54b0b182a5ee527d81d651d407317"
+    },
+    {
+      "path": "assets/textures/water.webp",
+      "bytes": 71094,
+      "sha256": "8a9ce51ec5535003490b8d566f6badc1b60a841d6935d78f527f47e33e4bc175"
+    },
+    {
+      "path": "assets/venues/basketball.jpg",
+      "bytes": 48461,
+      "sha256": "b1eabad220c49820e0c14cc4f07c17ff27e4e960063289c5a8af0ec7f2a15c67"
+    },
+    {
+      "path": "assets/venues/football.jpg",
+      "bytes": 46811,
+      "sha256": "e9a7ae04cb06acd88b3b7470c5512bd8a102266cea65dd2dc49c10bb7bcf5c34"
+    },
+    {
+      "path": "assets/venues/gym.jpg",
+      "bytes": 57229,
+      "sha256": "435511904cf76cdeb6132c8e265b90a31b3988cad5993e2a3b821d5422893b87"
+    },
+    {
+      "path": "assets/venues/tennis.jpg",
+      "bytes": 52589,
+      "sha256": "a91cf1e9626d29d66b44e16e6aa964f39c9e136f3c5ecb1d7768103357816e4c"
+    },
+    {
+      "path": "assets/video/intro-backdrop.webp",
+      "bytes": 324,
+      "sha256": "3308127007412e4701884e205a93303efc2b4f2b9b07b41694c1840a0a3799fc"
+    },
+    {
+      "path": "assets/video/intro.mp4",
+      "bytes": 615470,
+      "sha256": "8f9f97c49214212086a98fad311b69701e4dfaf57529840731d4bd6e8f974ae4"
+    },
+    {
+      "path": "art-source/README.md",
+      "bytes": 3190,
+      "sha256": "069eb28a0e5ca395d476f10353a100ef4c70e700a157cd12d1c1ab4ad1c03734"
+    },
+    {
+      "path": "art-source/crowd/Bored.fbx",
+      "bytes": 1158224,
+      "sha256": "3a5ea2d4e9f69791b4c21fa1ad7e0fda5561b76b7a804559b68c601350c99e36"
+    },
+    {
+      "path": "art-source/crowd/Idle.fbx",
+      "bytes": 788208,
+      "sha256": "826e7afc4b869ccf074204766836a19485174d30225d9e48e25d8df402b456cb"
+    },
+    {
+      "path": "art-source/crowd/Male_Standing_Pose_3.fbx",
+      "bytes": 267888,
+      "sha256": "3de0d824c9be6ca7e9cdba95e88e0dcbe0226786c1304aaf0ae32c802f8526df"
+    },
+    {
+      "path": "art-source/crowd/Male_Standing_Pose_4.fbx",
+      "bytes": 267888,
+      "sha256": "6efec9b773775ebd734c46de1fac7207938332135ebfddd399d1fff82b98b388"
+    },
+    {
+      "path": "art-source/crowd/Pouting.fbx",
+      "bytes": 598576,
+      "sha256": "2078dcb7baaf60d8572882e960d611d8827112c11f21597ae54947f107d239d6"
+    }
+  ]
+}

@@ -35,8 +35,59 @@ jobs:
       - name: Unit tests
         run: npm run test
 
+      # The art is not in this repository — see .gitignore and
+      # scripts/fetch-assets.mjs. A fork, or this repo before the secrets are
+      # set, has the code and none of the models, so the build below has to
+      # cope with both cases rather than failing on a missing texture.
+      - name: Fetch the art bundle
+        id: art
+        env:
+          ASSET_BUNDLE_URL: ${{ secrets.ASSET_BUNDLE_URL }}
+          ASSET_BUNDLE_KEY: ${{ secrets.ASSET_BUNDLE_KEY }}
+          ASSET_BUNDLE_TOKEN: ${{ secrets.ASSET_BUNDLE_TOKEN }}
+        run: |
+          if [ -z "$ASSET_BUNDLE_URL" ] || [ -z "$ASSET_BUNDLE_KEY" ]; then
+            echo "::notice::No art bundle secrets — building the code without assets."
+            echo "have_art=no" >> "$GITHUB_OUTPUT"
+          else
+            npm run assets:fetch
+            echo "have_art=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Two different builds on purpose. With the art, this is the real one and
+      # it must encrypt every asset, so a regression in protect-assets.mjs
+      # fails here rather than in a release. Without it, the plain build still
+      # proves the bundle compiles — which is the whole of what a fork can
+      # check, and worth keeping green for them.
       - name: Production build
-        run: npm run build
+        env:
+          VITE_ASSET_KEY: ${{ secrets.VITE_ASSET_KEY }}
+        run: |
+          if [ "${{ steps.art.outputs.have_art }}" != "yes" ]; then
+            npm run build:plain
+            exit 0
+          fi
+          if [ -z "$VITE_ASSET_KEY" ]; then
+            echo "::error::Art is present but VITE_ASSET_KEY is not set — that build would ship the assets in the clear."
+            exit 1
+          fi
+          npm run build
+
+      # A build that shipped a readable .glb is the one failure this whole
+      # scheme exists to prevent, and it looks exactly like a successful build.
+      # Cheap enough to assert every time.
+      - name: No readable art in the build output
+        if: steps.art.outputs.have_art == 'yes'
+        run: |
+          leaked=$(find dist/models dist/textures dist/venues dist/video dist/audio \
+                     -type f ! -name '*.teq' ! -name '.gitkeep' 2>/dev/null || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::These shipped unencrypted:"; echo "$leaked"; exit 1
+          fi
+          if [ -e dist/source-animations ]; then
+            echo "::error::Raw source animations reached dist/."; exit 1
+          fi
+          echo "All art in dist/ is encrypted."
 
       - name: Upload build output
         uses: actions/upload-artifact@v4

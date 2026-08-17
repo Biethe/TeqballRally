@@ -15,6 +15,11 @@ import { t, tf } from "./i18n";
 import { randomTip } from "./tips";
 import { RATING_KEYS, rating, totalPower, type RatingKey } from "./ratings";
 import { MAX_CLUB_MEMBERS } from "./account";
+import { assetUrl } from "./protected";
+
+/** The opening cinematic, and the blurred still that sits behind its bars. */
+const INTRO_CLIP = "/video/intro.mp4";
+const BACKDROP = "/video/intro-backdrop.webp";
 
 /** One line of plain English per trait, for the tooltip on the picker. */
 const RATING_DETAIL: Record<RatingKey, string> = {
@@ -1081,7 +1086,7 @@ export class UI {
    * The overlay is only revealed once frames are arriving, so a device that
    * cannot decode the file shows nothing at all and boots straight through.
    */
-  playIntroClip(src = "/video/intro.mp4"): Promise<void> {
+  playIntroClip(src = INTRO_CLIP): Promise<void> {
     this.hideIntroClip();
     // An opening cinematic is exactly what this preference is about.
     if (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -1114,14 +1119,35 @@ export class UI {
       video.onended = () => finish();
       video.onerror = () => finish();
 
-      video.src = src;
-      // Try it with its own sound first: a native WebView is allowed to start
-      // unmuted, a browser tab is not, and muted playback always starts.
-      video.muted = false;
-      void video.play().catch(() => {
-        video.muted = true;
-        void video.play().catch(() => finish());
-      });
+      // The blurred still behind the letterbox bars. Decorative, and the rule
+      // in `style.css` keeps a flat colour under it, so this is applied
+      // whenever it arrives and never waited for or reported.
+      void assetUrl(BACKDROP)
+        .then((url) => {
+          this.introClipEl.style.backgroundImage = `url("${url}")`;
+        })
+        .catch(() => undefined);
+
+      // A protected build cannot hand the element a path — the file there is
+      // `.teq` noise — so the clip is fetched and decrypted first. That costs
+      // the whole 600 KB before the first frame instead of streaming it, which
+      // is why `finish()` on failure matters more here than it did: a build
+      // whose clip will not decrypt has to boot through, not sit on a
+      // watchdog.
+      void assetUrl(src)
+        .then((url) => {
+          if (settled) return;
+          video.src = url;
+          // Try it with its own sound first: a native WebView is allowed to
+          // start unmuted, a browser tab is not, and muted playback always
+          // starts.
+          video.muted = false;
+          void video.play().catch(() => {
+            video.muted = true;
+            void video.play().catch(() => finish());
+          });
+        })
+        .catch(() => finish());
     });
   }
 
@@ -2159,7 +2185,18 @@ export class UI {
       // decision made in two seconds, and the picture shows more of the place
       // than the play camera ever does.
       venueCard.classList.toggle("hidden", this.selTab !== "venue");
-      if (this.selTab === "venue") venueCard.src = `/venues/${item.id}.jpg`;
+      if (this.selTab === "venue") {
+        // Browsing is a keypress away from the next card, so a decrypt that
+        // finishes after the player has moved on must not overwrite the one
+        // they are looking at now. `assetUrl` caches, so coming back to a card
+        // already seen resolves without a second fetch.
+        const wanted = item.id;
+        void assetUrl(`/venues/${wanted}.jpg`).then((url) => {
+          if (this.selTab === "venue" && items()[this.selIdx[this.selTab]]?.id === wanted) {
+            venueCard.src = url;
+          }
+        });
+      }
       if (this.selTab === "ball" && opts.withBall) {
         const pair = opts.withBall(opts.characters[this.selIdx.character].id, item.id);
         renderProfile(pair.withBall, pair.base);

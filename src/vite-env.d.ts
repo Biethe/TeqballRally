@@ -19,17 +19,19 @@ interface ImportMetaEnv {
    */
   readonly VITE_REVENUECAT_KEY?: string;
   /**
-   * Whether this build's models were scrambled by
-   * `scripts/protect-assets.mjs`. "1" means the loader must unscramble; the
-   * dev server serves `assets/` plain and leaves this unset.
+   * Whether this build's assets were encrypted by
+   * `scripts/protect-assets.mjs`. "1" means every loader must decrypt; the dev
+   * server serves `assets/` plain and leaves this unset.
    */
   readonly VITE_PROTECTED_ASSETS?: string;
   /**
-   * The key the models were scrambled with.
+   * The key the assets were encrypted with.
    *
-   * It ships inside the bundle — the game has to read its own models offline —
-   * so it is obfuscation rather than a secret. Setting it per release at least
-   * means the value is not the one written in the repository.
+   * It ships inside the bundle — the game has to read its own assets offline —
+   * so it raises the bar rather than being a secret. **No default:** the one
+   * that used to live here was the passphrase every shipped build really used,
+   * because nothing ever set this variable, and it was written in a repository
+   * about to be made public. Both halves now refuse to run without it.
    */
   readonly VITE_ASSET_KEY?: string;
 }

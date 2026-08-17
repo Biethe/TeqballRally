@@ -149,7 +149,11 @@ body {
   z-index: 11;
   gap: 0;
   padding: 0;
-  background: #06101c url("/video/intro-backdrop.webp") center / cover no-repeat;
+  /* The still itself is set from `playIntroClip`, not named here: in a
+     protected build the file at that path is `.teq` noise, and a stylesheet
+     has no way to be handed a decrypted blob. The colour is what shows until
+     it lands, and what shows for good if it never does. */
+  background: #06101c center / cover no-repeat;
   animation: intro-clip-in 260ms ease-out both;
 }
 

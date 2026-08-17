@@ -84,14 +84,33 @@ jobs:
       # The address is baked in here — the dispatch input if one was typed,
       # then the repository variable, then DEFAULT_RELAY above — so a build can
       # be produced entirely from the GitHub UI with no machine involved.
+      # The art is not in this repository. An APK without it installs and runs
+      # into an empty stage, which is not a build worth attaching to a run, so
+      # this one is fatal where CI's is only a notice.
+      - name: Fetch the art bundle
+        env:
+          ASSET_BUNDLE_URL: ${{ secrets.ASSET_BUNDLE_URL }}
+          ASSET_BUNDLE_KEY: ${{ secrets.ASSET_BUNDLE_KEY }}
+          ASSET_BUNDLE_TOKEN: ${{ secrets.ASSET_BUNDLE_TOKEN }}
+        run: npm run assets:fetch
+
       - name: Build web assets and sync into the native project
         env:
           VITE_RELAY_URL: ${{ inputs.relay_url || vars.VITE_RELAY_URL || env.DEFAULT_RELAY }}
+          # An APK is a zip anybody can open, which is the case this exists
+          # for. `scripts/protect-assets.mjs` refuses to run without it rather
+          # than falling back to a passphrase written in the repository, which
+          # is what every build before this one shipped with.
+          VITE_ASSET_KEY: ${{ secrets.VITE_ASSET_KEY }}
         run: |
           if [ -z "$VITE_RELAY_URL" ]; then
             echo "::warning::No relay configured — online play will show as unavailable."
           else
             echo "Relay: $VITE_RELAY_URL"
+          fi
+          if [ -z "$VITE_ASSET_KEY" ]; then
+            echo "::error::VITE_ASSET_KEY is not set — refusing to build an APK with unprotected assets."
+            exit 1
           fi
           npm run android:sync
 

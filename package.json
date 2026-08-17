@@ -8,6 +8,8 @@
     "dev:lan": "vite --host",
     "build": "VITE_PROTECTED_ASSETS=1 vite build && node scripts/protect-assets.mjs",
     "build:plain": "vite build",
+    "assets:fetch": "node scripts/fetch-assets.mjs",
+    "assets:pack": "node scripts/pack-assets.mjs",
     "preview": "vite preview",
     "android:sync": "npm run build && cap sync android",
     "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug",
