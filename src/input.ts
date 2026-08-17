@@ -306,7 +306,7 @@ export class Input {
     portraitHints.id = "touch-portrait-hints";
     portraitHints.setAttribute("role", "status");
     portraitHints.innerHTML =
-      '<span><b>TAP</b>move · place</span><span><b>SWIPE</b>kick</span>';
+      '<span><b>TAP</b>move · place</span><span><b>SWIPE</b>kick · up drives, down lobs</span>';
     zone.appendChild(portraitHints);
 
     this.joyBase = document.createElement("div");

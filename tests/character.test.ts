@@ -16,6 +16,7 @@ import {
   locoBlend,
   locoStride,
   type LocoWeights,
+  bodyPartOf,
   pickReceptionClip,
   chooseStrike,
   STRIKE_BANDS,
@@ -221,14 +222,17 @@ describe("serveClipForAim", () => {
   });
 
   it("uses a head serve inside the central dead band", () => {
-    stubRandom(0.1);
     expect(serveClipForAim(0)).toBe("HeadServeRight");
     expect(serveClipForAim(0.25)).toBe("HeadServeRight");
     expect(serveClipForAim(-0.25)).toBe("HeadServeRight");
+  });
 
-    vi.restoreAllMocks();
-    stubRandom(0.9);
-    expect(serveClipForAim(0)).toBe("HeadServeLeft");
+  it("heads the central serve off the strong side, every time", () => {
+    // It used to be a coin toss, which made the one serve a player can aim
+    // straight down the middle the one serve they could not learn.
+    expect(serveClipForAim(0, "left")).toBe("HeadServeLeft");
+    expect(serveClipForAim(0, "right")).toBe("HeadServeRight");
+    for (let i = 0; i < 50; i++) expect(serveClipForAim(0.1, "left")).toBe("HeadServeLeft");
   });
 
   it("only ever returns a known serve clip", () => {
@@ -243,31 +247,78 @@ describe("pickReceptionClip", () => {
   const height = 1.8;
 
   it("chests a high ball, knees a mid one and uses the inner foot low", () => {
-    stubRandom(0.99);
-    expect(pickReceptionClip(height * 0.8, 0.5, height, "both", 0)).toBe("ChestPrepRight");
-    vi.restoreAllMocks();
-    stubRandom(0);
-    expect(pickReceptionClip(height * 0.8, 0.5, height, "both", 0)).toBe("ChestReception");
-    expect(pickReceptionClip(height * 0.5, 0.5, height, "both", 0)).toBe("RightKneeReception");
-    expect(pickReceptionClip(height * 0.2, 0.5, height, "both", 0)).toBe("InnerRightFootReception");
+    expect(pickReceptionClip(height * 0.8, 0.5, height, "both", { bandShift: 0 })).toBe(
+      "ChestPrepRight"
+    );
+    // Square-on rather than off to the side: the chest is taken without the
+    // step across that the prep clips are.
+    expect(pickReceptionClip(height * 0.8, 0.05, height, "both", { bandShift: 0 })).toBe(
+      "ChestReception"
+    );
+    expect(pickReceptionClip(height * 0.5, 0.5, height, "both", { bandShift: 0 })).toBe(
+      "RightKneeReception"
+    );
+    expect(pickReceptionClip(height * 0.2, 0.5, height, "both", { bandShift: 0 })).toBe(
+      "InnerRightFootReception"
+    );
+  });
+
+  it("plays the same ball the same way, every time", () => {
+    // The property the whole skill curve rests on: what a player learns about
+    // where to stand has to hold the next time they stand there.
+    for (const rel of [0.2, 0.35, 0.5, 0.7, 0.9]) {
+      const first = pickReceptionClip(height * rel, 0.24, height, "right");
+      for (let i = 0; i < 50; i++) {
+        expect(pickReceptionClip(height * rel, 0.24, height, "right")).toBe(first);
+      }
+    }
+  });
+
+  it("takes a wide ball lower on the body than one met in front", () => {
+    // Reaching for a ball is what the leg does; a ball in front is met with
+    // whatever is already there. This is the whole of "position picks the
+    // body part", and it is why the variety no longer needs a die.
+    const high = height * 0.64;
+
+    expect(pickReceptionClip(high, 0, height, "both")).toBe("ChestReception");
+    expect(pickReceptionClip(high, 0.9, height, "both")).toBe("RightKneeReception");
   });
 
   it("picks the side from the lateral offset", () => {
     stubRandom(0);
-    expect(pickReceptionClip(height * 0.2, -0.5, height, "both", 0)).toBe("InnerLeftFootReception");
-    expect(pickReceptionClip(height * 0.5, -0.5, height, "both", 0)).toBe("LeftKneeReception");
+    expect(pickReceptionClip(height * 0.2, -0.5, height, "both", { bandShift: 0 })).toBe("InnerLeftFootReception");
+    expect(pickReceptionClip(height * 0.5, -0.5, height, "both", { bandShift: 0 })).toBe("LeftKneeReception");
   });
 
-  it("uses more than one clip for the same ball", () => {
+  it("uses more than one clip across the balls a rally actually produces", () => {
     // The complaint this exists for: a rally played the same three animations
     // over and over. Contact heights measured over a real match run 0.31 to
     // 0.88 of body height with a median of 0.75, so a hard-edged band meant one
-    // clip owned nearly every touch at a given height. Handing the same ball
-    // to the picker repeatedly must now produce a spread.
+    // clip owned nearly every touch at a given height.
+    //
+    // The spread used to be bought with a coin toss, which fixed the picture at
+    // the cost of the game: two identical balls could be played two different
+    // ways. It now comes from where the ball is, so a match still sees every
+    // clip — and each one for a reason the player can see.
     const seen = new Set<string>();
-    for (let i = 0; i < 400; i++) seen.add(pickReceptionClip(height * 0.47, 0.02, height));
+    for (let i = 0; i < 400; i++) {
+      const rel = 0.31 + (0.57 * i) / 400;
+      const lateral = ((i % 9) / 8) * 1.2 - 0.6;
+      seen.add(pickReceptionClip(height * rel, lateral, height));
+    }
 
-    expect(seen.size).toBeGreaterThan(2);
+    expect(seen.size).toBeGreaterThan(4);
+  });
+
+  it("never plays the same part of the body twice in a row", () => {
+    // The teqball rule, enforced where the limb is chosen rather than as a
+    // foul afterwards: the game picks the limb, so it has to pick a legal one.
+    for (const rel of [0.15, 0.3, 0.5, 0.66, 0.85]) {
+      for (const avoid of ["chest", "knee", "foot"] as const) {
+        const clip = pickReceptionClip(height * rel, 0.3, height, "both", { avoid });
+        expect(bodyPartOf(clip), `${rel} after ${avoid}`).not.toBe(avoid);
+      }
+    }
   });
 
   it("only ever returns a real clip with a contact frame", () => {
@@ -606,19 +657,19 @@ describe("chooseStrike", () => {
   it("flips rather than heads a high ball on the strong side", () => {
     // Feet first is the whole point: up at the table a teqball player kicks or
     // flips, and the header used to win every high ball by default.
-    const clip = chooseStrike(at(0.95), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0);
+    const clip = chooseStrike(at(0.95), RIGHT, STRONG_SIDE, righty, true, { bandShift: 0 });
 
     expect(clip).toBe("BackflipRightFoot");
   });
 
   it("kicks a mid ball rather than heading it", () => {
-    const clip = chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0);
+    const clip = chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, true, { bandShift: 0 });
 
     expect(clip).toBe("RightFootKick");
   });
 
   it("only takes a touch when the ball is too low for any of it", () => {
-    const clip = chooseStrike(at(0.05), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0);
+    const clip = chooseStrike(at(0.05), RIGHT, STRONG_SIDE, righty, true, { bandShift: 0 });
 
     expect(clip).toBe("InnerRightFootReception");
   });
@@ -629,26 +680,37 @@ describe("chooseStrike", () => {
     const weakSide = LEFT; // a right-footed player's weak side
     const high = at(0.95);
 
-    it("heads it when the roll beats the weak foot's score", () => {
-      // 0.9 > 0.70, so the foot is not trusted this time.
-      const clip = chooseStrike(high, weakSide, STRONG_SIDE, righty, true, () => 0.9, 0);
+    it("heads a ball too far onto the weak side for that foot", () => {
+      // 0.85 m across the body is past what a 70 weak foot is trusted with.
+      const clip = chooseStrike(high, -0.85, STRONG_SIDE, righty, true, { bandShift: 0 });
 
       expect(clip).toBe("LeftHeadKick");
     });
 
-    it("uses the foot when the roll is inside it", () => {
-      const clip = chooseStrike(high, weakSide, STRONG_SIDE, righty, true, () => 0.5, 0);
+    it("uses the foot for a weak-side ball still inside its range", () => {
+      const clip = chooseStrike(high, weakSide, STRONG_SIDE, righty, true, { bandShift: 0 });
 
       expect(clip).not.toContain("HeadKick");
+    });
+
+    it("is the same answer every time, so the line can be learned", () => {
+      for (let i = 0; i < 50; i++) {
+        expect(chooseStrike(high, -0.85, STRONG_SIDE, righty, true)).toBe("LeftHeadKick");
+        expect(chooseStrike(high, -0.3, STRONG_SIDE, righty, true)).not.toContain("HeadKick");
+      }
     });
 
     it("heads a weak-side ball more often the worse that foot is", () => {
       const poor = player({ strongFoot: "right", weakFoot: 20, backflips: "none" });
       const good = player({ strongFoot: "right", weakFoot: 95, backflips: "none" });
+      // Swept across the weak side rather than repeated: the header is now a
+      // question of how far across the body the ball is, so the count is how
+      // much of that side the foot is trusted with.
       const headers = (def: typeof poor) => {
         let n = 0;
         for (let i = 0; i < 400; i++) {
-          if (chooseStrike(high, weakSide, STRONG_SIDE, def, true).includes("HeadKick")) n++;
+          const lateral = -(i / 400);
+          if (chooseStrike(high, lateral, STRONG_SIDE, def, true).includes("HeadKick")) n++;
         }
         return n;
       };
@@ -666,7 +728,7 @@ describe("chooseStrike", () => {
 
     it("does not head a ball that is too low to head", () => {
       // Weak side, but at knee height there is no header to play.
-      const clip = chooseStrike(at(0.4), weakSide, STRONG_SIDE, righty, true, () => 0.99, 0);
+      const clip = chooseStrike(at(0.4), weakSide, STRONG_SIDE, righty, true, { bandShift: 0 });
 
       expect(clip).not.toContain("HeadKick");
     });
@@ -674,7 +736,7 @@ describe("chooseStrike", () => {
 
   describe("backflips stay on one side of the court", () => {
     it("flips off the strong foot when standing on that side", () => {
-      expect(chooseStrike(at(0.9), RIGHT, 1, righty, true, () => 0.5, 0)).toBe(
+      expect(chooseStrike(at(0.9), RIGHT, 1, righty, true, { bandShift: 0 })).toBe(
         "BackflipRightFoot"
       );
     });
@@ -682,7 +744,7 @@ describe("chooseStrike", () => {
     it("will not flip from the weak side", () => {
       // The leg that comes over is the outside one, so the far side of the
       // court has no flip in it — that is what "only one side" means.
-      const clip = chooseStrike(at(0.9), RIGHT, -1, righty, true, () => 0.5, 0);
+      const clip = chooseStrike(at(0.9), RIGHT, -1, righty, true, { bandShift: 0 });
 
       expect(clip).not.toContain("Backflip");
     });
@@ -690,13 +752,13 @@ describe("chooseStrike", () => {
     it("gives a two-footed player a flip from either side", () => {
       const ambi = player({ strongFoot: "both", weakFoot: 100, backflips: "strong" });
 
-      expect(chooseStrike(at(0.9), RIGHT, 1, ambi, true, () => 0.5, 0)).toBe("BackflipRightFoot");
-      expect(chooseStrike(at(0.9), LEFT, -1, ambi, true, () => 0.5, 0)).toBe("BackflipLeftFoot");
+      expect(chooseStrike(at(0.9), RIGHT, 1, ambi, true, { bandShift: 0 })).toBe("BackflipRightFoot");
+      expect(chooseStrike(at(0.9), LEFT, -1, ambi, true, { bandShift: 0 })).toBe("BackflipLeftFoot");
     });
 
     it("gives nothing to a player who does not flip at all", () => {
       const grounded = player({ strongFoot: "right", weakFoot: 100, backflips: "none" });
-      const clip = chooseStrike(at(0.9), RIGHT, 1, grounded, true, () => 0.5, 0);
+      const clip = chooseStrike(at(0.9), RIGHT, 1, grounded, true, { bandShift: 0 });
 
       expect(clip).toBe("RightFootKick");
     });
@@ -768,20 +830,20 @@ describe("finishes need a reception first", () => {
   it("does not volley a ball off the first touch", () => {
     // A foot volley is a finish: it is played on a ball you set up for
     // yourself, not on one arriving from the other end of the table.
-    const first = chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, false, () => 0.5, 0);
+    const first = chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, false, { bandShift: 0 });
 
     expect(first).not.toContain("FootKick");
   });
 
   it("does not backflip off the first touch either", () => {
-    const first = chooseStrike(at(0.9), RIGHT, STRONG_SIDE, righty, false, () => 0.5, 0);
+    const first = chooseStrike(at(0.9), RIGHT, STRONG_SIDE, righty, false, { bandShift: 0 });
 
     expect(first).not.toContain("Backflip");
   });
 
   it("controls the ball instead", () => {
     for (const rel of [0.2, 0.5, 0.7, 0.95]) {
-      const clip = chooseStrike(at(rel), RIGHT, STRONG_SIDE, righty, false, () => 0.5, 0);
+      const clip = chooseStrike(at(rel), RIGHT, STRONG_SIDE, righty, false, { bandShift: 0 });
       expect(["ChestKick", "RightKneeReception", "InnerRightFootReception"], `rel ${rel}`).toContain(
         clip
       );
@@ -789,10 +851,10 @@ describe("finishes need a reception first", () => {
   });
 
   it("offers both once the ball has been set up", () => {
-    expect(chooseStrike(at(0.9), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0)).toContain(
+    expect(chooseStrike(at(0.9), RIGHT, STRONG_SIDE, righty, true, { bandShift: 0 })).toContain(
       "Backflip"
     );
-    expect(chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, true, () => 0.5, 0)).toContain(
+    expect(chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, true, { bandShift: 0 })).toContain(
       "FootKick"
     );
   });

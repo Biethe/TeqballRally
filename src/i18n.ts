@@ -333,8 +333,8 @@ const EN = {
   "result.continue": "CONTINUE",
 
   // — loading tips —
-  "tip.power": "A slow swipe lifts the ball. A fast one drills it.",
-  "tip.setup": "Tap to move. Swipe to kick — the swipe is your aim.",
+  "tip.power": "Swipe up to drive it flat. Swipe down to loop it high.",
+  "tip.setup": "Tap to move. Swipe to kick — sideways aims it, and how fast you draw it is the pace.",
   "tip.deep": "Your first touch is a set-up. Put the ball where you can step in on it.",
   "tip.reception": "Stand near the ball and the first touch takes itself.",
   "tip.miss": "Hit it flat out and it will sometimes go long. That is the trade.",
@@ -685,8 +685,8 @@ const FR: Catalogue = {
   "result.continue": "CONTINUER",
 
   // — loading tips —
-  "tip.power": "Un swipe lent lève la balle. Un swipe rapide la tend.",
-  "tip.setup": "Touchez pour bouger. Glissez pour frapper — le geste est votre visée.",
+  "tip.power": "Glissez vers le haut pour tendre la balle, vers le bas pour la lober.",
+  "tip.setup": "Touchez pour bouger. Glissez pour frapper — le côté vise, la vitesse du geste donne la puissance.",
   "tip.deep": "Votre première touche est une remise. Posez la balle là où vous pourrez avancer dessus.",
   "tip.reception": "Restez près de la balle : la première touche se fait seule.",
   "tip.miss": "Frappée à fond, elle sortira parfois. C'est le prix de la vitesse.",
@@ -1034,8 +1034,8 @@ const ES: Catalogue = {
   "result.continue": "CONTINUAR",
 
   // — loading tips —
-  "tip.power": "Un deslizamiento lento eleva la pelota. Uno rápido la tensa.",
-  "tip.setup": "Toca para moverte. Desliza para golpear — el gesto es tu puntería.",
+  "tip.power": "Desliza hacia arriba para tensarla, hacia abajo para elevarla.",
+  "tip.setup": "Toca para moverte. Desliza para golpear — el lado apunta y la velocidad del gesto es la potencia.",
   "tip.deep": "Tu primer toque es una preparación. Deja la pelota donde puedas entrar a por ella.",
   "tip.reception": "Quédate cerca de la pelota: el primer toque se hace solo.",
   "tip.miss": "Golpeada a fondo, a veces se irá larga. Ese es el precio.",
@@ -1383,8 +1383,8 @@ const PT: Catalogue = {
   "result.continue": "CONTINUAR",
 
   // — loading tips —
-  "tip.power": "Um deslize lento levanta a bola. Um rápido baixa-a.",
-  "tip.setup": "Toca para te moveres. Desliza para chutar — o gesto é a tua mira.",
+  "tip.power": "Desliza para cima para a bater rasteira, para baixo para a levantar.",
+  "tip.setup": "Toca para te moveres. Desliza para chutar — o lado aponta e a rapidez do gesto é a força.",
   "tip.deep": "O teu primeiro toque é uma preparação. Deixa a bola onde possas avançar sobre ela.",
   "tip.reception": "Fica perto da bola: o primeiro toque acontece sozinho.",
   "tip.miss": "Batida com tudo, às vezes sai. É o preço da velocidade.",

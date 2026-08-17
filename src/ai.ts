@@ -1,7 +1,7 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { predict, sampleFlight, type Prediction } from "./ball";
 import type { MatchController, MatchEvent } from "./match";
-import { tableTarget } from "./aim";
+import { tableTarget, type StrikeAim } from "./aim";
 import {
   AI_REACH,
   COURT,
@@ -12,6 +12,9 @@ import {
   clearTable,
   onTableFootprint,
 } from "./config";
+
+/** The kinds of ball the CPU can decide to play. See `AIController.intent`. */
+export type ShotIntent = "wide" | "deep" | "short" | "flat" | "loop";
 
 export interface AIDifficulty {
   /** Fraction of the AI character's own court speed it actually uses. */
@@ -32,6 +35,17 @@ export interface AIDifficulty {
   popChance: number;
   /** Number of control touches to attempt when that sequence starts. */
   maxPopTouches: number;
+  /**
+   * How often the return is *chosen* rather than merely played, 0..1.
+   *
+   * Below it the CPU sends the ball somewhere legal and unremarkable; above it
+   * it picks the shot that asks the player the hardest question available from
+   * where they are standing — the drop when they have been pushed deep, the
+   * ball across them when they have gone wide. It is the knob that decides
+   * whether an opponent has a plan, and it is separate from `aimError`, which
+   * only decides how well the plan is executed.
+   */
+  tactics: number;
 }
 
 // Difficulty presets. Friendly games let the player pick; competitions use
@@ -53,6 +67,7 @@ export const DIFFICULTIES = {
     misjudge: 1.0,
     popChance: 0.25,
     maxPopTouches: 1,
+    tactics: 0.15,
   },
   normal: {
     speed: 0.7,
@@ -61,6 +76,7 @@ export const DIFFICULTIES = {
     misjudge: 0.62,
     popChance: 0.5,
     maxPopTouches: 1,
+    tactics: 0.5,
   },
   hard: {
     speed: 0.9,
@@ -69,6 +85,7 @@ export const DIFFICULTIES = {
     misjudge: 0.24,
     popChance: 0.9,
     maxPopTouches: 2,
+    tactics: 0.92,
   },
 } satisfies Record<string, AIDifficulty>;
 export type DifficultyLevel = keyof typeof DIFFICULTIES;
@@ -295,14 +312,11 @@ export class AIController {
             m.ball.state.pos.x > TABLE.halfLen &&
             d < AI_REACH * 0.72;
           if (!holdForLow) {
-            // The CPU aims at a spot on the player's half and strikes at a
-            // pace it picks; its own aim error is left to the shared spread,
-            // which now decides whether a greedy line stays on the table.
-            const aimFwd = Math.random() * 2 - 1;
-            const aimLat = (Math.random() * 2 - 1) * (1 - this.diff.aimError * 0.4);
-            const target = tableTarget(-1, aimFwd, aimLat);
-            const power = 0.35 + Math.random() * 0.5;
-            if (m.tryStrike("ai", { target, power })) {
+            // The CPU plays a *shot*, not a coordinate: it chose what kind of
+            // ball to send when the possession began, and this is where that
+            // choice is executed against where the player is actually standing.
+            const shot = this.aimShot();
+            if (m.tryStrike("ai", shot)) {
               this.notifyNewRally();
             }
           }
@@ -311,9 +325,101 @@ export class AIController {
     }
   }
 
+  /**
+   * The kind of ball the CPU intends to send back.
+   *
+   * Not a difficulty knob and not noise on a coordinate: each of these asks the
+   * player a different question, and the answer is where they were standing
+   * before the ball was struck.
+   *
+   *   - `wide`   — away from the player: adjust sideways, or do not reach it.
+   *   - `deep`   — at the back of the half: move back, and lose the attack.
+   *   - `short`  — dropped just over the net: come forward, now.
+   *   - `flat`   — fast and low: very little time, and the ball stays low.
+   *   - `loop`   — high and slow: all the time in the world, and a ball that
+   *                has to be taken above the waist.
+   *
+   * A rally made only of the first four is a rally about running; adding the
+   * fifth is what makes it about *reading*, because the same run is right for
+   * two of them and wrong for the others.
+   */
+  private intent: ShotIntent = "wide";
+
+  /**
+   * Turn the possession's intent into an actual kick, aimed against the player.
+   *
+   * The intent decides the shape; the player's own position decides which side
+   * of the court it goes to. That is the whole of the anticipation loop — a
+   * player who camps in one corner is played into the other, so standing
+   * somewhere sensible between shots starts to matter.
+   *
+   * The remaining `aimError` keeps a weak CPU's execution loose. What it no
+   * longer does is choose the shot, which is why the opponent now reads as
+   * having a plan rather than a random number generator.
+   */
+  private aimShot(): StrikeAim {
+    const m = this.match;
+    const player = m.chars.player;
+    // Which half of the court the player is *not* covering. Their own frame:
+    // the player attacks -x, so +z is their left.
+    const away = player.position.z >= 0 ? -1 : 1;
+    const err = () => (Math.random() * 2 - 1) * this.diff.aimError;
+    const deepness = Math.min(1, Math.max(-1, (Math.abs(player.position.x) - TABLE.halfLen) / 2.4));
+    switch (this.intent) {
+      case "wide":
+        return { target: tableTarget(-1, 0.1 + err() * 0.4, away * 0.85 + err() * 0.3), power: 0.6 };
+      case "deep":
+        // Behind them if they have come forward, at their feet if they have not.
+        return { target: tableTarget(-1, 0.85 + err() * 0.3, err() * 0.5), power: 0.62 };
+      case "short":
+        return {
+          target: tableTarget(-1, -0.85 + err() * 0.3, away * 0.4 + err() * 0.4),
+          power: 0.3,
+          loft: 1.35,
+        };
+      case "flat":
+        return {
+          target: tableTarget(-1, 0.45 + err() * 0.4, away * 0.5 + err() * 0.4),
+          power: 0.9,
+          loft: 0.62,
+        };
+      case "loop":
+        return {
+          target: tableTarget(-1, 0.3 + deepness * 0.4 + err() * 0.4, err() * 0.6),
+          power: 0.4,
+          loft: 1.7,
+        };
+    }
+  }
+
+  /**
+   * Choose this possession's intent.
+   *
+   * Weighted by difficulty rather than uniform: an easy opponent mostly returns
+   * the ball somewhere legal, while a hard one picks the shot that makes the
+   * player move — short after they have been pushed deep, wide after they have
+   * been pulled to the middle. It is deliberately a small table. The tactical
+   * depth this game needs is in what the *player* can do with the ball, and an
+   * opponent only has to be able to ask the questions.
+   */
+  private pickIntent(): ShotIntent {
+    const player = this.match.chars.player;
+    const deep = Math.abs(player.position.x) > TABLE.halfLen + 1.6;
+    const wide = Math.abs(player.position.z) > 1.1;
+    const sharp = Math.random() < this.diff.tactics;
+    if (!sharp) return Math.random() < 0.5 ? "wide" : "deep";
+    // Play into the space they have left. Standing deep invites the drop;
+    // standing wide invites the ball across them; standing central is answered
+    // by pace, because there is no gap to find.
+    if (deep) return Math.random() < 0.7 ? "short" : "wide";
+    if (wide) return Math.random() < 0.6 ? "wide" : "flat";
+    return Math.random() < 0.5 ? "flat" : Math.random() < 0.5 ? "loop" : "deep";
+  }
+
   /** Roll variety once for this inbound ball, never once per reprediction. */
   private rollPossessionChoice(): void {
     this.rolledRead = true;
+    this.intent = this.pickIntent();
     // Independent on both axes, so being wrong looks like being wrong rather
     // than like a habit. Less error along the table than across it: judging
     // how far a ball is coming is easier than judging where it will land.

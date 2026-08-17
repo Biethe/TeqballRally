@@ -42,6 +42,9 @@ export const PRACTICE_DIFFICULTY: AIDifficulty = {
   misjudge: 0,
   popChance: 0.18,
   maxPopTouches: 1,
+  // The coach feeds the ball; it does not hunt for the gap. A lesson is not
+  // the place to be played off the court.
+  tactics: 0,
 };
 
 interface PracticeUI {

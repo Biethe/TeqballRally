@@ -187,6 +187,65 @@ export const REACH_ASSIST = {
   strength: 0.5, // 0 = off, 1 = full auto-run when pushing straight at the ball
 };
 
+/**
+ * The room a player has around the ball they are about to play.
+ *
+ * The reach assist above bends a run *toward* the ball; this is what stops the
+ * same player running away from it. Around the point where the next contact is
+ * due there is a circle the player may move freely inside — that is where the
+ * positioning happens, and it is deliberately wide enough to choose a side of
+ * the ball, step in front of it, or hang back off it. Outside the circle the
+ * outward half of the push is damped over a soft band rather than blocked, and
+ * only past the band does a gentle leash draw them back.
+ *
+ * Nothing here teleports or freezes the character. The player who wants to
+ * leave still leaves — they just cannot do it by accident while the ball is
+ * dropping on them, which is the whole failure this exists for.
+ */
+export const RECEPTION_ZONE = {
+  /** Free radius around the anchor: full control, no damping at all (m). */
+  radius: 1.55 * TABLE_SCALE,
+  /** Beyond the radius, the band the outward push fades across (m). */
+  soft: 0.85 * TABLE_SCALE,
+  /** What is left of an outward push at the far edge of the soft band. */
+  minPush: 0.18,
+  /** Speed the leash draws a player back from beyond the band (m/s). */
+  leash: 1.15 * TABLE_SCALE,
+};
+
+/**
+ * Which part of the body a touch is played with.
+ *
+ * A rally is built out of these rather than out of clip names: the rules care
+ * that a knee follows a chest, not that `LeftKneeReception` follows
+ * `ChestPrepRight`.
+ */
+export type BodyPart = "foot" | "knee" | "chest" | "head";
+
+/**
+ * What each body part is good for, as a set-up touch.
+ *
+ * These are the numbers behind "chest to control, knee to reposition, foot to
+ * move the ball" — the differences a player is meant to feel rather than read.
+ * `rise` is how high the ball is popped (higher = more time before the next
+ * touch), `carry` how far it can be placed, and `control` how much of the
+ * touch's quality survives into the placement: a chested ball put down where
+ * it was asked for even off a scrappy contact, a footed one much less so.
+ */
+export const PART_SETUP: Record<BodyPart, { rise: number; carry: number; control: number }> = {
+  // Softest and most accurate, but it barely moves the ball: the touch you
+  // play when you want to be standing exactly here for the next one.
+  chest: { rise: 0.92, carry: 0.7, control: 1.3 },
+  // The in-between touch. Enough carry to step out of a bad spot, enough hang
+  // time to get there.
+  knee: { rise: 1.14, carry: 1.0, control: 1.05 },
+  // Moves the ball furthest and hangs it lowest — the quick set-up into an
+  // attack, and the one that punishes a poor contact hardest.
+  foot: { rise: 0.95, carry: 1.4, control: 0.82 },
+  // Highest ball of the three, at the cost of placement: buys time above all.
+  head: { rise: 1.3, carry: 0.95, control: 0.9 },
+};
+
 export type CameraMode = "court" | "side";
 
 /**
@@ -389,6 +448,22 @@ export const MAX_TOUCHES = 3; // touches allowed per possession (reception, prep
 // Reach scales with the players, who scale with the table.
 export const PLAYER_REACH = 1.2 * TABLE_SCALE;
 export const AI_REACH = 1.2 * TABLE_SCALE;
+/** Furthest a character may glide during a wind-up to reach the ball (m). */
+export const LUNGE_MAX = 1.0 * TABLE_SCALE;
+/**
+ * How near an incoming ball a player has to be for the automatic first
+ * reception. Wider than PLAYER_REACH — being close should be enough — but only
+ * a little: a reception granted from two paces away stops reading as standing
+ * in the right place. Scaled with the court, so it stays the same distance in
+ * paces however big the table is drawn.
+ *
+ * These three and `RECEPTION_ZONE.radius` are one set of numbers, not four: the
+ * free zone has to stay inside `PLAYER_REACH + LUNGE_MAX`, or a player moving
+ * freely inside it could put a reachable ball out of reach — which is the whole
+ * thing the zone promises they cannot do. `tests/reception.test.ts` holds that
+ * relationship.
+ */
+export const AUTO_RECEPTION_REACH = 1.36 * TABLE_SCALE;
 /**
  * Points to win a set, and sets to win the match.
  *

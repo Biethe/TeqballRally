@@ -38,6 +38,16 @@ var SPAWN = {
   // extra y lift if a model's feet still sink into the floor
 };
 var CHARACTER_SCALE = 0.8 * TABLE_SCALE;
+var RECEPTION_ZONE = {
+  /** Free radius around the anchor: full control, no damping at all (m). */
+  radius: 1.55 * TABLE_SCALE,
+  /** Beyond the radius, the band the outward push fades across (m). */
+  soft: 0.85 * TABLE_SCALE,
+  /** What is left of an outward push at the far edge of the soft band. */
+  minPush: 0.18,
+  /** Speed the leash draws a player back from beyond the band (m/s). */
+  leash: 1.15 * TABLE_SCALE
+};
 var SIDE_FOV = 1;
 var SIDE_HALF_WIDTH = COURT.maxX + 0.6;
 var SIDE_SLANT = SIDE_HALF_WIDTH / Math.tan(SIDE_FOV / 2);
@@ -169,6 +179,8 @@ var SERVE_X = 3.64 * TABLE_SCALE;
 var MAX_TOUCHES = 3;
 var PLAYER_REACH = 1.2 * TABLE_SCALE;
 var AI_REACH = 1.2 * TABLE_SCALE;
+var LUNGE_MAX = 1 * TABLE_SCALE;
+var AUTO_RECEPTION_REACH = 1.36 * TABLE_SCALE;
 var WIN_SCORE = 3;
 var SETS_TO_WIN = 2;
 var CHARACTERS = [

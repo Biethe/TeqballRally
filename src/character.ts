@@ -10,6 +10,8 @@ import {
   CHARACTER_SCALE,
   COURT,
   FOOT_FACTOR,
+  RECEPTION_ZONE,
+  type BodyPart,
   type CharacterDef,
   type Foot,
 } from "./config";
@@ -183,6 +185,65 @@ export function approachVelocity(
   tau: number = MOVE_TAU
 ): number {
   return current + (desired - current) * Math.min(1, dt / Math.max(1e-4, tau));
+}
+
+/**
+ * Reshape a requested run so it cannot leave the ball behind.
+ *
+ * `toAnchorX/Z` is the offset from the player to the point where their next
+ * contact is due; `mx/mz` is the direction they asked to run in. Inside
+ * `RECEPTION_ZONE.radius` the answer is exactly what was asked for — the player
+ * owns their feet, and the couple of metres around the contact point is where
+ * every decision worth making about a touch is made. Outside it, only the
+ * component heading *away* from the ball is damped, fading across the soft band
+ * rather than stopping dead at its edge, and past the band a slow leash is
+ * added toward the ball.
+ *
+ * Sideways movement is never touched. Circling the contact point to change
+ * which side of the ball you meet it on is the adjustment the zone exists to
+ * protect, not the one it exists to stop.
+ *
+ * Pure and exported for the same reason `approachVelocity` is: this decides how
+ * a player is allowed to move, it has to behave identically on both peers of a
+ * networked match, and it deserves to be held to that without a scene.
+ */
+export function nearAnchorPush(
+  toAnchorX: number,
+  toAnchorZ: number,
+  mx: number,
+  mz: number,
+  speed: number
+): [number, number] {
+  const d = Math.hypot(toAnchorX, toAnchorZ);
+  if (d <= RECEPTION_ZONE.radius || d < 1e-4) return [mx, mz];
+  const ux = toAnchorX / d;
+  const uz = toAnchorZ / d;
+  const past = Math.min(1, (d - RECEPTION_ZONE.radius) / RECEPTION_ZONE.soft);
+  // How hard the player is asking for something, measured before the damping
+  // below — the damped push is the answer, not the question, and reading the
+  // leash off it would let the zone lean on its own output and pull a player
+  // back through a full-stick push.
+  const asked = Math.min(1, Math.hypot(mx, mz));
+  const par = mx * ux + mz * uz;
+  if (par < 0) {
+    const keep = 1 + (RECEPTION_ZONE.minPush - 1) * past;
+    mx += ux * par * (keep - 1);
+    mz += uz * par * (keep - 1);
+  }
+  // And a walk back, into the room the player is not using: it grows with how
+  // far outside the zone they have drifted and fades out with how hard they
+  // are pushing, whichever way they are pushing.
+  //
+  // Both halves matter. It can never out-pull the controls — a leash a player
+  // cannot push against is a movement lock with extra steps, and at full stick
+  // this one is not there at all — and it is what closes the gap between the
+  // zone and the arm's length a reception is actually taken from: a player who
+  // drifted out and let go ends up back in the play rather than watching it
+  // land two paces away.
+  const pull = (RECEPTION_ZONE.leash / Math.max(0.5, speed)) * past * (1 - asked);
+  mx += ux * pull;
+  mz += uz * pull;
+  return [mx, mz];
 }
 
 /**
@@ -730,7 +791,8 @@ export function backflipAllowed(def: CharacterDef, foot: Foot): boolean {
 }
 
 /**
- * How far a band edge may move for one contact, as a fraction of body height.
+ * How far the band edges move between a ball met in front and one met at full
+ * stretch, as a fraction of body height.
  *
  * About 12 cm on a 1.8 m player: inside the range a real contact could
  * plausibly be taken at, so it buys variety without ever putting a head kick on
@@ -740,12 +802,33 @@ export function backflipAllowed(def: CharacterDef, foot: Foot): boolean {
  * measured over a real match run from 0.31 to 0.88 of body height with a median
  * of 0.75 — a narrow, top-heavy spread — so most of a match landed in one band
  * and stayed there while the other clips sat loaded and unused.
+ *
+ * This used to be a coin toss (`bandJitter`), which bought the variety at the
+ * price of the thing the variety was for: two identical balls could be played
+ * two different ways, so nothing a player learned about where to stand held.
+ * The spread now comes from the ball's own lateral offset instead — see
+ * `bandShift` — which varies just as much over a match and varies *because of
+ * something the player did*.
  */
 export const BAND_OVERLAP = 0.07;
 
-/** This contact's shift of the band edges. Pass 0 for a deterministic pick. */
-function bandJitter(): number {
-  return (Math.random() * 2 - 1) * BAND_OVERLAP;
+/** A ball this far to the side counts as fully at stretch, in metres. */
+export const WIDE_BALL = 0.55;
+
+/**
+ * How this contact moves the band edges, from where the ball is arriving.
+ *
+ * A ball dead in front is met high on the body — chest, head, the parts that
+ * are already there. A ball out to the side is reached for, and what reaches is
+ * the leg: the bands slide down, so the same height played wide is a knee where
+ * played in front it was a chest.
+ *
+ * That is the whole of "position decides the body part", and it is continuous:
+ * a step across changes the touch a little, not all at once, so the boundary
+ * is something a player can feel out rather than memorise.
+ */
+export function bandShift(lateral: number): number {
+  return -BAND_OVERLAP * Math.min(1, Math.abs(lateral) / WIDE_BALL);
 }
 
 /**
@@ -759,16 +842,35 @@ function bandJitter(): number {
 const CENTRE_ZONE = 0.18;
 
 /**
- * Left/Right by lateral offset; when the ball is near dead-centre, footed
- * players favour their strong side.
+ * Left/Right by lateral offset; a ball inside the central zone is taken on the
+ * player's strong side.
+ *
+ * Deterministic, where it used to be weighted dice. A player who wants the ball
+ * on their left foot has a way to ask for it — stand slightly to its right —
+ * and that only works if asking twice gives the same answer twice.
  */
 function pickSide(lateral: number, prefer: Foot | "both" = "both"): "Left" | "Right" {
-  if (Math.abs(lateral) < CENTRE_ZONE) {
-    if (prefer === "left") return Math.random() < 0.75 ? "Left" : "Right";
-    if (prefer === "right") return Math.random() < 0.75 ? "Right" : "Left";
-    return Math.random() < 0.5 ? "Left" : "Right";
+  if (Math.abs(lateral) < CENTRE_ZONE && prefer !== "both") {
+    return prefer === "left" ? "Left" : "Right";
   }
   return lateral >= 0 ? "Right" : "Left";
+}
+
+/**
+ * Which part of the body plays a clip.
+ *
+ * Read from the clip's own contact bone rather than from a second table, so a
+ * new clip cannot arrive with a contact point and no body part — the rules that
+ * count parts and the physics that places the ball are then talking about the
+ * same limb by construction.
+ */
+export function bodyPartOf(clip: string): BodyPart | null {
+  const bone = CLIP_CONTACT_BONE[clip];
+  if (!bone) return null;
+  if (bone === "Head") return "head";
+  if (bone.endsWith("Foot")) return "foot";
+  if (bone.endsWith("Leg")) return "knee";
+  return "chest";
 }
 
 /**
@@ -810,17 +912,71 @@ export function onWeakSide(lateral: number, def: CharacterDef): boolean {
 }
 
 /**
+ * How far onto the weak side a ball has to arrive before that foot is not
+ * trusted with it, in metres of lateral offset at full doubt.
+ */
+const WEAK_SIDE_FULL = 0.9;
+
+/**
+ * Whether this ball is too far onto the weak side for the foot to be used.
+ *
+ * The old rule rolled a die against the weak-foot score, which made the header
+ * the one thing in a rally a player could neither predict nor cause. It is now
+ * the same score read as a *reach*: how far across the body the foot is trusted
+ * to go. At 20 it is trusted almost nowhere and nearly every high ball on that
+ * side is headed; at 95 it goes right out to the touchline. Between them the
+ * player decides which they get, by where they stand.
+ */
+export function weakSideDoubt(lateral: number, def: CharacterDef): boolean {
+  if (!onWeakSide(lateral, def)) return false;
+  const severity = Math.min(1, Math.abs(lateral) / WEAK_SIDE_FULL);
+  return severity > def.weakFoot / 100;
+}
+
+/** A touch the game is considering: the clip, and the part of the body it uses. */
+interface Candidate {
+  clip: string;
+  part: BodyPart;
+}
+
+/**
+ * Options shared by both clip pickers.
+ *
+ * `avoid` is the teqball rule that makes a rally a sequence rather than three
+ * separate touches: the same part of the body may not play the ball twice in a
+ * row. It is enforced here, where the touch is chosen, rather than as a foul
+ * after the fact — the game picks the limb, so it must pick a legal one.
+ */
+export interface TouchOptions {
+  /** Body part used by this player's previous touch in the same possession. */
+  avoid?: BodyPart | null;
+  /** Override the band shift (tests). Defaults to the ball's own offset. */
+  bandShift?: number;
+}
+
+/** First candidate that is not the part just used; the head of the list otherwise. */
+function resolve(candidates: Candidate[], avoid: BodyPart | null | undefined): string {
+  const legal = avoid ? candidates.find((c) => c.part !== avoid) : candidates[0];
+  return (legal ?? candidates[0]).clip;
+}
+
+/**
  * What a player does with a ball they can attack.
  *
  * Feet first. A teqball player up at the table kicks or flips; heading is what
  * you do when the ball is coming to the side you do not trust, and even then
  * only if it is high enough to head at all. So the header is not a height band
- * any more — it is an admission, and how often it happens is the weak foot's
- * own score: at 70 the foot is used seven times in ten and the head the other
- * three.
+ * — it is an admission, and how far the weak foot is trusted decides where on
+ * the court it happens (`weakSideDoubt`).
  *
  * Below the table's own height none of that applies: there is no shot to play,
  * only a touch to take, and the reception clips are what that looks like.
+ *
+ * The return is a *list* in preference order, from which the first part not
+ * used by the previous touch is played. That is what turns the no-repeats rule
+ * into something to build with: a player who has just chested the ball knows
+ * the next one is a knee or a foot, and can put the ball at the height that
+ * picks the one they want.
  */
 export function chooseStrike(
   ballY: number,
@@ -835,11 +991,15 @@ export function chooseStrike(
    * first touch the job is to control it.
    */
   received: boolean,
-  rand: () => number = Math.random,
-  relJitter: number = bandJitter()
+  opts: TouchOptions = {}
 ): string {
-  const rel = ballY / def.height + relJitter;
+  const rel = ballY / def.height + (opts.bandShift ?? bandShift(lateral));
   const side = pickSide(lateral, def.strongFoot);
+  const candidates: Candidate[] = [];
+  const header: Candidate = {
+    clip: Math.abs(lateral) > 0.12 ? `${side}HeadKick` : "CenterHeadKick",
+    part: "head",
+  };
 
   // The same ladder wherever the player is standing.
   //
@@ -850,49 +1010,78 @@ export function chooseStrike(
   // deep is a question for the flight, not for the animation, and `loftFloor`
   // already answers it.
 
-  // The weak side, high enough to head: the one case a header is the answer.
-  if (rel >= STRIKE_BANDS.header && onWeakSide(lateral, def)) {
-    if (rand() > def.weakFoot / 100) {
-      return Math.abs(lateral) > 0.12 ? `${side}HeadKick` : "CenterHeadKick";
-    }
-  }
+  // The weak side, high enough to head: the one case a header leads.
+  const headable = rel >= STRIKE_BANDS.header;
+  if (headable && weakSideDoubt(lateral, def)) candidates.push(header);
 
-  // Otherwise the feet have it, hardest first — but only on a ball this player
-  // set up. Off the first touch there is nothing to finish yet.
   if (received) {
+    // Otherwise the feet have it, hardest first — but only on a ball this
+    // player set up. Off the first touch there is nothing to finish yet.
     if (rel >= STRIKE_BANDS.backflip) {
       const foot = strikeBackflipFoot(stance, def);
-      if (foot) return foot === "right" ? "BackflipRightFoot" : "BackflipLeftFoot";
+      if (foot) {
+        candidates.push({
+          clip: foot === "right" ? "BackflipRightFoot" : "BackflipLeftFoot",
+          part: "foot",
+        });
+      }
     }
-    if (rel >= STRIKE_BANDS.foot) return `${side}FootKick`;
-    return `Inner${side}FootReception`;
+    if (rel >= STRIKE_BANDS.foot) candidates.push({ clip: `${side}FootKick`, part: "foot" });
+    // A high ball the feet have already claimed is still headable, and that is
+    // the way out when the feet played the last touch.
+    if (headable) candidates.push(header);
+    if (rel > 0.45) candidates.push({ clip: `${side}KneeReception`, part: "knee" });
+    candidates.push({ clip: `Inner${side}FootReception`, part: "foot" });
+    return resolve(candidates, opts.avoid);
   }
 
   // First touch: bring it down.
-  if (rel > 0.62) return "ChestKick";
-  if (rel > 0.45) return `${side}KneeReception`;
-  return `Inner${side}FootReception`;
+  if (headable) candidates.push(header);
+  if (rel > 0.62) candidates.push({ clip: "ChestKick", part: "chest" });
+  if (rel > 0.45) candidates.push({ clip: `${side}KneeReception`, part: "knee" });
+  candidates.push({ clip: `Inner${side}FootReception`, part: "foot" });
+  // Every band has a chest and a knee behind it, so the no-repeats rule always
+  // has somewhere legal to go — a ball at shin height after a foot touch is
+  // dug out with the knee rather than illegally toed again.
+  candidates.push({ clip: `${side}KneeReception`, part: "knee" });
+  candidates.push({ clip: "ChestKick", part: "chest" });
+  // A first touch is a control touch: the head is the last resort, never the
+  // first answer, or the game goes back to being all headers.
+  const first = candidates[0];
+  if (first.part === "head" && !weakSideDoubt(lateral, def)) candidates.shift();
+  return resolve(candidates, opts.avoid);
 }
 
-/** Pick a control-touch (reception/prep) clip from the ball's height and lateral offset. */
+/**
+ * Pick a control-touch (reception/prep) clip from the ball's height and lateral
+ * offset, avoiding the part that played the previous touch.
+ *
+ * Only three parts can take a set-up — there is no heading clip that leaves the
+ * ball playable — so the ladder is chest, knee, foot, ordered by what the ball
+ * is level with. Which one arrives is decided entirely by the ball's height and
+ * how far to the side it is: the same approach always produces the same touch,
+ * and a different approach reliably produces a different one.
+ */
 export function pickReceptionClip(
   ballY: number,
   lateral: number,
   height: number,
   strongFoot: Foot | "both" = "both",
-  /** As `chooseStrike`: pass 0 for a deterministic pick and no random draw. */
-  relJitter: number = bandJitter()
+  opts: TouchOptions = {}
 ): string {
-  const rel = ballY / height + relJitter;
+  const rel = ballY / height + (opts.bandShift ?? bandShift(lateral));
   const side = pickSide(lateral, strongFoot);
-  if (rel > 0.62) {
-    return Math.random() < 0.4 ? "ChestReception" : `ChestPrep${side}`;
-  }
-  if (rel > 0.45) return Math.random() < 0.6 ? `${side}KneeReception` : "ChestReception";
-  // A knee sometimes takes the low ball too. Both are soft control touches that
-  // leave the ball in the same place, so this is a change of picture rather
-  // than of play — and it stops the inner foot owning the whole bottom band.
-  return Math.random() < 0.75 ? `Inner${side}FootReception` : `${side}KneeReception`;
+  // A ball in front of the chest is taken on the chest square-on; one off to
+  // the side needs the step across that the prep clips are.
+  const chest: Candidate = {
+    clip: Math.abs(lateral) > CENTRE_ZONE ? `ChestPrep${side}` : "ChestReception",
+    part: "chest",
+  };
+  const knee: Candidate = { clip: `${side}KneeReception`, part: "knee" };
+  const foot: Candidate = { clip: `Inner${side}FootReception`, part: "foot" };
+  const ladder =
+    rel > 0.62 ? [chest, knee, foot] : rel > 0.45 ? [knee, chest, foot] : [foot, knee, chest];
+  return resolve(ladder, opts.avoid);
 }
 
 export const SERVE_CLIPS = ["ServeRightFoot", "ServeLeftFoot", "HeadServeRight", "HeadServeLeft"] as const;
@@ -902,10 +1091,13 @@ export const SERVE_CLIPS = ["ServeRightFoot", "ServeLeftFoot", "HeadServeRight",
  * left): aiming left serves cross-body with the right foot, aiming right with
  * the left foot, and a central aim uses a head serve (random side).
  */
-export function serveClipForAim(ownLat: number): string {
+export function serveClipForAim(ownLat: number, strongFoot: Foot | "both" = "both"): string {
   if (ownLat > 0.25) return "ServeRightFoot";
   if (ownLat < -0.25) return "ServeLeftFoot";
-  return Math.random() < 0.5 ? "HeadServeRight" : "HeadServeLeft";
+  // The head serve used to pick its side with a coin toss, which meant the one
+  // serve a player can aim straight down the middle was also the one they could
+  // not learn. It follows the strong side instead.
+  return strongFoot === "left" ? "HeadServeLeft" : "HeadServeRight";
 }
 
 // Hand that carries/tosses the ball for each serve clip (edit if a serve's

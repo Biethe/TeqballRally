@@ -11,10 +11,13 @@ import {
   rangeFor,
   scatter,
   spreadRadius,
+  swipeShot,
+  swipeTarget,
   tableTarget,
   SPREAD,
+  SWIPE_BAND,
 } from "../src/aim";
-import { COURT, PLAY_BOX, TABLE } from "../src/config";
+import { COURT, PLAY_BOX, TABLE, TABLE_SCALE } from "../src/config";
 
 const easy = { power: 0.5, precision: 1, footSpray: 1, stretch: 0 };
 
@@ -250,5 +253,148 @@ describe("swipe speed and arc", () => {
   it("clamps a swipe that overran the range", () => {
     expect(loftFor(-1)).toBe(loftFor(0));
     expect(loftFor(2)).toBe(loftFor(1));
+  });
+});
+
+describe("reading a swipe as a shot", () => {
+  /** A swipe drawn at `degrees` above the sideways axis, at half pace. */
+  const at = (degrees: number, pace = 0.5) => {
+    const r = (degrees * Math.PI) / 180;
+    return swipeShot(Math.sin(r), Math.cos(r), pace);
+  };
+
+  it("drives a diagonal upward swipe: fast, flat and deep", () => {
+    const up = at(45);
+
+    expect(up.category).toBe("drive");
+    expect(up.power).toBeGreaterThan(at(0).power);
+    expect(up.loft).toBeLessThan(at(0).loft);
+    expect(up.depth).toBeGreaterThan(at(0).depth);
+  });
+
+  it("lobs a diagonal downward swipe: slow, high and short", () => {
+    const down = at(-45);
+
+    expect(down.category).toBe("lob");
+    expect(down.power).toBeLessThan(at(0).power);
+    expect(down.loft).toBeGreaterThan(at(0).loft);
+    expect(down.depth).toBeLessThan(at(0).depth);
+  });
+
+  it("plays a sideways swipe as the rally ball, between the two", () => {
+    const across = at(0);
+
+    expect(across.category).toBe("balanced");
+    expect(across.loft).toBeLessThan(at(-45).loft);
+    expect(across.loft).toBeGreaterThan(at(45).loft);
+  });
+
+  it("orders the three by pace and by arc, in opposite directions", () => {
+    // The whole lesson the scheme has to teach: up is fast and flat, down is
+    // slow and high, across is neither.
+    expect(at(60).power).toBeGreaterThan(at(0).power);
+    expect(at(0).power).toBeGreaterThan(at(-60).power);
+    expect(at(60).loft).toBeLessThan(at(0).loft);
+    expect(at(0).loft).toBeLessThan(at(-60).loft);
+  });
+
+  it("does not ask for a pixel-perfect diagonal", () => {
+    // A thumb does not draw a clean 45 degrees. Anything clearly upward is the
+    // drive, and it stays the drive all the way to straight up.
+    for (const deg of [40, 55, 70, 90]) expect(at(deg).category, `${deg}`).toBe("drive");
+    for (const deg of [-40, -55, -70, -90]) expect(at(deg).category, `${deg}`).toBe("lob");
+  });
+
+  it("blends across the boundary instead of switching at it", () => {
+    // A swipe near the edge of a band produces a shot near the edge of the
+    // band, so a gesture that lands one degree either side of it does not
+    // produce two very different balls.
+    const below = at(15);
+    const above = at(20);
+
+    expect(Math.abs(above.loft - below.loft)).toBeLessThan(0.25);
+    expect(below.power).toBeLessThan(above.power);
+  });
+
+  it("is the same shot for the same swipe, every time", () => {
+    for (let i = 0; i < 100; i++) {
+      const shot = at(37, 0.62);
+      expect(shot.power).toBe(at(37, 0.62).power);
+      expect(shot.loft).toBe(at(37, 0.62).loft);
+    }
+  });
+
+  it("lets the pace of the swipe decide how much of the shot it gets", () => {
+    expect(at(45, 1).power).toBeGreaterThan(at(45, 0).power);
+    expect(at(-45, 1).power).toBeGreaterThan(at(-45, 0).power);
+    // A lob is a decision to give up pace: even flat out it is the slower ball.
+    expect(at(-45, 1).power).toBeLessThan(at(45, 0).power);
+  });
+
+  it("keeps the bands where a thumb can find them", () => {
+    expect(SWIPE_BAND.from).toBeLessThan(SWIPE_BAND.full);
+    expect(SWIPE_BAND.from).toBeGreaterThan(0);
+    expect(SWIPE_BAND.full).toBeLessThan(1);
+  });
+
+  it("never asks for more than the striker has", () => {
+    for (let deg = -90; deg <= 90; deg += 5) {
+      const shot = at(deg, 1);
+      expect(shot.power, `${deg}`).toBeGreaterThan(0);
+      expect(shot.power, `${deg}`).toBeLessThanOrEqual(1);
+      expect(shot.loft, `${deg}`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("where a swiped kick is aimed", () => {
+  const from = new Vector3(-3 * TABLE_SCALE, 0, 0);
+
+  it("always sends the ball up the court, whichever way the swipe went", () => {
+    // A downward swipe used to aim at a point behind the player — the one
+    // gesture in the scheme that could only ever lose the point.
+    for (const deg of [90, 45, 0, -45, -90]) {
+      const r = (deg * Math.PI) / 180;
+      const shot = swipeShot(Math.sin(r), Math.cos(r), 0.6);
+      const target = swipeTarget(from, 1, Math.cos(r), shot);
+
+      expect(target.x, `${deg}`).toBeGreaterThan(from.x);
+    }
+  });
+
+  it("aims the sideways half of the swipe sideways", () => {
+    const shot = swipeShot(0.7, 0.7, 0.6);
+    const left = swipeTarget(from, 1, 1, shot);
+    const right = swipeTarget(from, 1, -1, shot);
+
+    expect(left.z).toBeGreaterThan(from.z);
+    expect(right.z).toBeLessThan(from.z);
+    expect(swipeTarget(from, 1, 0, shot).z).toBeCloseTo(from.z, 10);
+  });
+
+  it("drives deeper than it lobs", () => {
+    const drive = swipeShot(1, 0, 0.8);
+    const lob = swipeShot(-1, 0, 0.8);
+
+    expect(swipeTarget(from, 1, 0, drive).x).toBeGreaterThan(swipeTarget(from, 1, 0, lob).x);
+  });
+
+  it("keeps every swipe inside the playable box", () => {
+    for (let deg = -90; deg <= 90; deg += 10) {
+      const r = (deg * Math.PI) / 180;
+      const shot = swipeShot(Math.sin(r), Math.cos(r), 1);
+      for (const lat of [-1, 0, 1]) {
+        const target = swipeTarget(from, 1, lat, shot);
+        expect(Math.abs(target.x), `${deg}`).toBeLessThanOrEqual(PLAY_BOX.halfLen);
+        expect(Math.abs(target.z), `${deg}`).toBeLessThanOrEqual(PLAY_BOX.halfWid);
+      }
+    }
+  });
+
+  it("mirrors for the far side of the net", () => {
+    const shot = swipeShot(1, 0, 0.6);
+    const other = new Vector3(3 * TABLE_SCALE, 0, 0);
+
+    expect(swipeTarget(other, -1, 0, shot).x).toBeLessThan(other.x);
   });
 });

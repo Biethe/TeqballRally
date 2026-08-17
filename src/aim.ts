@@ -14,7 +14,129 @@ export interface StrikeAim {
   target: Vector3;
   /** 0 = a soft floater, 1 = everything the striker has. */
   power: number;
+  /**
+   * Multiplier on the arc the kick is played with; 1 leaves the shot to the
+   * power and the contact, as a charged landscape kick does. Portrait's swipe
+   * sets it directly, which is how one gesture asks for pace and shape at once.
+   */
+  loft?: number;
 }
+
+/**
+ * The three shots a swipe can ask for.
+ *
+ * Not a menu — a direction. The finger is already saying where the ball should
+ * go sideways, and how steeply it was drawn says what kind of ball it is:
+ *
+ *   - **up** (toward the far end): a drive. Fast, flat, deep, and the shot that
+ *     wins a point or misses the table trying.
+ *   - **down** (back toward the player): a lob. Slow and high, dropping short —
+ *     what you play to buy a second when the rally has got away from you.
+ *   - **across**: the rally ball. Medium pace, medium arc, medium depth.
+ *
+ * Up = aggressive, down = safe, across = neutral, and nothing else to learn.
+ */
+export type SwipeCategory = "drive" | "balanced" | "lob";
+
+export interface SwipeShot {
+  category: SwipeCategory;
+  /** 0..1, as any other kick's power. */
+  power: number;
+  /** Arc multiplier: below 1 drills the ball, above 1 floats it. */
+  loft: number;
+  /** Multiplier on how far up the court the shot is aimed. */
+  depth: number;
+}
+
+/**
+ * How steep a swipe has to be before it stops being a sideways one.
+ *
+ * A thumb on a phone does not draw a clean 45°, and a scheme that demanded one
+ * would be a scheme nobody could hit twice. The categories therefore start
+ * turning at `from` and are only fully themselves at `full`, with everything
+ * between the two a blend — so a swipe near a boundary produces a shot near
+ * the boundary rather than one of two very different ones at random.
+ *
+ * `from` is deliberately low: a third of the way up from horizontal is already
+ * unmistakably "upward" to the person drawing it.
+ */
+export const SWIPE_BAND = { from: 0.3, full: 0.62 };
+
+/** The end points the bands blend between. */
+const SWIPE_SHOTS: Record<SwipeCategory, Omit<SwipeShot, "category">> = {
+  // Everything the swipe's pace has, thrown flat and deep.
+  drive: { power: 0.72, loft: 0.58, depth: 1.16 },
+  // The ball a rally is made of.
+  balanced: { power: 0.42, loft: 1.0, depth: 1.0 },
+  // Pace deliberately capped: a lob is a decision to give up speed for height.
+  lob: { power: 0.24, loft: 1.85, depth: 0.72 },
+};
+
+/** Share of a swipe's own pace each category adds on top of its floor. */
+const SWIPE_PACE: Record<SwipeCategory, number> = { drive: 0.28, balanced: 0.33, lob: 0.24 };
+
+/**
+ * Read a swipe as a shot.
+ *
+ * `forward` and `lateral` are the gesture's direction in court space — forward
+ * meaning toward the opponent's end — and `pace` is how fast it was drawn,
+ * 0..1. Deterministic: the same drawing is the same shot, which is what lets a
+ * player build the habit at all.
+ */
+export function swipeShot(forward: number, lateral: number, pace: number): SwipeShot {
+  const len = Math.hypot(forward, lateral);
+  // A swipe with no length left in it (a flick straight at the screen, a stale
+  // aim) is the neutral ball rather than nothing.
+  const tilt = len > 1e-4 ? forward / len : 0;
+  const p = Math.min(1, Math.max(0, pace));
+  const toward: SwipeCategory = tilt >= 0 ? "drive" : "lob";
+  const blend = ramp(Math.abs(tilt), SWIPE_BAND.from, SWIPE_BAND.full);
+  const mix = (key: "power" | "loft" | "depth"): number =>
+    SWIPE_SHOTS.balanced[key] + (SWIPE_SHOTS[toward][key] - SWIPE_SHOTS.balanced[key]) * blend;
+  const paceShare = SWIPE_PACE.balanced + (SWIPE_PACE[toward] - SWIPE_PACE.balanced) * blend;
+  return {
+    // The name follows the half the swipe is actually in, so what a player is
+    // told (and what a test asserts) matches what they drew.
+    category: blend >= 0.5 ? toward : "balanced",
+    power: Math.min(1, mix("power") + paceShare * p),
+    loft: mix("loft"),
+    depth: mix("depth"),
+  };
+}
+
+/** Smoothstep from 0 at `a` to 1 at `b`. */
+function ramp(v: number, a: number, b: number): number {
+  const t = Math.min(1, Math.max(0, (v - a) / Math.max(1e-6, b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Where a swiped kick is aimed, given who is striking and what they drew.
+ *
+ * The shot always goes up the court — a swipe is never an instruction to kick
+ * the ball backwards, which is what the old direction-as-aim mapping made a
+ * downward one mean. Depth comes from the category and the power; the swipe's
+ * sideways component is what aims it left or right.
+ */
+export function swipeTarget(
+  from: Vector3,
+  attackingSign: number,
+  lateral: number,
+  shot: SwipeShot
+): Vector3 {
+  const reach = rangeFor(shot.power);
+  const lat = Math.max(-1, Math.min(1, lateral));
+  return clampToPlay(
+    new Vector3(
+      from.x + attackingSign * reach * shot.depth,
+      0,
+      from.z + lat * reach * SWIPE_LATERAL
+    )
+  );
+}
+
+/** How much of a kick's carry a fully sideways swipe spends going sideways. */
+const SWIPE_LATERAL = 0.55;
 
 /**
  * How wide the landing scatter is, in metres.

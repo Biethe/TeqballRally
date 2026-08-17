@@ -28,8 +28,8 @@ either way up on a phone.
 | --- | --- | --- | --- | --- |
 | Move | WASD or arrows | Left stick | Move stick | Tap where to stand |
 | Play a set-up | WASD or arrows | Left stick | Move stick | Tap where to put the ball |
-| Aim a kick | Hold Space, then WASD | Hold A, then stick | Hold STRIKE, then stick | Direction of the swipe |
-| Kick | Release Space | Release A | Release STRIKE | Swipe |
+| Aim a kick | Hold Space, then WASD | Hold A, then stick | Hold STRIKE, then stick | Sideways part of the swipe |
+| Kick | Release Space | Release A | Release STRIKE | Swipe — up drives, down lobs, across is a rally ball |
 | Serve | Space or Enter | A / Cross | STRIKE | Swipe |
 | Take a touch | K | B / Circle | RECEPTION | Tap, with the ball already near |
 | Pause | Escape | Start / Options | Pause button | Pause button |
@@ -53,7 +53,108 @@ incoming ball is enough to receive it — no press, no timing; a tap only steers
 where it goes. Every touch after that has to be asked for, and in portrait the
 tap is the asking. Chasing a ball down to make contact at all was never the
 interesting decision; what to do with it is (`AUTO_RECEPTION_REACH` in
-`src/match.ts`, `autoFirstReception` to switch the first touch back to manual).
+`src/config.ts`, `autoFirstReception` to switch the first touch back to manual).
+
+## Staying with the ball
+
+Around the point where a player's next contact is due there is a circle they
+move freely inside — about two paces, and the whole of it is theirs. Which side
+of the ball to stand, how square to be, how long to let it drop: every decision
+worth making about a touch is made inside that circle, and nothing interferes
+with any of it (`RECEPTION_ZONE` in `src/config.ts`).
+
+Outside it, only the half of the push that is *leaving* is damped, fading out
+across a soft band rather than stopping at a line, and a slow walk back builds
+up in whatever room the player is not using — at full stick it is not there at
+all. Sideways movement is never touched, because circling the contact point is
+the adjustment this exists to protect, not the one it exists to stop.
+
+So a player who means to leave still leaves. What they can no longer do is
+drift out of a reception they had already started, which is the failure it was
+built for: the ball dropping two paces from a player who wandered off during
+their own animation, and a touch that was there to be made quietly becoming
+impossible. The free radius is deliberately smaller than reach plus lunge
+(`tests/reception.test.ts` holds that), so moving freely inside it can never
+cost a reception that was on.
+
+One spot does three jobs — the reach assist bends a run onto it, the zone is
+drawn around it, and the auto-run after a set-up heads for it — and it is read
+off the ball's live flight rather than from what a touch intended. A set-up
+that came off the body badly therefore moves it, which is exactly the recovery
+a poor first touch should demand.
+
+## Touches, and what they are worth
+
+A touch is not a yes or a no. Three things decide how well the ball was met,
+and all three are things the player did before it arrived (`src/touch.ts`):
+
+```
+height   the ball is where the chosen limb actually strikes, not half a body off
+reach    it is in front of them, not at full stretch
+timing   the contact falls in the middle of the window, not at either end
+```
+
+There is no clock to hit and no bar to watch — the grade is geometry the player
+produced by standing somewhere and asking for the touch when they did. Height
+leads the weighting, because where you stand is the thing you have most control
+over; timing is last, because a game that graded timing hardest would be a
+rhythm game with a table drawn on it.
+
+What it buys is *control*, never permission. A well-met set-up sits the ball up
+where it was asked for; a scrappy one comes off lower, shorter and drifting —
+on past the spot if the ball was taken early, short of it if it was taken
+late — which is an awkward second touch rather than a lost point. There is a
+floor under the grade for exactly that reason. On a kick the cost lands on the
+line rather than the pace: a rushed attack is still fast, and no longer aimed.
+
+Reading the direction matters. Meeting the ball early, up on the body, is the
+*good* contact; leaving it until it is nearly on the floor is the poor one —
+which is the sport, and which is why `practice.early` ("strike while the ball
+is still high") is now backed by something.
+
+## Three touches, three parts of the body
+
+Two touches in a row may not use the same part of the body. That is the
+rulebook, and it is enforced where the limb is chosen rather than as a foul
+afterwards: the game picks the limb, so it picks a legal one. A player who has
+just chested the ball knows the next touch is a knee or a foot, and can put the
+ball at the height that picks the one they want.
+
+The parts are not reskins of each other (`PART_SETUP` in `src/config.ts`):
+
+| | What it is for |
+| --- | --- |
+| Chest | Control. Barely moves the ball, puts it exactly where it was asked for, and forgives a bad contact. |
+| Knee | The in-between touch: enough carry to step out of a bad spot, enough hang time to get there. |
+| Foot | Moves the ball furthest and hangs it lowest — the quick set-up into an attack, and the one that punishes a poor contact hardest. |
+| Head | Buys the most time, at the cost of placement. A finishing limb: there is no heading clip that leaves the ball playable. |
+
+Which one arrives is decided entirely by where the ball is and where the player
+is standing. Height picks the band; how far to the *side* the ball is arriving
+slides the whole ladder down, because reaching for a ball is what the leg does
+and a ball in front is met with whatever is already there (`bandShift`). So the
+same ball played square is a chest touch and played wide is a knee.
+
+## Nothing is rolled
+
+Clip selection used to roll dice — a band jitter on every contact, a weighted
+coin for which side took a central ball, another for which head serve was
+played, another again for whether a weak-side ball was headed. It bought
+variety, at the price of the thing the variety was for: two identical balls
+could be played two different ways, so nothing a player learned about where to
+stand held.
+
+All of it is now read from the state instead. The spread across a match is the
+same — a rally still sees every clip — but each one happens for a reason the
+player can see and can cause again. The weak foot, in particular, stopped being
+a die roll and became a *reach*: how far across the body that foot is trusted
+before the head takes over, so at 20 nearly every high ball on that side is
+headed and at 95 the foot goes right out to the touchline.
+
+What is still random is the landing spread on a kick, deliberately: pace has to
+cost accuracy. `tests/possession.test.ts` pins the distinction by playing the
+same rally against two very different random streams and requiring the same
+clips out of both.
 
 A set-up never lands on the player's own half: playing the ball onto your own
 table is a fault, and a placement the player asked for must not be the thing
@@ -63,10 +164,29 @@ that loses them the point.
 
 A kick aims at a point anywhere on the court and is struck at a power the
 player chooses. Landscape holds the kick control: the stick moves the aim
-marker while the charge builds, and letting go strikes. Portrait swipes: the
-direction aims it and the *speed* of the swipe is the power, so a flick is a
-low fast drive and a slow drag is a floater. The animation follows the power,
-because a lob played with a drilled foot volley reads as a bug.
+marker while the charge builds, and letting go strikes.
+
+Portrait swipes, and the swipe says two things at once. Its **sideways** half
+aims the ball. Its **steepness** chooses the shot:
+
+| Swipe | Ball |
+| --- | --- |
+| Diagonally up, toward the far end | A drive: fast, flat, deep |
+| Across | The rally ball: medium pace, medium arc, medium depth |
+| Diagonally down, back toward you | A lob: slow, high, dropping short |
+
+Up = aggressive, down = safe, across = neutral, and nothing else to learn. How
+fast the swipe was drawn decides how much of that shot's pace it gets, so a lob
+flicked hard is still the slower ball — giving up speed for height is what a
+lob *is*. The bands are deliberately forgiving: a thumb does not draw a clean
+45°, so anything clearly upward is the drive all the way to straight up, and
+the categories blend across their boundaries rather than switching at them
+(`swipeShot` and `SWIPE_BAND` in `src/aim.ts`).
+
+A downward swipe used to aim the kick *backwards*, at a point in the player's
+own half — the one gesture in the scheme that could only ever lose the point.
+It is now the lob, which is the shot anyone reaching for that direction was
+trying to play.
 
 Every aim, and every landing it scatters to, is clamped to `PLAY_BOX` — the
 table plus a hand's width of margin. A kick has to be able to miss; it does not
@@ -78,6 +198,7 @@ Where the ball actually lands is that aim plus a spread (`src/aim.ts`):
 
 ```
 radius ∝ power × weak-foot wobble × how far the striker had to reach
+         × how badly the ball was met
          ÷ the striker's precision
 ```
 
@@ -113,6 +234,23 @@ however wrong its read was, which is what made earlier builds feel like the
 CPU retrieved every ball. It still never *declines* to play: a ball put
 straight at it comes back, and beating it means making it move. Presets in
 `DIFFICULTIES` (`src/ai.ts`), held monotonic by `tests/ai.test.ts`.
+
+It also plays a *shot* rather than a coordinate. Once per possession it decides
+what kind of ball to send — wide, deep, a drop just over the net, a fast flat
+one, or a high loop — and it decides it against where the player is standing:
+stand deep and invite the drop, stand wide and get the ball across you, stand
+central and get pace, because there is no gap to find. `tactics` in
+`DIFFICULTIES` is how often that choice is made at all rather than the ball
+simply being returned somewhere legal, and it is separate from `aimError`,
+which only decides how well the choice is executed.
+
+Each intent asks a different question, and the answer is where the player was
+standing before the ball was struck: a lateral adjustment, a step back, a sprint
+forward, a ball that has to be taken above the waist. The point is not that the
+opponent varies — it is that the player learns to *read* what is coming. The
+table is deliberately small; the tactical depth this game wants is in what the
+player can do with the ball, and an opponent only has to be able to ask the
+questions.
 
 Between points both players are walked to where the next point actually
 starts: the server to the service line, the receiver to a mark behind their
