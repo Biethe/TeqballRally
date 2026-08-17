@@ -45,10 +45,22 @@ const manifest = JSON.parse(readFileSync(MANIFEST, "utf8"));
 
 console.log(`Fetching ${manifest.files.length} files…`);
 const response = await fetch(URL_, {
-  headers: TOKEN ? { authorization: `Bearer ${TOKEN}` } : undefined,
+  headers: {
+    // A GitHub release asset is the one host that needs asking. Its API URL
+    // returns *JSON metadata* by default and the actual bytes only with this
+    // header — without it the download "succeeds" and hands back a few hundred
+    // bytes of JSON, which then fails as a corrupt bundle rather than as the
+    // wrong Accept header. Harmless everywhere else.
+    accept: "application/octet-stream",
+    ...(TOKEN ? { authorization: `Bearer ${TOKEN}` } : {}),
+  },
+  redirect: "follow",
 });
 if (!response.ok) {
   console.error(`${response.status} ${response.statusText} fetching the art bundle.`);
+  if (response.status === 404 && !TOKEN) {
+    console.error("A private URL returns 404 rather than 403 when unauthenticated — set ASSET_BUNDLE_TOKEN.");
+  }
   process.exit(1);
 }
 const sealed = Buffer.from(await response.arrayBuffer());
