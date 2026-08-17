@@ -1,12 +1,14 @@
 {
   "version": 1,
   "generated": "2026-08-17",
-  "note": "bundle is null until scripts/pack-assets.mjs is run with the real ASSET_BUNDLE_KEY; the hash covers one specific upload (fresh IV per pack) so it cannot be committed ahead of it. The per-file digests below are the durable part and are checked on every fetch.",
   "roots": [
     "assets",
     "art-source"
   ],
-  "bundle": null,
+  "bundle": {
+    "bytes": 30544031,
+    "sha256": "6bc4170bd9982853066f51c5ff299191e7566db6b062e5d06372f8eb11f266c2"
+  },
   "files": [
     {
       "path": "assets/audio/music/.gitkeep",
