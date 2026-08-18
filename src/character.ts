@@ -2,6 +2,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
+import type { Skeleton } from "@babylonjs/core/Bones/skeleton";
 import type { Scene } from "@babylonjs/core/scene";
 import {
   clearTable,
@@ -277,6 +278,8 @@ export class Character {
   root: TransformNode;
   groups = new Map<string, AnimationGroup>();
   meshes: AbstractMesh[] = [];
+  /** Held only so `dispose` can take them down; nothing else reads them. */
+  private skeletons: Skeleton[] = [];
   /** +1: stands at x>0 facing -x (AI). -1: stands at x<0 facing +x (player). */
   faceDir: 1 | -1 = 1;
   height: number;
@@ -343,6 +346,7 @@ export class Character {
 
     const char = new Character(wrapper, h, def);
     char.meshes = res.meshes;
+    char.skeletons = res.skeletons;
     // Same exporter quirk as the balls: defaulted metallic renders the skin
     // textures nearly black without an environment map.
     fixMetallicMaterials(res.meshes);
@@ -437,16 +441,20 @@ export class Character {
    * World-space point where `clip` will make contact, for the current
    * position and yaw.
    *
-   * `extraYaw` is for asking about a clip that is *about* to be played with a
-   * yaw offset of its own — a backflip is turned to face the table, and a plan
-   * made before the turn would place the limb on the wrong side of the player.
-   * Once the clip is running the offset is already in the root's rotation and
-   * this takes no argument.
+   * The clip's own yaw offset is applied here rather than asked for, and the
+   * offset currently on the root is taken back off first, so the answer is the
+   * same whether the clip has not started, is running, or has already ended.
+   * That last case is why: the caller used to have to pass the offset before
+   * the turn and omit it during, which is correct only while the clip is
+   * actually playing. A clip that ends early — or a point that ends under it —
+   * restores the root's yaw, and every later question about the contact point
+   * then came back mirrored onto the wrong side of the player. Harmless while
+   * every offset was zero; a 2.8 m error on a backflip as soon as one was not.
    */
-  clipContactPoint(clip: string, extraYaw = 0): Vector3 | null {
+  clipContactPoint(clip: string): Vector3 | null {
     const off = this.contactOffsets.get(clip);
     if (!off) return null;
-    const yaw = this.root.rotation.y + extraYaw;
+    const yaw = this.root.rotation.y - this.actionYawOffset + clipYawOffset(clip);
     const cos = Math.cos(yaw);
     const sin = Math.sin(yaw);
     return new Vector3(
@@ -564,16 +572,19 @@ export class Character {
       callbacks?: FracCallback[];
       onEnd?: () => void;
       loop?: boolean;
-      /** Rotate the character by this yaw for the clip's duration (restored after). */
-      yawOffset?: number;
     } = {}
   ): boolean {
     const g = this.groups.get(name);
     if (!g) return false;
     this.stopAction();
-    if (opts.yawOffset) {
-      this.actionYawOffset = opts.yawOffset;
-      this.root.rotation.y += opts.yawOffset;
+    // The clip decides its own facing, so every caller gets it — including the
+    // online guest, which mirrors the host's clip by name and passes no options
+    // at all. Asking callers to opt in meant the host flipped and the guest did
+    // not, on the one screen where both are watching the same point.
+    const yawOffset = clipYawOffset(name);
+    if (yawOffset) {
+      this.actionYawOffset = yawOffset;
+      this.root.rotation.y += yawOffset;
     }
     for (const loco of LOCO_CLIPS) this.setLocoWeight(loco, 0);
     // A clip may have unusable frames at its head (CLIP_SKIP_FRAMES). Enforcing
@@ -713,6 +724,12 @@ export class Character {
 
   dispose(): void {
     for (const g of this.groups.values()) g.dispose();
+    // Skeletons are not owned by the meshes that use them, so disposing the
+    // hierarchy leaves them behind — invisible, since a skeleton with nothing
+    // skinned to it draws nothing, and therefore easy to accumulate for the
+    // life of the page one loaded character at a time.
+    for (const s of this.skeletons) s.dispose();
+    this.skeletons = [];
     this.root.dispose(false, true);
   }
 }
@@ -1085,6 +1102,27 @@ export function pickReceptionClip(
 }
 
 export const SERVE_CLIPS = ["ServeRightFoot", "ServeLeftFoot", "HeadServeRight", "HeadServeLeft"] as const;
+
+/**
+ * The yaw a clip is played at, relative to the way the character is facing.
+ *
+ * Only backflips are turned, and they are turned all the way round. Every clip
+ * was captured with the performer facing the camera and kicking away from it,
+ * so a rig that faces the table plays them correctly — except this one. A
+ * bicycle kick is performed with the **back** to the table: the ball is met
+ * above and beyond the head and sent back over it, so the strike travels
+ * opposite to the performer's facing and, played unturned, throws the ball away
+ * from the table.
+ *
+ * The measurement that argues against this is real and has been made twice: the
+ * turn moves the contact from 1.28 m in front of the player to 1.28 m behind.
+ * That is the correct side. A flip that met the ball on the table side would be
+ * a volley. If it ever looks wrong again the answer is to re-author the clip —
+ * do not flip this constant a third time.
+ */
+export function clipYawOffset(clip: string): number {
+  return clip.startsWith("Backflip") ? Math.PI : 0;
+}
 
 /**
  * Serve clip for a lateral aim in the server's own frame (+ = the server's

@@ -21,7 +21,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run lint && npm run test",
-    "verify:practice": "node scripts/verify-practice.mjs"
+    "verify:practice": "node scripts/verify-practice.mjs",
+    "verify:rounds": "node scripts/verify-competition-rounds.mjs"
   },
   "dependencies": {
     "@babylonjs/core": "^7.35.0",

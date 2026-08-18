@@ -2357,6 +2357,13 @@ async function boot(): Promise<void> {
         // that says what the match did, and a second one between every round
         // would turn a cup run into a series of receipts.
         settleCareer(winner === "player", human.id, difficulty);
+        // Stop the court before the standings go up over it. A competition is
+        // the one flow that leaves a finished match standing while it waits for
+        // a press, and nothing else was stopping it — the ball stayed live, the
+        // CPU kept playing and the crowd kept reacting behind an opaque screen,
+        // for as long as the player left it open. The next round builds its own
+        // controller, so nothing has to thaw this one.
+        match?.setTutorialFrozen(true);
         onEnd(winner === "player", sets);
       },
     });
@@ -2564,6 +2571,22 @@ async function boot(): Promise<void> {
         if (m.getTotalVertices() > 0) gs.shadows?.addShadowCaster(m, false);
       }
     }
+    // The pair this replaces, before the reference to them is dropped.
+    //
+    // `leaveMatch` used to be the only thing that disposed a character, which
+    // was fine for every flow that goes back to a menu between matches — a
+    // rematch reuses the same rigs through `match.reset()`, and online always
+    // leaves first. A competition does not: it runs its rounds back to back
+    // through here, so each new round left the last round's two players
+    // standing on court, idle, and a league was four spare bodies deep by its
+    // third round.
+    //
+    // Here rather than at the top of the function on purpose. The new rigs are
+    // already loaded by this point, so the swap is instant and the loading
+    // screen covers it either way; and there is no `await` between this and
+    // `match = controller`, so the render loop cannot tick in the gap and find
+    // a controller pointing at disposed rigs.
+    for (const c of chars) c.dispose();
     chars = [playerChar, aiChar];
 
     audio.stopMusic();

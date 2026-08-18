@@ -17,6 +17,7 @@ import {
   locoStride,
   type LocoWeights,
   bodyPartOf,
+  clipYawOffset,
   pickReceptionClip,
   chooseStrike,
   STRIKE_BANDS,
@@ -857,5 +858,39 @@ describe("finishes need a reception first", () => {
     expect(chooseStrike(at(0.4), RIGHT, STRONG_SIDE, righty, true, { bandShift: 0 })).toContain(
       "FootKick"
     );
+  });
+});
+
+/**
+ * Clip orientation.
+ *
+ * Backflips are the one clip family played facing away from the table, and
+ * nothing covered that until this: the constant had been applied, reverted and
+ * applied again on reasoning alone, with no test to say which way round it was
+ * meant to be. These pin the two properties the rest of the strike path relies
+ * on — that exactly the backflips are turned, and that a turn puts the contact
+ * behind the player rather than in front.
+ */
+describe("clipYawOffset", () => {
+  it("turns the backflips and nothing else", () => {
+    for (const clip of Object.keys(CLIPS)) {
+      expect([clip, clipYawOffset(clip)]).toEqual([clip, clip.startsWith("Backflip") ? Math.PI : 0]);
+    }
+  });
+
+  it("turns both backflip feet", () => {
+    expect(clipYawOffset("BackflipRightFoot")).toBe(Math.PI);
+    expect(clipYawOffset("BackflipLeftFoot")).toBe(Math.PI);
+  });
+
+  it("is a half turn, so the contact lands behind the player", () => {
+    // The rotation clipContactPoint performs, reduced to the one axis that
+    // matters: a contact 1.28 m in front of an unturned player is 1.28 m behind
+    // a turned one. Both are "1.28 m away"; only the sign says which side of
+    // the body the ball is met on, and for a bicycle kick it is the far side.
+    const reach = 1.28;
+    const contactZ = (yaw: number) => reach * Math.cos(yaw);
+    expect(contactZ(clipYawOffset("RightFootKick"))).toBeCloseTo(reach, 6);
+    expect(contactZ(clipYawOffset("BackflipRightFoot"))).toBeCloseTo(-reach, 6);
   });
 });

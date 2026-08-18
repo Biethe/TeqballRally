@@ -423,11 +423,10 @@ export class MatchController {
     clip: string,
     speed: number,
     flight: FlightSample[],
-    yawOffset = 0,
     /** Seconds this touch was asked for before the ball was ready for it. */
     earlyBy = 0
   ): { t: number; pos: Vector3; startFrac: number; quality: number; sense: -1 | 0 | 1 } {
-    const cp = char.clipContactPoint(clip, yawOffset);
+    const cp = char.clipContactPoint(clip);
     const contactY = cp ? cp.y : char.position.y + char.height * 0.5;
     // The clip can't wind up longer than its pre-contact frames allow.
     // Volley is how early a ball can be taken: it widens the window in which a
@@ -1559,25 +1558,27 @@ export class MatchController {
     if (!c.groups.has(clip) && clip.startsWith("Backflip")) {
       clip = `${lateral >= 0 ? "Right" : "Left"}FootKick`;
     }
-    // No clip is turned, backflips included — measured rather than assumed.
+    // A backflip is played with the back to the table. It is the one clip that
+    // has to be turned, and the reason is in how it was captured.
     //
-    // Turning the flip a half-turn to "square it up with the other kicks" is
-    // the obvious-looking fix and it is backwards. The striking foot at the
-    // backflip's contact frame sits 1.28 m in **front** of the player, 1.9 m
-    // up: over the head and toward the table, which is exactly where a
-    // bicycle kick meets the ball. A half-turn puts that foot 1.28 m behind
-    // them instead, so the ball would be steered to a point at their back and
-    // then launched forward through them, and the lunge would drag them away
-    // from the table to reach it.
+    // The mocap performer faces the camera and kicks *away* from it. For an
+    // ordinary kick that works out: the table is behind them, they kick toward
+    // it, and a rig facing the table plays it correctly with no correction. A
+    // bicycle kick is different in kind — it is struck up and over the
+    // player's own head, so it travels **opposite** to the way they face.
+    // Played by a rig squared up with the table like everything else, it
+    // therefore throws the ball away from the table, which is what was on
+    // screen.
     //
-    // Every clip is authored in the same rig space and `setSide` already
-    // squares the whole character up with the net, so nothing needs a
-    // per-clip correction. The parameter is threaded through `planContact`
-    // anyway: if a future clip does need one, the plan has to be made with the
-    // same yaw the clip will be played at, or the limb is planned for one side
-    // of the player and struck on the other.
-    const yawOffset = 0;
-    const plan = this.planContact(c, clip, STRIKE_SPEED, flight, yawOffset, timingSlip);
+    // This was measured once and read backwards. The half-turn does move the
+    // Backflips are played facing away from the table — see `clipYawOffset`,
+    // which owns that and applies it to the plan and the pose alike.
+    //
+    // It costs frequency, deliberately. The contact sits further from the body
+    // than `LUNGE_MAX` can carry a player mid-swing, so a flip only commits when
+    // they were already well placed — `chooseStrike` falls back to a foot kick
+    // otherwise. Earned rather than automatic-looking.
+    const plan = this.planContact(c, clip, STRIKE_SPEED, flight, timingSlip);
     // How well this contact was met, decided before a frame of it has played
     // and never revisited: the same approach to the same ball always earns the
     // same touch. A clean strike goes where it was aimed; a scrappy one keeps
@@ -1682,8 +1683,6 @@ export class MatchController {
       startFrac: plan.startFrac,
       speed: STRIKE_SPEED,
       callbacks: [{ frac: contactFraction(clip), fn: launch }],
-      // Bicycle kicks are performed with the back to the net.
-      yawOffset,
     });
     if (played) this.beginContactLunge(c, clip, plan, launch);
     else launch();
@@ -1738,7 +1737,7 @@ export class MatchController {
     const clip = pickReceptionClip(probe.y - GROUND_Y, lateral, c.height, c.def.strongFoot, {
       avoid: this.lastPart[side],
     });
-    const plan = this.planContact(c, clip, POP_SPEED, flight, 0, timingSlip);
+    const plan = this.planContact(c, clip, POP_SPEED, flight, timingSlip);
     const part = bodyPartOf(clip) ?? "foot";
     // What this limb does with this contact: the part decides the character of
     // the ball, the grade decides how much of what was asked for survives.
