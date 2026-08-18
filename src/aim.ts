@@ -1,5 +1,5 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { COURT, PLAY_BOX, TABLE, TABLE_SCALE } from "./config";
+import { COURT, PLAY_BOX, TABLE } from "./config";
 
 /**
  * What a kick is trying to do: land the ball on a point, at a chosen power.
@@ -23,29 +23,35 @@ export interface StrikeAim {
 }
 
 /**
- * The three shots a swipe can ask for.
+ * The shape of ball a swipe asks for — and *only* the shape.
  *
- * Not a menu — a direction. The finger is already saying where the ball should
- * go sideways, and how steeply it was drawn says what kind of ball it is:
+ * Three things a swipe can say, three things a shot is, and nothing riding
+ * along with anything else:
  *
- *   - **up** (toward the far end): a drive. Fast, flat, deep, and the shot that
- *     wins a point or misses the table trying.
- *   - **down** (back toward the player): a lob. Slow and high, dropping short —
- *     what you play to buy a second when the rally has got away from you.
- *   - **across**: the rally ball. Medium pace, medium arc, medium depth.
+ *   - **across** aims it, left or right;
+ *   - **up and down** shapes it, from a lob to a drive;
+ *   - **how fast it was drawn** is how hard it is struck.
  *
- * Up = aggressive, down = safe, across = neutral, and nothing else to learn.
+ * Up lifts and down drills, which is the way round a thumb expects: you push
+ * the ball up to float it. Depth is deliberately absent from that list. Given
+ * where the ball is struck, the arc and the pace already decide where it comes
+ * down — high and slow lands short, flat and fast lands deep — so a fourth dial
+ * would be asking the player to specify something physics has already answered.
+ *
+ * This replaces a scheme where steepness set the arc, the pace *and* the depth
+ * together. That bundling made two real shots impossible: the fast high ball
+ * played over somebody standing in, and the slow flat one dropped just over the
+ * net. Both exist now, and the fast lob is punished by carrying too far rather
+ * than by a rule forbidding it.
  */
 export type SwipeCategory = "drive" | "balanced" | "lob";
 
 export interface SwipeShot {
   category: SwipeCategory;
-  /** 0..1, as any other kick's power. */
+  /** 0..1, as any other kick's power. Read from the swipe's pace alone. */
   power: number;
   /** Arc multiplier: below 1 drills the ball, above 1 floats it. */
   loft: number;
-  /** Multiplier on how far up the court the shot is aimed. */
-  depth: number;
 }
 
 /**
@@ -62,45 +68,93 @@ export interface SwipeShot {
  */
 export const SWIPE_BAND = { from: 0.3, full: 0.62 };
 
-/** The end points the bands blend between. */
-const SWIPE_SHOTS: Record<SwipeCategory, Omit<SwipeShot, "category">> = {
-  // Everything the swipe's pace has, thrown flat and deep.
-  drive: { power: 0.72, loft: 0.58, depth: 1.16 },
-  // The ball a rally is made of.
-  balanced: { power: 0.42, loft: 1.0, depth: 1.0 },
-  // Pace deliberately capped: a lob is a decision to give up speed for height.
-  lob: { power: 0.24, loft: 1.85, depth: 0.72 },
-};
+/**
+ * How hard the slowest and fastest swipes strike.
+ *
+ * The whole range, and the shape of the swipe does not touch it. A steep swipe
+ * used to carry a power floor with it — a lob was capped slower than a lazy
+ * drive, on the theory that height is bought with pace. It is a real trade, but
+ * legislating it cost the driven lob, and physics enforces it anyway: ask for
+ * height *and* pace and the ball simply carries past the table.
+ */
+const SWIPE_PACE = { min: 0.26, max: 1 };
 
-/** Share of a swipe's own pace each category adds on top of its floor. */
-const SWIPE_PACE: Record<SwipeCategory, number> = { drive: 0.28, balanced: 0.33, lob: 0.24 };
+/**
+ * The arc a fully steep swipe asks for, either way, around the neutral ball.
+ *
+ * The two ends are the old drive and lob arcs, kept so a rally that was tuned
+ * against them still plays the same — what changed is which finger movement
+ * reaches them, and that nothing else comes with them.
+ */
+const SWIPE_LOFT = { flat: 0.58, neutral: 1, high: 1.85 };
+
+/**
+ * Where on the opponent's half a swipe lands, as a fraction of their half.
+ *
+ * `base` is the middle of it. Arc and pace move it from there: a flatter ball
+ * runs deeper, a higher one drops shorter, and a harder one goes further than a
+ * soft one of the same shape. Both terms are needed — arc leads, because that
+ * is what the thumb is shaping, and pace follows, because a ball struck harder
+ * genuinely does travel further before it comes down.
+ *
+ * **The target is on the table, not a distance from the striker.** That is the
+ * fix for the thing that made portrait unplayable: the carry used to be thrown
+ * a fixed distance from wherever the player was standing — up to eleven metres,
+ * in a court less than six metres deep — so from a normal receiving position
+ * every drive and every rally ball overshot the table, and a downward lob was
+ * the only swipe that could score at all. Aiming at the half, the way the CPU
+ * already does through `tableTarget`, means a shot lands where it was sent from
+ * anywhere on the court, and over-hitting is paid for in accuracy (the spread
+ * grows with power) rather than in an arbitrary length.
+ */
+const SWIPE_DEPTH = { base: 0.55, fromLoft: 0.22, fromPace: 0.3, min: 0.25, max: 0.95 };
 
 /**
  * Read a swipe as a shot.
  *
- * `forward` and `lateral` are the gesture's direction in court space — forward
- * meaning toward the opponent's end — and `pace` is how fast it was drawn,
- * 0..1. Deterministic: the same drawing is the same shot, which is what lets a
- * player build the habit at all.
+ * `forward` is the gesture's vertical reach in court space — toward the
+ * opponent's end, positive for a swipe up the screen — and `pace` is how fast
+ * it was drawn, 0..1. Both are read **raw** rather than normalised to a
+ * direction, which is the whole reason the axes are independent: a long swipe
+ * to the left with a little lift is a wide ball with a little lift, and the
+ * sideways reach does not eat into the arc the way normalising made it.
+ *
+ * `groundLoft` is the flattest arc the striker is actually allowed from where
+ * they stand — `loftFloor(x)`, which is zero anywhere inside the smash range
+ * and rises the further back they are. Passing it in is what keeps the control
+ * honest when it binds: the axis is remapped into the range that is legal
+ * there, so a full-down swipe from deep still gives the flattest ball available
+ * rather than being silently overridden downstream and feeling dead. It cannot
+ * be used to *buy* a flat drive from deep — the floor is still applied to the
+ * final arc in `tryStrike`; this only stops the thumb lying about its range.
+ *
+ * Deterministic: the same drawing is the same shot, which is what lets a player
+ * build the habit at all.
  */
-export function swipeShot(forward: number, lateral: number, pace: number): SwipeShot {
-  const len = Math.hypot(forward, lateral);
-  // A swipe with no length left in it (a flick straight at the screen, a stale
-  // aim) is the neutral ball rather than nothing.
-  const tilt = len > 1e-4 ? forward / len : 0;
+export function swipeShot(forward: number, pace: number, groundLoft = 0): SwipeShot {
   const p = Math.min(1, Math.max(0, pace));
-  const toward: SwipeCategory = tilt >= 0 ? "drive" : "lob";
-  const blend = ramp(Math.abs(tilt), SWIPE_BAND.from, SWIPE_BAND.full);
-  const mix = (key: "power" | "loft" | "depth"): number =>
-    SWIPE_SHOTS.balanced[key] + (SWIPE_SHOTS[toward][key] - SWIPE_SHOTS.balanced[key]) * blend;
-  const paceShare = SWIPE_PACE.balanced + (SWIPE_PACE[toward] - SWIPE_PACE.balanced) * blend;
+  const power = SWIPE_PACE.min + (SWIPE_PACE.max - SWIPE_PACE.min) * p;
+  // How steeply it was drawn, in its own right. A swipe with nothing vertical
+  // left in it (a flat sideways flick, a stale aim) is the neutral ball.
+  const steep = Math.min(1, Math.abs(forward));
+  const lift = ramp(steep, SWIPE_BAND.from, SWIPE_BAND.full);
+  const up = forward >= 0;
+  // The floor arrives as an absolute arc and the axis works in multipliers, so
+  // it is converted through the same power term the arc is built on.
+  const lowest = groundLoft > 0 ? groundLoft / Math.max(0.05, loftFor(power)) : 0;
+  // The *whole* axis lifts with the floor, not just its bottom end. Raising the
+  // flat end alone would leave a downward swipe asking for more arc than a
+  // sideways one — the axis inverted under the player's thumb exactly where it
+  // was already hardest to use. Standing far enough back the two ends meet,
+  // which is the honest answer: from there the shot is a lob whatever you draw.
+  const base = Math.max(SWIPE_LOFT.neutral, lowest);
+  const end = up ? Math.max(SWIPE_LOFT.high, base) : Math.max(SWIPE_LOFT.flat, lowest);
   return {
     // The name follows the half the swipe is actually in, so what a player is
     // told (and what a test asserts) matches what they drew.
-    category: blend >= 0.5 ? toward : "balanced",
-    power: Math.min(1, mix("power") + paceShare * p),
-    loft: mix("loft"),
-    depth: mix("depth"),
+    category: lift >= 0.5 ? (up ? "lob" : "drive") : "balanced",
+    power,
+    loft: base + (end - base) * lift,
   };
 }
 
@@ -115,8 +169,15 @@ function ramp(v: number, a: number, b: number): number {
  *
  * The shot always goes up the court — a swipe is never an instruction to kick
  * the ball backwards, which is what the old direction-as-aim mapping made a
- * downward one mean. Depth comes from the category and the power; the swipe's
- * sideways component is what aims it left or right.
+ * downward one mean. The sideways component aims it left or right; **how far it
+ * carries is derived, not chosen.**
+ *
+ * Carry falls as the arc rises, which is the one place the physics is stated
+ * rather than simulated: a ball thrown higher for the same effort does not go
+ * as far. That is what makes the fast lob self-punishing — ask for height and
+ * pace together and the carry runs past the table, `clampToPlay` pins it a
+ * hand's width beyond the line, and the point is lost to a shot that was never
+ * on. No rule had to forbid it.
  */
 export function swipeTarget(
   from: Vector3,
@@ -124,19 +185,32 @@ export function swipeTarget(
   lateral: number,
   shot: SwipeShot
 ): Vector3 {
-  const reach = rangeFor(shot.power);
+  const depth = Math.min(
+    SWIPE_DEPTH.max,
+    Math.max(
+      SWIPE_DEPTH.min,
+      SWIPE_DEPTH.base +
+        (SWIPE_LOFT.neutral - shot.loft) * SWIPE_DEPTH.fromLoft +
+        (shot.power - 0.5) * SWIPE_DEPTH.fromPace
+    )
+  );
   const lat = Math.max(-1, Math.min(1, lateral));
+  // `from` is deliberately unused for the landing spot: a kick is aimed at the
+  // table, not thrown a length from the player. It stays in the signature
+  // because the caller is the only thing that knows which way this striker
+  // attacks, and because a future rule may want the striking position back.
+  void from;
   return clampToPlay(
     new Vector3(
-      from.x + attackingSign * reach * shot.depth,
+      attackingSign * TABLE.halfLen * depth,
       0,
-      from.z + lat * reach * SWIPE_LATERAL
+      lat * TABLE.halfWid * SWIPE_LATERAL
     )
   );
 }
 
-/** How much of a kick's carry a fully sideways swipe spends going sideways. */
-const SWIPE_LATERAL = 0.55;
+/** How far across the half a fully sideways swipe aims, as a fraction of it. */
+const SWIPE_LATERAL = 0.9;
 
 /**
  * How wide the landing scatter is, in metres.
@@ -242,19 +316,6 @@ export function loftFloor(fromMiddle: number): number {
 /** Whether the hard clips — foot volleys and backflips — are on from here. */
 export function canSmashFrom(x: number): boolean {
   return Math.abs(x) <= SMASH_RANGE;
-}
-
-/**
- * How far from the striker a kick of this power carries, in metres.
- *
- * Portrait aims by direction rather than by point — a swipe says "that way,
- * this hard" — so the distance has to come from somewhere, and power is the
- * only thing the gesture said. Soft kicks drop just over the net, hard ones
- * reach the back of the opponent's half and beyond it if overdone.
- */
-export function rangeFor(power: number): number {
-  const p = Math.min(1, Math.max(0, power));
-  return (2.2 + 6.6 * p) * TABLE_SCALE;
 }
 
 /** Keep a point a player is walking to inside the court they may stand on. */

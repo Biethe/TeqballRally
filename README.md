@@ -29,7 +29,7 @@ either way up on a phone.
 | Move | WASD or arrows | Left stick | Move stick | Tap where to stand |
 | Play a set-up | WASD or arrows | Left stick | Move stick | Tap where to put the ball |
 | Aim a kick | Hold Space, then WASD | Hold A, then stick | Hold STRIKE, then stick | Sideways part of the swipe |
-| Kick | Release Space | Release A | Release STRIKE | Swipe — up drives, down lobs, across is a rally ball |
+| Kick | Release Space | Release A | Release STRIKE | Swipe — up lofts, down drives, speed is power |
 | Serve | Space or Enter | A / Cross | STRIKE | Swipe |
 | Take a touch | K | B / Circle | RECEPTION | Tap, with the ball already near |
 | Pause | Escape | Start / Options | Pause button | Pause button |
@@ -169,19 +169,50 @@ marker while the charge builds, and letting go strikes.
 Portrait swipes, and the swipe says two things at once. Its **sideways** half
 aims the ball. Its **steepness** chooses the shot:
 
-| Swipe | Ball |
-| --- | --- |
-| Diagonally up, toward the far end | A drive: fast, flat, deep |
-| Across | The rally ball: medium pace, medium arc, medium depth |
-| Diagonally down, back toward you | A lob: slow, high, dropping short |
+**Three things a swipe says, three things a shot is, and nothing riding along
+with anything else.**
 
-Up = aggressive, down = safe, across = neutral, and nothing else to learn. How
-fast the swipe was drawn decides how much of that shot's pace it gets, so a lob
-flicked hard is still the slower ball — giving up speed for height is what a
-lob *is*. The bands are deliberately forgiving: a thumb does not draw a clean
-45°, so anything clearly upward is the drive all the way to straight up, and
-the categories blend across their boundaries rather than switching at them
-(`swipeShot` and `SWIPE_BAND` in `src/aim.ts`).
+| What the swipe does | What it decides |
+| --- | --- |
+| How far across it went | Which side of the table |
+| How far up or down it went | The arc — up lofts it, down drives it flat |
+| How fast it was drawn | How hard it is struck |
+
+Depth is deliberately not on that list. The arc and the pace already decide it —
+high and slow drops short, flat and hard runs deep — so a fourth dial would ask
+the player to specify something already answered. `swipeTarget` derives it.
+
+**A kick is aimed at the table, not thrown a distance from the player.** That
+sounds like a detail and was the whole problem. The target used to be placed a
+fixed carry from the striker — up to eleven metres, in a court under six metres
+deep — so where somebody happened to be standing decided whether *anything*
+could land in. From a normal receiving position it meant every drive and every
+rally ball overshot the table and a downward lob was the only swipe that could
+score. Aiming at the opponent's half, the way the CPU already does through
+`tableTarget`, means a shot lands where it was sent from anywhere on the court,
+and over-hitting is paid for in accuracy — the spread grows with power — rather
+than in an arbitrary length.
+
+That independence is the point. Steepness used to set the arc, the pace *and*
+the depth together, which made two real shots impossible: the fast high ball
+played over somebody standing in, and the slow flat one dropped just over the
+net. Both exist now. The fast lob is not forbidden — it is punished by carrying
+past the table, which is a consequence rather than a rule.
+
+Two things the scheme will not give you, and says so. A *totally* flat slow ball
+is not available: it cannot clear the net, and `solveLaunchClearingNet` lengthens
+the flight until it does, so the real floor is "the flattest ball that still
+crosses". And from behind the middle line the loft floor binds — the arc there
+is forced up whatever the thumb asks — so the axis is remapped into the range
+that is legal where you stand (`swipeShot` takes `loftFloor(x)`). A full-down
+swipe always gives the flattest ball available *from there*, rather than being
+silently overridden and feeling dead. It cannot be used to buy a flat drive from
+deep; that still costs coming forward.
+
+The bands are deliberately forgiving: a thumb does not draw a clean 45°, so
+anything clearly upward is a lob all the way to straight up, and the shapes
+blend across their boundaries rather than switching at them (`swipeShot` and
+`SWIPE_BAND` in `src/aim.ts`).
 
 A downward swipe used to aim the kick *backwards*, at a point in the player's
 own half — the one gesture in the scheme that could only ever lose the point.

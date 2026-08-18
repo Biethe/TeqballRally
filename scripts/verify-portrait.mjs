@@ -312,16 +312,21 @@ console.log("\nportrait: the screen is the controller");
     m.strikeableSide = "player";
     m.touchCount = 1;
     m.tapSteering = true;
-    m.selfSetupSpot = new V(c.position.x, 0.4, c.position.z);
+    // The auto-run is `autoSetupRun` + `anchor` now; it used to be one
+    // `selfSetupSpot` field, and this check went on poking the dead name long
+    // after the rename — writing a property nothing read and asserting it came
+    // back null, which it always did.
+    m.autoSetupRun.player = true;
+    m.anchor.player = new V(c.position.x, 0.4, c.position.z);
     m.setMoveTarget(new V(c.position.x + 1.5, 0.4, c.position.z + 1.5));
     const idle = {
       moveX: 0, moveZ: 0, strikePressed: false, strikeHeld: false,
       strikePower: 0, popPressed: false, confirmPressed: false,
     };
     m.update(1 / 60, idle, () => {});
-    return { selfSetup: m.selfSetupSpot, target: m.moveTarget };
+    return { autoRun: m.autoSetupRun.player, target: m.moveTarget };
   });
-  check(tapWins.selfSetup === null, "a fresh tap calls the auto-run off");
+  check(tapWins.autoRun === false, "a fresh tap calls the auto-run off");
   check(tapWins.target !== null, "and keeps the place it asked for");
 
   // The camera has to hold the player wherever the court lets them go. The

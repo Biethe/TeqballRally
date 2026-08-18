@@ -1442,25 +1442,30 @@ export class MatchController {
    */
   private aimFor(side: Side, input: InputState): StrikeAim {
     const charged = this.charging[side];
-    const power =
-      charged > 0
-        ? TAP_POWER + (1 - TAP_POWER) * Math.min(1, charged / CHARGE_TIME)
-        : Math.max(TAP_POWER, input.strikePower);
     this.charging[side] = 0;
+    // The charged kick: a held control, its power read off how long it was
+    // held. Portrait never charges — its power comes from how fast the swipe
+    // was drawn — so this is computed on the path that actually uses it.
     if (!this.portraitControls || side !== "player") {
+      const power =
+        charged > 0
+          ? TAP_POWER + (1 - TAP_POWER) * Math.min(1, charged / CHARGE_TIME)
+          : Math.max(TAP_POWER, input.strikePower);
       return { target: this.aimSpot[side].clone(), power };
     }
     const c = this.chars[side];
     const attack = sign(other(side));
-    const len = Math.hypot(input.moveX, input.moveZ);
-    // A swipe with no usable direction left in it (a stale aim, a flick with
-    // no reach) plays the neutral ball straight ahead rather than nothing.
+    // Read raw, not normalised to a direction. The axes carry how far the
+    // thumb actually went, and that is what makes the two of them independent:
+    // normalising divided the reach back out, so a wide swipe and a wide-and-
+    // lifted one asked for the same arc, and swipe length meant nothing at all.
     // Forward is measured toward the opponent's end; lateral stays in court
     // space, because that is the axis the target is built on.
-    const forward = len > 0.05 ? (input.moveX / len) * attack : 0;
-    const lateral = len > 0.05 ? input.moveZ / len : 0;
-    // The gesture's own pace, which the input scheme put in `strikePower`.
-    const shot = swipeShot(forward, lateral, input.strikePower);
+    const forward = input.moveX * attack;
+    const lateral = input.moveZ;
+    // The gesture's own pace, which the input scheme put in `strikePower`, and
+    // the flattest arc this spot on the court allows — see `swipeShot`.
+    const shot = swipeShot(forward, input.strikePower, loftFloor(c.position.x));
     const target = swipeTarget(c.position, attack, lateral, shot);
     this.aimSpot[side] = target.clone();
     return { target, power: shot.power, loft: shot.loft };
@@ -1855,7 +1860,7 @@ export class MatchController {
             this.possessionHints++;
             this.ui.hint(
               portraitTouch()
-                ? "Swipe up to drive it · down to lob it · across for a rally ball"
+                ? "Swipe up to lift it · down to drive it · fast for pace"
                 : "Hold STRIKE to aim and charge · release to kick"
             );
           }

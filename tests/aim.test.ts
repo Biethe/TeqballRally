@@ -8,7 +8,6 @@ import {
   loftFloor,
   loftFor,
   onTableHalf,
-  rangeFor,
   scatter,
   spreadRadius,
   swipeShot,
@@ -104,18 +103,9 @@ describe("power shapes the ball", () => {
     expect(loftFor(1)).toBeGreaterThan(0);
   });
 
-  it("carries further the harder it is struck", () => {
-    expect(rangeFor(1)).toBeGreaterThan(rangeFor(0.5));
-    expect(rangeFor(0.5)).toBeGreaterThan(rangeFor(0));
-    // The softest kick has to reach across the net from the service area, and
-    // the hardest has to be able to overrun the far side of the table.
-    expect(rangeFor(0)).toBeGreaterThan(TABLE.halfLen);
-    expect(rangeFor(1)).toBeGreaterThan(TABLE.length + 2);
-  });
-
   it("clamps its inputs rather than trusting them", () => {
     expect(loftFor(-3)).toBe(loftFor(0));
-    expect(rangeFor(9)).toBe(rangeFor(1));
+    expect(loftFor(9)).toBe(loftFor(1));
   });
 });
 
@@ -257,52 +247,67 @@ describe("swipe speed and arc", () => {
 });
 
 describe("reading a swipe as a shot", () => {
-  /** A swipe drawn at `degrees` above the sideways axis, at half pace. */
+  /**
+   * A swipe drawn at `degrees` above the sideways axis, at half pace.
+   *
+   * Only the vertical reach and the pace reach `swipeShot` now — the sideways
+   * half aims the ball and has nothing to say about its shape.
+   */
   const at = (degrees: number, pace = 0.5) => {
     const r = (degrees * Math.PI) / 180;
-    return swipeShot(Math.sin(r), Math.cos(r), pace);
+    return swipeShot(Math.sin(r), pace);
   };
 
-  it("drives a diagonal upward swipe: fast, flat and deep", () => {
-    const up = at(45);
-
-    expect(up.category).toBe("drive");
-    expect(up.power).toBeGreaterThan(at(0).power);
-    expect(up.loft).toBeLessThan(at(0).loft);
-    expect(up.depth).toBeGreaterThan(at(0).depth);
-  });
-
-  it("lobs a diagonal downward swipe: slow, high and short", () => {
-    const down = at(-45);
-
-    expect(down.category).toBe("lob");
-    expect(down.power).toBeLessThan(at(0).power);
-    expect(down.loft).toBeGreaterThan(at(0).loft);
-    expect(down.depth).toBeLessThan(at(0).depth);
+  it("floats an upward swipe and drills a downward one", () => {
+    // Up lifts, down drills: you push the ball up to float it.
+    expect(at(45).loft).toBeGreaterThan(at(0).loft);
+    expect(at(-45).loft).toBeLessThan(at(0).loft);
+    expect(at(45).category).toBe("lob");
+    expect(at(-45).category).toBe("drive");
   });
 
   it("plays a sideways swipe as the rally ball, between the two", () => {
     const across = at(0);
 
     expect(across.category).toBe("balanced");
-    expect(across.loft).toBeLessThan(at(-45).loft);
-    expect(across.loft).toBeGreaterThan(at(45).loft);
+    expect(across.loft).toBeLessThan(at(45).loft);
+    expect(across.loft).toBeGreaterThan(at(-45).loft);
   });
 
-  it("orders the three by pace and by arc, in opposite directions", () => {
-    // The whole lesson the scheme has to teach: up is fast and flat, down is
-    // slow and high, across is neither.
-    expect(at(60).power).toBeGreaterThan(at(0).power);
-    expect(at(0).power).toBeGreaterThan(at(-60).power);
-    expect(at(60).loft).toBeLessThan(at(0).loft);
-    expect(at(0).loft).toBeLessThan(at(-60).loft);
+  it("orders the arc by steepness, and nothing else by it", () => {
+    // The whole lesson the scheme has to teach, and the whole of what
+    // steepness is allowed to say.
+    expect(at(60).loft).toBeGreaterThan(at(0).loft);
+    expect(at(0).loft).toBeGreaterThan(at(-60).loft);
+  });
+
+  it("leaves the pace of the shot entirely to the pace of the swipe", () => {
+    // The bundling this replaced: steepness used to carry a power floor, so a
+    // lob was capped slower than a lazy drive and the driven lob could not be
+    // played at all. Drawn at the same speed, every angle strikes equally hard.
+    const paces = [0, 0.35, 0.7, 1];
+    for (const pace of paces) {
+      const flat = at(-70, pace).power;
+      for (const deg of [-40, 0, 40, 70]) {
+        expect(at(deg, pace).power, `${deg}deg @ ${pace}`).toBeCloseTo(flat, 10);
+      }
+    }
+    // …and pace alone is what moves it.
+    expect(at(0, 1).power).toBeGreaterThan(at(0, 0).power);
+  });
+
+  it("lets a lob be struck as hard as a drive", () => {
+    // The shot the old cap forbade outright. It is allowed now; what stops it
+    // being free is that it carries too far, which `swipeTarget` covers.
+    expect(at(70, 1).power).toBeCloseTo(at(-70, 1).power, 10);
+    expect(at(70, 1).loft).toBeGreaterThan(at(-70, 1).loft);
   });
 
   it("does not ask for a pixel-perfect diagonal", () => {
     // A thumb does not draw a clean 45 degrees. Anything clearly upward is the
-    // drive, and it stays the drive all the way to straight up.
-    for (const deg of [40, 55, 70, 90]) expect(at(deg).category, `${deg}`).toBe("drive");
-    for (const deg of [-40, -55, -70, -90]) expect(at(deg).category, `${deg}`).toBe("lob");
+    // lob, and it stays the lob all the way to straight up.
+    for (const deg of [40, 55, 70, 90]) expect(at(deg).category, `${deg}`).toBe("lob");
+    for (const deg of [-40, -55, -70, -90]) expect(at(deg).category, `${deg}`).toBe("drive");
   });
 
   it("blends across the boundary instead of switching at it", () => {
@@ -313,7 +318,7 @@ describe("reading a swipe as a shot", () => {
     const above = at(20);
 
     expect(Math.abs(above.loft - below.loft)).toBeLessThan(0.25);
-    expect(below.power).toBeLessThan(above.power);
+    expect(above.loft).toBeGreaterThan(below.loft);
   });
 
   it("is the same shot for the same swipe, every time", () => {
@@ -324,11 +329,12 @@ describe("reading a swipe as a shot", () => {
     }
   });
 
-  it("lets the pace of the swipe decide how much of the shot it gets", () => {
-    expect(at(45, 1).power).toBeGreaterThan(at(45, 0).power);
-    expect(at(-45, 1).power).toBeGreaterThan(at(-45, 0).power);
-    // A lob is a decision to give up pace: even flat out it is the slower ball.
-    expect(at(-45, 1).power).toBeLessThan(at(45, 0).power);
+  it("reads how far the thumb went, not just which way it pointed", () => {
+    // Raw rather than normalised. A short lift is a gentler shape than a long
+    // one drawn at the same angle — which is what gives swipe length a meaning
+    // at all, having previously been measured and then divided straight out.
+    expect(swipeShot(1, 0.5).loft).toBeGreaterThan(swipeShot(0.35, 0.5).loft);
+    expect(swipeShot(-1, 0.5).loft).toBeLessThan(swipeShot(-0.35, 0.5).loft);
   });
 
   it("keeps the bands where a thumb can find them", () => {
@@ -345,6 +351,41 @@ describe("reading a swipe as a shot", () => {
       expect(shot.loft, `${deg}`).toBeGreaterThan(0);
     }
   });
+
+  describe("standing too deep to hit it flat", () => {
+    /**
+     * The loft floor is applied to the final arc in `tryStrike` whatever the
+     * swipe asked for, so from deep the bottom of the axis used to be dead:
+     * every downward swipe produced the same overridden ball. Handing the
+     * floor to `swipeShot` remaps the axis into the range that is legal there.
+     */
+    const deep = loftFloor(SMASH_RANGE + 2.5);
+
+    it("still answers a downward swipe from the back of the court", () => {
+      const flat = swipeShot(-1, 0.5, deep);
+      const half = swipeShot(-0.45, 0.5, deep);
+
+      expect(deep).toBeGreaterThan(0);
+      expect(flat.loft).toBeLessThan(swipeShot(0, 0.5, deep).loft);
+      expect(flat.loft).toBeLessThan(half.loft);
+    });
+
+    it("but never flat enough to buy a drive it has not earned", () => {
+      // The floor is the point of the positional rule: coming forward is what
+      // pays for the flat ball, and the axis must not be a way around it.
+      const fromDeep = swipeShot(-1, 1, deep);
+      const fromMiddle = swipeShot(-1, 1, loftFloor(0));
+
+      expect(fromDeep.loft).toBeGreaterThan(fromMiddle.loft);
+      // And what it asks for survives the floor being applied again downstream.
+      expect(fromDeep.loft * loftFor(fromDeep.power)).toBeGreaterThanOrEqual(deep - 1e-9);
+    });
+
+    it("leaves the middle of the court alone", () => {
+      // Inside the smash range there is no floor, so nothing is remapped.
+      expect(swipeShot(-1, 0.5, loftFloor(0)).loft).toBe(swipeShot(-1, 0.5).loft);
+    });
+  });
 });
 
 describe("where a swiped kick is aimed", () => {
@@ -355,7 +396,7 @@ describe("where a swiped kick is aimed", () => {
     // gesture in the scheme that could only ever lose the point.
     for (const deg of [90, 45, 0, -45, -90]) {
       const r = (deg * Math.PI) / 180;
-      const shot = swipeShot(Math.sin(r), Math.cos(r), 0.6);
+      const shot = swipeShot(Math.sin(r), 0.6);
       const target = swipeTarget(from, 1, Math.cos(r), shot);
 
       expect(target.x, `${deg}`).toBeGreaterThan(from.x);
@@ -363,7 +404,7 @@ describe("where a swiped kick is aimed", () => {
   });
 
   it("aims the sideways half of the swipe sideways", () => {
-    const shot = swipeShot(0.7, 0.7, 0.6);
+    const shot = swipeShot(0.7, 0.6);
     const left = swipeTarget(from, 1, 1, shot);
     const right = swipeTarget(from, 1, -1, shot);
 
@@ -372,17 +413,75 @@ describe("where a swiped kick is aimed", () => {
     expect(swipeTarget(from, 1, 0, shot).z).toBeCloseTo(from.z, 10);
   });
 
-  it("drives deeper than it lobs", () => {
-    const drive = swipeShot(1, 0, 0.8);
-    const lob = swipeShot(-1, 0, 0.8);
+  // Deep enough, and gently enough struck, that the carry is what is being
+  // measured rather than the box it is clamped into. Both of these compare
+  // shots that land short of the line on purpose.
+  const deep = new Vector3(-5.5, 0, 0);
 
-    expect(swipeTarget(from, 1, 0, drive).x).toBeGreaterThan(swipeTarget(from, 1, 0, lob).x);
+  it("carries less the higher it is thrown, at the same pace", () => {
+    // Depth is derived rather than dialled: a ball thrown higher for the same
+    // effort does not go as far. This is the whole reason a swipe needs only
+    // three things to say.
+    const flat = swipeShot(-1, 0.2);
+    const high = swipeShot(1, 0.2);
+
+    expect(swipeTarget(deep, 1, 0, flat).x).toBeGreaterThan(swipeTarget(deep, 1, 0, high).x);
+  });
+
+  it("carries further the harder it is struck, at the same arc", () => {
+    const soft = swipeShot(0, 0);
+    const hard = swipeShot(0, 0.3);
+
+    expect(soft.loft).toBeCloseTo(hard.loft, 10);
+    expect(swipeTarget(deep, 1, 0, hard).x).toBeGreaterThan(swipeTarget(deep, 1, 0, soft).x);
+  });
+
+  it("makes the fast lob a real shot with a real cost", () => {
+    // The shot the old scheme forbade outright by capping a lob's pace. It is
+    // playable now. What stops it being free is not a rule but the spread:
+    // power is what widens it (see `spreadRadius`), so the hardest ball is
+    // always the least certain of where it lands.
+    const slow = swipeShot(1, 0);
+    const fast = swipeShot(1, 1);
+
+    expect(fast.power).toBeGreaterThan(slow.power);
+    expect(fast.loft).toBeCloseTo(slow.loft, 10);
+    expect(
+      spreadRadius({ power: fast.power, precision: 1, footSpray: 1, stretch: 0 })
+    ).toBeGreaterThan(
+      spreadRadius({ power: slow.power, precision: 1, footSpray: 1, stretch: 0 })
+    );
+    // And it runs deeper, which is the other half of why it is not free: the
+    // margin behind the line is what a hard ball is spending.
+    expect(swipeTarget(from, 1, 0, fast).x).toBeGreaterThan(swipeTarget(from, 1, 0, slow).x);
+  });
+
+  it("lands on the opponent's half from anywhere on the court", () => {
+    // The bug this replaced: the target used to be thrown a fixed distance
+    // from the striker — up to eleven metres, in a court under six deep — so
+    // from a normal receiving position every drive and rally ball overshot,
+    // and only a downward lob could score at all. Where a player stands must
+    // not decide whether the ball can land in.
+    for (const x of [-6, -5, -3.6, -2, -0.5]) {
+      const stand = new Vector3(x, 0, 0);
+      for (const deg of [90, 45, 0, -45, -90]) {
+        const r = (deg * Math.PI) / 180;
+        for (const pace of [0, 0.5, 1]) {
+          const shot = swipeShot(Math.sin(r), pace, loftFloor(x));
+          const t = swipeTarget(stand, 1, Math.cos(r), shot);
+          const where = `x=${x} ${deg}deg pace=${pace}`;
+          expect(t.x, where).toBeGreaterThan(0);
+          expect(Math.abs(t.x), where).toBeLessThanOrEqual(TABLE.halfLen);
+          expect(Math.abs(t.z), where).toBeLessThanOrEqual(TABLE.halfWid);
+        }
+      }
+    }
   });
 
   it("keeps every swipe inside the playable box", () => {
     for (let deg = -90; deg <= 90; deg += 10) {
       const r = (deg * Math.PI) / 180;
-      const shot = swipeShot(Math.sin(r), Math.cos(r), 1);
+      const shot = swipeShot(Math.sin(r), 1);
       for (const lat of [-1, 0, 1]) {
         const target = swipeTarget(from, 1, lat, shot);
         expect(Math.abs(target.x), `${deg}`).toBeLessThanOrEqual(PLAY_BOX.halfLen);
@@ -392,7 +491,7 @@ describe("where a swiped kick is aimed", () => {
   });
 
   it("mirrors for the far side of the net", () => {
-    const shot = swipeShot(1, 0, 0.6);
+    const shot = swipeShot(1, 0.6);
     const other = new Vector3(3 * TABLE_SCALE, 0, 0);
 
     expect(swipeTarget(other, -1, 0, shot).x).toBeLessThan(other.x);
