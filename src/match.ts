@@ -4,6 +4,7 @@ import type { TargetCamera } from "@babylonjs/core/Cameras/targetCamera";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import {
   Ball,
+  capLaunchApex,
   predict,
   sampleFlight,
   solveLaunch,
@@ -34,7 +35,14 @@ import {
   SERVE_TOSS_HAND,
 } from "./character";
 import { KICK_INPUT, kickLoft, kickPower } from "./kickinput";
-import { gradeContact, setupShape, strikeShape, timingSense } from "./touch";
+import {
+  gradeContact,
+  receptionPaceFactor,
+  setupShape,
+  strikeShape,
+  timingSense,
+  volleyPaceFactor,
+} from "./touch";
 import {
   contactDelaySeconds,
   contactFraction,
@@ -57,6 +65,7 @@ import {
   TABLE,
   MAX_TOUCHES,
   AUTO_RECEPTION_REACH,
+  AUTO_RUN,
   RECEPTION_ZONE,
   LUNGE_MAX,
   PLAYER_REACH,
@@ -139,7 +148,7 @@ export interface MatchUI {
   banner(text: string, sub?: string): void;
   hint(text: string | null): void;
   onMatchEnd(winner: Side): void;
-  /** Precision bar: fill fraction (null hides it) plus the sweet zone bounds. */
+  /** Power bar: fill fraction (null hides it) plus the safe-power band bounds. */
   meter?(frac: number | null, sweetStart: number, sweetEnd: number): void;
   /** How much is left in each player's legs, 0..1. */
   /**
@@ -395,15 +404,37 @@ export class MatchController {
     player: { taps: 0, held: 0 },
     ai: { taps: 0, held: 0 },
   };
+  /**
+   * Portrait's power bar has no tap sequence to track, so the bar instead
+   * echoes the power a swipe kick just committed at, for a moment. Frames, not
+   * seconds: it is HUD plumbing, not simulation state, and never read by rules.
+   */
+  private meterEcho: { power: number; frames: number } | null = null;
   /** Table-bounce debounce state (see TABLE_BOUNCE_DEBOUNCE). */
   private tableEventCooldown = 0;
   private lastTableSide: Side | null = null;
   /**
-   * After a player's own set-up: run to the drop automatically until they ask
-   * to go somewhere else. A convenience, not a possession of the feet — the
-   * soft zone below is what keeps them near the ball once they take over.
+   * After a player's own set-up: the ball is in the air and going nowhere
+   * else, so the feet are owned by the run to its drop spot until they arrive
+   * (`runLocked`). Cleared when a strike commits or a new possession starts.
    */
   private autoSetupRun: Record<Side, boolean> = { player: false, ai: false };
+  /**
+   * Arrival latch for the locked run: once a side is close enough to the
+   * anchor (`AUTO_RUN.arrive`) the stick is heard again, until the anchor
+   * moves far enough (`AUTO_RUN.reengage`) that the arrival no longer covers
+   * it and the run picks back up.
+   */
+  private autoRunArrived: Record<Side, boolean> = { player: false, ai: false };
+  /**
+   * Horizontal pace each side last struck the ball at (m/s).
+   *
+   * The reception of that strike is judged against this rather than against
+   * `ball.state.vel`, which the table bounce has already damped by the time
+   * the ball is playable — a smash and its own bounce-back would otherwise
+   * read as the same ball.
+   */
+  private struckPace: Record<Side, number> = { player: 0, ai: 0 };
   /**
    * Which part of the body played this possession's previous touch.
    *
@@ -762,6 +793,36 @@ export class MatchController {
     const slack = Math.max(RECEPTION_ZONE.hardCap, Math.min(this.leashSlack[side], d));
     this.leashSlack[side] = slack;
     return slack;
+  }
+
+  /**
+   * Whether this side's feet are owned by the automatic run to the ball's
+   * drop spot.
+   *
+   * The run owns them while the ball is on its way to this side (an anchor
+   * exists before the first touch) and while a set-up of their own is hanging
+   * (`autoSetupRun`). It releases once they are close enough to the anchor —
+   * from there, shifting left or right of the ball is the decision a touch is
+   * made of, and it has to be theirs — and picks back up if the anchor moves
+   * far enough that the arrival no longer covers it.
+   *
+   * Landscape only for the player: portrait steers by tapping the court, and
+   * a tap the game declines to walk toward reads as a dead control. The stick
+   * is not listened to while locked — that was the whole failure: pushing
+   * anywhere cancelled the run, so a push that meant nothing in particular
+   * walked the player off the ball.
+   */
+  private runLocked(side: Side): boolean {
+    if (this.state !== "rally" || this.ball.held) return false;
+    if (side === "player" && this.portraitControls) return false;
+    const anchor = this.anchor[side];
+    if (anchor === null) return false;
+    if (!(this.touchCount === 0 || this.autoSetupRun[side])) return false;
+    const c = this.chars[side];
+    const d = Math.hypot(anchor.x - c.position.x, anchor.z - c.position.z);
+    if (d <= AUTO_RUN.arrive) this.autoRunArrived[side] = true;
+    else if (d > AUTO_RUN.reengage) this.autoRunArrived[side] = false;
+    return !this.autoRunArrived[side];
   }
 
   /**
@@ -1223,6 +1284,8 @@ export class MatchController {
     this.strikeableSide = null;
     this.touchCount = 0;
     this.autoSetupRun = { player: false, ai: false };
+    this.autoRunArrived = { player: false, ai: false };
+    this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
     this.contactSync = null;
@@ -1476,12 +1539,17 @@ export class MatchController {
       SERVE_CLEARANCE.max,
       Math.max(SERVE_CLEARANCE.min, SERVE_CLEARANCE.base * arc)
     );
-    const v = solveLaunchClearingNet(
+    const v = capLaunchApex(
       this.ball.state.pos,
-      target,
-      ((0.55 + dist * 0.07) * shot.loft) / paced,
-      clearance
+      solveLaunchClearingNet(
+        this.ball.state.pos,
+        target,
+        ((0.55 + dist * 0.07) * shot.loft) / paced,
+        clearance
+      ),
+      GROUND_Y + 2 * server.height
     );
+    this.struckPace[this.serveOwner] = Math.hypot(v.x, v.z);
     this.servePhase = "launched";
     this.lastHitter = this.serveOwner;
     this.strikeableSide = null;
@@ -1712,6 +1780,14 @@ export class MatchController {
     if (!this.canTouch(side)) return false;
     const c = this.chars[side];
     const popped = this.touchCount > 0; // ball was set up by a control touch
+    // A direct return — no control touch first — meets the ball at the pace it
+    // was struck with, and that is a technique question: the volley trait sets
+    // the pace this character can take cleanly, and past it the ball sprays
+    // (see `PACE.volley`). A set-up ball was slowed by the touch that made it,
+    // so it costs nothing here.
+    const volleyFactor = popped
+      ? 1
+      : volleyPaceFactor(this.struckPace[other(side)], c.def.volley);
     const power = Math.min(1, Math.max(0, aim.power));
 
     // Ball still climbing (or way overhead): queue the touch until it drops —
@@ -1734,8 +1810,14 @@ export class MatchController {
     this.touchCount = 0;
     this.pointTouches++;
     this.autoSetupRun[side] = false;
+    this.autoRunArrived[side] = false;
     this.leashSlack[side] = Infinity;
     if (side === "player") this.ui.hint(null);
+    // Portrait has no tap sequence the bar can track, so the bar echoes the
+    // power this kick committed at — the swipe's one visible consequence.
+    if (side === "player" && this.portraitControls && !this.versus) {
+      this.meterEcho = { power, frames: 45 };
+    }
 
     // Pick the clip from where the ball will NATURALLY be around contact time
     // — its flight is sampled, never altered; the character goes to the ball.
@@ -1779,8 +1861,10 @@ export class MatchController {
     // and never revisited: the same approach to the same ball always earns the
     // same touch. A clean strike goes where it was aimed; a scrappy one keeps
     // most of its pace and loses the line, which is what makes rushing an
-    // attack a real risk rather than a slower ball.
-    const graded = strikeShape(plan.quality);
+    // attack a real risk rather than a slower ball. A direct return against a
+    // fast ball starts from behind (see `volleyFactor`).
+    const quality = plan.quality * volleyFactor;
+    const graded = strikeShape(quality);
     this.lastPart[side] = bodyPartOf(clip) ?? this.lastPart[side];
     // The ball leaves at the planned contact moment, from wherever its natural
     // flight put it — the lunge carried the limb there, so the visual contact
@@ -1873,9 +1957,16 @@ export class MatchController {
       // timing bar, nothing to read mid-rally.
       if (side === "player" && !this.versus) {
         const online = Math.max(0, 1 - Vector3.Distance(wanted, aim.target) / SPREAD.max);
-        this.ui.meterResult?.(Math.min(plan.quality, 0.5 * plan.quality + 0.5 * online));
+        this.ui.meterResult?.(Math.min(quality, 0.5 * quality + 0.5 * online));
       }
-      const v = solveLaunchClearingNet(this.ball.state.pos, target, flight, clearance);
+      const v = capLaunchApex(
+        this.ball.state.pos,
+        solveLaunchClearingNet(this.ball.state.pos, target, flight, clearance),
+        // Twice the striker's height is all the air a kick may buy. Applied
+        // after the net solve, which can lengthen a flight past what was asked.
+        GROUND_Y + 2 * c.height
+      );
+      this.struckPace[side] = Math.hypot(v.x, v.z);
       this.ball.launch(v, 0.7 + relH); // smashes visibly spin faster
       this.audio.playKick();
       this.emitLaunch(side, "strike", clip, 0.7 + relH);
@@ -1915,16 +2006,19 @@ export class MatchController {
       return true;
     }
 
+    // What the other side's strike left at: the first touch of the possession
+    // is judged against it, so a hard hit comes off the body harder to play
+    // next (see `PACE` in `touch.ts`). Read before `touchCount` moves, because
+    // it only applies to the reception itself.
+    const incomingPace = this.touchCount === 0 ? this.struckPace[other(side)] : 0;
+
     this.touchCount++;
     this.pointTouches++;
     if (side === "player") {
       this.ui.hint(null);
-      // Committing to a set-up spends any destination the player had stored.
-      // A tap made while chasing the ball meant "be there for this ball", and
-      // once the ball has been played it is stale — left queued it used to
-      // release the player across the court the moment the auto-run ended.
-      // Anything tapped *after* this point is fresh, and `update` lets it
-      // cancel the auto-run.
+      // Committing to a set-up spends any destination the player had stored:
+      // a tap made while chasing the ball meant "be there for this ball", and
+      // once the ball has been played it is stale.
       this.moveTarget = null;
     }
 
@@ -1937,14 +2031,21 @@ export class MatchController {
     const flight = sampleFlight(this.ball.state, CONTACT_WINDOW.max + 0.05);
     const probe = flightAt(flight, POP_LEAD);
     const lateral = (probe.z - c.position.z) * (side === "player" ? -1 : 1);
+    // While the run to the ball owns the feet, the player never chose where to
+    // stand relative to it, so the side it is taken on is not theirs to lose
+    // either: whichever limb is nearer plays it, strong foot or not.
     const clip = pickReceptionClip(probe.y - GROUND_Y, lateral, c.height, c.def.strongFoot, {
       avoid: this.lastPart[side],
+      forceNearest: this.runLocked(side),
     });
     const plan = this.planContact(c, clip, POP_SPEED, flight, timingSlip);
     const part = bodyPartOf(clip) ?? "foot";
     // What this limb does with this contact: the part decides the character of
-    // the ball, the grade decides how much of what was asked for survives.
-    const shape = setupShape(part, plan.quality, plan.sense);
+    // the ball, the grade decides how much of what was asked for survives —
+    // and a ball arriving fast costs some of the grade before the limb ever
+    // meets it.
+    const quality = plan.quality * receptionPaceFactor(incomingPace);
+    const shape = setupShape(part, quality, plan.sense);
     this.lastPart[side] = part;
 
     // Pop the ball at the planned contact moment so it rises and comes down
@@ -1983,7 +2084,13 @@ export class MatchController {
       // has to hang long enough for its own player to arrive under it. How high
       // it actually sits up is the limb's doing — a headed ball buys a second,
       // a footed one has to be chased.
-      const rise = (1.0 + 0.55 * Math.min(1, len)) * shape.rise * TABLE_SCALE;
+      const rise = Math.min(
+        (1.0 + 0.55 * Math.min(1, len)) * shape.rise * TABLE_SCALE,
+        // The same ceiling as every strike: twice the player's height, measured
+        // from the contact rather than the ground, and never so small a pop
+        // that there is no time to play the next touch.
+        Math.max(0.3, GROUND_Y + 2 * c.height - pos.y)
+      );
       const vy = Math.sqrt(2 * GRAVITY * rise);
       const t = (2 * vy) / GRAVITY;
       const own = sign(side); // own half: sign of x
@@ -1994,21 +2101,23 @@ export class MatchController {
         own * Math.min(COURT.maxX - 0.2, Math.max(TABLE.halfLen + 0.25, own * target.x));
       target.z = Math.max(-COURT.maxZ + 0.2, Math.min(COURT.maxZ - 0.2, target.z));
       const v = new Vector3((target.x - pos.x) / t, vy, (target.z - pos.z) / t);
+      this.struckPace[side] = Math.hypot(v.x, v.z);
       this.ball.launch(v, 0.45); // a set-up pop floats with little spin
       this.audio.playKick();
       this.emitLaunch(side, "pop", clip, 0.45);
-      // Run to the drop automatically until the player asks to be elsewhere.
-      // Where that is comes from the ball's live flight (`computeAnchor`), not
-      // from where this touch meant to put it, so a set-up that came off the
-      // body badly is chased to where it actually went.
+      // The feet are owned by the run to the drop until the arrival. Where the
+      // drop is comes from the ball's live flight (`computeAnchor`), not from
+      // where this touch meant to put it, so a set-up that came off the body
+      // badly is chased to where it actually went.
       // Only the sides a human steers keep an anchor: it exists to hold a
       // player's own run together, and the CPU does its own reading of the
       // ball (`pickIntercept` in `src/ai.ts`).
       if (side === "player" || this.versus) {
         this.autoSetupRun[side] = true;
+        this.autoRunArrived[side] = false;
         this.anchor[side] = this.computeAnchor(side);
       }
-      if (side === "player" && !this.versus) this.ui.meterResult?.(plan.quality);
+      if (side === "player" && !this.versus) this.ui.meterResult?.(quality);
       this.emit({ type: "touch-committed", side, action: "pop" });
     };
     const played = c.playAction(clip, {
@@ -2052,6 +2161,7 @@ export class MatchController {
           // ball, not about the whole point.
           this.lastPart[e.side] = null;
           this.autoSetupRun[e.side] = false;
+          this.autoRunArrived[e.side] = false;
       this.leashSlack[e.side] = Infinity;
           // A fresh possession starts aimed at the middle of the other half,
           // so an aim left in a corner never carries silently into it.
@@ -2112,6 +2222,8 @@ export class MatchController {
     this.timer = 0;
     this.strikeableSide = null;
     this.autoSetupRun = { player: false, ai: false };
+    this.autoRunArrived = { player: false, ai: false };
+    this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
     this.contactSync = null;
@@ -2426,39 +2538,26 @@ export class MatchController {
           this.landingSpot = this.ball.held ? null : this.computeLandingSpot();
         }
         // Holding the kick control hands the stick to the aim marker and
-        // charges the shot; the player stands still while they line it up.
+        // charges the shot; the player stands still while they line it up —
+        // unless the auto-run still owns the feet, in which case the run to
+        // the ball is not interrupted and the shot is lined up on the move.
         const aiming = this.updateAiming("player", input, dt);
-        // After the player's own pop, run to the drop spot automatically —
-        // the stick then only aims the finish (the direction that steered the
-        // pop would otherwise keep carrying the player past the ball).
-        //
-        // Asking to move cancels it. The auto-run used to outrank the controls
-        // entirely, so for the second and third touch of every possession the
-        // character walked its own line and the stick did nothing — which is
-        // precisely what "my player moves on its own" is. It is a convenience,
-        // and a convenience that cannot be overridden is a control being taken
-        // away. What counts as asking differs by scheme: a stick push in
-        // landscape, and a tap in portrait, where the axes carry a swipe's aim
-        // rather than any intention to walk.
-        const askedToMove = this.tapSteering
-          ? this.moveTarget !== null
-          : Math.hypot(input.moveX, input.moveZ) > 0.25;
-        if (askedToMove) this.autoSetupRun.player = false;
-        const selfSetup =
-          this.strikeableSide === "player" &&
-          this.touchCount > 0 &&
-          this.autoSetupRun.player &&
-          this.anchor.player !== null;
-        // The auto-run owns the feet while it lasts, so anywhere the player had
-        // asked to stand is spent, not stored. Left queued, it used to take
-        // over the moment the auto-run finished and walk them away from the
-        // ball they had just set up.
-        if (selfSetup) this.moveTarget = null;
+        // While the ball is on its way here (or the player's own set-up pop is
+        // hanging), the player runs to where it will come down and the stick
+        // is not listened to until they arrive: overriding the run is exactly
+        // how the player walked past the ball, and the decisions the stick is
+        // for — which side of the ball to take it on — begin where the run
+        // ends, not during it.
+        const locked = this.runLocked("player");
+        // The run owns the feet while it lasts, so anywhere the player had
+        // asked to stand is spent, not stored: left queued, it would take over
+        // the moment the run finished and walk them away from the ball.
+        if (locked) this.moveTarget = null;
         // Busy means an action clip owns the root (it may be lunging): the
         // locomotion velocity has to be gone, not merely decaying.
         if (player.busy) player.velocity.setAll(0);
-        else if (aiming) player.move(0, 0, 0, dt);
-        else if (selfSetup) player.moveToward(this.anchor.player!, player.def.speed, dt);
+        else if (aiming && !locked) player.move(0, 0, 0, dt);
+        else if (locked) player.moveToward(this.anchor.player!, player.def.speed, dt);
         else this.movePlayer(input, dt);
         // Presses are buffered briefly and retried, so releasing just before
         // the ball becomes strikeable (or drops into reach) still lands the
@@ -2550,18 +2649,26 @@ export class MatchController {
    *
    * The marked band is where the spread is still tight enough to trust a line:
    * past it the ball goes harder and lands less reliably, which is the whole
-   * trade the bar exists to show.
+   * trade the bar exists to show. Portrait has no tap sequence, so there the
+   * bar briefly echoes the power a swipe kick committed at.
    */
   private updateMeter(): void {
     const { taps } = this.kickAim.player;
-    if (taps <= 0 || this.versus) {
-      this.ui.meter?.(null, 0, 0);
+    if (taps > 0 && !this.versus) {
+      this.meterEcho = null;
+      // Plain power now that the tiers are the scale, so the marked band is
+      // just SAFE_POWER — which is tier two exactly. The bar therefore reads
+      // "one and two are safe, three is the gamble", which is the whole choice.
+      this.ui.meter?.(kickPower(taps), 0, SAFE_POWER);
       return;
     }
-    // Plain power now that the tiers are the scale, so the marked band is just
-    // SAFE_POWER — which is tier two exactly. The bar therefore reads "one and
-    // two are safe, three is the gamble", which is the whole choice.
-    this.ui.meter?.(kickPower(taps), 0, SAFE_POWER);
+    if (this.meterEcho && !this.versus) {
+      this.ui.meter?.(this.meterEcho.power, 0, SAFE_POWER);
+      this.meterEcho.frames -= 1;
+      if (this.meterEcho.frames <= 0) this.meterEcho = null;
+      return;
+    }
+    this.ui.meter?.(null, 0, 0);
   }
 
   /**
@@ -2609,15 +2716,13 @@ export class MatchController {
   private updateVersusRally(dt: number): void {
     const v = this.versusInput;
     const c = this.chars.ai;
-    // After P2's own pop, auto-run to the drop spot (mirror of player 1).
-    const selfSetup =
-      this.strikeableSide === "ai" &&
-      this.touchCount > 0 &&
-      this.autoSetupRun.ai &&
-      this.anchor.ai !== null;
+    // Same locked run to the drop spot as player 1: the stick is not listened
+    // to until the arrival, on the incoming ball and on P2's own set-up pop.
+    const locked = this.runLocked("ai");
     const aiming = this.updateAiming("ai", v, dt);
-    if (c.busy || aiming) c.velocity.setAll(0);
-    else if (selfSetup) c.moveToward(this.anchor.ai!, c.def.speed, dt);
+    if (c.busy) c.velocity.setAll(0);
+    else if (aiming && !locked) c.velocity.setAll(0);
+    else if (locked) c.moveToward(this.anchor.ai!, c.def.speed, dt);
     else {
       // Same reach assist as player 1, toward this side's intercept.
       const [bx, bz] = this.bendAssist(c.position, this.anchor.ai, v.moveX, v.moveZ);

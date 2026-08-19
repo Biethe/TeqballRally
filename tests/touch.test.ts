@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   BANDS,
+  PACE,
   QUALITY,
   gradeContact,
+  receptionPaceFactor,
   setupShape,
   strikeShape,
   timingSense,
   touchBand,
+  volleyPaceFactor,
   type ContactErrors,
 } from "../src/touch";
 import { PART_SETUP, type BodyPart } from "../src/config";
@@ -159,5 +162,42 @@ describe("what a graded contact does to a kick", () => {
 
   it("rewards a clean contact with everything the striker has", () => {
     expect(strikeShape(1).power).toBeGreaterThan(strikeShape(0.5).power);
+  });
+});
+
+describe("what an incoming pace costs the next touch", () => {
+  it("costs a slow ball nothing", () => {
+    expect(receptionPaceFactor(0)).toBe(1);
+    expect(receptionPaceFactor(PACE.receive.from)).toBe(1);
+    expect(volleyPaceFactor(0, 0.88)).toBe(1);
+  });
+
+  it("ramps monotonically down to the floor, never below it", () => {
+    let prev = receptionPaceFactor(PACE.receive.from);
+    for (let pace = PACE.receive.from + 0.5; pace <= PACE.receive.full + 3; pace += 0.5) {
+      const f = receptionPaceFactor(pace);
+      expect(f).toBeLessThanOrEqual(prev);
+      expect(f).toBeGreaterThanOrEqual(PACE.receive.floor);
+      prev = f;
+    }
+    expect(receptionPaceFactor(PACE.receive.full)).toBeCloseTo(PACE.receive.floor);
+  });
+
+  it("never deletes the touch: the floor is where the cost stops", () => {
+    expect(receptionPaceFactor(100)).toBe(PACE.receive.floor);
+    expect(volleyPaceFactor(100, 0.5)).toBe(PACE.volley.floor);
+    expect(volleyPaceFactor(100, 2)).toBe(PACE.volley.floor);
+  });
+
+  it("lets a better volley take a faster ball cleanly", () => {
+    const weak = 0.88;
+    const strong = 1.4;
+    // A pace between the two allowances: the stronger character is still
+    // clean, the weaker one is already paying.
+    const contested = 12.5;
+    expect(volleyPaceFactor(contested, strong)).toBe(1);
+    expect(volleyPaceFactor(contested, weak)).toBeLessThan(1);
+    // More trait, more allowance — monotone in the trait itself.
+    expect(volleyPaceFactor(contested, 1.2)).toBeGreaterThan(volleyPaceFactor(contested, weak));
   });
 });

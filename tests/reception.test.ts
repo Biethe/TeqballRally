@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { leashPush, nearAnchorPush } from "../src/character";
-import { AUTO_RECEPTION_REACH, LUNGE_MAX, PLAYER_REACH, RECEPTION_ZONE } from "../src/config";
+import {
+  AUTO_RECEPTION_REACH,
+  AUTO_RUN,
+  LUNGE_MAX,
+  PLAYER_REACH,
+  RECEPTION_ZONE,
+} from "../src/config";
 
 /** A player's top speed, in m/s, for the leash term. */
 const SPEED = 4.5;
@@ -95,6 +101,16 @@ describe("the room a player has around the ball", () => {
     // And wide enough to be worth having: further than the vicinity an
     // automatic first reception is granted from.
     expect(RECEPTION_ZONE.radius).toBeGreaterThan(AUTO_RECEPTION_REACH);
+  });
+
+  it("releases the locked run inside playing reach of the drop", () => {
+    // The run to the ball releases at `AUTO_RUN.arrive`; if a ball at the
+    // anchor were playable only from further away, the release would strand
+    // the player outside their own reception.
+    expect(AUTO_RUN.arrive).toBeLessThan(PLAYER_REACH);
+    // And the re-engage distance is a true hysteresis: the anchor has to move
+    // further than the arrival covers before the run picks back up.
+    expect(AUTO_RUN.reengage).toBeGreaterThan(AUTO_RUN.arrive);
   });
 
   it("shapes the run rather than moving the player", () => {

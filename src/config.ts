@@ -229,6 +229,24 @@ export const RECEPTION_ZONE = {
 };
 
 /**
+ * The locked run to the ball's drop spot.
+ *
+ * While the ball is coming to a side (or hanging from that side's own set-up
+ * pop), the player runs to the anchor on their own and the stick is not
+ * listened to — a convenience that cannot be overridden, because overriding it
+ * was exactly how players walked past the ball in landscape. The run releases
+ * at the drop spot, where choosing a side of the ball becomes the decision to
+ * make, and picks the run back up if the anchor moves far enough that the
+ * arrival no longer covers it.
+ */
+export const AUTO_RUN = {
+  /** Distance to the anchor at which the run counts as arrived (m). */
+  arrive: 0.35 * TABLE_SCALE,
+  /** If the anchor moves further than this after arrival, chase it again (m). */
+  reengage: 1.05 * TABLE_SCALE,
+};
+
+/**
  * Which part of the body a touch is played with.
  *
  * A rally is built out of these rather than out of clip names: the rules care

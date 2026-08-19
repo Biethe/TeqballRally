@@ -291,6 +291,22 @@ describe("pickReceptionClip", () => {
     expect(pickReceptionClip(height * 0.5, -0.5, height, "both", { bandShift: 0 })).toBe("LeftKneeReception");
   });
 
+  it("takes the nearest side when the run chose the standing", () => {
+    // Inside the central zone the strong foot normally asks for the ball. A
+    // reception played under the locked run never chose where to stand, so the
+    // side is not theirs to lose either: whichever limb the ball is on plays
+    // it, strong foot or not.
+    expect(pickReceptionClip(height * 0.2, 0.1, height, "left", { bandShift: 0 })).toBe(
+      "InnerLeftFootReception"
+    );
+    expect(
+      pickReceptionClip(height * 0.2, 0.1, height, "left", { bandShift: 0, forceNearest: true })
+    ).toBe("InnerRightFootReception");
+    expect(
+      pickReceptionClip(height * 0.2, -0.1, height, "right", { bandShift: 0, forceNearest: true })
+    ).toBe("InnerLeftFootReception");
+  });
+
   it("uses more than one clip across the balls a rally actually produces", () => {
     // The complaint this exists for: a rally played the same three animations
     // over and over. Contact heights measured over a real match run 0.31 to

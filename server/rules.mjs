@@ -63,6 +63,12 @@ var RECEPTION_ZONE = {
    */
   hardCap: 0.64 * TABLE_SCALE
 };
+var AUTO_RUN = {
+  /** Distance to the anchor at which the run counts as arrived (m). */
+  arrive: 0.35 * TABLE_SCALE,
+  /** If the anchor moves further than this after arrival, chase it again (m). */
+  reengage: 1.05 * TABLE_SCALE
+};
 var SIDE_FOV = 1;
 var SIDE_HALF_WIDTH = COURT.maxX + 0.6;
 var SIDE_SLANT = SIDE_HALF_WIDTH / Math.tan(SIDE_FOV / 2);

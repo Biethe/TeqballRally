@@ -3,6 +3,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { bodyPartOf } from "../src/character";
 import { solveLaunchClearingNet } from "../src/ball";
 import {
+  AUTO_RUN,
   GROUND_Y,
   MAX_TOUCHES,
   PLAYER_REACH,
@@ -234,35 +235,51 @@ describe("staying with the ball", () => {
     expect(drifted.moved).toBeGreaterThan(0.8);
   });
 
-  it("still lets a player who means to leave, leave", () => {
-    // The other half of it. A soft boundary a player cannot push against is a
-    // movement lock; holding the direction for the whole flight takes them out
-    // of the play, and that is their decision to make.
-    const gone = chase({ moveX: -1, moveZ: 0.8 }, 3);
-    const drifted = chase({ moveX: -1, moveZ: 0.8 }, 0.4);
+  it("runs to the drop spot even while the stick pushes away", () => {
+    // The inversion the locked run is: the old soft zone let a stick push
+    // cancel the run to the ball, so a push that meant nothing in particular
+    // walked the player off a reception. Holding the direction for the whole
+    // flight must now change nothing — the touch still lands, and the player
+    // ends at the drop rather than where the stick was pointing.
+    const r = rig();
+    feedPlayer(r);
+    for (let i = 0; i < 60 * 3 && r.match.state === "rally"; i++) {
+      r.match.update(SIM_DT, { ...idle, moveX: -1, moveZ: 0.8 }, () => {});
+    }
 
-    expect(gone.moved).toBeGreaterThan(drifted.moved + 1);
+    expect(r.player.played.some((c) => bodyPartOf(c) !== null)).toBe(true);
+    const anchor = (r.match as unknown as { anchor: Record<string, Vector3 | null> }).anchor
+      .player;
+    expect(anchor).not.toBeNull();
+    expect(Vector3.Distance(r.player.position, anchor!)).toBeLessThan(AUTO_RUN.reengage);
   });
 
-  it("leaves the choice of where to meet the ball to the player", () => {
-    // Test 2: the same incoming ball, met from one side of it or the other, is
-    // a different touch. This is the skill the zone is protecting room for —
-    // and the reason it is a zone rather than a spot the game moves you to.
-    const met = (offsetZ: number): string | undefined => {
-      const r = rig();
-      feedPlayer(r);
-      r.player.position.z += offsetZ;
-      for (let i = 0; i < 60 * 3 && r.match.state === "rally"; i++) {
-        r.match.update(SIM_DT, idle, () => {});
-      }
-      return r.player.played.find((c) => bodyPartOf(c) !== null);
-    };
+  it("hears the stick again once the run has arrived", () => {
+    // The second half of the rule: the lock is until the drop spot, not a
+    // possession of the feet. From the arrival on, a push moves the player
+    // again — that shift is how a side of the ball is chosen.
+    const r = rig();
+    feedPlayer(r);
+    r.player.position.z = -2.2; // well off the drop spot: the run has work to do
 
-    const left = met(0.7);
-    const right = met(-0.7);
+    // Stick idle: the run alone has to bring the reception home.
+    let touched = false;
+    for (let i = 0; i < 60 * 4 && r.match.state === "rally" && !touched; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+      touched = r.player.played.some((c) => bodyPartOf(c) !== null);
+    }
+    expect(touched).toBe(true);
+    // Give the run time to land the player under their own pop.
+    for (let i = 0; i < 60 * 0.5 && r.match.state === "rally"; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+    }
+    expect(r.match.state).toBe("rally");
 
-    expect(left).toBeDefined();
-    expect(right).toBeDefined();
-    expect(left).not.toBe(right);
+    // From the arrival on, the push is heard again.
+    const zBefore = r.player.position.z;
+    for (let i = 0; i < 60 * 0.35 && r.match.state === "rally"; i++) {
+      r.match.update(SIM_DT, { ...idle, moveZ: -1 }, () => {});
+    }
+    expect(r.player.position.z).toBeLessThan(zBefore - 0.25);
   });
 });

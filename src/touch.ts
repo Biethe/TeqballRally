@@ -166,6 +166,66 @@ export function strikeShape(quality: number): { power: number; spread: number } 
   return { power: 0.85 + 0.15 * q, spread: 1 + 1.35 * (1 - q) };
 }
 
+/**
+ * What the pace of an incoming ball costs the next touch.
+ *
+ * A fast ball is harder to meet cleanly: it arrives sooner and leaves less of
+ * a window, so the same standing position grades worse against it. The cost
+ * lands on the ball, never on the touch itself — the floor principle holds, a
+ * fast ball is an awkward ball to play next, not one that refuses to be
+ * played.
+ */
+export const PACE = {
+  receive: {
+    /** Incoming pace below this costs nothing (m/s, horizontal). */
+    from: 10.5,
+    /** Pace at which the reception quality factor is fully ramped down. */
+    full: 17,
+    /** What the factor bottoms out at: a hard-hit reception keeps this much. */
+    floor: 0.45,
+  },
+  volley: {
+    /** The pace a volley trait of 0.6 can take cleanly (m/s). */
+    base: 8.5,
+    /** Extra clean pace each full point of volley trait buys (m/s). */
+    perPoint: 6.5,
+    /** The band above the allowance the factor ramps down across (m/s). */
+    band: 4,
+    /** Floor for an overpaced volley: the spread this feeds makes it spray. */
+    floor: 0.12,
+  },
+};
+
+/**
+ * How much of the reception quality survives the incoming pace, 0..1.
+ *
+ * 1 below `PACE.receive.from`, ramping linearly to the floor at `full`.
+ */
+export function receptionPaceFactor(pace: number): number {
+  const r = PACE.receive;
+  const t = clamp01((pace - r.from) / (r.full - r.from));
+  if (t >= 1) return r.floor;
+  return 1 - (1 - r.floor) * t;
+}
+
+/**
+ * How much of a direct volley's quality survives the incoming pace, 0..1.
+ *
+ * Kicking a ball back without a control touch first is a technique question:
+ * the character's volley trait sets the pace they can take cleanly, and past
+ * it the factor ramps to the floor over `PACE.volley.band`. At the floor the
+ * spread a `strikeShape` of this quality produces is wide enough that a fast
+ * return almost never lands — mostly impossible, exactly as designed, except
+ * for the characters built for it.
+ */
+export function volleyPaceFactor(pace: number, volley: number): number {
+  const v = PACE.volley;
+  const allow = v.base + (volley - 0.6) * v.perPoint;
+  const t = clamp01((pace - allow) / v.band);
+  if (t >= 1) return v.floor;
+  return 1 - (1 - v.floor) * t;
+}
+
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }

@@ -66,7 +66,7 @@ export interface SwipeShot {
  * `from` is deliberately low: a third of the way up from horizontal is already
  * unmistakably "upward" to the person drawing it.
  */
-export const SWIPE_BAND = { from: 0.3, full: 0.62 };
+export const SWIPE_BAND = { from: 0.22, full: 0.62 };
 
 /**
  * How hard the slowest and fastest swipes strike.
@@ -82,11 +82,14 @@ const SWIPE_PACE = { min: 0.26, max: 1 };
 /**
  * The arc a fully steep swipe asks for, either way, around the neutral ball.
  *
- * The two ends are the old drive and lob arcs, kept so a rally that was tuned
- * against them still plays the same — what changed is which finger movement
- * reaches them, and that nothing else comes with them.
+ * Deliberately wider than the old drive/lob pair: the axis used to feel dead
+ * because its ends were close enough together that the launch corrections
+ * (net clearance, height-of-contact) swallowed most of the difference. The
+ * spread is safe because every launch is policed by the apex cap at twice the
+ * striker's height — the thumb can ask for more than the ball may do, and the
+ * cap, not the axis, is the ceiling.
  */
-export const SWIPE_LOFT = { flat: 0.58, neutral: 1, high: 1.85 };
+export const SWIPE_LOFT = { flat: 0.52, neutral: 1, high: 2.0 };
 
 /**
  * Where on the opponent's half a swipe lands, as a fraction of their half.

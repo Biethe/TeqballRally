@@ -2389,8 +2389,8 @@ export class UI {
   }
 
   /**
-   * Precision bar: fill fraction in [0, 1] (null hides the bar) and the sweet
-   * zone bounds as fractions of the bar width.
+   * Power bar: fill fraction in [0, 1] (null hides the bar) and the safe-power
+   * band bounds as fractions of the bar width.
    */
   meter(frac: number | null, sweetStart: number, sweetEnd: number): void {
     if (frac === null) {

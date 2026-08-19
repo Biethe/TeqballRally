@@ -5,6 +5,7 @@ import {
   type BallEvent,
   type BallState,
   type BodyCollider,
+  capLaunchApex,
   heightAtNet,
   predict,
   sampleFlight,
@@ -13,6 +14,7 @@ import {
   stepBall,
 } from "../src/ball";
 import {
+  BALL_PACE,
   BALL_RADIUS,
   GRAVITY,
   GROUND_Y,
@@ -401,6 +403,67 @@ describe("clearing the net from low down", () => {
     const v = solveLaunchClearingNet(from, target, 0.35, 0.05);
 
     expect(v).toEqual(solveLaunch(from, target, 0.35));
+  });
+});
+
+describe("capLaunchApex", () => {
+  const apexOf = (from: Vector3, v: Vector3): number =>
+    from.y + (v.y * v.y) / (2 * GRAVITY);
+  // The cap the match applies: twice the shortest character's height.
+  const cap = GROUND_Y + 2 * 1.72;
+
+  it("leaves a launch that fits under the cap alone", () => {
+    const from = new Vector3(-2, GROUND_Y + 1, 0);
+    const v = solveLaunch(from, new Vector3(1, GROUND_Y, 0), 0.8);
+
+    expect(capLaunchApex(from, v, cap)).toBe(v);
+  });
+
+  it("never raises a ball that is not climbing", () => {
+    const from = new Vector3(-2, GROUND_Y + 2, 0);
+    const v = new Vector3(4, -2, 0.5);
+
+    expect(capLaunchApex(from, v, GROUND_Y + 1)).toBe(v);
+  });
+
+  it("clamps the apex to the ceiling and keeps the horizontal pace", () => {
+    const from = new Vector3(-2, GROUND_Y + 1, 0);
+    const v = new Vector3(3, 9, 0.5);
+
+    const capped = capLaunchApex(from, v, cap);
+
+    expect(apexOf(from, capped)).toBeLessThanOrEqual(cap + 1e-9);
+    expect(capped.x).toBe(v.x);
+    expect(capped.z).toBe(v.z);
+    expect(capped.y).toBeLessThan(v.y);
+  });
+
+  it("keeps ordinary rally launches under the cap and over the net", () => {
+    // Sweep the launches a rally actually produces: the three power tiers, the
+    // neutral and fullest arcs, and strikers from deep to at the table. The
+    // cap must never bind these into the net — an ordinary shot stays an
+    // ordinary shot.
+    for (const power of [0.34, 0.62, 0.95]) {
+      for (const loft of [1, 2.0]) {
+        for (const x of [-3.2, -1.9, 1.9, 3.2]) {
+          const from = new Vector3(x, GROUND_Y + 1.0, 0);
+          const tx = -Math.sign(x) * 1.4;
+          const target = new Vector3(tx, tableSurfaceY(tx), 0.2);
+          const dist = Vector3.Distance(from, target);
+          const flight = ((0.5 + dist * 0.055) * loft) / (0.9 * BALL_PACE * (0.72 + 0.5 * power));
+          const solved = solveLaunchClearingNet(from, target, flight, 0.14);
+          const v = capLaunchApex(from, solved, cap);
+
+          expect(apexOf(from, v), `power ${power} loft ${loft} x ${x}`).toBeLessThanOrEqual(
+            cap + 1e-9
+          );
+          // Neutral arcs never bind, so they keep their net clearance.
+          if (loft === 1) {
+            expect(heightAtNet(from, v) - BALL_RADIUS).toBeGreaterThan(GROUND_Y + TABLE.netTop);
+          }
+        }
+      }
+    }
   });
 });
 

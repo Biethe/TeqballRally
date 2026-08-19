@@ -1038,6 +1038,14 @@ export interface TouchOptions {
   avoid?: BodyPart | null;
   /** Override the band shift (tests). Defaults to the ball's own offset. */
   bandShift?: number;
+  /**
+   * Take the ball on whichever side of the body it actually is, skipping the
+   * strong-foot preference inside the centre zone. Used when the feet were
+   * owned by the automatic run: the player never chose where to stand relative
+   * to the ball, so the side they take it on is not theirs to lose either —
+   * the nearest limb is the honest answer.
+   */
+  forceNearest?: boolean;
 }
 
 /** First candidate that is not the part just used; the head of the list otherwise. */
@@ -1156,7 +1164,7 @@ export function pickReceptionClip(
   opts: TouchOptions = {}
 ): string {
   const rel = ballY / height + (opts.bandShift ?? bandShift(lateral));
-  const side = pickSide(lateral, strongFoot);
+  const side = pickSide(lateral, opts.forceNearest ? "both" : strongFoot);
   // A ball in front of the chest is taken on the chest square-on; one off to
   // the side needs the step across that the prep clips are.
   const chest: Candidate = {

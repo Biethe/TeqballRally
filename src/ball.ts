@@ -200,6 +200,23 @@ export function solveLaunchClearingNet(
   return solveLaunch(from, target, t);
 }
 
+/**
+ * Clamp a launch so its ballistic apex stays at or below `apexY`.
+ *
+ * Only the vertical component is touched: the ball keeps the pace it was
+ * struck with and simply lands shorter, which is the honest physical
+ * consequence of a flatter ceiling. Returns `v` unchanged when it already
+ * fits under the cap or is not climbing.
+ */
+export function capLaunchApex(from: Vector3, v: Vector3, apexY: number): Vector3 {
+  if (v.y <= 0) return v;
+  const apex = from.y + (v.y * v.y) / (2 * GRAVITY);
+  if (apex <= apexY) return v;
+  const out = v.clone();
+  out.y = Math.sqrt(Math.max(0, 2 * GRAVITY * (apexY - from.y)));
+  return out;
+}
+
 export class Ball {
   state: BallState = { pos: new Vector3(0, 2, 0), vel: Vector3.Zero() };
   mesh: AbstractMesh | null = null;

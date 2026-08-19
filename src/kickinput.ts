@@ -43,7 +43,7 @@ export const KICK_INPUT = {
   /** Taps past this cannot say anything new, so the sequence commits there. */
   maxTaps: 3,
   /** Holding this much longer than `hold` asks for the fullest arc (s). */
-  loftRamp: 0.35,
+  loftRamp: 0.3,
   /** What each tap count asks for, 0..1. */
   tiers: [0.34, 0.62, 0.95],
   /**
@@ -53,7 +53,7 @@ export const KICK_INPUT = {
    * swipe in portrait reach the same lob — the two schemes should be two ways
    * of asking, not two different games.
    */
-  loftMax: 1.85,
+  loftMax: 2.0,
 } as const;
 
 /** A press sequence in progress. */
