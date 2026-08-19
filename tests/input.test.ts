@@ -10,6 +10,10 @@ const sample = (over: Partial<InputState> = {}): InputState => ({
   strikePressed: false,
   strikeHeld: false,
   strikePower: 0,
+  strikeTaps: undefined,
+  strikeLoft: undefined,
+  strikeTapsSoFar: 0,
+  strikeHoldSoFar: 0,
   popPressed: false,
   confirmPressed: false,
   ...over,
@@ -161,5 +165,50 @@ describe("which way the screen points in each view", () => {
         6
       );
     }
+  });
+});
+
+describe("what a press carries", () => {
+  it("keeps the tier and the arc only while a press is waiting", () => {
+    // Same rule as the power beside them: these describe a particular kick, so
+    // a frame with no press must not leave them lying around for the next one.
+    const latch = newLatch();
+
+    latchInput(latch, sample({ strikeTaps: 3, strikeLoft: 1.6 }));
+
+    expect(latch.strikeTaps).toBeUndefined();
+    expect(latch.strikeLoft).toBeUndefined();
+  });
+
+  it("carries them with the press they arrived on", () => {
+    const latch = newLatch();
+
+    latchInput(latch, sample({ strikePressed: true, strikeTaps: 2, strikeLoft: 1.4 }));
+
+    expect(latch.strikeTaps).toBe(2);
+    expect(latch.strikeLoft).toBe(1.4);
+  });
+
+  it("clears them when the step spends the press", () => {
+    const latch = newLatch();
+    latchInput(latch, sample({ strikePressed: true, strikeTaps: 2, strikeLoft: 1.4 }));
+
+    const spent = consumeInput(latch);
+
+    expect(spent.strikeTaps).toBe(2);
+    expect(latch.strikeTaps).toBeUndefined();
+    expect(latch.strikeLoft).toBeUndefined();
+  });
+
+  it("tracks the sequence in progress as a level, not a press", () => {
+    // The HUD reads these every frame; they are what is being built, not what
+    // was spent, so they follow the newest sample like the axes do.
+    const latch = newLatch();
+
+    latchInput(latch, sample({ strikeTapsSoFar: 2, strikeHoldSoFar: 0.3 }));
+    expect(latch.strikeTapsSoFar).toBe(2);
+
+    latchInput(latch, sample({ strikeTapsSoFar: 0, strikeHoldSoFar: 0 }));
+    expect(latch.strikeTapsSoFar).toBe(0);
   });
 });

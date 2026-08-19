@@ -46,7 +46,22 @@ var RECEPTION_ZONE = {
   /** What is left of an outward push at the far edge of the soft band. */
   minPush: 0.18,
   /** Speed the leash draws a player back from beyond the band (m/s). */
-  leash: 1.15 * TABLE_SCALE
+  leash: 1.15 * TABLE_SCALE,
+  /**
+   * Hard cap around a set-up the player made themselves (m).
+   *
+   * The soft zone above is the right answer for a ball coming *at* you: you
+   * may still decide to leave it. A ball you put up yourself is different —
+   * it is already in the air and going nowhere else, so leaving is not a
+   * decision left to make halfway through, and the soft zone let a player
+   * walk off their own set-up while it dropped.
+   *
+   * Deliberately small: this is room to circle the drop and choose which foot
+   * takes it, not room to reposition. Scaled like every other distance here,
+   * and well inside `PLAYER_REACH`, so a ball landing on the anchor stays
+   * reachable from anywhere in the circle.
+   */
+  hardCap: 0.64 * TABLE_SCALE
 };
 var SIDE_FOV = 1;
 var SIDE_HALF_WIDTH = COURT.maxX + 0.6;

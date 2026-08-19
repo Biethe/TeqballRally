@@ -785,8 +785,27 @@ describe("chooseStrike", () => {
   });
 
   it("keeps the bands in the order the shots happen in", () => {
-    expect(STRIKE_BANDS.header).toBeGreaterThan(STRIKE_BANDS.backflip);
-    expect(STRIKE_BANDS.backflip).toBeGreaterThan(STRIKE_BANDS.foot);
+    // Flip above the head, head at head height, foot below: the ladder reads
+    // upward in the order the shots become possible. The flip used to sit
+    // *under* the header, and since it is offered first it won nearly every
+    // set-up ball above knee height — a flat bicycle kick from chest height,
+    // and a header almost nobody ever saw.
+    expect(STRIKE_BANDS.backflip).toBeGreaterThan(STRIKE_BANDS.header);
+    expect(STRIKE_BANDS.header).toBeGreaterThan(STRIKE_BANDS.foot);
+  });
+
+  it("kicks a ball at head height rather than flipping it", () => {
+    // The behaviour change, pinned: 0.7 used to be a flip and is now a kick.
+    // Nothing covered this band at all, which is how the flip came to own it.
+    expect(chooseStrike(at(0.7), RIGHT, STRONG_SIDE, righty, true, { bandShift: 0 })).toBe(
+      "RightFootKick"
+    );
+  });
+
+  it("still flips a ball above the head", () => {
+    expect(chooseStrike(at(1.0), RIGHT, STRONG_SIDE, righty, true, { bandShift: 0 })).toBe(
+      "BackflipRightFoot"
+    );
   });
 });
 

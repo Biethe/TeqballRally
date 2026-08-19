@@ -10,6 +10,9 @@ import {
   applyStrike,
   catchupTicks,
   decode,
+  isValidInput,
+  readLoft,
+  readTaps,
   encode,
   isValidMove,
   isValidStrike,
@@ -237,3 +240,42 @@ describe("protocol version", () => {
     expect(PROTOCOL_VERSION).toBeGreaterThan(0);
   });
 });
+
+describe("the shape a kick was given", () => {
+  const base = { t: "input", tick: 1, moveX: 0, moveZ: 0, strike: true, pop: false, confirm: false };
+
+  it("accepts a frame that carries no shape at all", () => {
+    // An older peer sends neither, and its kicks simply come out neutral.
+    expect(isValidInput(base)).toBe(true);
+    expect(readTaps(undefined)).toBeUndefined();
+    expect(readLoft(undefined)).toBeUndefined();
+  });
+
+  it("takes a sensible shape at face value", () => {
+    expect(readTaps(2)).toBe(2);
+    expect(readLoft(1.4)).toBe(1.4);
+  });
+
+  it("makes nonsense safe instead of throwing the frame away", () => {
+    // The movement rides on the same message. Rejecting it over a bad field
+    // would stutter the other player's character, which is far worse than
+    // flattening one kick — so these are clamped, never a reason to drop.
+    expect(readTaps(99)).toBe(3);
+    expect(readTaps(-4)).toBe(1);
+    expect(readTaps(2.6)).toBe(3);
+    expect(readLoft(1e9)).toBe(2);
+    expect(readLoft(-1e9)).toBe(0.5);
+  });
+
+  it("ignores values that are not numbers", () => {
+    for (const junk of [NaN, Infinity, "3", null, {}, []]) {
+      expect(readTaps(junk)).toBeUndefined();
+      expect(readLoft(junk)).toBeUndefined();
+    }
+  });
+
+  it("still validates a frame that carries a shape", () => {
+    expect(isValidInput({ ...base, taps: 3, loft: 1.85 })).toBe(true);
+  });
+});
+

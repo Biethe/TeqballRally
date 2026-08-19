@@ -86,7 +86,7 @@ const SWIPE_PACE = { min: 0.26, max: 1 };
  * against them still plays the same — what changed is which finger movement
  * reaches them, and that nothing else comes with them.
  */
-const SWIPE_LOFT = { flat: 0.58, neutral: 1, high: 1.85 };
+export const SWIPE_LOFT = { flat: 0.58, neutral: 1, high: 1.85 };
 
 /**
  * Where on the opponent's half a swipe lands, as a fraction of their half.
@@ -349,6 +349,24 @@ export function onTableHalf(point: Vector3, halfSign: number): boolean {
     Math.abs(point.x) <= TABLE.halfLen &&
     Math.abs(point.z) <= TABLE.halfWid
   );
+}
+
+/**
+ * Where a serve aimed with `fwd` and `lat` is sent, in world space.
+ *
+ * Shared by the launch and by the preview ring, which used to work this out
+ * separately and disagree — the ring sat up to 42 cm deeper and 16 cm wider
+ * than the serve could actually reach, so it promised a corner the ball was
+ * never going to find.
+ *
+ * Deliberately not `tableTarget`. A serve is struck from behind the service
+ * line with the whole table in front of it, and giving it a rally kick's reach
+ * would quietly deepen every serve in the game. These are the numbers the
+ * serve already used; only the duplication is gone.
+ */
+export function serveTarget(attackingSign: number, fwd: number, lat: number): Vector3 {
+  const depth = Math.min(1.4, Math.max(0.35, 0.85 + fwd * 0.5));
+  return new Vector3(attackingSign * depth, 0, Math.max(-0.62, Math.min(0.62, lat * 0.62)));
 }
 
 /**

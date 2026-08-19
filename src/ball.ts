@@ -27,7 +27,19 @@ export interface BallState {
   vel: Vector3;
 }
 
-const MAX_SPEED = 20;
+/**
+ * Ceiling on ball speed, in m/s.
+ *
+ * A safety rail against a solver producing something absurd, not a tuning
+ * knob — and it must stay clear of every per-clip cap in `KICK_SPEED_CAP`,
+ * which `tests/config.test.ts` asserts. It did not: the backflip's cap works
+ * out at 18 × `BALL_PACE` = 22.68 m/s, so the hardest shot in the game was
+ * quietly scaled back to 20 here, *after* `solveLaunchClearingNet` had already
+ * checked the net against the full velocity. The direction survives the clamp
+ * and the speed does not, so those shots landed short of where they were aimed
+ * and a flip solved as just clearing the tape could still clip it.
+ */
+export const MAX_SPEED = 24;
 const TABLE_RESTITUTION = 0.82;
 const GROUND_RESTITUTION = 0.55;
 const NET_RESTITUTION = 0.35;
@@ -166,7 +178,16 @@ export function solveLaunchClearingNet(
   clearance = 0.18
 ): Vector3 {
   let t = baseTime;
-  for (let i = 0; i < 18; i++) {
+  // The budget has to cover the worst case, not the common one. A rally kick
+  // is met near chest height and needs a step or two; a wide serve is struck
+  // off the foot from under a metre and has to climb most of the net's height
+  // on the way over, which took far more lengthening than the old 18 steps
+  // allowed. It ran out and returned a velocity that clipped the tape — so
+  // every serve aimed to the side hit the net, in the shipped game.
+  //
+  // Raising it is safe by construction: a launch that already clears returns on
+  // its own iteration and never sees the extra room.
+  for (let i = 0; i < 80; i++) {
     const v = solveLaunch(from, target, t);
     const crossesNet = Math.sign(from.x) !== Math.sign(target.x);
     if (!crossesNet) return v;

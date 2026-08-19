@@ -19,6 +19,8 @@ import type { Side } from "../ball";
 import type { NetConnection } from "./connection";
 import {
   isValidInput,
+  readLoft,
+  readTaps,
   isValidPause,
   isValidSnapshot,
   reframe,
@@ -219,6 +221,8 @@ export class OnlineSession {
           // older peer that does not send it simply never charges one.
           strikeHeld: msg.hold === true,
           strikePower: typeof msg.power === "number" ? msg.power : 0,
+          strikeTaps: readTaps(msg.taps),
+          strikeLoft: readLoft(msg.loft),
           popPressed: this.pendingGuest.pop || msg.pop,
           confirmPressed: this.pendingGuest.confirm || msg.confirm,
         };
@@ -319,6 +323,8 @@ export class OnlineSession {
           strike: held.strikePressed,
           hold: held.strikeHeld,
           power: held.strikePower,
+          taps: held.strikeTaps,
+          loft: held.strikeLoft,
           pop: held.popPressed,
           confirm: held.confirmPressed,
         },
@@ -330,6 +336,8 @@ export class OnlineSession {
       ...held,
       strikePressed: false,
       strikePower: 0,
+      strikeTaps: undefined,
+      strikeLoft: undefined,
       popPressed: false,
       confirmPressed: false,
     };
@@ -347,6 +355,8 @@ export class OnlineSession {
       strikePressed: this.localInput.strikePressed || input.strikePressed,
       strikeHeld: input.strikeHeld,
       strikePower: input.strikePressed ? input.strikePower : this.localInput.strikePower,
+      strikeTaps: input.strikePressed ? input.strikeTaps : this.localInput.strikeTaps,
+      strikeLoft: input.strikePressed ? input.strikeLoft : this.localInput.strikeLoft,
       popPressed: this.localInput.popPressed || input.popPressed,
       confirmPressed: this.localInput.confirmPressed || input.confirmPressed,
     };

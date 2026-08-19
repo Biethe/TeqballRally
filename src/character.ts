@@ -189,6 +189,41 @@ export function approachVelocity(
 }
 
 /**
+ * Hold a player inside a hard circle around their own set-up.
+ *
+ * Free inside, blocked at the edge. Only the component of the push heading
+ * *out* of the circle is removed; anything sideways is untouched, so a player
+ * at the boundary can still circle the drop to pick which foot takes the ball
+ * — which is the one adjustment the room exists for.
+ *
+ * Unlike `nearAnchorPush` this is a wall, and deliberately so. That one damps a
+ * push and lets a player who means to leave leave, which is right for a ball
+ * arriving from the other side. This is for a ball you set up yourself, where
+ * there is nothing left to decide.
+ *
+ * Nothing here moves anybody. It reshapes the direction that was asked for and
+ * returns it no longer than it arrived, so the caller's own easing, footing and
+ * court clamp all still apply.
+ */
+export function leashPush(
+  toAnchorX: number,
+  toAnchorZ: number,
+  mx: number,
+  mz: number,
+  radius: number
+): [number, number] {
+  const d = Math.hypot(toAnchorX, toAnchorZ);
+  if (d < radius || d < 1e-4) return [mx, mz];
+  const ux = toAnchorX / d;
+  const uz = toAnchorZ / d;
+  // Positive points back toward the anchor, so a negative one is the part
+  // trying to leave — and that is the only part taken away.
+  const par = mx * ux + mz * uz;
+  if (par >= 0) return [mx, mz];
+  return [mx - ux * par, mz - uz * par];
+}
+
+/**
  * Reshape a requested run so it cannot leave the ball behind.
  *
  * `toAnchorX/Z` is the offset from the player to the point where their next
@@ -901,10 +936,44 @@ export function bodyPartOf(clip: string): BodyPart | null {
 export const STRIKE_BANDS = {
   /** Head height. Below this there is no header to play. */
   header: 0.78,
-  /** A backflip reaches above the player, so it starts lower than a header. */
-  backflip: 0.6,
+  /**
+   * Above the head, where a bicycle kick is the only thing that reaches.
+   *
+   * This sat at 0.6 — *below* the header — and since `chooseStrike` offers the
+   * flip first, it won nearly every set-up ball above knee height and the
+   * header almost never happened. A flip met at chest height is also a flat
+   * one: the shot only comes down steeply if the ball was up there to begin
+   * with, because the contact height is what decides the angle.
+   *
+   * So the ladder now reads in the order the shots actually happen: kick it
+   * below head height, head it at head height, flip it above. `bandShift`
+   * still lowers this by up to `BAND_OVERLAP` for a ball out to the side, so
+   * the effective band in play is 0.85–0.92 — a flip is for a ball you got
+   * *under*, and reaching for one sideways should be the harder ask.
+   */
+  backflip: 0.85,
   /** Under this nothing can be struck at all and the ball is only controlled. */
   foot: 0.12,
+};
+
+/**
+ * The highest contact, in body-height fractions, each kind of touch is planned at.
+ *
+ * A ball has to come down to the body part playing it, and `touchWait` holds a
+ * touch back until it has. The flip is the exception — it is struck above the
+ * head, so waiting for the ball to fall to shoulder height is waiting for the
+ * shot to be gone.
+ *
+ * `flip` is a ceiling, not a preference. `canTouch` measures from the chest at
+ * 0.55 of height against `PLAYER_REACH`; at 1.15 the ball is ~1.08 m above the
+ * chest and only ~1 m of horizontal reach is left. Past about 1.2 the reach
+ * sphere closes completely and raising this further does nothing at all.
+ */
+export const STRIKE_CEILING = {
+  /** Anything played off the body: the ball has to have come down to it. */
+  normal: 0.9,
+  /** A flip is struck above the head, so the ball must still be up there. */
+  flip: 1.15,
 };
 
 /**

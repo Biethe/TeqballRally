@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import {
+  MAX_SPEED,
   type BallEvent,
   type BallState,
   type BodyCollider,
@@ -242,7 +243,7 @@ describe("stepBall", () => {
 
     stepBall(s, 1 / 60);
 
-    expect(s.vel.length()).toBeLessThanOrEqual(20 + 1e-9);
+    expect(s.vel.length()).toBeLessThanOrEqual(MAX_SPEED + 1e-9);
   });
 
   it("deflects off a character capsule and reports the side", () => {
@@ -375,4 +376,32 @@ describe("predict", () => {
     expect(p.samples.length).toBeLessThanOrEqual(360);
   });
 });
+
+describe("clearing the net from low down", () => {
+  it("lifts a ball struck below the tape over it", () => {
+    // A wide serve is struck off the foot from under a metre, so it has to
+    // climb most of the net's height on the way over. The solver's step budget
+    // was sized for a rally kick met near chest height, ran out, and returned a
+    // velocity that clipped the tape — which meant every serve aimed to the
+    // side hit the net.
+    const from = new Vector3(-3.93, GROUND_Y + 0.56, 0);
+    const target = new Vector3(0.85, tableSurfaceY(0.85), 0.5);
+
+    const v = solveLaunchClearingNet(from, target, 0.12, 0.18);
+
+    expect(heightAtNet(from, v) - BALL_RADIUS).toBeGreaterThan(GROUND_Y + TABLE.netTop);
+  });
+
+  it("still leaves a launch that already clears exactly alone", () => {
+    // The extra budget must only ever reach shots that were failing; anything
+    // that clears returns on its own iteration and never sees it.
+    const from = new Vector3(-2, GROUND_Y + 1.8, 0);
+    const target = new Vector3(1.2, tableSurfaceY(1.2), 0);
+
+    const v = solveLaunchClearingNet(from, target, 0.35, 0.05);
+
+    expect(v).toEqual(solveLaunch(from, target, 0.35));
+  });
+});
+
 

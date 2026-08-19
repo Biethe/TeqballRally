@@ -68,7 +68,9 @@ const readMatch = (page) =>
       player: { x: m.chars.player.position.x, z: m.chars.player.position.z },
       touchCount: m.touchCount,
       strikeable: m.strikeableSide,
-      charging: m.charging.player,
+      kickTaps: m.kickAim.player.taps,
+      kickHeld: m.kickAim.player.held,
+      lastAim: m.lastPlayerAim ?? null,
       aim: { x: m.aimSpot.player.x, z: m.aimSpot.player.z },
       markerOn: window.__teq.match.aimMarker?.isEnabled() ?? null,
       portraitClass: layer?.classList.contains("portrait") ?? null,
@@ -377,10 +379,11 @@ console.log("\nlandscape: the stick and buttons are back");
   check(state.hintsShown === false, "the gesture legend is hidden");
   check(state.tapSteering === false, "the stick steers, not taps");
 
-  // Holding the kick control charges it and hands the stick to the aim marker.
+  // A press hands the stick to the aim marker, and how long it is held decides
+  // the arc the kick will be given.
   //
-  // The state it needs is set directly rather than waited for. Charging is
-  // only allowed while the ball is this player's and they are not already
+  // The state it needs is set directly rather than waited for. Aiming is only
+  // allowed while the ball is this player's and they are not already
   // mid-animation, and at one rendered frame a second that window opens and
   // shuts between polls — waiting for it made this check report a working
   // feature as broken about a third of the time.
@@ -404,25 +407,35 @@ console.log("\nlandscape: the stick and buttons are back");
     m.ball.state.vel.set(0, 0, 0);
     m.strikeableSide = "player";
     m.touchCount = 1; // already received: nothing will be taken automatically
-    m.charging.player = 0;
+    m.kickAim.player = { taps: 0, held: 0 };
+    m.lastPlayerAim = null;
     return { aim: { x: m.aimSpot.player.x, z: m.aimSpot.player.z } };
   });
   await page.keyboard.down("Space");
-  await page.keyboard.down("KeyD"); // push the aim sideways while charging
-  const charged = await settles(page, () => window.__teq.match.charging.player > 0.2, 30000);
+  await page.keyboard.down("KeyD"); // push the aim sideways while the press is down
+  const pressed = await settles(page, () => window.__teq.match.kickAim.player.taps > 0, 30000);
+  // Long enough to be a hold rather than a tap, so the kick asks for an arc.
+  const lofted = await settles(page, () => window.__teq.match.kickAim.player.held > 0.25, 30000);
   const held = await readMatch(page);
   await page.keyboard.up("KeyD");
   await page.keyboard.up("Space");
-  check(charged, `holding the kick control charges it (${held.charging?.toFixed?.(2)} s)`);
+  check(pressed, `the press opens a kick sequence (${held.kickTaps} tap)`);
+  check(lofted, `and holding it builds the arc (${held.kickHeld?.toFixed?.(2)} s)`);
   check(
     Math.abs(held.aim.z - before.aim.z) > 0.2 || Math.abs(held.aim.x - before.aim.x) > 0.2,
     `the stick moves the aim while it is held (${JSON.stringify(held.aim)})`
   );
   check(held.markerOn === true, "landscape shows the aim marker while aiming");
-  // Not read straight back: a release is spent by the next simulation step,
-  // and a software-rendered frame here can be a second long.
-  const spent = await settles(page, () => window.__teq.match.charging.player === 0, 20000);
-  check(spent, "letting go spends the charge");
+  // A held press commits the moment it is released — no tap window at all —
+  // and the arc it asked for has to reach the shot rather than being dropped
+  // somewhere between the button and the ball.
+  const struck = await settles(
+    page,
+    () => (window.__teq.match.lastPlayerAim?.loft ?? 0) > 1,
+    20000
+  );
+  const after = await readMatch(page);
+  check(struck, `letting go strikes with the arc it built (loft ${after.lastAim?.loft?.toFixed?.(2)})`);
   await page.close();
 }
 

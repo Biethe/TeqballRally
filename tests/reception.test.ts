@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nearAnchorPush } from "../src/character";
+import { leashPush, nearAnchorPush } from "../src/character";
 import { AUTO_RECEPTION_REACH, LUNGE_MAX, PLAYER_REACH, RECEPTION_ZONE } from "../src/config";
 
 /** A player's top speed, in m/s, for the leash term. */
@@ -110,5 +110,72 @@ describe("the room a player has around the ball", () => {
         );
       }
     }
+  });
+});
+
+/**
+ * The hard cap around your own set-up.
+ *
+ * A separate function from `nearAnchorPush` because it answers a different
+ * question: that one governs a ball coming at you, where leaving is still a
+ * decision, and this one governs a ball you put up yourself, where it is not.
+ * Keeping them apart is what lets the soft zone above stay exactly as it was.
+ */
+describe("staying with a set-up you made yourself", () => {
+  const CAP = RECEPTION_ZONE.hardCap;
+
+  it("does not touch the controls inside the circle", () => {
+    for (const d of [0, 0.2, CAP * 0.5, CAP - 1e-6]) {
+      expect(leashPush(d, 0, -1, 0, CAP)).toEqual([-1, 0]);
+      expect(leashPush(0, d, 0.6, -0.8, CAP)).toEqual([0.6, -0.8]);
+    }
+  });
+
+  it("blocks the way out at the edge", () => {
+    // Anchor is 1 m ahead in +x; the player asks to run directly away from it.
+    const [mx, mz] = leashPush(1, 0, -1, 0, CAP);
+
+    expect(mx).toBeCloseTo(0, 12);
+    expect(mz).toBeCloseTo(0, 12);
+  });
+
+  it("still lets them circle the ball to choose a foot", () => {
+    // Straight across the circle is untouched: picking which side of the body
+    // takes the ball is the whole reason there is any room at all.
+    const [mx, mz] = leashPush(1, 0, 0, 1, CAP);
+
+    expect(mx).toBeCloseTo(0, 12);
+    expect(mz).toBeCloseTo(1, 12);
+  });
+
+  it("keeps every step inward, whole", () => {
+    const [mx, mz] = leashPush(1, 0, 1, 0, CAP);
+
+    expect(mx).toBeCloseTo(1, 12);
+    expect(mz).toBeCloseTo(0, 12);
+  });
+
+  it("never returns a longer push than it was given", () => {
+    // It removes a component and never adds one, so nobody is ever moved
+    // faster — let alone somewhere — by being leashed.
+    for (let a = 0; a < Math.PI * 2; a += 0.2) {
+      for (const d of [CAP, CAP + 0.4, CAP + 2]) {
+        const [mx, mz] = leashPush(d, 0, Math.cos(a), Math.sin(a), CAP);
+
+        expect(Math.hypot(mx, mz)).toBeLessThanOrEqual(1 + 1e-9);
+      }
+    }
+  });
+
+  it("keeps the ball reachable from anywhere in the circle", () => {
+    // A ball landing on the anchor has to be playable from the edge, or the
+    // cap would be a way to lose the point rather than a way to stay with it.
+    expect(CAP).toBeLessThan(PLAYER_REACH);
+  });
+
+  it("is tighter than the zone for a ball still on its way", () => {
+    // The two exist to answer different phases; if this ever inverted, a
+    // set-up would give a player *more* room than an incoming ball.
+    expect(CAP).toBeLessThan(RECEPTION_ZONE.radius);
   });
 });

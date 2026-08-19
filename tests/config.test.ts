@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { RATING_KEYS, rating, totalPower } from "../src/ratings";
+import { MAX_SPEED } from "../src/ball";
 import {
   BALLS,
   CAMERA,
@@ -12,6 +13,8 @@ import {
   KICK_LOFT,
   KICK_POWER,
   KICK_SPEED_CAP,
+  KICK_SPEED_CAP_DEFAULT,
+  BALL_PACE,
   MAX_TOUCHES,
   PLAYER_REACH,
   PLAY_BOX,
@@ -519,3 +522,17 @@ describe("the portrait camera follows the player", () => {
     expect(portraitCameraShot(spawn, -3, baseX).z).toBe(-portraitCameraShot(spawn, 3, baseX).z);
   });
 });
+
+describe("the speed ceiling", () => {
+  it("leaves room for the hardest shot any clip is allowed", () => {
+    // The clamp in `stepBall` is a safety rail, not a tuning knob, so no clip's
+    // cap may sit above it. The backflip's did — 18 * 1.26 = 22.68 against a
+    // ceiling of 20 — and the clamp scaled the shot back *after* the net had
+    // been checked against the full velocity, so the hardest shot in the game
+    // landed short and could clip a tape it was solved to clear.
+    const fastest = Math.max(...Object.values(KICK_SPEED_CAP), KICK_SPEED_CAP_DEFAULT);
+
+    expect(fastest * BALL_PACE).toBeLessThanOrEqual(MAX_SPEED);
+  });
+});
+

@@ -22,14 +22,18 @@ import {
   bodyPartOf,
   footFactor,
   nearAnchorPush,
+  leashPush,
   pickReceptionClip,
   chooseStrike,
+  strikeBackflipFoot,
+  STRIKE_CEILING,
   serveClipForAim,
   serveContactOffset,
   HEAD_CONTACT_PUSH,
   SERVE_CLIPS,
   SERVE_TOSS_HAND,
 } from "./character";
+import { KICK_INPUT, kickLoft, kickPower } from "./kickinput";
 import { gradeContact, setupShape, strikeShape, timingSense } from "./touch";
 import {
   contactDelaySeconds,
@@ -53,11 +57,12 @@ import {
   TABLE,
   MAX_TOUCHES,
   AUTO_RECEPTION_REACH,
+  RECEPTION_ZONE,
   LUNGE_MAX,
   PLAYER_REACH,
   REACH_ASSIST,
   SERVE_EVERY,
-  SERVE_NET_CLEARANCE,
+  SERVE_CLEARANCE,
   SERVE_POWER,
   SERVE_X,
   SETS_TO_WIN,
@@ -81,7 +86,7 @@ import {
   spreadRadius,
   swipeShot,
   swipeTarget,
-  tableTarget,
+  serveTarget,
   SPREAD,
   type StrikeAim,
 } from "./aim";
@@ -228,12 +233,23 @@ const POP_CARRY = 2.4 * TABLE_SCALE;
  * at is often still rising out of the player's own previous touch.
  */
 const TAP_PRESS_BUFFER = 0.9;
-// Holding the kick control this long charges it fully. Long enough that the
-// difference between a tap and a held kick is a decision, short enough to make
-// inside the second or so a ball hangs in the air.
-const CHARGE_TIME = 0.8;
-/** Power a kick released without any charge at all is struck at. */
+/**
+ * Power a press with no tap count of its own is struck at.
+ *
+ * The landscape scheme always sends one (see `kickinput.ts`), so this is the
+ * floor for a synthesised press — one arriving over the network from a peer
+ * too old to send tiers, or one a test made by hand. It has to be a playable
+ * kick rather than the softest possible touch.
+ */
 const TAP_POWER = 0.3;
+/**
+ * The arc a served ball can be given, as a multiplier on its flight.
+ *
+ * A tap serves flat and fast; a long hold floats it. Neutral (1) sits between
+ * them and is what an unshaped serve gets, so the scale runs both ways around
+ * the serve the game has always had.
+ */
+const SERVE_ARC = { flat: 0.78, floated: 1.6 };
 /** How fast the aim marker travels under a fully pushed stick, in m/s. */
 const AIM_SPEED = 5.4;
 /**
@@ -367,8 +383,18 @@ export class MatchController {
     player: new Vector3(TABLE.halfLen * 0.6, 0, 0),
     ai: new Vector3(-TABLE.halfLen * 0.6, 0, 0),
   };
-  /** Seconds each side has held its kick control, 0 when nothing is charging. */
-  private charging: Record<Side, number> = { player: 0, ai: 0 };
+  /**
+   * What each side's kick sequence is currently asking for, for the HUD.
+   *
+   * Mirrored off the input each step rather than accumulated here: the tap
+   * counting happens in `kickinput.ts`, against event timestamps, and a second
+   * copy of it running off the simulation clock would disagree with the first
+   * on exactly the frames that matter.
+   */
+  private kickAim: Record<Side, { taps: number; held: number }> = {
+    player: { taps: 0, held: 0 },
+    ai: { taps: 0, held: 0 },
+  };
   /** Table-bounce debounce state (see TABLE_BOUNCE_DEBOUNCE). */
   private tableEventCooldown = 0;
   private lastTableSide: Side | null = null;
@@ -542,6 +568,14 @@ export class MatchController {
    * player could be assisted toward one place, walked to a second and end up
    * striking at a third.
    */
+  /**
+   * How far the leash is currently letting each side stray, in metres.
+   *
+   * Infinity until a set-up pins them; see `leashRadius`, which only ever
+   * shrinks it. Reset wherever the leash releases, or the next possession
+   * would start pinned to the last one's slack.
+   */
+  private leashSlack: Record<Side, number> = { player: Infinity, ai: Infinity };
   private anchor: Record<Side, Vector3 | null> = { player: null, ai: null };
   private repredictIn = 0;
 
@@ -559,7 +593,13 @@ export class MatchController {
   private computeAnchor(side: Side): Vector3 | null {
     if (this.ball.held) return null;
     if (this.strikeableSide === side && this.touchCount > 0) {
-      return this.dropSpot(side, sampleFlight(this.ball.state, 1.8));
+      // A set-up popped very high or driven flat has no sample in `dropSpot`'s
+      // height window, and it answers null. Keeping the last known anchor
+      // rather than dropping it matters twice over: it is what the leash is
+      // measured against, so losing it un-pins the player at the exact moment
+      // the ball is hardest to stay with, and it is where the auto-run is
+      // heading, which otherwise stops dead.
+      return this.dropSpot(side, sampleFlight(this.ball.state, 1.8)) ?? this.anchor[side];
     }
     return this.computeIntercept(side);
   }
@@ -673,6 +713,7 @@ export class MatchController {
    * the animation keeps its footing.
    */
   private holdNearAnchor(
+    side: Side,
     pos: Vector3,
     anchor: Vector3 | null,
     mx: number,
@@ -680,7 +721,47 @@ export class MatchController {
     speed: number
   ): [number, number] {
     if (!anchor) return [mx, mz];
+    // The two are alternatives, never layered: inside your own set-up the hard
+    // cap replaces the soft zone entirely.
+    if (this.leashed(side)) {
+      return leashPush(anchor.x - pos.x, anchor.z - pos.z, mx, mz, this.leashRadius(side, pos, anchor));
+    }
     return nearAnchorPush(anchor.x - pos.x, anchor.z - pos.z, mx, mz, speed);
+  }
+
+  /**
+   * Whether this side is pinned to a set-up of their own making.
+   *
+   * The condition is `computeAnchor`'s self-setup branch verbatim, so the
+   * anchor being measured against and the rule holding the player to it cannot
+   * come apart.
+   *
+   * Portrait is exempt. It steers by tapping the court, and a tap the game
+   * declines to walk toward reads as a dead control rather than as a boundary
+   * — there is no stick pushing against the edge to make the limit felt.
+   */
+  private leashed(side: Side): boolean {
+    if (this.portraitControls && side === "player") return false;
+    return this.strikeableSide === side && this.touchCount > 0;
+  }
+
+  /**
+   * The radius the leash is currently enforcing — shrinking toward the cap,
+   * never growing.
+   *
+   * A player can end up outside the circle through no fault of their own: the
+   * momentum `Character.move` was already easing when the leash engaged,
+   * `clearTable` pushing them clear of the table, or the anchor itself moving
+   * as `computeAnchor` re-reads the flight. A fixed radius would answer all
+   * three by hauling them inward, which is the one thing this must never do —
+   * so the circle instead starts wherever they are and closes to the cap as
+   * they come in.
+   */
+  private leashRadius(side: Side, pos: Vector3, anchor: Vector3): number {
+    const d = Math.hypot(anchor.x - pos.x, anchor.z - pos.z);
+    const slack = Math.max(RECEPTION_ZONE.hardCap, Math.min(this.leashSlack[side], d));
+    this.leashSlack[side] = slack;
+    return slack;
   }
 
   /**
@@ -781,6 +862,7 @@ export class MatchController {
         return;
       }
       const [mx, mz] = this.holdNearAnchor(
+        "player",
         player.position,
         anchor,
         dx / d,
@@ -795,12 +877,12 @@ export class MatchController {
       // Nothing asked for: ease to a stop, but still drift back toward a ball
       // that is dropping somewhere else — in portrait the player has no stick
       // to hold, so standing still must not mean standing out of the play.
-      const [mx, mz] = this.holdNearAnchor(player.position, anchor, 0, 0, player.def.speed);
+      const [mx, mz] = this.holdNearAnchor("player", player.position, anchor, 0, 0, player.def.speed);
       player.move(mx, mz, player.def.speed, dt);
       return;
     }
     const [bx, bz] = this.bendAssist(player.position, anchor, input.moveX, input.moveZ);
-    const [mx, mz] = this.holdNearAnchor(player.position, anchor, bx, bz, player.def.speed);
+    const [mx, mz] = this.holdNearAnchor("player", player.position, anchor, bx, bz, player.def.speed);
     player.move(mx, mz, player.def.speed, dt);
   }
 
@@ -1114,6 +1196,14 @@ export class MatchController {
   private serveClip: string = SERVE_CLIPS[0];
   /** Landing aim for the serve (court space); live for the player, rolled once for the AI. */
   private serveAim = { fwd: 0, lat: 0 };
+  /**
+   * Pace and arc the server asked for, 0..1 and a flight multiplier.
+   *
+   * Neutral until a control scheme says otherwise, and neutral is exactly
+   * today's serve — so a CPU serve, or one from a peer too old to send a
+   * shape, comes out unchanged.
+   */
+  private serveShot = { power: 0.5, loft: 1 };
 
   private beginServeCycle(): void {
     this.state = "serve_move";
@@ -1123,6 +1213,9 @@ export class MatchController {
     this.victoryPos = null;
     this.victoryTarget = null;
     this.servePhase = "idle";
+    // Back to neutral: a shape asked for on the last serve must not ride into
+    // this one, and the CPU never asks for one at all.
+    this.serveShot = { power: 0.5, loft: 1 };
     // A point celebration may still be playing; it must not block the walk
     // to the serve spot.
     this.chars.player.stopAction();
@@ -1130,6 +1223,7 @@ export class MatchController {
     this.strikeableSide = null;
     this.touchCount = 0;
     this.autoSetupRun = { player: false, ai: false };
+    this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
     this.contactSync = null;
     this.pendingTouch = null;
@@ -1137,7 +1231,7 @@ export class MatchController {
     // A charge only ever advances during a rally, so one held when the point
     // ended would otherwise sit there — on the power bar, and on the next
     // kick — until something else cleared it.
-    this.charging = { player: 0, ai: 0 };
+    this.kickAim = { player: { taps: 0, held: 0 }, ai: { taps: 0, held: 0 } };
     this.receptionAim = null;
     this.celebration = null;
     this.anchor = { player: null, ai: null };
@@ -1250,6 +1344,38 @@ export class MatchController {
    * the serve animation starts it is locked. Input +z is the player's left,
    * matching serveClipForAim's own-frame convention.
    */
+  /**
+   * The pace and arc a committed press asked its serve for.
+   *
+   * Both schemes say it the way they say everything else — landscape by how
+   * many times the button was tapped and how long the last press was held,
+   * portrait by the shape and speed of the swipe — so nothing new has to be
+   * learned to serve.
+   *
+   * The arc is remapped rather than passed straight through, and that is the
+   * one place the serve differs from a rally kick. A kick's neutral is
+   * "whatever the contact implies", so its scale only ever climbs from there.
+   * A serve's neutral is a fixed shape, so the axis has to run *both* ways
+   * around it — a tap has to be able to ask for a flatter, faster ball than
+   * the standard one, not merely fail to loft it.
+   */
+  private serveShotFor(input: InputState, side: Side): { power: number; loft: number } {
+    if (this.portraitControls && side === "player") {
+      const attack = sign(other(side));
+      // No ground loft: `loftFloor` is a rally rule about getting a struck ball
+      // over the net from deep in the court, and a serve solves its own
+      // clearance from behind the service line.
+      const shot = swipeShot(input.moveX * attack, input.strikePower, 0);
+      return { power: shot.power, loft: shot.loft };
+    }
+    const taps = input.strikeTaps;
+    const power = taps ? kickPower(taps) : 0.5;
+    const held = input.strikeLoft ?? 1;
+    // [1, loftMax] from the kick scheme, spread across [flat, floated] here.
+    const t = (held - 1) / (KICK_INPUT.loftMax - 1);
+    return { power, loft: SERVE_ARC.flat + (SERVE_ARC.floated - SERVE_ARC.flat) * t };
+  }
+
   private updatePlayerServeAim(input: InputState, allowClipChange: boolean): void {
     if (this.serveOwner !== "player") return;
     this.serveAim = { fwd: input.moveX, lat: input.moveZ };
@@ -1317,23 +1443,44 @@ export class MatchController {
     // Same aim mapping as rally strikes; aiming shrinks the random spray but a
     // residual remains, scaled by the server's precision and serving foot.
     const aim = this.serveAim;
-    const tx = sign(recv) * Math.min(1.4, Math.max(0.35, 0.85 + aim.fwd * 0.5));
+    const spot = serveTarget(sign(recv), aim.fwd, aim.lat);
+    const tx = spot.x;
     const ff = footFactor(server.def, this.serveClip);
     // The serve trait does both halves of a good serve: it tightens where the
     // ball can be put and it puts pace on it. A strong server can go near the
     // line at speed; a weak one has to choose.
     const sprayAmp = (0.25 * ff.spray) / (server.def.precision * server.def.serve);
     const spray = (Math.random() - 0.5) * sprayAmp * (1 - 0.7 * Math.min(1, Math.abs(aim.lat)));
-    const tz = Math.max(-0.62, Math.min(0.62, aim.lat * 0.62 + spray));
+    const tz = Math.max(-0.62, Math.min(0.62, spot.z + spray));
     const target = new Vector3(tx, tableSurfaceY(tx) + 0.02, tz);
     const dist = Vector3.Distance(this.ball.state.pos, target);
     // Foot serves fly faster and flatter than head serves.
     const power = (SERVE_POWER[this.serveClip] ?? 1) * server.def.power * ff.power * server.def.serve;
+    // What the server asked for, on top of what their clip and traits give.
+    // Neutral is 0.5 and 1, and `0.78 + 0.44 * 0.5` is exactly 1 — so a serve
+    // nobody shaped solves the identical velocity it always has, and the CPU's
+    // serve and every number tuned behind it are untouched by this being
+    // controllable at all. `tests/serve.test.ts` holds that.
+    const shot = this.serveShot;
+    const paced = power * (0.78 + 0.44 * shot.power);
+    // Pace has to shape the arc, not just the flight time, or it says nothing.
+    // `solveLaunchClearingNet` only ever *lengthens* a flight to clear the net,
+    // so from behind the service line the clearance is what the serve actually
+    // ends up being — ask three different paces for the same clearance and all
+    // three come back at the same speed, having each been lengthened to the same
+    // arc. A driven serve passes closer to the tape, which is also just true.
+    //
+    // `1.25 - 0.5 * 0.5` is exactly 1, so neutral is still untouched.
+    const arc = shot.loft * (1.25 - 0.5 * shot.power);
+    const clearance = Math.min(
+      SERVE_CLEARANCE.max,
+      Math.max(SERVE_CLEARANCE.min, SERVE_CLEARANCE.base * arc)
+    );
     const v = solveLaunchClearingNet(
       this.ball.state.pos,
       target,
-      (0.55 + dist * 0.07) / power,
-      SERVE_NET_CLEARANCE
+      ((0.55 + dist * 0.07) * shot.loft) / paced,
+      clearance
     );
     this.servePhase = "launched";
     this.lastHitter = this.serveOwner;
@@ -1406,7 +1553,41 @@ export class MatchController {
    * now. Prevents the ball-still-rising case (e.g. a pop pressed right after
    * an own pop) from striking thin air above the player.
    */
-  private touchWait(char: Character): number {
+  /**
+   * Which side of their own half a player is standing on, in their own frame.
+   *
+   * Which foot a flip comes over on is decided by where the player is standing,
+   * not by where the ball is. Signed the same way `lateral` is inside
+   * `tryStrike`, and shared with `flipReady` so the two cannot disagree about
+   * which flip is available.
+   */
+  private stanceOf(side: Side): number {
+    return this.chars[side].position.z * (side === "player" ? -1 : 1);
+  }
+
+  /**
+   * Whether a flip is genuinely the shot this side is about to play.
+   *
+   * Asked before the clip is chosen, because the answer decides how long the
+   * strike is allowed to wait — and waiting for a ball to fall to shoulder
+   * height when the shot is a bicycle kick is waiting for it to be gone.
+   *
+   * It has to ask the real question rather than "does this character own a
+   * flip", because `chooseStrike` drops the flip when the previous touch was
+   * also a foot. Every clause here mirrors one of its gates: a flip is a finish
+   * (`touchCount > 0`), it is never played twice off the same body part, the
+   * character and stance have to allow it, and the model has to carry the clip.
+   */
+  private flipReady(side: Side): boolean {
+    if (this.touchCount === 0) return false;
+    if (this.lastPart[side] === "foot") return false;
+    const c = this.chars[side];
+    const foot = strikeBackflipFoot(this.stanceOf(side), c.def);
+    if (!foot) return false;
+    return c.groups.has(foot === "right" ? "BackflipRightFoot" : "BackflipLeftFoot");
+  }
+
+  private touchWait(char: Character, maxRel = STRIKE_CEILING.normal): number {
     const flight = sampleFlight(this.ball.state, 1.4);
     let prevY = this.ball.state.pos.y;
     for (const s of flight) {
@@ -1414,7 +1595,7 @@ export class MatchController {
       const relH = (s.pos.y - GROUND_Y) / char.height;
       const descending = s.pos.y < prevY;
       prevY = s.pos.y;
-      if (descending && relH <= 0.9 && relH >= 0.15) {
+      if (descending && relH <= maxRel && relH >= 0.15) {
         return s.t <= CONTACT_WINDOW.max ? 0 : Math.min(1.1, s.t - 0.28);
       }
     }
@@ -1440,17 +1621,20 @@ export class MatchController {
    * that direction was always trying to play.
    */
   private aimFor(side: Side, input: InputState): StrikeAim {
-    const charged = this.charging[side];
-    this.charging[side] = 0;
-    // The charged kick: a held control, its power read off how long it was
-    // held. Portrait never charges — its power comes from how fast the swipe
-    // was drawn — so this is computed on the path that actually uses it.
+    // The tapped kick: how many taps decided the speed, and how long the last
+    // press was held decided the arc — two answers from one button, worked out
+    // in `kickinput.ts` before the press ever reached here. Portrait takes the
+    // branch below, where a single swipe says both at once.
+    //
+    // The fallback matters as much as the tiers. A press with no tap count is
+    // a synthesised one — the network, a test — and it still has to produce a
+    // playable kick rather than the softest possible touch.
     if (!this.portraitControls || side !== "player") {
-      const power =
-        charged > 0
-          ? TAP_POWER + (1 - TAP_POWER) * Math.min(1, charged / CHARGE_TIME)
-          : Math.max(TAP_POWER, input.strikePower);
-      return { target: this.aimSpot[side].clone(), power };
+      const taps = input.strikeTaps;
+      const power = taps ? kickPower(taps) : Math.max(TAP_POWER, input.strikePower);
+      const loft = input.strikeLoft ?? 1;
+      if (side === "player") this.lastPlayerAim = { power, loft };
+      return { target: this.aimSpot[side].clone(), power, loft };
     }
     const c = this.chars[side];
     const attack = sign(other(side));
@@ -1467,38 +1651,50 @@ export class MatchController {
     const shot = swipeShot(forward, input.strikePower, loftFloor(c.position.x));
     const target = swipeTarget(c.position, attack, lateral, shot);
     this.aimSpot[side] = target.clone();
+    if (side === "player") this.lastPlayerAim = { power: shot.power, loft: shot.loft };
     return { target, power: shot.power, loft: shot.loft };
   }
 
   /**
    * Advance a held kick: the stick moves this side's aim marker instead of the
-   * player, and the charge grows. Returns true while that is happening, so the
-   * caller can keep the striker still.
+   * player. Returns true while that is happening, so the caller can keep the
+   * striker still.
+   *
+   * Only while a press is physically down, which is what keeps the tap scheme
+   * playable: a sequence waiting out its window leaves the player free to run,
+   * rather than rooting them for the length of a window they never chose.
    *
    * Portrait never charges — its swipe already said how hard — and a side that
    * cannot strike right now cannot line one up either.
    */
-  private updateCharge(side: Side, input: InputState, dt: number): boolean {
+  private updateAiming(side: Side, input: InputState, dt: number): boolean {
     const aimable =
       this.state === "rally" &&
       this.strikeableSide === side &&
       !this.chars[side].busy &&
       !this.pendingTouch &&
       !(this.portraitControls && side === "player");
-    if (!input.strikeHeld || !aimable) {
-      // The release arrives on the same frame as the press it fired, and this
-      // runs first: clearing the charge here would throw away the very thing
-      // that press is about to spend. aimFor() clears it when it reads it.
-      if (!input.strikeHeld && !input.strikePressed) this.charging[side] = 0;
-      return false;
-    }
-    this.charging[side] += dt;
+    // Tracked before the early return: between taps no press is down, and the
+    // bar still has to show the tier already banked.
+    this.kickAim[side] = aimable
+      ? { taps: input.strikeTapsSoFar ?? 0, held: input.strikeHoldSoFar ?? 0 }
+      : { taps: 0, held: 0 };
+    if (!input.strikeHeld || !aimable) return false;
     const spot = this.aimSpot[side];
     spot.x += input.moveX * AIM_SPEED * dt;
     spot.z += input.moveZ * AIM_SPEED * dt;
     this.aimSpot[side] = clampToPlay(spot);
     return true;
   }
+
+  /**
+   * What the player's last kick actually asked for.
+   *
+   * Written for the input harness, which otherwise has no way to see whether a
+   * hold's arc survived the trip from the button to the ball — it used to watch
+   * the charge accumulator, which no longer exists. Read by nothing in the game.
+   */
+  lastPlayerAim: { power: number; loft: number } | null = null;
 
   /** Portrait touch play: no aim marker, and the swipe carries the aim. */
   portraitControls = false;
@@ -1518,8 +1714,10 @@ export class MatchController {
     const popped = this.touchCount > 0; // ball was set up by a control touch
     const power = Math.min(1, Math.max(0, aim.power));
 
-    // Ball still climbing (or way overhead): queue the touch until it drops.
-    const wait = this.touchWait(c);
+    // Ball still climbing (or way overhead): queue the touch until it drops —
+    // but only as far as this touch actually needs. A flip is struck above the
+    // head, so it waits for a much higher ball than anything played off the body.
+    const wait = this.touchWait(c, this.flipReady(side) ? STRIKE_CEILING.flip : STRIKE_CEILING.normal);
     if (wait > 0) {
       this.pendingTouch = {
         side,
@@ -1536,6 +1734,7 @@ export class MatchController {
     this.touchCount = 0;
     this.pointTouches++;
     this.autoSetupRun[side] = false;
+    this.leashSlack[side] = Infinity;
     if (side === "player") this.ui.hint(null);
 
     // Pick the clip from where the ball will NATURALLY be around contact time
@@ -1547,10 +1746,7 @@ export class MatchController {
     // Where they are standing decides which shots are even on the menu: the
     // hard ones need the middle line. See `canSmashFrom`.
     const nearMiddle = canSmashFrom(c.position.x);
-    // Which foot a flip comes over on is decided by where the player is
-    // standing, not by where the ball is, so the stance is signed in the
-    // player's own frame the same way `lateral` above is.
-    const stance = c.position.z * (side === "player" ? -1 : 1);
+    const stance = this.stanceOf(side);
     let clip = chooseStrike(ballHeight, lateral, stance, c.def, popped, {
       avoid: this.lastPart[side],
     });
@@ -1655,6 +1851,13 @@ export class MatchController {
       // A backflip is struck above the head and comes down steeply, and the
       // higher it is met the steeper it gets. This is the one shot in the game
       // that should look unanswerable when it is set up properly.
+      //
+      // A backstop now rather than the main knob. Since the flip band moved
+      // above head height, the height term above has already saturated at 0.35
+      // (it bottoms out at relH 0.9) and the natural loft comes out under this
+      // clamp, so the shot is decided by `KICK_SPEED_CAP` — the flip goes as
+      // fast as a flip is allowed to go. This still binds at the bottom of the
+      // band, where a wide ball can be flipped from as low as 0.78.
       if (clip.startsWith("Backflip")) {
         loft = Math.min(loft, 0.34 - 0.12 * Math.min(1, Math.max(0, relH - 0.7) / 0.4));
       }
@@ -1849,10 +2052,11 @@ export class MatchController {
           // ball, not about the whole point.
           this.lastPart[e.side] = null;
           this.autoSetupRun[e.side] = false;
+      this.leashSlack[e.side] = Infinity;
           // A fresh possession starts aimed at the middle of the other half,
           // so an aim left in a corner never carries silently into it.
           this.aimSpot[e.side] = new Vector3(sign(other(e.side)) * TABLE.halfLen * 0.6, 0, 0);
-          this.charging[e.side] = 0;
+          this.kickAim[e.side] = { taps: 0, held: 0 };
           this.receptionAim = null;
           this.emit({ type: "possession-start", side: e.side });
           if ((e.side === "player" || this.versus) && this.possessionHints < 2) {
@@ -1908,6 +2112,7 @@ export class MatchController {
     this.timer = 0;
     this.strikeableSide = null;
     this.autoSetupRun = { player: false, ai: false };
+    this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
     this.contactSync = null;
     this.pendingTouch = null;
@@ -2153,7 +2358,9 @@ export class MatchController {
           this.timer = 0;
           if (this.serveOwner === "player" || this.versus)
             this.ui.hint(
-              portraitTouch() ? "Swipe where you want to serve" : "Hold a direction to aim · STRIKE serves"
+              portraitTouch()
+                ? "Swipe where you want to serve"
+                : "Aim with the stick · tap STRIKE for pace, hold to float it"
             );
           this.emit({ type: "serve-ready", side: this.serveOwner });
         }
@@ -2170,8 +2377,12 @@ export class MatchController {
         this.ball.place(this.serveHandPos(server));
         this.timer += dt;
         if (this.serveOwner === "player") {
-          if (input.strikePressed) this.startServe();
+          if (input.strikePressed) {
+            this.serveShot = this.serveShotFor(input, "player");
+            this.startServe();
+          }
         } else if (this.versus ? this.versusInput.strikePressed : this.timer > 1.1) {
+          if (this.versus) this.serveShot = this.serveShotFor(this.versusInput, "ai");
           this.startServe();
         }
         break;
@@ -2216,7 +2427,7 @@ export class MatchController {
         }
         // Holding the kick control hands the stick to the aim marker and
         // charges the shot; the player stands still while they line it up.
-        const aiming = this.updateCharge("player", input, dt);
+        const aiming = this.updateAiming("player", input, dt);
         // After the player's own pop, run to the drop spot automatically —
         // the stick then only aims the finish (the direction that steered the
         // pop would otherwise keep carrying the player past the ball).
@@ -2342,15 +2553,15 @@ export class MatchController {
    * trade the bar exists to show.
    */
   private updateMeter(): void {
-    const held = this.charging.player;
-    if (held <= 0 || this.versus) {
+    const { taps } = this.kickAim.player;
+    if (taps <= 0 || this.versus) {
       this.ui.meter?.(null, 0, 0);
       return;
     }
-    const charge = Math.min(1, held / CHARGE_TIME);
-    const power = TAP_POWER + (1 - TAP_POWER) * charge;
-    const safeUpTo = (SAFE_POWER - TAP_POWER) / (1 - TAP_POWER);
-    this.ui.meter?.(power, 0, Math.max(0, Math.min(1, safeUpTo)));
+    // Plain power now that the tiers are the scale, so the marked band is just
+    // SAFE_POWER — which is tier two exactly. The bar therefore reads "one and
+    // two are safe, three is the gamble", which is the whole choice.
+    this.ui.meter?.(kickPower(taps), 0, SAFE_POWER);
   }
 
   /**
@@ -2373,10 +2584,12 @@ export class MatchController {
     marker.setEnabled(side !== null);
     if (!side) return;
     if (inServe) {
-      // The serve still aims by held direction, onto the opponent's half.
+      // The serve still aims by held direction, onto the opponent's half —
+      // through the same function the launch uses, so the ring cannot promise
+      // a spot the ball will not reach.
       const inp = side === "player" ? input : this.versusInput;
       const fwd = side === "player" ? inp.moveX : -inp.moveX;
-      const spot = tableTarget(sign(other(side)), fwd, inp.moveZ);
+      const spot = serveTarget(sign(other(side)), fwd, inp.moveZ);
       marker.position.set(spot.x, tableSurfaceY(spot.x) + 0.025, spot.z);
     } else {
       const spot = this.aimSpot[side];
@@ -2384,10 +2597,12 @@ export class MatchController {
       const y = onTable ? tableSurfaceY(spot.x) : GROUND_Y;
       marker.position.set(spot.x, y + 0.025, spot.z);
     }
-    // A charging kick swells the marker, so the power in the bar is also
-    // visible where the player is actually looking.
-    const charge = Math.min(1, this.charging[side] / CHARGE_TIME);
-    marker.scaling.setAll(1 + 0.35 * charge + 0.08 * Math.sin(performance.now() / 180));
+    // The marker swells with the arc a held press is asking for, so the thing
+    // a hold actually changes is visible where the player is already looking.
+    // It showed the charge before, which was the same number as the bar.
+    const loft = kickLoft(this.kickAim[side].held);
+    const arc = (loft - 1) / (KICK_INPUT.loftMax - 1);
+    marker.scaling.setAll(1 + 0.35 * arc + 0.08 * Math.sin(performance.now() / 180));
   }
 
   /** Versus mode: drive the "ai" character from the second human's input. */
@@ -2400,13 +2615,13 @@ export class MatchController {
       this.touchCount > 0 &&
       this.autoSetupRun.ai &&
       this.anchor.ai !== null;
-    const aiming = this.updateCharge("ai", v, dt);
+    const aiming = this.updateAiming("ai", v, dt);
     if (c.busy || aiming) c.velocity.setAll(0);
     else if (selfSetup) c.moveToward(this.anchor.ai!, c.def.speed, dt);
     else {
       // Same reach assist as player 1, toward this side's intercept.
       const [bx, bz] = this.bendAssist(c.position, this.anchor.ai, v.moveX, v.moveZ);
-      const [mx, mz] = this.holdNearAnchor(c.position, this.anchor.ai, bx, bz, c.def.speed);
+      const [mx, mz] = this.holdNearAnchor("ai", c.position, this.anchor.ai, bx, bz, c.def.speed);
       c.move(mx, mz, c.def.speed, dt);
     }
     // The second seat aims and charges exactly as the first does; its axes

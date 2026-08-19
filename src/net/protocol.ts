@@ -86,6 +86,10 @@ export interface InputMessage {
   hold?: boolean;
   /** Power the guest's own scheme decided (a portrait swipe), 0..1. */
   power?: number;
+  /** Taps the guest's kick was made of, 1..3 (their landscape scheme). */
+  taps?: number;
+  /** Arc the guest's kick asked for; 1 is neutral. */
+  loft?: number;
   pop: boolean;
   confirm: boolean;
 }
@@ -438,6 +442,25 @@ export function isValidInput(msg: unknown): msg is InputMessage {
     typeof m.pop === "boolean" &&
     typeof m.confirm === "boolean"
   );
+}
+
+/**
+ * The shape values, made safe rather than made a reason to reject a frame.
+ *
+ * A nonsense `taps` or `loft` must become a legal shot, not a dropped message:
+ * rejecting the frame would throw away the movement riding on it too, so one
+ * bad field would stutter the other player's character rather than merely
+ * flattening their kick. Absent stays absent, and the shot falls back to
+ * neutral on its own.
+ */
+export function readTaps(v: unknown): number | undefined {
+  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+  return Math.min(3, Math.max(1, Math.round(v)));
+}
+
+export function readLoft(v: unknown): number | undefined {
+  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+  return Math.min(2, Math.max(0.5, v));
 }
 
 function isScorePair(v: unknown): v is [number, number] {

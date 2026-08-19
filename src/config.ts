@@ -211,6 +211,21 @@ export const RECEPTION_ZONE = {
   minPush: 0.18,
   /** Speed the leash draws a player back from beyond the band (m/s). */
   leash: 1.15 * TABLE_SCALE,
+  /**
+   * Hard cap around a set-up the player made themselves (m).
+   *
+   * The soft zone above is the right answer for a ball coming *at* you: you
+   * may still decide to leave it. A ball you put up yourself is different —
+   * it is already in the air and going nowhere else, so leaving is not a
+   * decision left to make halfway through, and the soft zone let a player
+   * walk off their own set-up while it dropped.
+   *
+   * Deliberately small: this is room to circle the drop and choose which foot
+   * takes it, not room to reposition. Scaled like every other distance here,
+   * and well inside `PLAYER_REACH`, so a ball landing on the anchor stays
+   * reachable from anywhere in the circle.
+   */
+  hardCap: 0.64 * TABLE_SCALE,
 };
 
 /**
@@ -538,8 +553,20 @@ export const SERVE_POWER: Record<string, number> = {
 };
 
 // Metres above the net tape a serve clears — the direct knob for serve loft
-// (bigger = higher, slower serve arc).
-export const SERVE_NET_CLEARANCE = 0.22;
+/**
+ * The arc of a serve, as metres of air over the net tape.
+ *
+ * The one knob that shapes a serve, because `solveLaunchClearingNet` only ever
+ * *lengthens* a flight to clear the net — so for a ball thrown from behind the
+ * service line this, and not the requested flight time, is what the arc ends up
+ * being. `base` is what a neutral serve asks for; the range is what a player
+ * can ask for either side of it, from a flat drive to a slow floated ball.
+ *
+ * Whatever moves this must move the flight time with it. Changing one alone
+ * either does nothing (the loop simply lifts the ball back out) or solves a
+ * ball into the net that the loop then quietly re-lofts.
+ */
+export const SERVE_CLEARANCE = { base: 0.22, min: 0.09, max: 0.5 };
 
 // Ball speed multiplier per kick clip: >1 = faster, flatter return; <1 = a
 // softer ball. Clips not listed use 1. Backflips hit hardest (reward for the

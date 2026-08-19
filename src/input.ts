@@ -1,5 +1,13 @@
 import type { CameraMode } from "./config";
 import { GestureScheme } from "./gestures";
+import {
+  kickDown,
+  kickHeldFor,
+  kickTick,
+  kickUp,
+  type KickCommit,
+  type KickSequence,
+} from "./kickinput";
 
 /**
  * Unified input: keyboard (WASD/arrows + space), touch and gamepad (left stick
@@ -17,19 +25,42 @@ export interface InputState {
   moveX: number;
   moveZ: number;
   /**
-   * True only on the frame the strike control was *released*. A kick is
-   * committed by letting go, because how long it was held is what decides how
-   * hard it is struck.
+   * True only on the frame a kick was *committed*.
+   *
+   * Not simply the release edge any more: in landscape a kick is a sequence of
+   * taps whose count picks the speed, so the commit is the release of a held
+   * press, the release of the third tap, or the moment the tap window closes
+   * on a shorter sequence. See `kickinput.ts`.
    */
   strikePressed: boolean;
-  /** True while the strike control is down: the kick is being charged. */
+  /** True while the strike control is down: the player is aiming. */
   strikeHeld: boolean;
   /**
    * Power the input scheme decided for itself, 0..1, valid on the frame of a
-   * press. Portrait sets it from the speed of the swipe; landscape leaves it
-   * at 0 and the match charges the kick from how long the button was held.
+   * press. Portrait reads it from the speed of the swipe, landscape from how
+   * many times the button was tapped.
    */
   strikePower: number;
+  /**
+   * Taps the committed kick was made of, 1..3. Absent when the press did not
+   * come from the tap scheme at all — a gesture, or a synthesised press.
+   */
+  strikeTaps?: number;
+  /**
+   * Arc the committed kick asked for; 1 is neutral and leaves the shape to the
+   * power and the contact. Absent means the same as 1.
+   */
+  strikeLoft?: number;
+  /**
+   * Taps banked in the sequence still in progress, 0 when none is.
+   *
+   * A level rather than an edge, and separate from `strikeTaps` because the
+   * HUD has to show the tier being built *before* it commits — a bar that only
+   * appeared after the kick would be telling the player what they already saw.
+   */
+  strikeTapsSoFar?: number;
+  /** How long the press currently down has lasted, for showing the arc live. */
+  strikeHoldSoFar?: number;
   /** True only on the frame the reception (control-touch) control was pressed. */
   popPressed: boolean;
   /** True only on the frame any "confirm" control was pressed (strike, enter, tap). */
@@ -51,6 +82,10 @@ export interface LatchedInput {
   strikePressed: boolean;
   strikeHeld: boolean;
   strikePower: number;
+  strikeTaps?: number;
+  strikeLoft?: number;
+  strikeTapsSoFar?: number;
+  strikeHoldSoFar?: number;
   popPressed: boolean;
   confirmPressed: boolean;
 }
@@ -62,6 +97,10 @@ export function newLatch(): LatchedInput {
     strikePressed: false,
     strikeHeld: false,
     strikePower: 0,
+    strikeTaps: undefined,
+    strikeLoft: undefined,
+    strikeTapsSoFar: 0,
+    strikeHoldSoFar: 0,
     popPressed: false,
     confirmPressed: false,
   };
@@ -76,9 +115,17 @@ export function latchInput(latched: LatchedInput, sampled: InputState): void {
   latched.moveZ = sampled.moveZ;
   // Held is a level, like the axes: what matters is whether it is down now.
   latched.strikeHeld = sampled.strikeHeld;
+  // The sequence in progress is a level too — it is what the HUD is currently
+  // showing, not something a press spends.
+  latched.strikeTapsSoFar = sampled.strikeTapsSoFar;
+  latched.strikeHoldSoFar = sampled.strikeHoldSoFar;
   // A power belongs to the press it arrived with, so it is kept only when
   // there is a press waiting to carry it.
-  if (sampled.strikePressed) latched.strikePower = sampled.strikePower;
+  if (sampled.strikePressed) {
+    latched.strikePower = sampled.strikePower;
+    latched.strikeTaps = sampled.strikeTaps;
+    latched.strikeLoft = sampled.strikeLoft;
+  }
   latched.strikePressed ||= sampled.strikePressed;
   latched.popPressed ||= sampled.popPressed;
   latched.confirmPressed ||= sampled.confirmPressed;
@@ -89,6 +136,8 @@ export function consumeInput(latched: LatchedInput): InputState {
   const state: InputState = { ...latched };
   latched.strikePressed = false;
   latched.strikePower = 0;
+  latched.strikeTaps = undefined;
+  latched.strikeLoft = undefined;
   latched.popPressed = false;
   latched.confirmPressed = false;
   return state;
@@ -138,6 +187,11 @@ export class Input {
    * known until it comes back up.
    */
   private strikeDown = false;
+  /** The landscape press sequence in progress; see `kickinput.ts`. */
+  private kickSeq: KickSequence | null = null;
+  /** What the last committed sequence asked for, consumed by the next poll. */
+  private kickTaps: number | undefined;
+  private kickLoftValue: number | undefined;
   /** Pad level, so a pad release is only reported once. */
   private padStrikeWasDown = false;
   private prevGamepadPop = false;
@@ -209,7 +263,9 @@ export class Input {
       }
       // Every strike/reception key belongs to the one player.
       if (e.code === "Space" || e.code === "Enter" || e.code === "KeyJ") {
-        this.setStrikeDown(true);
+        // Repeat events keep firing while a key is held; `setStrikeDown` ignores
+        // a state it is already in, so the sequence sees one press.
+        this.setStrikeDown(true, e.timeStamp / 1000);
         e.preventDefault();
       }
       if (e.code === "KeyK") {
@@ -219,7 +275,8 @@ export class Input {
     });
     window.addEventListener("keyup", (e) => {
       this.keys.delete(e.code);
-      if (e.code === "Space" || e.code === "Enter" || e.code === "KeyJ") this.setStrikeDown(false);
+      if (e.code === "Space" || e.code === "Enter" || e.code === "KeyJ")
+        this.setStrikeDown(false, e.timeStamp / 1000);
     });
     window.addEventListener("blur", () => {
       this.keys.clear();
@@ -269,19 +326,36 @@ export class Input {
    * let go. Confirm still fires on the way down, so menus and the serve toss
    * answer a press immediately.
    */
-  private setStrikeDown(down: boolean): void {
+  private setStrikeDown(down: boolean, t: number = performance.now() / 1000): void {
     if (down === this.strikeDown) return;
     this.strikeDown = down;
     if (down) {
+      this.kickSeq = kickDown(this.kickSeq, t);
+      // Still the down edge, so a menu or the intro answers a press at once and
+      // never waits on a tap window meant for kicks.
       this.confirmQueued = true;
       return;
     }
+    const { seq, commit } = kickUp(this.kickSeq, t);
+    this.kickSeq = seq;
+    if (commit) this.commitKick(commit);
+  }
+
+  /** Publish a finished sequence for the next poll to hand to the match. */
+  private commitKick(commit: KickCommit): void {
     this.strikeQueued = true;
+    this.gesturePower = commit.power;
+    this.kickTaps = commit.taps;
+    this.kickLoftValue = commit.loft;
   }
 
   /** Drop a held kick without firing it (focus loss, a hidden touch layer). */
   private clearStrikeHold(): void {
     this.strikeDown = false;
+    // Deliberately dropped rather than committed: a sequence interrupted by the
+    // window going away was never finished, and firing it would be a kick the
+    // player did not ask for.
+    this.kickSeq = null;
   }
 
   /** Hide the touch layer while a screen needs direct canvas interaction (model viewer). */
@@ -324,7 +398,7 @@ export class Input {
       "STRIKE",
       "HOLD TO AIM",
       "Hold to aim and charge the kick, release to strike",
-      (down) => this.setStrikeDown(down)
+      (down, t) => this.setStrikeDown(down, t)
     );
     this.popBtn = this.makeTouchAction(
       "pop-btn",
@@ -477,7 +551,13 @@ export class Input {
     label: string,
     detail: string,
     ariaLabel: string,
-    hold: (down: boolean) => void
+    /**
+     * `t` is the *event's* timestamp, not the handler's. Tap counting lives or
+     * dies on it: on a struggling phone two presses 140 ms apart can reach
+     * their listeners half a second apart, which would read as two kicks
+     * instead of one double-tap.
+     */
+    hold: (down: boolean, t: number) => void
   ): HTMLButtonElement {
     const button = document.createElement("button");
     button.type = "button";
@@ -491,7 +571,7 @@ export class Input {
       if (!activePointers.delete(e.pointerId)) return;
       if (activePointers.size === 0) {
         button.classList.remove("pressed");
-        hold(false);
+        hold(false, e.timeStamp / 1000);
       }
     };
     button.addEventListener("pointerdown", (e) => {
@@ -505,7 +585,7 @@ export class Input {
       } catch {
         // A press still registers on browsers without Pointer Events capture.
       }
-      hold(true);
+      hold(true, e.timeStamp / 1000);
     });
     button.addEventListener("pointerup", release);
     button.addEventListener("pointercancel", release);
@@ -620,6 +700,12 @@ export class Input {
   /** Poll and consume one frame of the player's input. Screen-space: x right, y down. */
   poll(cameraMode: CameraMode = "court"): InputState {
     if (this.portrait) this.pumpGestures();
+    // A tap sequence whose window closed between frames commits here, rather
+    // than waiting for a press that may never come.
+    const now = performance.now() / 1000;
+    const tick = kickTick(this.kickSeq, now);
+    this.kickSeq = tick.seq;
+    if (tick.commit) this.commitKick(tick.commit);
     // The active view is passed into this concrete poll rather than cached on
     // Input, so a view that cycles this frame is already reflected here.
     const rotateDpad = cameraMode === "side";
@@ -652,6 +738,10 @@ export class Input {
       strikePressed: this.strikeQueued,
       strikeHeld: this.strikeDown,
       strikePower: this.gesturePower,
+      strikeTaps: this.kickTaps,
+      strikeLoft: this.kickLoftValue,
+      strikeTapsSoFar: this.kickSeq?.taps ?? 0,
+      strikeHoldSoFar: kickHeldFor(this.kickSeq, now),
       popPressed: this.popQueued,
       confirmPressed: this.confirmQueued,
     };
@@ -659,6 +749,8 @@ export class Input {
     this.popQueued = false;
     this.confirmQueued = false;
     this.gesturePower = 0;
+    this.kickTaps = undefined;
+    this.kickLoftValue = undefined;
     return state;
   }
 
