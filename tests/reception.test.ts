@@ -111,6 +111,10 @@ describe("the room a player has around the ball", () => {
     // And the re-engage distance is a true hysteresis: the anchor has to move
     // further than the arrival covers before the run picks back up.
     expect(AUTO_RUN.reengage).toBeGreaterThan(AUTO_RUN.arrive);
+    // The assist is semi-: it engages only in the ball's vicinity, which sits
+    // outside the re-engage band — the run never grabs a player who merely
+    // wanders past its arrival circle.
+    expect(AUTO_RUN.vicinity).toBeGreaterThan(AUTO_RUN.reengage);
   });
 
   it("shapes the run rather than moving the player", () => {

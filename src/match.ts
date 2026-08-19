@@ -427,6 +427,14 @@ export class MatchController {
    */
   private autoRunArrived: Record<Side, boolean> = { player: false, ai: false };
   /**
+   * Engagement latch for the semi-assisted run: the run only takes the feet
+   * once the player is in the ball's vicinity (`AUTO_RUN.vicinity`) — while
+   * the ball is still far off, the feet are the player's own. Once engaged it
+   * stays engaged until the possession changes, so a ball that moves after the
+   * run started is still chased.
+   */
+  private autoRunEngaged: Record<Side, boolean> = { player: false, ai: false };
+  /**
    * Horizontal pace each side last struck the ball at (m/s).
    *
    * The reception of that strike is judged against this rather than against
@@ -796,15 +804,15 @@ export class MatchController {
   }
 
   /**
-   * Whether this side's feet are owned by the automatic run to the ball's
-   * drop spot.
+   * Whether this side's feet are owned by the run to the ball's drop spot.
    *
-   * The run owns them while the ball is on its way to this side (an anchor
-   * exists before the first touch) and while a set-up of their own is hanging
-   * (`autoSetupRun`). It releases once they are close enough to the anchor —
-   * from there, shifting left or right of the ball is the decision a touch is
-   * made of, and it has to be theirs — and picks back up if the anchor moves
-   * far enough that the arrival no longer covers it.
+   * Semi-assisted on purpose. While the ball is still far off the feet are
+   * the player's own; the run engages only once they are in its vicinity, and
+   * from there it releases once they are close enough to the anchor — from
+   * there, shifting left or right of the ball is the decision a touch is made
+   * of, and it has to be theirs — picking back up if the anchor moves far
+   * enough that the arrival no longer covers it. Engagement latches: a ball
+   * that moves after the run started is still the run's business.
    *
    * Landscape only for the player: portrait steers by tapping the court, and
    * a tap the game declines to walk toward reads as a dead control. The stick
@@ -820,6 +828,10 @@ export class MatchController {
     if (!(this.touchCount === 0 || this.autoSetupRun[side])) return false;
     const c = this.chars[side];
     const d = Math.hypot(anchor.x - c.position.x, anchor.z - c.position.z);
+    if (!this.autoRunEngaged[side]) {
+      if (d > AUTO_RUN.vicinity) return false;
+      this.autoRunEngaged[side] = true;
+    }
     if (d <= AUTO_RUN.arrive) this.autoRunArrived[side] = true;
     else if (d > AUTO_RUN.reengage) this.autoRunArrived[side] = false;
     return !this.autoRunArrived[side];
@@ -1285,6 +1297,7 @@ export class MatchController {
     this.touchCount = 0;
     this.autoSetupRun = { player: false, ai: false };
     this.autoRunArrived = { player: false, ai: false };
+    this.autoRunEngaged = { player: false, ai: false };
     this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
@@ -1811,6 +1824,7 @@ export class MatchController {
     this.pointTouches++;
     this.autoSetupRun[side] = false;
     this.autoRunArrived[side] = false;
+    this.autoRunEngaged[side] = false;
     this.leashSlack[side] = Infinity;
     if (side === "player") this.ui.hint(null);
     // Portrait has no tap sequence the bar can track, so the bar echoes the
@@ -2115,6 +2129,7 @@ export class MatchController {
       if (side === "player" || this.versus) {
         this.autoSetupRun[side] = true;
         this.autoRunArrived[side] = false;
+        this.autoRunEngaged[side] = false;
         this.anchor[side] = this.computeAnchor(side);
       }
       if (side === "player" && !this.versus) this.ui.meterResult?.(quality);
@@ -2162,6 +2177,7 @@ export class MatchController {
           this.lastPart[e.side] = null;
           this.autoSetupRun[e.side] = false;
           this.autoRunArrived[e.side] = false;
+          this.autoRunEngaged[e.side] = false;
       this.leashSlack[e.side] = Infinity;
           // A fresh possession starts aimed at the middle of the other half,
           // so an aim left in a corner never carries silently into it.
@@ -2223,6 +2239,7 @@ export class MatchController {
     this.strikeableSide = null;
     this.autoSetupRun = { player: false, ai: false };
     this.autoRunArrived = { player: false, ai: false };
+    this.autoRunEngaged = { player: false, ai: false };
     this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
@@ -2542,12 +2559,12 @@ export class MatchController {
         // unless the auto-run still owns the feet, in which case the run to
         // the ball is not interrupted and the shot is lined up on the move.
         const aiming = this.updateAiming("player", input, dt);
-        // While the ball is on its way here (or the player's own set-up pop is
-        // hanging), the player runs to where it will come down and the stick
-        // is not listened to until they arrive: overriding the run is exactly
-        // how the player walked past the ball, and the decisions the stick is
-        // for — which side of the ball to take it on — begin where the run
-        // ends, not during it.
+        // Semi-assisted: while the ball is still far off the feet are the
+        // player's own. Once they are in its vicinity the run takes over to
+        // where it will come down and the stick is not listened to until the
+        // arrival: overriding the run there is exactly how the player walked
+        // past the ball, and the decisions the stick is for — which side of
+        // the ball to take it on — begin where the run ends, not during it.
         const locked = this.runLocked("player");
         // The run owns the feet while it lasts, so anywhere the player had
         // asked to stand is spent, not stored: left queued, it would take over

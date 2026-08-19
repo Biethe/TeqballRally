@@ -64,6 +64,8 @@ var RECEPTION_ZONE = {
   hardCap: 0.64 * TABLE_SCALE
 };
 var AUTO_RUN = {
+  /** How close to the anchor the player must be before the run engages (m). */
+  vicinity: 2.2,
   /** Distance to the anchor at which the run counts as arrived (m). */
   arrive: 0.35 * TABLE_SCALE,
   /** If the anchor moves further than this after arrival, chase it again (m). */

@@ -229,17 +229,19 @@ export const RECEPTION_ZONE = {
 };
 
 /**
- * The locked run to the ball's drop spot.
+ * The semi-assisted run to the ball's drop spot.
  *
- * While the ball is coming to a side (or hanging from that side's own set-up
- * pop), the player runs to the anchor on their own and the stick is not
- * listened to — a convenience that cannot be overridden, because overriding it
- * was exactly how players walked past the ball in landscape. The run releases
- * at the drop spot, where choosing a side of the ball becomes the decision to
- * make, and picks the run back up if the anchor moves far enough that the
- * arrival no longer covers it.
+ * The assist is deliberately half a control: while the ball is still far off,
+ * the player's feet are their own. Only once they are in the ball's vicinity
+ * does the run take over — from there it goes to the anchor on its own and the
+ * stick is not listened to, because overriding it there was exactly how players
+ * walked past the ball. The run releases at the drop spot, where choosing a
+ * side of the ball becomes the decision to make, and picks the run back up if
+ * the anchor moves far enough that the arrival no longer covers it.
  */
 export const AUTO_RUN = {
+  /** How close to the anchor the player must be before the run engages (m). */
+  vicinity: 2.2,
   /** Distance to the anchor at which the run counts as arrived (m). */
   arrive: 0.35 * TABLE_SCALE,
   /** If the anchor moves further than this after arrival, chase it again (m). */

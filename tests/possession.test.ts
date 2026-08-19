@@ -235,6 +235,21 @@ describe("staying with the ball", () => {
     expect(drifted.moved).toBeGreaterThan(0.8);
   });
 
+  it("leaves the feet to the player while the ball is far off", () => {
+    // The assist is semi-: the run takes over in the ball's vicinity, not the
+    // moment it is hit. Standing further out than that, the stick is in charge
+    // and walking anywhere is still the player's decision to make.
+    const r = rig();
+    feedPlayer(r);
+    r.player.position.z = 2.5; // outside AUTO_RUN.vicinity of the drop spot
+    const from = r.player.position.clone();
+    for (let i = 0; i < 60 * 0.5 && r.match.state === "rally"; i++) {
+      r.match.update(SIM_DT, { ...idle, moveZ: 1 }, () => {});
+    }
+
+    expect(r.player.position.z - from.z).toBeGreaterThan(0.8);
+  });
+
   it("runs to the drop spot even while the stick pushes away", () => {
     // The inversion the locked run is: the old soft zone let a stick push
     // cancel the run to the ball, so a push that meant nothing in particular
@@ -260,7 +275,9 @@ describe("staying with the ball", () => {
     // again — that shift is how a side of the ball is chosen.
     const r = rig();
     feedPlayer(r);
-    r.player.position.z = -2.2; // well off the drop spot: the run has work to do
+    // Inside the run's engagement vicinity but well off the drop spot: the
+    // run has work to do.
+    r.player.position.z = -1.2;
 
     // Stick idle: the run alone has to bring the reception home.
     let touched = false;
