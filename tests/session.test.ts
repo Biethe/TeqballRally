@@ -52,6 +52,7 @@ function fakeMatch() {
     serveOwner: "player",
     state: "rally",
     versusInput: { moveX: 0, moveZ: 0, strikePressed: false, strikeHeld: false, strikePower: 0, popPressed: false, confirmPressed: false },
+    lockedState: { player: false, ai: false },
     ball: { state: { pos: new Vector3(0, 1, 0), vel: new Vector3(0, 0, 0) }, held: false },
     chars: {
       player: { position: new Vector3(-3, 0.4, 0), velocity: new Vector3(0, 0, 0) },
@@ -279,6 +280,18 @@ describe("host and guest exchange", () => {
     expect(["player", "ai"]).toContain(frame.serveOwner);
   });
 
+  it("publishes which seats' feet the run to the ball owns", () => {
+    // The guest cannot see the host's run lock any other way, and without it
+    // its local prediction fights the authoritative run every reception.
+    const h = session({}, "host");
+    h.match.lockedState.ai = true;
+    run(h.s, 0.1);
+    const snap = h.sent.find((m) => m.t === "snap") as SnapshotMessage;
+
+    expect(snap.guestLocked).toBe(true);
+    expect(snap.hostLocked).toBe(false);
+  });
+
   it("feeds the guest's controls into the match's second seat", () => {
     const h = session({}, "host");
     h.deliver({ t: "input", tick: 1, moveX: 0.5, moveZ: -1, strike: true, pop: false, confirm: false });
@@ -351,6 +364,23 @@ describe("guest applies the authoritative frame", () => {
     g.deliver({ ...snapshot({}), ballPos: { x: NaN, y: 0, z: 0 } });
 
     expect(g.applySnapshot).not.toHaveBeenCalled();
+  });
+
+  it("tells the guest when the host owns its feet", () => {
+    // The host locks the guest's seat to the run toward the drop spot; the
+    // guest must stop predicting from a stick the host is no longer listening
+    // to, or the two race every reception. The flag swaps with the seats.
+    const g = session({}, "guest");
+    g.deliver(snapshot({ guestLocked: true, hostLocked: false }));
+
+    expect(g.applySnapshot.mock.calls[0][0]).toMatchObject({ selfLocked: true });
+  });
+
+  it("reads an older host's missing lock flags as unlocked", () => {
+    const g = session({}, "guest");
+    g.deliver(snapshot());
+
+    expect(g.applySnapshot.mock.calls[0][0]).toMatchObject({ selfLocked: false });
   });
 });
 

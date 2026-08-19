@@ -350,6 +350,13 @@ export class MatchController {
    * rule engines fed by different inputs will not agree for a single rally.
    */
   netFollower = false;
+  /**
+   * Which seats' feet are currently owned by the run to the drop spot
+   * (`runLocked`), mirrored every rally step. The online snapshot carries it,
+   * so a guest whose feet the host has taken over stops predicting from a
+   * stick that is no longer driving anything.
+   */
+  lockedState: Record<Side, boolean> = { player: false, ai: false };
   versusInput: InputState = {
     moveX: 0,
     moveZ: 0,
@@ -1032,8 +1039,16 @@ export class MatchController {
       //
       // Only during a rally: between points the host walks players to serve
       // and receive spots, and predicting from a stick that is not driving
-      // that would fight it the whole way.
-      if (side === "player" && !c.busy && this.followerPhase === "rally") {
+      // that would fight it the whole way. And only while the host is
+      // listening to the stick at all: while the run to the drop spot owns
+      // the feet there (`selfLocked`), predicting from it is predicting from
+      // nothing, and the two would race every reception.
+      if (
+        side === "player" &&
+        !c.busy &&
+        this.followerPhase === "rally" &&
+        !this.followerSelfLocked
+      ) {
         // Portrait predicts from the tap target, not the axes: in portrait the
         // axes only ever carry a swipe's leftover aim, and walking on that is
         // the player drifting diagonally after every kick.
@@ -1111,6 +1126,12 @@ export class MatchController {
   private followerClip: Record<Side, string | null> = { player: null, ai: null };
   /** Host's match phase; prediction only runs during a rally. */
   private followerPhase = "";
+  /**
+   * The host currently owns this peer's feet (the run to the drop spot is
+   * engaged there), so local prediction from the stick is suspended and the
+   * character follows the snapshot instead.
+   */
+  private followerSelfLocked = false;
 
   /**
    * Take one side of a snapshot.
@@ -1183,12 +1204,15 @@ export class MatchController {
     opponentVel: { x: number; z: number };
     selfClip: string | null;
     opponentClip: string | null;
+    /** The host owns this peer's feet (the run to the drop spot is engaged). */
+    selfLocked?: boolean;
     score: [number, number];
     sets: [number, number];
     serveOwner: Side;
     phase: string;
   }, lead = 0): void {
     this.followerPhase = snap.phase;
+    this.followerSelfLocked = snap.selfLocked === true;
 
     // Where the host's ball would be *now*, run forward through the same pure
     // physics both peers share.
@@ -1298,6 +1322,7 @@ export class MatchController {
     this.autoSetupRun = { player: false, ai: false };
     this.autoRunArrived = { player: false, ai: false };
     this.autoRunEngaged = { player: false, ai: false };
+    this.lockedState = { player: false, ai: false };
     this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
@@ -2240,6 +2265,7 @@ export class MatchController {
     this.autoSetupRun = { player: false, ai: false };
     this.autoRunArrived = { player: false, ai: false };
     this.autoRunEngaged = { player: false, ai: false };
+    this.lockedState = { player: false, ai: false };
     this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
@@ -2566,6 +2592,7 @@ export class MatchController {
         // past the ball, and the decisions the stick is for — which side of
         // the ball to take it on — begin where the run ends, not during it.
         const locked = this.runLocked("player");
+        this.lockedState.player = locked;
         // The run owns the feet while it lasts, so anywhere the player had
         // asked to stand is spent, not stored: left queued, it would take over
         // the moment the run finished and walk them away from the ball.
@@ -2736,6 +2763,7 @@ export class MatchController {
     // Same locked run to the drop spot as player 1: the stick is not listened
     // to until the arrival, on the incoming ball and on P2's own set-up pop.
     const locked = this.runLocked("ai");
+    this.lockedState.ai = locked;
     const aiming = this.updateAiming("ai", v, dt);
     if (c.busy) c.velocity.setAll(0);
     else if (aiming && !locked) c.velocity.setAll(0);

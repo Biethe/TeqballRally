@@ -126,6 +126,16 @@ export interface SnapshotMessage {
    */
   hostClip: string | null;
   guestClip: string | null;
+  /**
+   * Whether each seat's feet are owned by the semi-assisted run to the drop
+   * spot (`runLocked` in the match). The guest needs to know about its own
+   * seat: while locked, its stick is not driving the character on the host,
+   * so predicting from that stick locally would fight the authoritative run
+   * and saw the joined player tugged toward every ball. Optional because an
+   * older peer never sends them, and an absent flag means the old behaviour.
+   */
+  hostLocked?: boolean;
+  guestLocked?: boolean;
   /** Score in the host's frame: [host, guest]. */
   score: [number, number];
   sets: [number, number];
@@ -353,6 +363,8 @@ export function reframe<T extends GameMessage>(msg: T, role: PeerRole): T {
         guestVel: mirror(msg.hostVel),
         hostClip: msg.guestClip,
         guestClip: msg.hostClip,
+        hostLocked: msg.guestLocked,
+        guestLocked: msg.hostLocked,
         score: [msg.score[1], msg.score[0]],
         sets: [msg.sets[1], msg.sets[0]],
         serveOwner: msg.serveOwner === "player" ? "ai" : "player",
