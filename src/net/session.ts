@@ -400,6 +400,10 @@ export class OnlineSession {
   private trackPresence(dt: number): void {
     if (this.forfeited) return;
     this.sinceMessage += dt;
+    // A finished match is finished on both screens: an opponent who walks out
+    // of the result screen is not an opponent who walked out of the match, and
+    // awarding a walkover here would hand the loser a win they lost.
+    if (this.match.matchWinner !== null) return;
     // Our own socket is down and being retried. Nothing can arrive through it,
     // so the silence says nothing about the opponent — and awarding ourselves
     // the match because our phone changed network would be a walkover claimed

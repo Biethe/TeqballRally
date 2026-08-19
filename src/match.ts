@@ -1211,8 +1211,22 @@ export class MatchController {
     serveOwner: Side;
     phase: string;
   }, lead = 0): void {
+    // The follower runs no rules, so it would never notice the match ending on
+    // its own: the host's engine decides it and keeps it to itself. Reading
+    // the phase change here is what gives the joined player the same final
+    // whistle — winner, celebration, result screen — instead of a court that
+    // simply stops making sense.
+    const finishedNow =
+      snap.phase === "over" && this.followerPhase !== "over" && this.state !== "over";
     this.followerPhase = snap.phase;
     this.followerSelfLocked = snap.selfLocked === true;
+    if (finishedNow) {
+      this.state = "over";
+      // Sets arrive already in this peer's frame ([me, them]), so the winner
+      // is read straight off them.
+      this.matchWinner = snap.sets[0] >= SETS_TO_WIN ? "player" : "ai";
+      this.ui.onMatchEnd(this.matchWinner);
+    }
 
     // Where the host's ball would be *now*, run forward through the same pure
     // physics both peers share.

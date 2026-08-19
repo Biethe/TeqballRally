@@ -53,6 +53,7 @@ function fakeMatch() {
     state: "rally",
     versusInput: { moveX: 0, moveZ: 0, strikePressed: false, strikeHeld: false, strikePower: 0, popPressed: false, confirmPressed: false },
     lockedState: { player: false, ai: false },
+    matchWinner: null,
     ball: { state: { pos: new Vector3(0, 1, 0), vel: new Vector3(0, 0, 0) }, held: false },
     chars: {
       player: { position: new Vector3(-3, 0.4, 0), velocity: new Vector3(0, 0, 0) },
@@ -172,6 +173,21 @@ describe("opponent presence", () => {
     runPresent(s, deliver, 1); // back
 
     expect(onOpponentReturned).toHaveBeenCalledTimes(1);
+    expect(onOpponentForfeit).not.toHaveBeenCalled();
+  });
+
+  it("never forfeits a match that already has a winner", () => {
+    // Once the last set is decided the result is fixed on both screens; an
+    // opponent leaving the result screen is not a walkout, and awarding one
+    // would hand the loser a win they lost.
+    const onOpponentAbsent = vi.fn();
+    const onOpponentForfeit = vi.fn();
+    const { s, match } = session({ onOpponentAbsent, onOpponentForfeit });
+    (match as unknown as { matchWinner: string | null }).matchWinner = "player";
+
+    run(s, ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 30);
+
+    expect(onOpponentAbsent).not.toHaveBeenCalled();
     expect(onOpponentForfeit).not.toHaveBeenCalled();
   });
 

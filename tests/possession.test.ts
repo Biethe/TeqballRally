@@ -300,3 +300,69 @@ describe("staying with the ball", () => {
     expect(r.player.position.z).toBeLessThan(zBefore - 0.25);
   });
 });
+
+describe("a follower at the final whistle", () => {
+  /** One authoritative frame, with the match just decided. */
+  const finalFrame = (sets: [number, number]) => ({
+    ballPos: { x: 0, y: 1, z: 0 },
+    ballVel: { x: 0, y: 0, z: 0 },
+    ballHeld: true,
+    selfPos: { x: -3, z: 0 },
+    opponentPos: { x: 3, z: 0 },
+    selfVel: { x: 0, z: 0 },
+    opponentVel: { x: 0, z: 0 },
+    selfClip: null,
+    opponentClip: null,
+    score: [12, 9] as [number, number],
+    sets,
+    serveOwner: "player" as const,
+    phase: "over",
+  });
+
+  it("shows the joined player the result the host decided", () => {
+    // The guest runs no rules: left to itself it would never know the match
+    // had ended, and what it saw next was a silence countdown awarding it a
+    // win it had lost. The phase change in the snapshot is the final whistle.
+    let ended: string | null = null;
+    const ui = silentUI();
+    ui.onMatchEnd = (winner) => {
+      ended = winner;
+    };
+    const r = rig({ ui });
+    r.match.netFollower = true;
+
+    r.match.applySnapshot(finalFrame([2, 1]));
+
+    expect(r.match.state).toBe("over");
+    expect(r.match.matchWinner).toBe("player");
+    expect(ended).toBe("player");
+  });
+
+  it("names the opponent the winner when the follower lost", () => {
+    let ended: string | null = null;
+    const ui = silentUI();
+    ui.onMatchEnd = (winner) => {
+      ended = winner;
+    };
+    const r = rig({ ui });
+    r.match.netFollower = true;
+
+    r.match.applySnapshot(finalFrame([1, 2]));
+
+    expect(r.match.matchWinner).toBe("ai");
+    expect(ended).toBe("ai");
+  });
+
+  it("blows the whistle once, however many frames follow", () => {
+    const ended: string[] = [];
+    const ui = silentUI();
+    ui.onMatchEnd = (winner) => ended.push(winner);
+    const r = rig({ ui });
+    r.match.netFollower = true;
+
+    r.match.applySnapshot(finalFrame([2, 0]));
+    r.match.applySnapshot(finalFrame([2, 0]));
+
+    expect(ended).toEqual(["player"]);
+  });
+});
