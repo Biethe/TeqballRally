@@ -15,6 +15,7 @@ import {
   readTaps,
   encode,
   isValidMove,
+  isValidRematch,
   isValidStrike,
   makeRoomCode,
   makeStrike,
@@ -152,6 +153,21 @@ describe("strike validation", () => {
     expect(isValidMove(move)).toBe(true);
     expect(isValidMove({ ...move, yaw: NaN })).toBe(false);
     expect(isValidMove({ ...move, t: "strike" })).toBe(false);
+  });
+});
+
+describe("rematch validation", () => {
+  it("accepts the three negotiation actions", () => {
+    for (const action of ["request", "accept", "decline"] as const) {
+      expect(isValidRematch({ t: "rematch", tick: 1, action })).toBe(true);
+    }
+  });
+
+  it("rejects anything a pause could do but a rematch cannot", () => {
+    expect(isValidRematch({ t: "rematch", tick: 1, action: "resume" })).toBe(false);
+    expect(isValidRematch({ t: "pause", tick: 1, action: "request" })).toBe(false);
+    expect(isValidRematch({ t: "rematch", tick: 1 })).toBe(false);
+    expect(isValidRematch(null)).toBe(false);
   });
 });
 

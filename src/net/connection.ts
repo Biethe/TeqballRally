@@ -56,6 +56,8 @@ export interface NetHandlers {
   onReconnecting?: (attempt: number, of: number) => void;
   /** The seat was reclaimed and play can continue. */
   onReconnected?: () => void;
+  /** The relay minted a fresh match id (a rematch began). */
+  onMatchId?: (id: string) => void;
   /** Fatal: the room was refused, or the socket died. */
   onError?: (reason: string) => void;
 }
@@ -181,6 +183,15 @@ export class NetConnection {
     this.rawSend({ t: "cancel" });
     this.pendingJoin?.reject(new Error("cancelled"));
     this.pendingJoin = null;
+  }
+
+  /**
+   * Host: a rematch was agreed. Ask the relay to mint a fresh match id for
+   * the same room; the relay answers both seats, and this connection adopts
+   * the id when it arrives.
+   */
+  newMatch(): void {
+    this.rawSend({ t: "newmatch" });
   }
 
   /**
@@ -343,6 +354,15 @@ export class NetConnection {
         this.setState(msg.joined ? "ready" : "waiting");
         if (msg.match) this.matchId = msg.match;
         this.handlers.onPeer?.(msg.joined, msg.who ?? null, this.matchId);
+        return;
+
+      // The rematch got its name: adopt it, so this match's result is never
+      // reported against the previous match's id.
+      case "newmatch":
+        if (typeof msg.match === "string") {
+          this.matchId = msg.match;
+          this.handlers.onMatchId?.(msg.match);
+        }
         return;
 
       // Answer the peer's clock probe. Their `sent` is echoed untouched so only

@@ -313,6 +313,7 @@ describe("a follower at the final whistle", () => {
     opponentVel: { x: 0, z: 0 },
     selfClip: null,
     opponentClip: null,
+    tick: 100,
     score: [12, 9] as [number, number],
     sets,
     serveOwner: "player" as const,

@@ -1178,17 +1178,23 @@ async function boot(): Promise<void> {
    * screen says nothing about a rank rather than something wrong about one.
    */
   const settleOnline = (won: boolean, championId: string) => {
-    const done = () => leaveMatch();
-    if (!identity || !onlineMatchId) {
+    const leave = () => leaveMatch();
+    const again = () => session?.requestRematch();
+    // The id this result is reported against. A rematch mints a fresh one; if
+    // this report's answer is still in the air when that happens, it must not
+    // throw the old match's card over the new one.
+    const reportedId = onlineMatchId;
+    const stillCurrent = () => onlineMatchId === reportedId;
+    if (!identity || !reportedId) {
       // Playing without an account, or a match the relay never named. Nothing
       // to settle; the result screen would have nothing true to put on it.
-      ui.showEnd(won ? "player" : "ai", done, done);
+      ui.showEnd(won ? "player" : "ai", again, leave);
       return;
     }
     const tally = matchTally();
     input.setTouchControlsEnabled(false);
     void reportOnlineMatch(identity.token, {
-      matchId: onlineMatchId,
+      matchId: reportedId,
       championId,
       won,
       ...tally,
@@ -1196,16 +1202,19 @@ async function boot(): Promise<void> {
     }).then(
       (result) => {
         if ("pending" in result) {
-          ui.showEnd(won ? "player" : "ai", done, done);
+          if (stillCurrent()) ui.showEnd(won ? "player" : "ai", again, leave);
           return;
         }
+        // The career is real whatever the screen does with it.
         adoptServerCareer(result.career);
         if (profile) profile = { ...profile, trophies: result.career.trophies, rank: result.rank };
-        showOutcome(won, result.outcome, done, null);
+        if (stillCurrent()) showOutcome(won, result.outcome, leave, again);
       },
       // Offline at the final whistle. The match was still played, and saying
       // so is better than a screen that pretends it was not.
-      () => ui.showEnd(won ? "player" : "ai", done, done)
+      () => {
+        if (stillCurrent()) ui.showEnd(won ? "player" : "ai", again, leave);
+      }
     );
   };
 
@@ -1891,6 +1900,11 @@ async function boot(): Promise<void> {
         if (!isValidSetup(msg)) return;
         theirs = { character: msg.character, ball: msg.ball };
         launch();
+      },
+      // A rematch mints a fresh match id; the result of the new match reports
+      // against it, never against the settled one.
+      onMatchId: (id) => {
+        onlineMatchId = id;
       },
       // A phone drops its socket for a few seconds all the time. Say what is
       // happening rather than freezing silently, and say when it is over —
@@ -2678,6 +2692,34 @@ async function boot(): Promise<void> {
               if (detail) ui.banner("PAUSE", detail);
               return;
           }
+        },
+        onRematchState: (state, detail) => {
+          switch (state) {
+            case "asking":
+              ui.showOnlinePause("REMATCH?", "Asking your opponent…", [
+                ["LEAVE MATCH", () => leaveMatch()],
+              ]);
+              return;
+            case "asked":
+              ui.showOnlinePause("REMATCH?", "Your opponent wants a rematch", [
+                ["ACCEPT", () => session?.respondToRematch(true)],
+                ["DECLINE", () => session?.respondToRematch(false)],
+              ]);
+              return;
+            case "none":
+              ui.hideOnlinePause();
+              if (detail) ui.banner("REMATCH", detail);
+              return;
+          }
+        },
+        // Both peers land here on the same agreed transition. The host's reset
+        // is the authoritative one — it owns the rules and the serve order —
+        // and the guest's is presentation; the snapshots that follow re-drive
+        // everything it shows.
+        onRematch: () => {
+          input.setTouchControlsEnabled(true);
+          ui.showHUD();
+          match?.reset();
         },
       });
       session.pauseAllowed = opts.online.private;

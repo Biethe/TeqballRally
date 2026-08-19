@@ -172,6 +172,19 @@ export interface PauseMessage {
   action: "request" | "accept" | "decline" | "resume";
 }
 
+/**
+ * A rematch negotiated between the players, from the end screen.
+ *
+ * Shaped like the pause for the same reason: one peer asks, the other decides,
+ * and both act on the same transition. Unlike the pause there is no resume —
+ * completion starts the new match, and leaving is what the LEAVE button is for.
+ */
+export interface RematchMessage {
+  t: "rematch";
+  tick: number;
+  action: "request" | "accept" | "decline";
+}
+
 /** Host-only: the authoritative score and phase. */
 export interface StateMessage {
   t: "state";
@@ -207,6 +220,7 @@ export interface PongMessage {
 
 export type GameMessage =
   | PauseMessage
+  | RematchMessage
   | SetupMessage
   | InputMessage
   | SnapshotMessage
@@ -295,6 +309,17 @@ export interface ErrorMessage {
   reason: string;
 }
 
+/**
+ * A rematch begins: the host asks the relay to mint a fresh match id for the
+ * same room (sent bare), and the relay answers both seats with it. A result
+ * settles once per id, so the new match needs a name of its own before either
+ * side reports it.
+ */
+export interface NewMatchMessage {
+  t: "newmatch";
+  match?: string;
+}
+
 export type SignalMessage =
   | JoinMessage
   | JoinedMessage
@@ -302,7 +327,8 @@ export type SignalMessage =
   | ErrorMessage
   | QueueMessage
   | QueuedMessage
-  | CancelMessage;
+  | CancelMessage
+  | NewMatchMessage;
 export type NetMessage = GameMessage | SignalMessage;
 
 // ------------------------------------------------------------------- helpers
@@ -432,6 +458,14 @@ export function isValidPause(msg: unknown): msg is PauseMessage {
   if (typeof msg !== "object" || msg === null) return false;
   const m = msg as Partial<PauseMessage>;
   return m.t === "pause" && (PAUSE_ACTIONS as readonly string[]).includes(m.action ?? "");
+}
+
+export const REMATCH_ACTIONS = ["request", "accept", "decline"] as const;
+
+export function isValidRematch(msg: unknown): msg is RematchMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<RematchMessage>;
+  return m.t === "rematch" && (REMATCH_ACTIONS as readonly string[]).includes(m.action ?? "");
 }
 
 export function isValidSetup(msg: unknown): msg is SetupMessage {

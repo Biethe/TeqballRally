@@ -2422,7 +2422,8 @@ export class UI {
     this.endEl.querySelector<HTMLButtonElement>("#btn-rematch")!.textContent = t("end.rematch");
     this.endEl.querySelector<HTMLButtonElement>("#btn-change")!.textContent = t("end.change");
     this.endEl.querySelector<HTMLButtonElement>("#btn-rematch")!.onclick = () => {
-      this.endEl.classList.add("hidden");
+      // The overlay stays: a declined or unanswered request returns here, and
+      // a start that happens clears everything anyway.
       onRematch();
     };
     this.endEl.querySelector<HTMLButtonElement>("#btn-change")!.onclick = () => {

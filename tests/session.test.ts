@@ -9,15 +9,18 @@ import {
   DISCONNECT_GRACE_SECONDS,
   OnlineSession,
   PAUSE_REQUEST_TIMEOUT_SECONDS,
+  REMATCH_REQUEST_TIMEOUT_SECONDS,
   type PauseState,
   type SessionHandlers,
 } from "../src/net/session";
+import { MAX_CATCHUP_TICKS } from "../src/net/protocol";
 import type { GameMessage, SnapshotMessage } from "../src/net/protocol";
 
 /** A connection that records what was sent and lets a test drive its handlers. */
 function fakeConn() {
   const sent: GameMessage[] = [];
   let handlers: NetHandlers = {};
+  const newMatch = vi.fn();
   const conn = {
     tick: 0,
     send: (m: GameMessage) => sent.push(m),
@@ -26,10 +29,12 @@ function fakeConn() {
     // that is missing. The session reads both.
     latencyTicks: 0,
     isReconnecting: false,
+    newMatch,
   };
   return {
     conn: conn as unknown as NetConnection,
     sent,
+    newMatch,
     deliver: (m: GameMessage) => handlers.onMessage?.(m),
     setPeer: (present: boolean) => handlers.onPeer?.(present),
     setLatency: (ticks: number) => (conn.latencyTicks = ticks),
@@ -275,8 +280,8 @@ describe("host and guest exchange", () => {
     run(h.s, 1);
 
     const snaps = h.sent.filter((m) => m.t === "snap");
-    expect(snaps.length).toBeGreaterThanOrEqual(18);
-    expect(snaps.length).toBeLessThanOrEqual(22);
+    expect(snaps.length).toBeGreaterThanOrEqual(28);
+    expect(snaps.length).toBeLessThanOrEqual(32);
     // The host is authoritative, so it never sends its controls anywhere.
     expect(h.sent.some((m) => m.t === "input")).toBe(false);
   });
@@ -576,6 +581,147 @@ describe("pausing an online match", () => {
   });
 });
 
+describe("agreeing a rematch from the end screen", () => {
+  /** The stand-in match has to be finished before a rematch means anything. */
+  const finish = (m: MatchController) => {
+    (m as unknown as { matchWinner: string | null }).matchWinner = "player";
+  };
+
+  it("asks the opponent and starts when they accept", () => {
+    const onRematchState = vi.fn();
+    const onRematch = vi.fn();
+    const h = session({ onRematchState, onRematch }, "host");
+    finish(h.match);
+
+    h.s.requestRematch();
+    expect(h.sent.some((m) => m.t === "rematch" && m.action === "request")).toBe(true);
+    expect(onRematchState).toHaveBeenLastCalledWith("asking", undefined);
+
+    h.deliver({ t: "rematch", tick: 2, action: "accept" });
+    expect(onRematch).toHaveBeenCalledTimes(1);
+    expect(h.s.rematchState).toBe("none");
+  });
+
+  it("has the host, and only the host, ask the relay for the fresh id", () => {
+    const host = session({}, "host");
+    finish(host.match);
+    host.s.requestRematch();
+    host.deliver({ t: "rematch", tick: 2, action: "accept" });
+    expect(host.newMatch).toHaveBeenCalledTimes(1);
+
+    const guest = session({}, "guest");
+    finish(guest.match);
+    guest.s.requestRematch();
+    guest.deliver({ t: "rematch", tick: 2, action: "accept" });
+    expect(guest.newMatch).not.toHaveBeenCalled();
+  });
+
+  it("carries a decline and leaves both on the result screen", () => {
+    const onRematchState = vi.fn();
+    const onRematch = vi.fn();
+    const h = session({ onRematchState, onRematch }, "host");
+    finish(h.match);
+
+    h.s.requestRematch();
+    h.deliver({ t: "rematch", tick: 2, action: "decline" });
+
+    expect(onRematch).not.toHaveBeenCalled();
+    expect(onRematchState).toHaveBeenLastCalledWith("none", "Your opponent declined");
+  });
+
+  it("presents the request to the one it was asked of", () => {
+    const onRematchState = vi.fn();
+    const g = session({ onRematchState }, "guest");
+    finish(g.match);
+
+    g.deliver({ t: "rematch", tick: 1, action: "request" });
+
+    expect(onRematchState).toHaveBeenLastCalledWith("asked", undefined);
+    expect(g.s.rematchState).toBe("asked");
+  });
+
+  it("reads two crossed requests as an agreement", () => {
+    const onRematch = vi.fn();
+    const g = session({ onRematch }, "guest");
+    finish(g.match);
+
+    g.s.requestRematch();
+    g.deliver({ t: "rematch", tick: 2, action: "request" });
+
+    expect(onRematch).toHaveBeenCalledTimes(1);
+    expect(g.sent.some((m) => m.t === "rematch" && m.action === "accept")).toBe(true);
+  });
+
+  it("accepts a pending request when REMATCH is pressed anyway", () => {
+    const onRematch = vi.fn();
+    const g = session({ onRematch }, "guest");
+    finish(g.match);
+
+    g.deliver({ t: "rematch", tick: 1, action: "request" });
+    g.s.requestRematch();
+
+    expect(onRematch).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up on an unanswered request and says so", () => {
+    const onRematchState = vi.fn();
+    const h = session({ onRematchState }, "host");
+    finish(h.match);
+
+    h.s.requestRematch();
+    run(h.s, REMATCH_REQUEST_TIMEOUT_SECONDS + 1);
+
+    expect(onRematchState).toHaveBeenLastCalledWith("none", "No answer from your opponent");
+  });
+
+  it("ignores the button while the match is still being played", () => {
+    const onRematchState = vi.fn();
+    const h = session({ onRematchState }, "host");
+
+    h.s.requestRematch();
+
+    expect(h.sent.some((m) => m.t === "rematch")).toBe(false);
+    expect(onRematchState).not.toHaveBeenCalled();
+  });
+
+  it("closes a negotiation the opponent leaves", () => {
+    const onRematchState = vi.fn();
+    const onRematch = vi.fn();
+    const h = session({ onRematchState, onRematch }, "host");
+    finish(h.match);
+
+    h.s.requestRematch();
+    h.setPeer(false);
+
+    expect(onRematchState).toHaveBeenLastCalledWith("none", "Your opponent left");
+    // A late accept from a departed peer starts nothing.
+    h.deliver({ t: "rematch", tick: 3, action: "accept" });
+    expect(onRematch).not.toHaveBeenCalled();
+  });
+
+  it("spends presses queued on the end screen before the new match", () => {
+    const h = session({}, "host");
+    finish(h.match);
+    h.deliver({ t: "input", tick: 1, moveX: 0, moveZ: 0, strike: true, pop: false, confirm: false });
+    expect(h.match.versusInput.strikePressed).toBe(true);
+
+    h.s.requestRematch();
+    h.deliver({ t: "rematch", tick: 2, action: "accept" });
+
+    expect(h.match.versusInput.strikePressed).toBe(false);
+  });
+
+  it("ignores a malformed rematch frame", () => {
+    const onRematchState = vi.fn();
+    const g = session({ onRematchState }, "guest");
+    finish(g.match);
+
+    g.deliver({ t: "rematch", tick: 1, action: "resume" } as unknown as GameMessage);
+
+    expect(onRematchState).not.toHaveBeenCalled();
+  });
+});
+
 describe("showing everything at the same moment", () => {
   /**
    * The bug this exists for looked like a graphics fault and was not one.
@@ -587,43 +733,75 @@ describe("showing everything at the same moment", () => {
    * worse. The frame's age has to travel with it so everything can be drawn at
    * one instant.
    */
-  it("tells the match how old each frame is", () => {
-    const net = fakeConn();
-    const match = fakeMatch();
-    net.setLatency(7);
-    new OnlineSession(net.conn, match.match, "guest");
-
-    net.deliver(snapshot());
-
-    expect(match.applySnapshot).toHaveBeenCalledTimes(1);
-    expect(match.applySnapshot.mock.calls[0][1]).toBe(7);
-  });
-
-  it("reports no age at all before the first round trip is measured", () => {
-    // `latencyTicks` is 0 until a pong lands. Extrapolating by a guess would
-    // be worse than not extrapolating.
-    const net = fakeConn();
-    const match = fakeMatch();
-    new OnlineSession(net.conn, match.match, "guest");
-
-    net.deliver(snapshot());
-
-    expect(match.applySnapshot.mock.calls[0][1]).toBe(0);
-  });
-
-  it("keeps the age current as the connection changes", () => {
+  it("tells the match how old each frame is, off the frame's own tick", () => {
+    // The first frame calibrates the route and shows no age at all — there
+    // is nothing earlier to measure against, and extrapolating by a guess
+    // would be worse than not extrapolating.
     const net = fakeConn();
     const match = fakeMatch();
     const session = new OnlineSession(net.conn, match.match, "guest");
-    void session;
 
-    net.setLatency(3);
-    net.deliver(snapshot());
-    net.setLatency(11);
-    net.deliver(snapshot());
+    for (let i = 0; i < 10; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 6 })); // four ticks in flight
 
-    expect(match.applySnapshot.mock.calls[0][1]).toBe(3);
-    expect(match.applySnapshot.mock.calls[1][1]).toBe(11);
+    expect(match.applySnapshot).toHaveBeenCalledTimes(1);
+    expect(match.applySnapshot.mock.calls[0][1]).toBe(0);
+    // The frame's own tick reaches the match; the playback buffer is keyed by it.
+    expect(match.applySnapshot.mock.calls[0][0]).toMatchObject({ tick: 6 });
+  });
+
+  it("measures a slower frame against the fastest one seen", () => {
+    const net = fakeConn();
+    const match = fakeMatch();
+    const session = new OnlineSession(net.conn, match.match, "guest");
+
+    for (let i = 0; i < 10; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 6 })); // baseline: four ticks in flight
+    for (let i = 0; i < 5; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 6 })); // nine ticks in flight
+
+    // The extra five ticks of delay are reported, less the sliver of floor
+    // the estimator releases per sample to absorb clock drift.
+    const lead = match.applySnapshot.mock.calls[1][1] as number;
+    expect(lead).toBeGreaterThan(4.9);
+    expect(lead).toBeLessThanOrEqual(5);
+  });
+
+  it("absorbs an opponent whose tick clock started anywhere", () => {
+    // The two sessions start their counters independently; the offset
+    // between them is a constant the estimator calibrates out, so a host
+    // ten thousand ticks ahead produces the identical ages.
+    const run = (offset: number): number[] => {
+      const net = fakeConn();
+      const match = fakeMatch();
+      const session = new OnlineSession(net.conn, match.match, "guest");
+      for (let i = 0; i < 10; i++) session.step(SIM_DT);
+      net.deliver(snapshot({ tick: 6 + offset }));
+      for (let i = 0; i < 5; i++) session.step(SIM_DT);
+      net.deliver(snapshot({ tick: 6 + offset }));
+      return [
+        match.applySnapshot.mock.calls[0][1] as number,
+        match.applySnapshot.mock.calls[1][1] as number,
+      ];
+    };
+
+    const plain = run(0);
+    const shifted = run(10_000);
+    expect(shifted[0]).toBeCloseTo(plain[0], 6);
+    expect(shifted[1]).toBeCloseTo(plain[1], 6);
+  });
+
+  it("never fast-forwards further than the catch-up cap, however late a frame is", () => {
+    const net = fakeConn();
+    const match = fakeMatch();
+    const session = new OnlineSession(net.conn, match.match, "guest");
+
+    for (let i = 0; i < 10; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 9 })); // calibrates
+    for (let i = 0; i < 600; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 10 })); // absurdly stale
+
+    expect(match.applySnapshot.mock.calls[1][1]).toBeLessThanOrEqual(MAX_CATCHUP_TICKS);
   });
 });
 

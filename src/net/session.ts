@@ -17,11 +17,13 @@ import type { MatchController } from "../match";
 import type { InputState } from "../input";
 import type { Side } from "../ball";
 import type { NetConnection } from "./connection";
+import { TickAge } from "./sync";
 import {
   isValidInput,
   readLoft,
   readTaps,
   isValidPause,
+  isValidRematch,
   isValidSnapshot,
   reframe,
   vec,
@@ -29,8 +31,17 @@ import {
   type PeerRole,
 } from "./protocol";
 
-/** Authoritative frames per second. Guests ease between them. */
-const SNAPSHOT_HZ = 20;
+/**
+ * Authoritative frames per second. Guests play the ball back from a buffer
+ * of them.
+ *
+ * 30 rather than 20: a launch or a steer that happens between two frames can
+ * only be shown with the frames' resolution, so the coarser the grid the
+ * larger the visible kink when it arrives. A frame is a couple of hundred
+ * bytes; the extra third of the traffic buys a third off every one of those
+ * kinks.
+ */
+const SNAPSHOT_HZ = 30;
 
 /**
  * Silence long enough to call the opponent absent.
@@ -59,12 +70,28 @@ export const DISCONNECT_GRACE_SECONDS = 10;
 export const PAUSE_REQUEST_TIMEOUT_SECONDS = 15;
 
 /**
+ * How long a rematch request waits for an answer before giving up.
+ *
+ * Same reading as the pause: silence is a decline, and the asker is returned
+ * to the result screen rather than left standing in front of a question.
+ */
+export const REMATCH_REQUEST_TIMEOUT_SECONDS = 15;
+
+/**
  * Where a pause negotiation stands.
  *
  * "asking" and "asked" are the two sides of the same moment, kept apart
  * because only one of them may answer and only the other may withdraw.
  */
 export type PauseState = "none" | "asking" | "asked" | "paused";
+
+/**
+ * Where a rematch negotiation stands.
+ *
+ * No fourth state: completion starts the new match at once, so there is
+ * nothing to sit in. Both peers act on the same completed transition.
+ */
+export type RematchState = "none" | "asking" | "asked";
 
 export interface SessionHandlers {
   /**
@@ -80,6 +107,14 @@ export interface SessionHandlers {
   onScore?: (score: { player: number; ai: number; sets: [number, number]; serveOwner: Side }) => void;
   /** The pause negotiation moved. `state` is what to show now. */
   onPauseState?: (state: PauseState, detail?: string) => void;
+  /** The rematch negotiation moved. `state` is what to show now. */
+  onRematchState?: (state: RematchState, detail?: string) => void;
+  /**
+   * The rematch was agreed on both sides. Fired exactly once; both peers
+   * reset their match on it, and the relay mints a fresh match id for the
+   * new one.
+   */
+  onRematch?: () => void;
 }
 
 export class OnlineSession {
@@ -106,8 +141,13 @@ export class OnlineSession {
   pauseAllowed = false;
   private pause: PauseState = "none";
   private pauseWait = 0;
+  /** The rematch negotiation, from the end screen. */
+  private rematch: RematchState = "none";
+  private rematchWait = 0;
   /** Guest presses awaiting a simulation step on the host. */
   private pendingGuest = { strike: false, pop: false, confirm: false };
+  /** Guest: the age of each arriving snapshot, measured off its tick stamp. */
+  private snapAge = new TickAge();
   /** Guest: this frame's controls, latched until sent. */
   private localInput: InputState = {
     moveX: 0,
@@ -129,9 +169,13 @@ export class OnlineSession {
     conn.setHandlers({
       onMessage: (msg) => this.onNetMessage(msg),
       // A clean disconnect is reported by the relay; silence is noticed by the
-      // step loop. Either starts the same countdown.
+      // step loop. Either starts the same countdown. A rematch left hanging in
+      // the air is simply closed — there is nobody to play it with.
       onPeer: (present) => {
         this.peerPresent = present;
+        if (!present && this.rematch !== "none") {
+          this.setRematch("none", "Your opponent left");
+        }
       },
     });
   }
@@ -198,6 +242,102 @@ export class OnlineSession {
     }
   }
 
+  private setRematch(next: RematchState, detail?: string): void {
+    if (this.rematch === next) return;
+    this.rematch = next;
+    this.rematchWait = 0;
+    this.handlers.onRematchState?.(next, detail);
+  }
+
+  get rematchState(): RematchState {
+    return this.rematch;
+  }
+
+  /**
+   * Ask for another match, from the end screen. Allowed in quick matches too:
+   * both players already agreed to be paired, and the stall the pause gate
+   * exists for does not apply to a match that has already ended.
+   */
+  requestRematch(): void {
+    if (this.disposed) return;
+    // Pressing REMATCH while the opponent is already asking is an answer.
+    if (this.rematch === "asked") {
+      this.respondToRematch(true);
+      return;
+    }
+    if (this.rematch !== "none") return;
+    if (!this.peerPresent) {
+      this.setRematch("none", "Your opponent left");
+      return;
+    }
+    // A rematch restarts a finished match; during play the button means nothing.
+    if (this.match.matchWinner === null && this.match.state !== "over") return;
+    this.conn.send({ t: "rematch", action: "request" });
+    this.setRematch("asking");
+  }
+
+  /** Answer an opponent's rematch request. */
+  respondToRematch(accept: boolean): void {
+    if (this.rematch !== "asked") return;
+    this.conn.send({ t: "rematch", action: accept ? "accept" : "decline" });
+    if (accept) this.beginRematch();
+    else this.setRematch("none");
+  }
+
+  private onRematchMessage(action: "request" | "accept" | "decline"): void {
+    switch (action) {
+      case "request":
+        // Two players pressing REMATCH at once is an agreement, not a race:
+        // answer the crossing request and start.
+        if (this.rematch === "asking") {
+          this.conn.send({ t: "rematch", action: "accept" });
+          this.beginRematch();
+        } else if (
+          this.rematch === "none" &&
+          (this.match.matchWinner !== null || this.match.state === "over")
+        ) {
+          this.setRematch("asked");
+        }
+        return;
+      case "accept":
+        if (this.rematch === "asking") this.beginRematch();
+        return;
+      case "decline":
+        if (this.rematch === "asking") this.setRematch("none", "Your opponent declined");
+        return;
+    }
+  }
+
+  /**
+   * Both sides agreed; the new match starts now, on both peers at once.
+   * The host asks the relay for the fresh match id the result will settle
+   * against; a press queued on the end screen must not fire in the new match.
+   */
+  private beginRematch(): void {
+    if (this.rematch !== "asking" && this.rematch !== "asked") return;
+    if (this.isHost) this.conn.newMatch();
+    this.pendingGuest = { strike: false, pop: false, confirm: false };
+    this.localInput = {
+      ...this.localInput,
+      strikePressed: false,
+      strikeHeld: false,
+      popPressed: false,
+      confirmPressed: false,
+    };
+    // The last input of the old match may still be sitting on the second
+    // seat; its presses belong to a match that has ended.
+    this.match.versusInput = {
+      ...this.match.versusInput,
+      strikePressed: false,
+      strikeHeld: false,
+      strikePower: 0,
+      popPressed: false,
+      confirmPressed: false,
+    };
+    this.setRematch("none");
+    this.handlers.onRematch?.();
+  }
+
   /** Inbound. Everything is validated before it can touch the simulation. */
   private onNetMessage(raw: GameMessage): void {
     if (this.disposed) return;
@@ -236,10 +376,14 @@ export class OnlineSession {
       // reframe, so it is in this peer's own coordinates.
       case "snap": {
         if (this.isHost || !isValidSnapshot(msg)) return;
-        // How old this frame already is: half the measured round trip, in
-        // simulation ticks. The match fast-forwards everything in it by that
-        // much, so the ball and both players are drawn at the same instant
-        // rather than the ball being shown half a trip in the past.
+        // How old this frame already is, measured off its own tick stamp
+        // rather than guessed from half the round trip: the estimator
+        // calibrates out the peers' unrelated clock origins and tracks the
+        // transport delay sample by sample. The match fast-forwards
+        // everything in the frame by that much, so the ball and both players
+        // are drawn at the same instant rather than the ball being shown half
+        // a trip in the past.
+        const lead = this.snapAge.observe(this.tick - msg.tick);
         this.match.applySnapshot({
           ballPos: msg.ballPos,
           ballVel: msg.ballVel,
@@ -252,11 +396,12 @@ export class OnlineSession {
           selfClip: msg.hostClip,
           opponentClip: msg.guestClip,
           selfLocked: msg.hostLocked === true,
+          tick: msg.tick,
           score: msg.score,
           sets: msg.sets,
           serveOwner: msg.serveOwner,
           phase: msg.phase,
-        }, this.conn.latencyTicks);
+        }, lead);
         this.handlers.onScore?.({
           player: msg.score[0],
           ai: msg.score[1],
@@ -268,6 +413,10 @@ export class OnlineSession {
 
       case "pause":
         if (isValidPause(msg)) this.onPauseMessage(msg.action);
+        return;
+
+      case "rematch":
+        if (isValidRematch(msg)) this.onRematchMessage(msg.action);
         return;
 
       default:
@@ -305,6 +454,13 @@ export class OnlineSession {
       this.pauseWait += dt;
       if (this.pauseWait > PAUSE_REQUEST_TIMEOUT_SECONDS) {
         this.setPause("none", "No answer from your opponent");
+      }
+    }
+    // An unanswered rematch request returns the asker to the result screen.
+    if (this.rematch === "asking") {
+      this.rematchWait += dt;
+      if (this.rematchWait > REMATCH_REQUEST_TIMEOUT_SECONDS) {
+        this.setRematch("none", "No answer from your opponent");
       }
     }
 

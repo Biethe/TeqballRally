@@ -178,6 +178,34 @@ function openMatch(a, b) {
   b.matchId = id;
 }
 
+/**
+ * How often one room may mint a fresh match id.
+ *
+ * A rematch needs one — a result settles once per id — but ids are store
+ * entries, so a stuck button must not be able to spam them.
+ */
+const REMATCH_MINT_COOLDOWN_MS = 10_000;
+
+/**
+ * A rematch was agreed: give the same room a fresh match id.
+ *
+ * The host drives, one mint per agreement, and both seats are told the new id
+ * so each reports this match's result against it rather than against the one
+ * already settled. The old id keeps its own life until it expires.
+ */
+function handleNewMatch(socket) {
+  const state = socket.teq;
+  if (!state || state.role !== "host") return;
+  const peer = peerOf(state.room, socket);
+  if (!peer || peer.readyState !== peer.OPEN) return;
+  const now = Date.now();
+  if (state.room.lastMint && now - state.room.lastMint < REMATCH_MINT_COOLDOWN_MS) return;
+  state.room.lastMint = now;
+  openMatch(socket, peer);
+  send(socket, { t: "newmatch", match: socket.matchId });
+  send(peer, { t: "newmatch", match: peer.matchId });
+}
+
 function releaseSeat(socket) {
   // Before the presence release, so the match still knows who this was.
   if (socket.matchId) {
@@ -275,8 +303,9 @@ wss.on("connection", (socket) => {
     const text = raw.toString();
     if (text.length > MAX_FRAME_BYTES) return;
 
-    // Only "join" is ever interpreted. Everything else is opaque payload that
-    // belongs to the two clients, so it is forwarded without being parsed.
+    // Only signalling is ever interpreted — seating and the rematch's fresh
+    // match id. Everything else is opaque payload that belongs to the two
+    // clients, so it is forwarded without being parsed.
     let type;
     try {
       type = JSON.parse(text)?.t;
@@ -284,6 +313,11 @@ wss.on("connection", (socket) => {
       return;
     }
     socket.isAlive = true;
+
+    if (type === "newmatch") {
+      handleNewMatch(socket);
+      return;
+    }
 
     if (type === "join" || type === "queue" || type === "cancel") {
       let msg;

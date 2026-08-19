@@ -287,3 +287,61 @@ describe("end-to-end authority handoff", () => {
     guest.close();
   });
 });
+
+describe("the rematch's fresh match id", () => {
+  /** A room with both seats filled; returns the id minted at seating. */
+  async function paired() {
+    const room = makeRoomCode();
+    const host = await TestPeer.open();
+    host.join(room);
+    await host.waitForType("joined");
+    const guest = await TestPeer.open();
+    guest.join(room);
+    await guest.waitForType("joined");
+    const hostPeer = await host.waitFor((m) => m.t === "peer");
+    await guest.waitFor((m) => m.t === "peer");
+    return { host, guest, original: (hostPeer as { match?: string | null }).match };
+  }
+
+  it("hands both seats the same fresh id when the host asks", async () => {
+    const { host, guest, original } = await paired();
+    expect(typeof original).toBe("string");
+
+    host.send({ t: "newmatch" });
+    const hostNew = await host.waitForType("newmatch");
+    const guestNew = await guest.waitForType("newmatch");
+
+    // A rematch settles against its own id, never against the old one.
+    expect((hostNew as { match?: string }).match).toBe((guestNew as { match?: string }).match);
+    expect((hostNew as { match?: string }).match).not.toBe(original);
+
+    host.close();
+    guest.close();
+  });
+
+  it("ignores the request when the guest sends it", async () => {
+    const { host, guest } = await paired();
+
+    guest.send({ t: "newmatch" });
+    // Proof of life and ordering: an ordinary frame still crosses, and no
+    // mint slipped in ahead of it.
+    host.send({ t: "ping", sent: 1, tick: 1 });
+    expect(await guest.waitForType("ping")).toMatchObject({ sent: 1 });
+    await expect(guest.waitForType("newmatch", 300)).rejects.toThrow();
+
+    host.close();
+    guest.close();
+  });
+
+  it("mints at most one id per room inside the cooldown", async () => {
+    const { host, guest } = await paired();
+
+    host.send({ t: "newmatch" });
+    await host.waitForType("newmatch");
+    host.send({ t: "newmatch" });
+    await expect(host.waitForType("newmatch", 300)).rejects.toThrow();
+
+    host.close();
+    guest.close();
+  });
+});

@@ -1027,7 +1027,21 @@ export class MatchController {
    */
   private updateAsFollower(dt: number, input: InputState): void {
     this.matchClock += dt;
-    this.ball.update(dt);
+    this.followerStep += 1;
+    // The ball is either played back from the snapshot buffer — smooth, a
+    // constant interval behind — or, before the buffer is warm and whenever
+    // it starves, stepped locally the old way.
+    if (!this.playBufferedBall()) this.ball.update(dt);
+    // The landing X is help the joined player needs as much as the host's;
+    // it reads the same delayed ball state the ball itself is shown in, so
+    // the marker and the flight always agree.
+    this.followerMarkerIn -= dt;
+    if (this.followerMarkerIn <= 0) {
+      this.followerMarkerIn = 0.15;
+      this.landingSpot =
+        this.followerPhase === "rally" && !this.ball.held ? this.computeLandingSpot() : null;
+      this.updateFollowerLandingMarker();
+    }
     for (const side of ["player", "ai"] as Side[]) {
       const target = this.followerPose[side];
       const c = this.chars[side];
@@ -1091,6 +1105,87 @@ export class MatchController {
   }
 
   /**
+   * Show the ball from the snapshot buffer, `BUFFER_DELAY_TICKS` behind the
+   * newest frame. Returns false when the buffer cannot own the ball this
+   * frame — not warm yet, or starving — and the caller steps it locally.
+   */
+  private playBufferedBall(): boolean {
+    if (!this.bufferEngaged || this.snapBuffer.length < 2) return false;
+    if (this.followerStep - this.lastSnapLocalStep > MatchController.FEED_STALE_STEPS) {
+      return false;
+    }
+    // The instant being shown: the newest frame's tick less the buffer delay,
+    // advancing one local step per step — both clocks tick once per fixed
+    // step, so the playback point keeps moving between frames too.
+    const renderTick =
+      this.newestSnapTick -
+      MatchController.BUFFER_DELAY_TICKS +
+      (this.followerStep - this.lastSnapLocalStep);
+    // Bracketing states: `a` the newest one not after the render point.
+    let a: (typeof this.snapBuffer)[number] | null = null;
+    let b: (typeof this.snapBuffer)[number] | null = null;
+    for (const e of this.snapBuffer) {
+      if (e.tick <= renderTick) a = e;
+      else {
+        b = e;
+        break;
+      }
+    }
+    // The render point runs ahead of the oldest buffered state for a step or
+    // two after engagement; local stepping covers that gap.
+    if (!a) return false;
+
+    if (a.held) {
+      // A held ball rides the hand: between reported positions, no physics,
+      // and no easing — the palm knows exactly where it is.
+      this.ball.held = true;
+      const span = b && b.tick > a.tick ? b.tick - a.tick : 1;
+      const f = Math.max(0, Math.min(1, (renderTick - a.tick) / span));
+      const target = b ? Vector3.Lerp(a.pos, b.pos, f) : a.pos;
+      this.ball.state.pos.copyFrom(target);
+      this.ball.state.vel.setAll(0);
+      this.ball.update(0); // mesh follows; no physics with dt 0
+      return true;
+    }
+
+    // Free flight: the shared pure physics, stepped forward from the
+    // bracketing state — the host's own trajectory, save the limb steering
+    // only the host applies. The playback point advances one tick per tick,
+    // so the ideal itself is a smooth 60 Hz flight; the ball is placed on it
+    // exactly, because easing toward a moving ball lags it by metres at
+    // smash pace, and the snap that lag ends in IS the visible jump. A host
+    // bend the buffer learns about late lands as one small kink when the
+    // frame that carries it arrives — rare, and where the ball is being hit
+    // anyway.
+    const ideal: BallState = { pos: a.pos.clone(), vel: a.vel.clone() };
+    const steps = Math.min(Math.max(0, renderTick - a.tick), 12);
+    for (let i = 0; i < steps; i++) stepBall(ideal, SIM_DT);
+
+    this.ball.held = false;
+    this.ball.state.pos.copyFrom(ideal.pos);
+    this.ball.state.vel.copyFrom(ideal.vel);
+    this.ball.update(0);
+    return true;
+  }
+
+  /**
+   * The landing marker as the follower sees it. Shown wherever the delayed
+   * ball is heading; the phase gate sits with the caller, which owns the
+   * rhythm the marker refreshes on.
+   */
+  private updateFollowerLandingMarker(): void {
+    const m = this.landingMarker;
+    if (!m) return;
+    const spot = this.landingSpot;
+    const show = spot !== null;
+    m.setEnabled(show);
+    if (show && spot) {
+      const y = spot.onTable ? tableSurfaceY(spot.pos.x) : GROUND_Y;
+      m.position.set(spot.pos.x, y + 0.02, spot.pos.z);
+    }
+  }
+
+  /**
    * The controls a guest actually sends, given what its taps asked for.
    *
    * The wire carries a stick, and portrait has no stick: its taps become a
@@ -1132,6 +1227,28 @@ export class MatchController {
    * character follows the snapshot instead.
    */
   private followerSelfLocked = false;
+
+  /**
+   * The ball the guest shows is played back from a short buffer of reported
+   * states rather than corrected in place. Twenty corrections a second are
+   * twenty visible kinks in a fast flight; rendering a couple of intervals
+   * behind and stepping the shared pure physics between the buffered states
+   * turns the same feed into one continuous arc. The price is the delay, and
+   * it is constant where the kinks were random.
+   */
+  private snapBuffer: { tick: number; pos: Vector3; vel: Vector3; held: boolean }[] = [];
+  private newestSnapTick = -1;
+  /** Local step the newest snapshot arrived on, for the starvation check. */
+  private lastSnapLocalStep = -1;
+  /** Local step counter, advanced once per follower frame. */
+  private followerStep = 0;
+  private bufferEngaged = false;
+  private followerMarkerIn = 0;
+  /** How far behind the newest frame the buffered ball is shown, in ticks. */
+  private static readonly BUFFER_DELAY_TICKS = 6;
+  private static readonly SNAP_BUFFER_MAX = 4;
+  /** A feed older than this is a starving one; fall back to local stepping. */
+  private static readonly FEED_STALE_STEPS = 18;
 
   /**
    * Take one side of a snapshot.
@@ -1206,6 +1323,8 @@ export class MatchController {
     opponentClip: string | null;
     /** The host owns this peer's feet (the run to the drop spot is engaged). */
     selfLocked?: boolean;
+    /** The host tick the frame was sampled at; keys the ball playback buffer. */
+    tick: number;
     score: [number, number];
     sets: [number, number];
     serveOwner: Side;
@@ -1228,30 +1347,48 @@ export class MatchController {
       this.ui.onMatchEnd(this.matchWinner);
     }
 
-    // Where the host's ball would be *now*, run forward through the same pure
-    // physics both peers share.
-    const ahead: BallState = {
-      pos: new Vector3(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z),
-      vel: new Vector3(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z),
-    };
-    if (!snap.ballHeld) {
-      for (let i = 0; i < lead; i++) stepBall(ahead, SIM_DT);
+    // The reported ball state joins the playback buffer, keyed by the host's
+    // tick; once two states are buffered the buffer owns the ball and the
+    // fast-forward/ease below is retired for as long as it stays fed.
+    if (this.snapBuffer.length === 0 || snap.tick > this.newestSnapTick) {
+      this.snapBuffer.push({
+        tick: snap.tick,
+        pos: new Vector3(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z),
+        vel: new Vector3(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z),
+        held: snap.ballHeld,
+      });
+      if (this.snapBuffer.length > MatchController.SNAP_BUFFER_MAX) this.snapBuffer.shift();
+      this.newestSnapTick = snap.tick;
     }
-    const held = snap.ballHeld;
-    this.ball.held = held;
-    this.ball.state.vel.copyFrom(ahead.vel);
-    // A held ball is sitting in somebody's hand: there is nothing to predict
-    // and any easing would drag it out of the palm. Otherwise the correction
-    // is eased, because a ball that is only a few centimetres out is better
-    // walked back than teleported — and after the fast-forward above, a few
-    // centimetres is what it normally is.
-    const gap = Vector3.Distance(this.ball.state.pos, ahead.pos);
-    if (held || gap > MatchController.BALL_SNAP) {
-      this.ball.state.pos.copyFrom(ahead.pos);
-    } else {
-      this.ball.state.pos.addInPlace(
-        ahead.pos.subtract(this.ball.state.pos).scale(MatchController.BALL_CORRECT)
-      );
+    this.lastSnapLocalStep = this.followerStep;
+    if (this.snapBuffer.length >= 2) this.bufferEngaged = true;
+
+    if (!this.bufferEngaged) {
+      // Where the host's ball would be *now*, run forward through the same
+      // pure physics both peers share.
+      const ahead: BallState = {
+        pos: new Vector3(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z),
+        vel: new Vector3(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z),
+      };
+      if (!snap.ballHeld) {
+        for (let i = 0; i < lead; i++) stepBall(ahead, SIM_DT);
+      }
+      const held = snap.ballHeld;
+      this.ball.held = held;
+      this.ball.state.vel.copyFrom(ahead.vel);
+      // A held ball is sitting in somebody's hand: there is nothing to predict
+      // and any easing would drag it out of the palm. Otherwise the correction
+      // is eased, because a ball that is only a few centimetres out is better
+      // walked back than teleported — and after the fast-forward above, a few
+      // centimetres is what it normally is.
+      const gap = Vector3.Distance(this.ball.state.pos, ahead.pos);
+      if (held || gap > MatchController.BALL_SNAP) {
+        this.ball.state.pos.copyFrom(ahead.pos);
+      } else {
+        this.ball.state.pos.addInPlace(
+          ahead.pos.subtract(this.ball.state.pos).scale(MatchController.BALL_CORRECT)
+        );
+      }
     }
 
     // The characters are carried forward the same way, so the three things
@@ -2442,6 +2579,30 @@ export class MatchController {
     }
     this.chars.player.stopAction();
     this.chars.ai.stopAction();
+    // A rematch over a socket is a fresh match on the same rigs: the follower's
+    // view of the previous one — poses, clips, the final phase — must not
+    // carry across, or a stale "Defeat" keeps playing into the first serve.
+    this.followerPose = { player: null, ai: null };
+    this.followerVel = { player: { x: 0, z: 0 }, ai: { x: 0, z: 0 } };
+    this.followerClip = { player: null, ai: null };
+    this.followerPhase = "";
+    this.followerSelfLocked = false;
+    this.snapBuffer = [];
+    this.newestSnapTick = -1;
+    this.lastSnapLocalStep = -1;
+    this.followerStep = 0;
+    this.bufferEngaged = false;
+    this.followerMarkerIn = 0;
+    this.meterEcho = null;
+    this.landingSpot = null;
+    this.bufferedPress = null;
+    this.bufferedPress2 = null;
+    this.moveTarget = null;
+    this.versusInput.strikePressed = false;
+    this.versusInput.strikeHeld = false;
+    this.versusInput.strikePower = 0;
+    this.versusInput.popPressed = false;
+    this.versusInput.confirmPressed = false;
     this.ui.setScore(0, 0, this.serveOwner, 0, 0);
     this.beginServeCycle();
   }
