@@ -56,15 +56,17 @@ interface PracticeUI {
 /**
  * The lesson, in order.
  *
- * `watch` and `chase` are the defending half — anticipation, then covering the
- * ground. `stepIn`, `strike` and `early` are the attacking half, and they are
- * deliberately the three things that actually win a point in this game: get
- * close enough to hit it flat, hit it hard, take it before it drops.
+ * `watch`, `chase` and `craft` are the defending half — anticipation, covering
+ * the ground, and aiming the first touch. `stepIn`, `strike` and `early` are
+ * the attacking half, and they are deliberately the three things that actually
+ * win a point in this game: get close enough to hit it flat, hit it hard, take
+ * it before it drops.
  */
 const STEPS = [
   "serve",
   "watch",
   "chase",
+  "craft",
   "stepIn",
   "strike",
   "early",
@@ -77,6 +79,7 @@ const CHAPTER: Record<DrillStep, "defend" | "attack" | null> = {
   serve: null,
   watch: "defend",
   chase: "defend",
+  craft: "defend",
   stepIn: "attack",
   strike: "attack",
   early: "attack",
@@ -92,6 +95,8 @@ export class PracticeCoach {
   private resumeGuardFrames = 0;
   private moveTime = 0;
   private struckFromClose = false;
+  /** The player held a direction during the aim-your-touch step. */
+  private craftArmed = false;
   /**
    * Steps whose card has already been shown.
    *
@@ -136,6 +141,7 @@ export class PracticeCoach {
     this.step = "serve";
     this.moveTime = 0;
     this.struckFromClose = false;
+    this.craftArmed = false;
     this.introduced.clear();
     this.ui.hideTrainingPause();
     this.refreshPanel();
@@ -160,6 +166,14 @@ export class PracticeCoach {
 
   update(dt: number, input: InputState): void {
     if (this.paused) return;
+
+    // Aiming the first touch: holding a direction arms the lesson, and the
+    // pop that lands while armed is the proof it was aimed. Checked before
+    // the chase completion, so the frame that advances into this step does
+    // not arm it with the run that finished the previous one.
+    if (this.step === "craft" && this.match.state === "rally") {
+      if (Math.hypot(input.moveX, input.moveZ) > 0.25) this.craftArmed = true;
+    }
 
     // Defending: once they have actually covered some ground, the lesson has
     // been done rather than merely described.
@@ -205,6 +219,12 @@ export class PracticeCoach {
           this.advance();
           break;
         }
+        if (this.step === "craft" && event.action === "pop") {
+          // Portrait has no stick to hold: the tap that plays the ball is
+          // itself the aim, so any pop there is an aimed one.
+          if (this.craftArmed || this.isPortrait()) this.advance();
+          break;
+        }
         if (event.action !== "strike") break;
         const close = canSmashFrom(this.match.chars.player.position.x);
         if (this.step === "strike" && close) {
@@ -224,6 +244,7 @@ export class PracticeCoach {
     const at = STEPS.indexOf(this.step);
     this.step = STEPS[Math.min(STEPS.length - 1, at + 1)];
     this.moveTime = 0;
+    this.craftArmed = false;
   }
 
   private pause(): void {
@@ -278,6 +299,13 @@ export class PracticeCoach {
       case "chase":
       case "stepIn":
         return this.control("WASD", "LEFT STICK", "JOYSTICK", "TAP THE COURT");
+      case "craft":
+        return this.control(
+          "K + WASD",
+          "B + LEFT STICK",
+          "RECEPTION + JOYSTICK",
+          "TAP WHERE YOU WANT THE BALL"
+        );
       default:
         return this.control("HOLD SPACE", "HOLD A", "HOLD STRIKE", "SWIPE FAST");
     }

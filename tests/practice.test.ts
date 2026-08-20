@@ -91,6 +91,12 @@ describe("the coached lesson", () => {
     resume(coach);
     for (let i = 0; i < 30; i++) coach.update(1 / 60, RUNNING);
 
+    // AIM YOUR TOUCH — hold a direction, then pop.
+    match.emit({ type: "possession-start", side: "player" });
+    resume(coach);
+    coach.update(1 / 60, RUNNING);
+    match.emit({ type: "touch-committed", side: "player", action: "pop" });
+
     // STEP IN — stand inside smash range.
     match.emit({ type: "possession-start", side: "player" });
     resume(coach);
@@ -143,6 +149,52 @@ describe("the coached lesson", () => {
     match.emit({ type: "touch-committed", side: "player", action: "pop" });
 
     expect(stepOf(coach)).toBe("chase");
+  });
+
+  /** Drive the coach to the AIM YOUR TOUCH step and hand it back. */
+  function atCraft(portrait = false): { match: ReturnType<typeof fakeMatch>; coach: PracticeCoach } {
+    const m = fakeMatch();
+    const coach = new PracticeCoach(m.controller, fakeUi(), () => false, () => false, () => portrait);
+    coach.start();
+    m.emit({ type: "serve-ready", side: "player" });
+    resume(coach);
+    m.emit({ type: "serve-committed", side: "player" }); // watch
+    m.emit({ type: "possession-start", side: "player" });
+    resume(coach);
+    m.emit({ type: "touch-committed", side: "player", action: "pop" }); // chase
+    m.emit({ type: "possession-start", side: "player" });
+    resume(coach);
+    for (let i = 0; i < 30 && stepOf(coach) === "chase"; i++) coach.update(1 / 60, RUNNING);
+    expect(stepOf(coach)).toBe("craft");
+    return { match: m, coach };
+  }
+
+  it("leaves AIM YOUR TOUCH when the pop was aimed", () => {
+    const { match, coach } = atCraft();
+
+    coach.update(1 / 60, RUNNING); // hold a direction
+    match.emit({ type: "touch-committed", side: "player", action: "pop" });
+
+    expect(stepOf(coach)).toBe("stepIn");
+  });
+
+  it("holds AIM YOUR TOUCH for a pop with no direction held", () => {
+    // The lesson is the aiming, not the popping: a set-up played with an idle
+    // stick proves nothing about it.
+    const { match, coach } = atCraft();
+
+    coach.update(1 / 60, IDLE);
+    match.emit({ type: "touch-committed", side: "player", action: "pop" });
+
+    expect(stepOf(coach)).toBe("craft");
+  });
+
+  it("in portrait any pop aims the touch, because the tap is the aim", () => {
+    const { match, coach } = atCraft(true);
+
+    match.emit({ type: "touch-committed", side: "player", action: "pop" });
+
+    expect(stepOf(coach)).toBe("stepIn");
   });
 
   it("ignores the opponent's touches", () => {
