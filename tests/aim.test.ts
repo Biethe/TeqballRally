@@ -5,10 +5,10 @@ import {
   canSmashFrom,
   clampToCourt,
   clampToPlay,
+  landingDeviation,
   loftFloor,
   loftFor,
   onTableHalf,
-  scatter,
   spreadRadius,
   swipeShot,
   swipeTarget,
@@ -63,35 +63,89 @@ describe("spread", () => {
   });
 });
 
-describe("scatter", () => {
-  it("stays inside the radius", () => {
-    const target = new Vector3(1, 0, 0);
-    let worst = 0;
-    let seed = 0;
-    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
-    for (let i = 0; i < 2000; i++) {
-      const p = scatter(target, 0.5, rand);
-      worst = Math.max(worst, Math.hypot(p.x - target.x, p.z - target.z));
+describe("landing deviation", () => {
+  // A striker on the player half driving toward the opponent's corner.
+  const ball = new Vector3(-2, 0.8, 0.1);
+  const target = new Vector3(1.2, 0.5, 0.4);
+  const neutral = { power: 0.55, sense: 0 as const, lateral: 0, stretch: 0 };
+
+  it("lands the same shot the same way, every time", () => {
+    const first = landingDeviation(target, ball, 0.4, { ...neutral, power: 0.9, stretch: 0.5 });
+    for (let i = 0; i < 100; i++) {
+      const again = landingDeviation(target, ball, 0.4, { ...neutral, power: 0.9, stretch: 0.5 });
+      expect(again.asArray()).toEqual(first.asArray());
     }
+  });
 
+  it("never deviates further than the radius it was given", () => {
+    let worst = 0;
+    for (const power of [0, 0.34, 0.62, 0.95, 1]) {
+      for (const sense of [-1, 0, 1] as const) {
+        for (const lateral of [-0.6, -0.1, 0.1, 0.6]) {
+          for (const stretch of [0, 0.5, 1, 1.4]) {
+            const p = landingDeviation(target, ball, 0.5, { power, sense, lateral, stretch });
+            worst = Math.max(worst, Math.hypot(p.x - target.x, p.z - target.z));
+          }
+        }
+      }
+    }
     expect(worst).toBeLessThanOrEqual(0.5 + 1e-9);
-    expect(worst).toBeGreaterThan(0.45); // and actually reaches the edge
   });
 
-  it("leaves the height alone and does not mutate its input", () => {
-    const target = new Vector3(1, 0.8, 0.2);
-    const out = scatter(target, 0.4, () => 0.5);
+  it("lands exactly on the aim when there is no spread", () => {
+    const p = landingDeviation(target, ball, 0, { power: 1, sense: 1, lateral: 0.5, stretch: 1 });
+    expect(p.x).toBeCloseTo(target.x, 9);
+    expect(p.z).toBeCloseTo(target.z, 9);
+  });
 
+  it("carries an early contact long and a late one short", () => {
+    const early = landingDeviation(target, ball, 0.5, { ...neutral, sense: 1 });
+    const late = landingDeviation(target, ball, 0.5, { ...neutral, sense: -1 });
+    // The shot travels down +x; long means further along that line.
+    expect(early.x).toBeGreaterThan(target.x);
+    expect(late.x).toBeLessThan(target.x);
+  });
+
+  it("carries full power past the aim", () => {
+    const hard = landingDeviation(target, ball, 0.5, { ...neutral, power: 1 });
+    expect(hard.x).toBeGreaterThan(target.x);
+  });
+
+  it("squirts a stretched ball toward the side it was reached on", () => {
+    const right = landingDeviation(target, ball, 0.5, { ...neutral, lateral: 0.4, stretch: 0.8 });
+    const left = landingDeviation(target, ball, 0.5, { ...neutral, lateral: -0.4, stretch: 0.8 });
+    // Opposite sides of the aim line...
+    expect(Math.sign(right.z - target.z)).toBe(-Math.sign(left.z - target.z));
+    expect(Math.sign(right.z - target.z)).not.toBe(0);
+    // ...and a ball met square in front squirts not at all.
+    const square = landingDeviation(target, ball, 0.5, { ...neutral, lateral: 0, stretch: 0.8 });
+    expect(square.z).toBeCloseTo(target.z, 9);
+  });
+
+  it("grows the squirt with the stretch", () => {
+    const near = landingDeviation(target, ball, 0.5, { ...neutral, lateral: 0.4, stretch: 0.2 });
+    const far = landingDeviation(target, ball, 0.5, { ...neutral, lateral: 0.4, stretch: 1 });
+    expect(Math.abs(far.z - target.z)).toBeGreaterThan(Math.abs(near.z - target.z));
+  });
+
+  it("mirrors the same relative contact into the same relative miss", () => {
+    // The mirrored striker (other half, mirrored aim and ball) with the same
+    // own-frame inputs misses by the mirror of this striker's deviation.
+    const mirror = (v: Vector3) => new Vector3(-v.x, v.y, -v.z);
+    const inputs = { power: 0.9, sense: 1 as const, lateral: 0.3, stretch: 0.7 };
+    const a = landingDeviation(target, ball, 0.5, inputs);
+    const b = landingDeviation(mirror(target), mirror(ball), 0.5, inputs);
+    expect(b.x).toBeCloseTo(-a.x, 9);
+    expect(b.z).toBeCloseTo(-a.z, 9);
+  });
+
+  it("leaves the height alone and does not mutate its inputs", () => {
+    const t = new Vector3(1, 0.8, 0.2);
+    const b = new Vector3(-2, 0.7, 0);
+    const out = landingDeviation(t, b, 0.4, { power: 1, sense: 1, lateral: 0.5, stretch: 1 });
     expect(out.y).toBe(0.8);
-    expect(target.asArray()).toEqual([1, 0.8, 0.2]);
-  });
-
-  it("puts the ball exactly where it was aimed when there is no spread", () => {
-    const target = new Vector3(1, 0, -0.4);
-    const out = scatter(target, 0, () => 0.7);
-
-    expect(out.x).toBeCloseTo(target.x, 9);
-    expect(out.z).toBeCloseTo(target.z, 9);
+    expect(t.asArray()).toEqual([1, 0.8, 0.2]);
+    expect(b.asArray()).toEqual([-2, 0.7, 0]);
   });
 });
 
@@ -133,10 +187,17 @@ describe("court geometry", () => {
   });
 
   it("never lets the widest possible spread escape the box", () => {
-    // The clamp is applied after the scatter, so even the worst kick from the
-    // furthest legal aim stays inside it.
+    // The clamp is applied after the deviation, so even the worst kick from
+    // the furthest legal aim stays inside it.
     const corner = clampToPlay(new Vector3(PLAY_BOX.halfLen, 0, PLAY_BOX.halfWid));
-    const wild = clampToPlay(scatter(corner, SPREAD.max, () => 0.99));
+    const wild = clampToPlay(
+      landingDeviation(corner, new Vector3(-2, 0.8, 0), SPREAD.max, {
+        power: 1,
+        sense: 1,
+        lateral: 0.5,
+        stretch: 1,
+      })
+    );
 
     expect(Math.abs(wild.x)).toBeLessThanOrEqual(PLAY_BOX.halfLen);
     expect(Math.abs(wild.z)).toBeLessThanOrEqual(PLAY_BOX.halfWid);

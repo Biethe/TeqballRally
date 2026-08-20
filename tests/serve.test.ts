@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { heightAtNet } from "../src/ball";
 import { serveTarget } from "../src/aim";
@@ -46,11 +46,10 @@ describe("a serve nobody shaped", () => {
     // 0.5 power and 1 loft, `0.78 + 0.44 * 0.5` is exactly 1, and the clearance
     // multiplies by 1 — so the CPU's serve, and every number ever tuned behind
     // it, is untouched by any of this. If this drifts, the game's opening ball
-    // changed and nobody meant it to.
-    const spy = vi.spyOn(Math, "random").mockReturnValue(0.5); // kill the spray
+    // changed and nobody meant it to. A centre aim drifts zero by construction,
+    // so nothing needs mocking any more.
     const plain = serve(rig()).vel;
     const tiered = serve(rig(), { strikeTaps: undefined, strikeLoft: undefined }).vel;
-    spy.mockRestore();
 
     expect(tiered.x).toBeCloseTo(plain.x, 12);
     expect(tiered.y).toBeCloseTo(plain.y, 12);
@@ -58,11 +57,57 @@ describe("a serve nobody shaped", () => {
   });
 });
 
+describe("where an aimed serve drifts", () => {
+  // The serve aim is live until contact, so the direction has to be held the
+  // whole way — through the walk, the toss and the strike — exactly as a
+  // player holds the stick.
+  const aimedServe = (r: Rig, aim: Partial<typeof idle>) => {
+    for (let i = 0; i < Math.round(3 / SIM_DT); i++) r.step(SIM_DT, aim);
+    r.step(SIM_DT, { strikePressed: true, ...aim });
+    for (let i = 0; i < 600; i++) {
+      r.step(SIM_DT, aim);
+      if (r.match.state === "rally") {
+        return { pos: r.match.ball.state.pos.clone(), vel: r.match.ball.state.vel.clone() };
+      }
+    }
+    throw new Error("the serve never left");
+  };
+
+  it("lands the same aimed serve the same way, every time", () => {
+    const first = aimedServe(rig(), { strikeTaps: 2, moveZ: 1 }).vel;
+    const again = aimedServe(rig(), { strikeTaps: 2, moveZ: 1 }).vel;
+
+    expect(again.asArray()).toEqual(first.asArray());
+  });
+
+  it("curls toward the sideline it was aimed at", () => {
+    const c = aimedServe(rig(), { strikeTaps: 2, moveZ: 0 });
+    const w = aimedServe(rig(), { strikeTaps: 2, moveZ: 1 });
+    const o = aimedServe(rig(), { strikeTaps: 2, moveZ: -1 });
+    const centre = landing(c.pos, c.vel);
+    const wide = landing(w.pos, w.vel);
+    const wideOther = landing(o.pos, o.vel);
+
+    expect(centre).not.toBeNull();
+    expect(wide).not.toBeNull();
+    expect(wideOther).not.toBeNull();
+    expect(wide!.z).toBeGreaterThan(centre!.z);
+    expect(wideOther!.z).toBeLessThan(centre!.z);
+  });
+
+  it("drifts a centre serve not at all", () => {
+    // Aim dead centre: the drift term is zero, so the landing sits on the
+    // middle line (within the solver's own tolerance) — the neutral invariant.
+    const s = aimedServe(rig(), { strikeTaps: 2, moveZ: 0 });
+    const landed = landing(s.pos, s.vel);
+    expect(landed).not.toBeNull();
+    expect(Math.abs(landed!.z)).toBeLessThan(0.02);
+  });
+});
+
 describe("asking a serve to go faster", () => {
   it("orders the tiers by pace", () => {
-    const spy = vi.spyOn(Math, "random").mockReturnValue(0.5);
     const speeds = [1, 2, 3].map((taps) => serve(rig(), { strikeTaps: taps }).vel.length());
-    spy.mockRestore();
 
     expect(speeds[0]).toBeLessThan(speeds[1]);
     expect(speeds[1]).toBeLessThan(speeds[2]);
@@ -73,10 +118,8 @@ describe("asking a serve to float", () => {
   it("sends a held serve over the net higher than a tapped one", () => {
     // Asserted where it is actually felt — the height at the tape — rather than
     // on the velocity, which trades speed for angle and can mislead.
-    const spy = vi.spyOn(Math, "random").mockReturnValue(0.5);
     const flatShot = serve(rig(), { strikeTaps: 1, strikeLoft: 1 });
     const floatedShot = serve(rig(), { strikeTaps: 1, strikeLoft: KICK_INPUT.loftMax });
-    spy.mockRestore();
 
     expect(heightAtNet(floatedShot.pos, floatedShot.vel)).toBeGreaterThan(
       heightAtNet(flatShot.pos, flatShot.vel)
@@ -94,7 +137,6 @@ describe("every serve a player can ask for", () => {
     // The sweep. A serve with two new axes has a lot of corners, and the one
     // that matters is that none of them is unservable: a floated ball must not
     // hang up and drop short, and a driven one must not be solved into the tape.
-    const spy = vi.spyOn(Math, "random").mockReturnValue(0.5);
     const failures: string[] = [];
 
     for (const taps of [1, 2, 3]) {
@@ -124,7 +166,6 @@ describe("every serve a player can ask for", () => {
         }
       }
     }
-    spy.mockRestore();
 
     expect(failures).toEqual([]);
   });

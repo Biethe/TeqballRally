@@ -22,13 +22,14 @@ export interface AIDifficulty {
   aimError: number;
   reactionTime: number;
   /**
-   * How badly it reads the ball, in metres of error on the drop point.
+   * How badly it reads a SLOW ball, in metres of error on the drop point.
    *
-   * This is the whole of its fallibility, and it is deliberately the only
-   * knob that produces a missed ball. A weak opponent stands in the wrong
-   * place and arrives late; it never declines to play. See the note on the
-   * class for why that distinction is the difference between an opponent and
-   * a bug.
+   * The base of its fallibility, grown by the incoming ball's pace (see
+   * `READ`): a float is read near this, a missile near this times
+   * `READ.maxMul`. It is deliberately the only knob that produces a missed
+   * ball. A weak opponent stands in the wrong place and arrives late; it
+   * never declines to play. See the note on the class for why that
+   * distinction is the difference between an opponent and a bug.
    */
   misjudge: number;
   /** Chance per possession the AI starts a control-touch sequence. */
@@ -93,24 +94,65 @@ export type DifficultyLevel = keyof typeof DIFFICULTIES;
 export const DIFFICULTY: AIDifficulty = DIFFICULTIES.normal;
 
 /**
+ * How incoming pace strains the read of a drop point.
+ *
+ * Mirrors `PACE.receive` in touch.ts — the same physical fact seen from the
+ * reader's side: a ball that arrives fast gives less time to judge, so the read
+ * of a missile is worse than the read of a float, by a factor that grows
+ * between these paces.
+ */
+export const READ = {
+  from: 9,
+  full: 16,
+  /** How many times worse a fully fast ball is read than a slow one. */
+  maxMul: 1.9,
+};
+
+/** How much of the pace ramp a given incoming pace has grown, 0..1. */
+export function paceStrain(incomingPace: number): number {
+  const t = (incomingPace - READ.from) / (READ.full - READ.from);
+  return Math.max(0, Math.min(1, t));
+}
+
+/**
  * One possession's misread of where the ball will drop, in metres.
  *
- * Signed, so the AI is as likely to be short as long and as likely to be left
- * as right. That symmetry is the whole point: an opponent that is always wrong
- * in the same direction is not misjudging the ball, it is avoiding it, and it
- * looks exactly like the bug it is.
+ * Deterministic, and earned by the shot: the magnitude is the difficulty's
+ * `misjudge` grown by the incoming pace (`READ`), the across-error is signed
+ * by the direction the ball is travelling — a ball cut across the court is
+ * over-read across the court — and the along-error is short and grows with
+ * the pace, because fast balls are under-read and drop behind the stand.
  *
- * Squared about zero (`r * |r|`) so most reads are nearly right and a badly
- * misjudged ball is the occasional one — a uniform error makes every reception
- * equally sloppy, which reads as an opponent who cannot play at all.
+ * The point of the determinism is the exploit: the same shot misreads the
+ * same way twice, so wide diagonals and deep-then-drop become patterns a
+ * player can *learn*, not a lottery they can only fund.
  */
-export function misreadOffset(misjudge: number, rand: () => number = Math.random): number {
-  const r = rand() * 2 - 1;
-  // `|| 0` collapses negative zero, which a negative draw against a zero
-  // misjudge produces. It is worth being fussy about here: this feeds a
-  // position that the two peers of an online match both compute, and -0 does
-  // not survive a round trip the way 0 does.
-  return r * Math.abs(r) * misjudge || 0;
+export function readError(
+  misjudge: number,
+  incomingPace: number,
+  /** Sign of the incoming ball's lateral travel; 0 for a straight ball. */
+  placementSign: number
+): { dz: number; dx: number } {
+  const strain = paceStrain(incomingPace);
+  const mag = misjudge * (1 + (READ.maxMul - 1) * strain);
+  // `|| 0` collapses negative zero: these feed a position both peers of an
+  // online match compute, and -0 does not survive the trip the way 0 does.
+  const dz = (Math.sign(placementSign) * mag) || 0;
+  const dx = (-mag * strain) || 0;
+  return { dz, dx };
+}
+
+/**
+ * The AI's serve placement as a function of the point index.
+ *
+ * The side alternates and the depth cycles, so the serve is a tell a
+ * receiver can learn — and because the clip follows the aim, the tell is
+ * visible in the body before the ball leaves.
+ */
+export function aiServePattern(pointIndex: number): { lat: number; fwd: number } {
+  const lat = pointIndex % 2 === 0 ? 1 : -1;
+  const fwd = [-0.3, 0.2, 0.5][pointIndex % 3];
+  return { lat, fwd };
 }
 
 /**
@@ -154,13 +196,19 @@ export class AIController {
   /**
    * How far off this possession's read of the drop point is, in metres.
    *
-   * Signed, and rolled once per incoming ball: a fixed sign is what made the
-   * old whiff look mechanical, because a player who is always wrong the same
-   * way is not misjudging, they are dodging.
+   * Computed from the shot itself (`readError`): pace strains the read and
+   * the ball's own lateral travel signs the across-error. The same shot
+   * misreads the same way twice — that is what makes the exploit learnable.
    */
   private misreadZ = 0;
   private misreadX = 0;
   private rolledRead = false;
+  /**
+   * Which possession of the match this is. The deterministic seed of every
+   * patterned choice — intents cycle on it, pops are due on it, the jitter
+   * alternates with it — so the variety is real but the tells are learnable.
+   */
+  private possessionIndex = 0;
   /** Planned control touches for the current AI possession. */
   private plannedPops = 0;
   /** Let the ball drop below waist height before returning (shows low kicks). */
@@ -295,9 +343,10 @@ export class AIController {
           // still counts against neither side until MatchController commits
           // it, so the touchCount comparison naturally waits for the ball to
           // come back down before asking for the next one.
-          const popX = (Math.random() - 0.5) * 0.8;
-          const popZ = (Math.random() - 0.5) * 1.4;
-          if (m.tryControlTouch("ai", popX, popZ)) this.reaction = 0.25;
+          // The set-up goes away from the player, the same rule the return
+          // follows — a plan, not a scatter.
+          const away = m.chars.player.position.z >= 0 ? -1 : 1;
+          if (m.tryControlTouch("ai", -0.2, away * 0.45)) this.reaction = 0.25;
         } else if (m.touchCount === 0 || m.ball.state.vel.y < 0) {
           // After a pop, wait for the ball to come back down before kicking.
           // On "low" possessions, let a direct return drop toward the feet first.
@@ -353,9 +402,11 @@ export class AIController {
    * player who camps in one corner is played into the other, so standing
    * somewhere sensible between shots starts to matter.
    *
-   * The remaining `aimError` keeps a weak CPU's execution loose. What it no
-   * longer does is choose the shot, which is why the opponent now reads as
-   * having a plan rather than a random number generator.
+   * The `aimError` left in execution is pressure-driven and deterministic:
+   * the faster the ball arrived this possession the looser the return, and
+   * the sign alternates with the possession count, so the looseness is real
+   * but never a die roll. What it does not do any more is choose the shot,
+   * which is why the opponent reads as having a plan.
    */
   private aimShot(): StrikeAim {
     const m = this.match;
@@ -363,29 +414,35 @@ export class AIController {
     // Which half of the court the player is *not* covering. Their own frame:
     // the player attacks -x, so +z is their left.
     const away = player.position.z >= 0 ? -1 : 1;
-    const err = () => (Math.random() * 2 - 1) * this.diff.aimError;
+    // Pressure on the return: a fast incoming ball is answered looser, bounded
+    // by this difficulty's aimError; parity signs it, so it alternates rather
+    // than wanders.
+    const errMag = this.diff.aimError * (1 + (READ.maxMul - 1) * paceStrain(m.incomingPace("ai")));
+    const parity = this.possessionIndex % 2 === 0 ? 1 : -1;
+    const e1 = parity * errMag;
+    const e2 = -parity * errMag;
     const deepness = Math.min(1, Math.max(-1, (Math.abs(player.position.x) - TABLE.halfLen) / 2.4));
     switch (this.intent) {
       case "wide":
-        return { target: tableTarget(-1, 0.1 + err() * 0.4, away * 0.85 + err() * 0.3), power: 0.6 };
+        return { target: tableTarget(-1, 0.1 + e1 * 0.4, away * 0.85 + e2 * 0.3), power: 0.6 };
       case "deep":
         // Behind them if they have come forward, at their feet if they have not.
-        return { target: tableTarget(-1, 0.85 + err() * 0.3, err() * 0.5), power: 0.62 };
+        return { target: tableTarget(-1, 0.85 + e1 * 0.3, e2 * 0.5), power: 0.62 };
       case "short":
         return {
-          target: tableTarget(-1, -0.85 + err() * 0.3, away * 0.4 + err() * 0.4),
+          target: tableTarget(-1, -0.85 + e1 * 0.3, away * 0.4 + e2 * 0.4),
           power: 0.3,
           loft: 1.35,
         };
       case "flat":
         return {
-          target: tableTarget(-1, 0.45 + err() * 0.4, away * 0.5 + err() * 0.4),
+          target: tableTarget(-1, 0.45 + e1 * 0.4, away * 0.5 + e2 * 0.4),
           power: 0.9,
           loft: 0.62,
         };
       case "loop":
         return {
-          target: tableTarget(-1, 0.3 + deepness * 0.4 + err() * 0.4, err() * 0.6),
+          target: tableTarget(-1, 0.3 + deepness * 0.4 + e1 * 0.4, e2 * 0.6),
           power: 0.4,
           loft: 1.7,
         };
@@ -401,36 +458,60 @@ export class AIController {
    * been pulled to the middle. It is deliberately a small table. The tactical
    * depth this game needs is in what the *player* can do with the ball, and an
    * opponent only has to be able to ask the questions.
+   *
+   * Every choice here cycles on the possession count instead of rolling, so
+   * the variety is real but the tells are learnable — after two flats comes
+   * the loop, and a player who has watched can be ready for it.
    */
   private pickIntent(): ShotIntent {
     const player = this.match.chars.player;
     const deep = Math.abs(player.position.x) > TABLE.halfLen + 1.6;
     const wide = Math.abs(player.position.z) > 1.1;
-    const sharp = Math.random() < this.diff.tactics;
-    if (!sharp) return Math.random() < 0.5 ? "wide" : "deep";
+    const idx = this.possessionIndex;
+    const sharp = (idx % 10) / 10 < this.diff.tactics;
+    if (!sharp) return idx % 2 === 0 ? "wide" : "deep";
     // Play into the space they have left. Standing deep invites the drop;
     // standing wide invites the ball across them; standing central is answered
     // by pace, because there is no gap to find.
-    if (deep) return Math.random() < 0.7 ? "short" : "wide";
-    if (wide) return Math.random() < 0.6 ? "wide" : "flat";
-    return Math.random() < 0.5 ? "flat" : Math.random() < 0.5 ? "loop" : "deep";
+    if (deep) return idx % 2 === 0 ? "short" : "wide";
+    if (wide) return idx % 3 !== 0 ? "wide" : "flat";
+    return (["flat", "loop", "deep"] as ShotIntent[])[idx % 3];
   }
 
-  /** Roll variety once for this inbound ball, never once per reprediction. */
+  /**
+   * Decide this possession's read and rhythm, once per inbound ball.
+   *
+   * Nothing here is rolled: the misread is earned by the shot (`readError`),
+   * and the rhythm choices cycle on the possession count, so a player who
+   * watches the opponent can learn them.
+   */
   private rollPossessionChoice(): void {
     this.rolledRead = true;
+    this.possessionIndex += 1;
     this.intent = this.pickIntent();
-    // Independent on both axes, so being wrong looks like being wrong rather
-    // than like a habit. Less error along the table than across it: judging
-    // how far a ball is coming is easier than judging where it will land.
-    this.misreadZ = misreadOffset(this.diff.misjudge);
-    this.misreadX = misreadOffset(this.diff.misjudge * 0.6);
+    // The read is the shot's own doing: its pace strains it and its lateral
+    // travel signs it. Less error along the table than across it: judging how
+    // far a ball is coming is easier than judging where it will land.
+    const read = readError(
+      this.diff.misjudge,
+      this.match.incomingPace("ai"),
+      Math.sign(this.match.ball.state.vel.z)
+    );
+    this.misreadZ = read.dz;
+    this.misreadX = read.dx * 0.6;
+    // Building is due on a rhythm set by the difficulty — and only when the
+    // incoming ball is soft enough to set up at all: pace denies the build,
+    // which is what makes a fast ball worth hitting.
     const maxPops = Math.max(0, Math.min(MAX_TOUCHES - 1, Math.floor(this.diff.maxPopTouches)));
-    this.plannedPops = Math.random() < this.diff.popChance ? maxPops : 0;
-    this.wantLow = Math.random() < 0.16;
+    const period = Math.max(1, Math.round(1 / Math.max(0.01, this.diff.popChance)));
+    const buildDue = this.possessionIndex % period === 0;
+    const softEnough = this.match.incomingPace("ai") < 12;
+    this.plannedPops = buildDue && softEnough ? maxPops : 0;
+    this.wantLow = this.possessionIndex % 7 === 4;
     // Enough texture to keep the AI from parking on a perfect rail, but not
-    // enough to lose it a reception it should make.
-    this.jitterZ = (Math.random() - 0.5) * 0.42;
+    // enough to lose it a reception it should make. Alternating rather than
+    // rolled, so it does not read as the same stand every time nor wander.
+    this.jitterZ = (this.possessionIndex % 2 === 0 ? 1 : -1) * 0.14;
     this.reaction = this.diff.reactionTime;
   }
 

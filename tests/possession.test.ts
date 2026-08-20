@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { bodyPartOf } from "../src/character";
 import { solveLaunchClearingNet } from "../src/ball";
 import {
+  AUTO_RECEPTION_REACH,
   AUTO_RUN,
   GROUND_Y,
   MAX_TOUCHES,
@@ -58,44 +59,33 @@ describe("a possession, played through the real rules", () => {
     expect(r.match.touchCount).toBeLessThanOrEqual(MAX_TOUCHES);
   });
 
-  it("chooses the same touches however the dice fall", () => {
-    // Determinism where it counts. The landing spread is deliberately random
-    // — pace has to cost accuracy — so two rallies never end up ball-for-ball
-    // identical. What must never vary is the *decision*: which limb plays the
-    // ball, and therefore what the player can do next. Running the same inputs
-    // against two very different random streams pins exactly that.
-    const played = (value: number): string[] => {
-      const spy = vi.spyOn(Math, "random").mockReturnValue(value);
-      try {
-        const r = rig();
-        r.step(3);
-        r.step(0.2, { strikePressed: true, moveX: 0.4, moveZ: -0.2 });
-        r.step(1.4);
-        return r.player.played;
-      } finally {
-        spy.mockRestore();
-      }
+  it("plays the same touches on every run of the same inputs", () => {
+    // Determinism where it counts. There are no dice left in the rally path —
+    // the landing deviation, the AI's read and the AI's choices are all
+    // functions of the simulation — so what must never vary is everything:
+    // which limb plays the ball, and therefore what the player can do next.
+    const played = (): string[] => {
+      const r = rig();
+      r.step(3);
+      r.step(0.2, { strikePressed: true, moveX: 0.4, moveZ: -0.2 });
+      r.step(1.4);
+      return r.player.played;
     };
 
-    expect(played(0.12)).toEqual(played(0.87));
+    expect(played()).toEqual(played());
   });
 
-  it("replays a rally exactly when nothing is left to chance", () => {
-    // With the declared spread held still, two runs of the same inputs have to
-    // agree to the last decimal — anything else would be a second, undeclared
-    // source of variation somewhere in the simulation.
+  it("replays a rally exactly, ball for ball", () => {
+    // Two runs of the same inputs have to agree to the last decimal —
+    // anything else would be a source of variation somewhere in the
+    // simulation, and a variation one of the two peers cannot see.
     const run = (): number[] => {
-      const spy = vi.spyOn(Math, "random").mockReturnValue(0.5);
-      try {
-        const r = rig();
-        r.step(3);
-        r.step(0.2, { strikePressed: true, moveX: 0.4, moveZ: -0.2 });
-        r.step(2.2);
-        const b = r.match.ball.state;
-        return [b.pos.x, b.pos.y, b.pos.z, r.player.position.x, r.player.position.z];
-      } finally {
-        spy.mockRestore();
-      }
+      const r = rig();
+      r.step(3);
+      r.step(0.2, { strikePressed: true, moveX: 0.4, moveZ: -0.2 });
+      r.step(2.2);
+      const b = r.match.ball.state;
+      return [b.pos.x, b.pos.y, b.pos.z, r.player.position.x, r.player.position.z];
     };
 
     expect(run()).toEqual(run());
@@ -298,6 +288,131 @@ describe("staying with the ball", () => {
       r.match.update(SIM_DT, { ...idle, moveZ: -1 }, () => {});
     }
     expect(r.player.position.z).toBeLessThan(zBefore - 0.25);
+  });
+});
+
+describe("crafting the first touch", () => {
+  /** Put a ball on its way to the player's half, as a return from the far side. */
+  const feed = (r: Rig): void => {
+    r.step(0.5);
+    r.match.state = "rally";
+    r.match.lastHitter = "ai";
+    r.match.strikeableSide = null;
+    r.match.touchCount = 0;
+    r.player.position.set(-SPAWN.x, GROUND_Y, 0);
+    r.player.played.length = 0;
+    const from = new Vector3(2.4, GROUND_Y + 1.6, 0.3);
+    const target = new Vector3(-1.1, tableSurfaceY(-1.1) + 0.02, 0.2);
+    r.match.ball.state.pos.copyFrom(from);
+    r.match.ball.launch(solveLaunchClearingNet(from, target, 1.35));
+  };
+
+  /** Step until the automatic reception pops the ball; return the pop's launch velocity. */
+  const popVel = (r: Rig, stick: Partial<InputState>): Vector3 | null => {
+    let vel: Vector3 | null = null;
+    r.match.subscribe((e) => {
+      if (e.type === "ball-launched" && e.action === "pop" && e.side === "player" && !vel) {
+        vel = e.vel.clone();
+      }
+    });
+    for (let i = 0; i < 60 * 4 && r.match.state === "rally" && !vel; i++) {
+      r.match.update(SIM_DT, { ...idle, ...stick }, () => {});
+    }
+    return vel;
+  };
+
+  it("pops the reception toward the held stick", () => {
+    const r = rig();
+    feed(r);
+
+    const vel = popVel(r, { moveX: 0.2, moveZ: 1 });
+
+    expect(vel).not.toBeNull();
+    // The set-up goes where the stick was pointing — the +z side.
+    expect(vel!.z).toBeGreaterThan(0);
+  });
+
+  it("still sets up forward when the stick is idle", () => {
+    const r = rig();
+    feed(r);
+
+    const vel = popVel(r, {});
+
+    // Near the table the set-up is clamped into the own half, so the honest
+    // assertion is that the touch went where the receiver faced — not
+    // sideways, which is what a stick would have added.
+    expect(vel).not.toBeNull();
+    expect(Math.abs(vel!.z)).toBeLessThan(0.1);
+  });
+
+  it("ignores a thumb resting inside the deadzone", () => {
+    const resting = rig();
+    feed(resting);
+    const held = rig();
+    feed(held);
+
+    const restingVel = popVel(resting, { moveZ: 0.1 });
+    const heldVel = popVel(held, { moveZ: 1 });
+
+    expect(restingVel).not.toBeNull();
+    expect(heldVel).not.toBeNull();
+    // The resting thumb still walks the player a little, which nudges the
+    // geometry — but it must not AIM the touch: far less sideways than the
+    // same thumb held past the deadzone.
+    expect(Math.abs(restingVel!.z)).toBeLessThan(Math.abs(heldVel!.z) - 0.2);
+  });
+
+  it("in portrait the tap outvotes everything — and the stick reads nothing", () => {
+    // Both runs start standing at the drop: this test measures the touch's
+    // aim, not the footwork that gets there. The game sets both portrait
+    // flags together; movement keys off tapSteering, reception off
+    // portraitControls.
+    const standAt = (r: Rig) => {
+      r.player.position.set(-1.6, GROUND_Y, 0.2);
+      r.match.portraitControls = true;
+      r.match.tapSteering = true;
+    };
+
+    // Portrait axes carry the last swipe's residue, so the portrait seat must
+    // never aim a reception off them: with no tap, the held stick is ignored
+    // and the touch sets up the way the receiver faced.
+    const plain = rig();
+    feed(plain);
+    standAt(plain);
+    const plainVel = popVel(plain, { moveZ: 1 });
+    expect(plainVel).not.toBeNull();
+    expect(Math.abs(plainVel!.z)).toBeLessThan(0.1);
+
+    // And a tap is still the aim: it beats the residue on the axes.
+    const tapped = rig();
+    feed(tapped);
+    standAt(tapped);
+    let vel: Vector3 | null = null;
+    let done = false;
+    tapped.match.subscribe((e) => {
+      if (e.type === "ball-launched" && e.action === "pop" && e.side === "player" && !vel) {
+        vel = e.vel.clone();
+      }
+    });
+    let placed = false;
+    for (let i = 0; i < 60 * 4 && tapped.match.state === "rally" && !vel; i++) {
+      const ball = tapped.match.ball.state.pos;
+      const chest = tapped.player.position.add(new Vector3(0, tapped.player.height * 0.55, 0));
+      if (
+        !placed &&
+        tapped.match.strikeableSide === "player" &&
+        Vector3.Distance(chest, ball) <= AUTO_RECEPTION_REACH * 1.6
+      ) {
+        // Tap a spot wide on the -z side while the axes hold +z residue.
+        tapped.match.tapAt(tapped.player.position.add(new Vector3(1.2, 0, -1.6)));
+        placed = true;
+      }
+      tapped.match.update(SIM_DT, { ...idle, moveZ: 1 }, () => {});
+      if (vel) done = true;
+    }
+    expect(placed).toBe(true);
+    expect(done).toBe(true);
+    expect(vel!.z).toBeLessThan(0);
   });
 });
 

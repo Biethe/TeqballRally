@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   DIFFICULTIES,
   DIFFICULTY,
-  misreadOffset,
+  READ,
+  aiServePattern,
+  readError,
   type AIDifficulty,
   type DifficultyLevel,
 } from "../src/ai";
@@ -65,53 +67,66 @@ describe("DIFFICULTIES", () => {
 
 describe("how the AI misses", () => {
   /**
-   * The rule this suite exists for: the opponent always goes for the ball.
+   * The rule this suite exists for: the opponent always goes for the ball,
+   * and every miss it makes is EARNED by the shot.
    *
-   * The old difficulty model included a "whiff" — a fixed 1.15 m sidestep,
-   * always the same way, plus a rule forbidding the AI to touch the ball that
-   * possession. On easy it fired on nearly a quarter of incoming balls, so a
-   * quarter of points opened with the opponent walking away from the serve.
-   * These tests hold the replacement to being a misjudgement instead: an error
-   * that is as often one way as the other, and that a well-placed shot has to
-   * exploit rather than simply receive.
+   * The old model rolled its errors — so points arrived from dice the player
+   * could neither cause nor learn. The read is now a deterministic function
+   * of the incoming ball: pace strains it, the ball's own lateral travel
+   * signs it, and the same shot misreads the same way twice. That is what
+   * turns wide diagonals and deep-then-drop into patterns a player can learn.
    */
 
-  it("is as likely to read the ball short as long", () => {
-    // A fixed sign is what made the old behaviour look like dodging.
-    let low = 0;
-    let high = 0;
-    for (let i = 0; i < 4000; i++) {
-      const off = misreadOffset(0.5);
-      if (off < 0) low++;
-      if (off > 0) high++;
-    }
+  it("is earned by the shot: pace strains the read", () => {
+    const slow = readError(0.5, 5, 1);
+    const fast = readError(0.5, 18, 1);
 
-    expect(low).toBeGreaterThan(1500);
-    expect(high).toBeGreaterThan(1500);
+    expect(Math.abs(fast.dz)).toBeGreaterThan(Math.abs(slow.dz));
+    // Along the table: a slow ball is read as it is; a fast one is under-read
+    // and drops behind the stand.
+    expect(slow.dx).toBe(0);
+    expect(fast.dx).toBeLessThan(0);
   });
 
-  it("never misreads by more than the difficulty allows", () => {
-    for (let i = 0; i < 2000; i++) {
-      expect(Math.abs(misreadOffset(0.66))).toBeLessThanOrEqual(0.66);
+  it("signs the across-error by the ball's own lateral travel", () => {
+    const left = readError(0.5, 12, -1);
+    const right = readError(0.5, 12, 1);
+
+    expect(left.dz).toBeLessThan(0);
+    expect(right.dz).toBeGreaterThan(0);
+    // A straight ball carries no across-error, however fast.
+    expect(readError(0.5, 18, 0).dz).toBe(0);
+  });
+
+  it("reads the same shot the same way twice", () => {
+    for (const pace of [4, 9, 12, 17]) {
+      for (const sign of [-1, 0, 1]) {
+        expect(readError(0.62, pace, sign)).toEqual(readError(0.62, pace, sign));
+      }
     }
   });
 
-  it("is usually nearly right, and occasionally badly wrong", () => {
-    // Squared about zero: a uniform error would make every single reception
-    // sloppy, which reads as an opponent who cannot play rather than one who
-    // can be beaten by a good shot.
-    const offsets = Array.from({ length: 4000 }, () => Math.abs(misreadOffset(1)));
-    const small = offsets.filter((o) => o < 0.25).length;
-    const large = offsets.filter((o) => o > 0.75).length;
-
-    expect(small / offsets.length).toBeGreaterThan(0.45);
-    expect(large / offsets.length).toBeLessThan(0.16);
+  it("never misreads by more than the difficulty allows, at any pace", () => {
+    for (const pace of [0, 9, 13, 16, 30]) {
+      const r = readError(0.66, pace, 1);
+      expect(Math.abs(r.dz)).toBeLessThanOrEqual(0.66 * READ.maxMul + 1e-9);
+      expect(Math.abs(r.dx)).toBeLessThanOrEqual(0.66 * READ.maxMul + 1e-9);
+    }
   });
 
   it("reads the ball perfectly when the difficulty says so", () => {
-    // What practice uses: a partner that keeps the lesson moving.
-    for (let i = 0; i < 200; i++) expect(misreadOffset(0)).toBe(0);
+    // What practice uses: a partner that keeps the lesson moving — at any pace.
+    for (const pace of [0, 12, 25]) {
+      expect(readError(0, pace, 1)).toEqual({ dz: 0, dx: 0 });
+    }
     expect(PRACTICE_DIFFICULTY.misjudge).toBe(0);
+  });
+
+  it("keeps the ladder: a harder preset reads the same missile better", () => {
+    const easy = readError(DIFFICULTIES.easy.misjudge, 18, 1);
+    const hard = readError(DIFFICULTIES.hard.misjudge, 18, 1);
+
+    expect(Math.abs(hard.dz)).toBeLessThan(Math.abs(easy.dz));
   });
 
   it("has no way left to decline a ball", () => {
@@ -120,5 +135,15 @@ describe("how the AI misses", () => {
     const knobs = Object.keys(DIFFICULTIES.easy);
     expect(knobs).not.toContain("whiffChance");
     expect(knobs).toContain("misjudge");
+  });
+});
+
+describe("the AI's patterns", () => {
+  it("serves a learnable pattern: side alternates, depth cycles", () => {
+    for (let i = 0; i < 12; i++) {
+      const p = aiServePattern(i);
+      expect(p.lat).toBe(i % 2 === 0 ? 1 : -1);
+      expect(p.fwd).toBe([-0.3, 0.2, 0.5][i % 3]);
+    }
   });
 });

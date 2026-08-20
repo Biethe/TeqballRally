@@ -216,13 +216,14 @@ export function swipeTarget(
 const SWIPE_LATERAL = 0.9;
 
 /**
- * How wide the landing scatter is, in metres.
+ * How large the landing deviation is, in metres.
  *
  * Power is the honest trade in this game: a hard kick is harder to keep on a
  * 1.5 m table half, so pace has to cost accuracy or there would be no reason
  * ever to play a soft one. Precision is the counterweight, and the number a
  * player will later be able to improve — it divides the spread, so a precise
- * striker can hit hard and still keep it in.
+ * striker can hit hard and still keep it in. The deviation this sizes is
+ * shaped by the contact itself (`landingDeviation`), never rolled.
  */
 export const SPREAD = {
   /** Radius at half power, for an unremarkable striker with an easy contact. */
@@ -258,15 +259,79 @@ export function spreadRadius({ power, precision, footSpray, stretch }: SpreadInp
 }
 
 /**
- * Displace a target inside its spread disc. `rand` returns 0..1 — the caller
- * passes Math.random in the game and a fixed sequence in a test.
+ * How the spread of a kick is shaped between its two directions: along the
+ * line of the shot (over- and under-carry) and across it (the squirt of a
+ * ball reached away from the body).
  */
-export function scatter(target: Vector3, radius: number, rand: () => number): Vector3 {
-  const angle = rand() * Math.PI * 2;
-  // sqrt keeps the samples uniform over the disc rather than crowding the
-  // middle, so the edge of the spread is as likely as it looks.
-  const r = Math.sqrt(rand()) * radius;
-  return new Vector3(target.x + Math.cos(angle) * r, target.y, target.z + Math.sin(angle) * r);
+export const DEVIATION = {
+  /** Share of the radius spent along the shot line. */
+  along: 0.6,
+  /** Weight of the contact's timing sense on the over/under-carry. */
+  senseWeight: 0.6,
+  /** Weight of power on the carry, centred on a middling strike. */
+  powerWeight: 0.8,
+  powerCentre: 0.55,
+  /** The stretch at which the across-squirt is fully grown. */
+  stretchFull: 0.6,
+};
+
+/** What the contact itself says about where the ball will actually land. */
+export interface DeviationInputs {
+  /** The kick's power, 0..1. */
+  power: number;
+  /** Contact timing: +1 met early (ball still climbing), −1 met late. */
+  sense: -1 | 0 | 1;
+  /** The ball's side at contact, in the striker's own frame (+ = their right). */
+  lateral: number;
+  /** How far the striker had to reach, 0 = in front of them, 1+ = full stretch. */
+  stretch: number;
+}
+
+/**
+ * Where a kick actually lands, given where it was aimed and the geometry of
+ * the contact that struck it.
+ *
+ * The radius is the spread the contact earned — power, precision, foot,
+ * stretch and quality, as ever — but its direction is the contact's own, so
+ * the same shot lands the same way twice and a miss is a lesson rather than
+ * a draw: met early the ball carries long, met late it dies short, full
+ * power flattens it past the aim, and a ball reached at arm's length squirts
+ * toward the side it was reached on. A ball met square in front squirts not
+ * at all — squaring up is the skill the across term is teaching.
+ */
+export function landingDeviation(
+  target: Vector3,
+  ballPos: Vector3,
+  radius: number,
+  inputs: DeviationInputs
+): Vector3 {
+  if (radius <= 0) return target.clone();
+  const dx = target.x - ballPos.x;
+  const dz = target.z - ballPos.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-4) return target.clone();
+  const fx = dx / len;
+  const fz = dz / len;
+  // Along: over- and under-carry, signed by the contact and the power.
+  const sLong = clamp11(
+    DEVIATION.senseWeight * inputs.sense + DEVIATION.powerWeight * (inputs.power - DEVIATION.powerCentre)
+  );
+  const long = radius * DEVIATION.along * sLong;
+  // Across: the ball squirts toward the side it was reached on, grown by how
+  // far the striker had to stretch for it. `perp` is the striker's left when
+  // they aim down-court, whichever end they strike from, so the same relative
+  // contact mirrors into the same relative miss on both halves.
+  const stretch = Math.min(1, Math.max(0, inputs.stretch) / DEVIATION.stretchFull);
+  const across = -radius * (1 - DEVIATION.along) * Math.sign(inputs.lateral) * stretch;
+  return new Vector3(
+    target.x + long * fx + across * -fz,
+    target.y,
+    target.z + long * fz + across * fx
+  );
+}
+
+function clamp11(v: number): number {
+  return Math.max(-1, Math.min(1, v));
 }
 
 /**

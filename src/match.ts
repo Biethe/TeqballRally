@@ -83,6 +83,7 @@ import {
   type CameraMode,
 } from "./config";
 import type { InputState } from "./input";
+import { aiServePattern } from "./ai";
 import type { AudioManager } from "./audio";
 import { reconcile } from "./net/reconcile";
 import {
@@ -91,7 +92,7 @@ import {
   loftFloor,
   loftFor,
   onTableHalf,
-  scatter,
+  landingDeviation,
   spreadRadius,
   swipeShot,
   swipeTarget,
@@ -280,6 +281,10 @@ const BODY_RADIUS = 0.15;
 // an arm's length out of reach, possession not open until the bounce, previous
 // animation finishing) it retries every frame instead of being dropped.
 const PRESS_BUFFER = 0.35;
+// The stick only aims the automatic reception past this magnitude: a resting
+// thumb on the nub must not turn every first touch sideways, and the same
+// 0.25 convention is what the walking code reads as "asking to move".
+const RECEPTION_STICK_DEADZONE = 0.25;
 // One physical bounce registers several table contacts when the ball skims
 // flat or rolls (a contact every few ms) — same-side contacts within this
 // window count as the same bounce for the rules.
@@ -450,6 +455,11 @@ export class MatchController {
    * read as the same ball.
    */
   private struckPace: Record<Side, number> = { player: 0, ai: 0 };
+
+  /** The pace the ball this side must answer arrived at (the other side's last strike). */
+  incomingPace(side: Side): number {
+    return this.struckPace[other(side)];
+  }
   /**
    * Which part of the body played this possession's previous touch.
    *
@@ -1489,10 +1499,13 @@ export class MatchController {
     this.anchor = { player: null, ai: null };
     this.repredictIn = 0;
     if (this.serveOwner === "ai" && !this.versus) {
-      // The AI rolls its aim once; its clip follows the same aim→clip rule.
-      const ownLat = Math.random() * 2 - 1; // + = the AI's own left (-z in court space)
+      // The AI's serve follows a pattern keyed by the point index — side
+      // alternates, depth cycles — so it is a serve a receiver can learn to
+      // read, and the clip (which follows the aim) shows the tell.
+      const pattern = aiServePattern(this.totalPoints);
+      const ownLat = pattern.lat; // + = the AI's own left (-z in court space)
       this.serveClip = serveClipForAim(ownLat);
-      this.serveAim = { fwd: Math.random() * 1.4 - 0.7, lat: -ownLat };
+      this.serveAim = { fwd: pattern.fwd, lat: -ownLat };
     } else {
       // Neutral aim until the player holds a direction (updated live below).
       this.serveClip = serveClipForAim(0);
@@ -1692,8 +1705,11 @@ export class MatchController {
     if (contactPoint) this.ball.state.pos.copyFrom(contactPoint);
     const recv = other(this.serveOwner);
     const server = this.chars[this.serveOwner];
-    // Same aim mapping as rally strikes; aiming shrinks the random spray but a
-    // residual remains, scaled by the server's precision and serving foot.
+    // Same aim mapping as rally strikes. The landing drifts toward the aimed
+    // sideline by what the server's traits allow — deterministic, so a wide
+    // serve curls wide every time, and the skill is leaving a hand's width of
+    // inward aim for the drift to spend. A centre serve drifts not at all,
+    // which keeps the neutral serve exactly the one it has always been.
     const aim = this.serveAim;
     const spot = serveTarget(sign(recv), aim.fwd, aim.lat);
     const tx = spot.x;
@@ -1702,7 +1718,7 @@ export class MatchController {
     // ball can be put and it puts pace on it. A strong server can go near the
     // line at speed; a weak one has to choose.
     const sprayAmp = (0.25 * ff.spray) / (server.def.precision * server.def.serve);
-    const spray = (Math.random() - 0.5) * sprayAmp * (1 - 0.7 * Math.min(1, Math.abs(aim.lat)));
+    const spray = 0.5 * sprayAmp * (1 - 0.7 * Math.min(1, Math.abs(aim.lat))) * Math.sign(aim.lat);
     const tz = Math.max(-0.62, Math.min(0.62, spot.z + spray));
     const target = new Vector3(tx, tableSurfaceY(tx) + 0.02, tz);
     const dist = Vector3.Distance(this.ball.state.pos, target);
@@ -1788,14 +1804,32 @@ export class MatchController {
    * pushed past the wall so the camera looks through it.
    */
   indoorVenue = false;
-  private autoReceive(side: Side): void {
+  private autoReceive(side: Side, stick: InputState | null): void {
     if (!this.autoFirstReception || this.touchCount > 0 || this.ball.held) return;
     if (!this.canTouch(side, AUTO_RECEPTION_REACH)) return;
-    // Steered by the last tap if there was one, and set up just in front of
-    // the receiver if there was not.
-    const aim = side === "player" ? this.receptionAim : null;
+    // The first touch is the start of the plan, so it is aimed: a portrait
+    // tap if one was left, else the stick held at the moment of contact, else
+    // the old set-up just in front of the receiver. The portrait seat never
+    // reads the stick — its axes carry the last swipe's residue, and a
+    // reception fired at that is a reception fired at a ghost. While the
+    // locked run owns the feet the stick is otherwise idle, so holding a
+    // direction during the carry is exactly the player crafting this touch;
+    // an idle stick falls through the deadzone to the forward default.
+    const tapAim = side === "player" ? this.receptionAim : null;
     this.receptionAim = null;
-    this.tryControlTouch(side, aim?.x ?? 0, aim?.z ?? 0, AUTO_RECEPTION_REACH);
+    let aimX = 0;
+    let aimZ = 0;
+    if (tapAim) {
+      aimX = tapAim.x;
+      aimZ = tapAim.z;
+    } else if (stick && !(side === "player" && this.portraitControls)) {
+      const mag = Math.hypot(stick.moveX, stick.moveZ);
+      if (mag > RECEPTION_STICK_DEADZONE) {
+        aimX = stick.moveX;
+        aimZ = stick.moveZ;
+      }
+    }
+    this.tryControlTouch(side, aimX, aimZ, AUTO_RECEPTION_REACH);
   }
 
   /** A committed touch waiting for the ball to drop back into striking range. */
@@ -1960,10 +1994,13 @@ export class MatchController {
    * Attempt the return strike for `side`, aimed at a point on the court and
    * struck at a chosen power.
    *
-   * Where it actually lands is that point plus a spread: wider the harder the
-   * ball is struck, wider again for a contact taken at full stretch, narrower
-   * for a precise striker. Nothing clamps the result back onto the table, so a
-   * kick aimed at the line and hit flat out can and should miss.
+   * Where it actually lands is that point displaced by the contact's own
+   * geometry: the spread grows the harder the ball is struck, again for a
+   * contact taken at full stretch, and shrinks for a precise striker — and
+   * its direction is the contact's (early carries long, stretched squirts
+   * sideways), so the same shot lands the same way twice. Nothing clamps the
+   * result back onto the table, so a kick aimed at the line and hit flat out
+   * can and should miss.
    */
   tryStrike(side: Side, aim: StrikeAim, timingSlip = 0): boolean {
     if (!this.canTouch(side)) return false;
@@ -2080,7 +2117,15 @@ export class MatchController {
           footSpray: ff.spray,
           stretch,
         }) * graded.spread;
-      const landed = scatter(aim.target, radius, Math.random);
+      // Where it actually lands: the aim displaced by the contact's own
+      // geometry, so the same shot lands the same way twice and every miss is
+      // the striker's to learn from.
+      const landed = landingDeviation(aim.target, this.ball.state.pos, radius, {
+        power,
+        sense: plan.sense,
+        lateral,
+        stretch,
+      });
       // Aiming past the far edge is allowed — that is how a kick misses — but
       // a target beyond the court is not a shot anyone meant to play.
       const wanted = clampToPlay(landed);
@@ -2798,7 +2843,7 @@ export class MatchController {
           // Nothing pressed: the first touch of the possession is taken for
           // them. A buffered press is checked first so a player going for a
           // direct return never has it received out from under them.
-          this.autoReceive("player");
+          this.autoReceive("player", input);
         }
         // Online play arrives here as an ordinary two-human match: the second
         // seat's controls come off the wire into versusInput, exactly where a
@@ -2966,7 +3011,7 @@ export class MatchController {
       bp.ttl -= dt;
       if (done || bp.ttl <= 0) this.bufferedPress2 = null;
     } else {
-      this.autoReceive("ai");
+      this.autoReceive("ai", this.versusInput);
     }
   }
 
