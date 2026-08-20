@@ -3,7 +3,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { SIM_DT } from "../src/config";
 import { stepBall, type BallState } from "../src/ball";
 import { AIController, DIFFICULTIES } from "../src/ai";
-import { idle, rig, silentUI, type Rig } from "./rig";
+import { idle, rig, silentUI, FakeCharacter, type Rig } from "./rig";
 import type { InputState } from "../src/input";
 
 /**
@@ -19,13 +19,18 @@ type BallPos = { x: number; y: number; z: number };
 /** Snapshots sampled every 2 host ticks (30 Hz), delivered `delay` ticks late. */
 function feed(host: Rig, guest: Rig, delay: number) {
   const cpu = new AIController(host.match, DIFFICULTIES.normal);
+  // The session's publishing wiring, reproduced the way session.step does it:
+  // drain once per host step, in the step's tick, so clip windows are stamped
+  // in the same clock the frames carry.
+  host.match.netPublish = true;
   const queue: { due: number; frame: Frame }[] = [];
-  const history: (BallPos & { vel: BallPos; held: boolean })[] = [];
+  const history: (BallPos & { vel: BallPos; held: boolean; aiX: number; aiZ: number })[] = [];
   let tick = 0;
 
   const stepHost = (input: Partial<InputState> = {}) => {
     host.match.update(SIM_DT, { ...idle, ...input }, (dt) => cpu.update(dt));
     tick += 1;
+    host.match.drainNet(tick);
     const b = host.match.ball;
     history.push({
       x: b.state.pos.x,
@@ -33,9 +38,18 @@ function feed(host: Rig, guest: Rig, delay: number) {
       z: b.state.pos.z,
       vel: { x: b.state.vel.x, y: b.state.vel.y, z: b.state.vel.z },
       held: b.held,
+      aiX: host.match.chars.ai.position.x,
+      aiZ: host.match.chars.ai.position.z,
     });
     if (tick % 2 === 0) {
       const m = host.match;
+      const win = (side: "player" | "ai") => {
+        const clip = m.chars[side].currentActionClip;
+        const w = m.clipWindow[side];
+        return w && w.clip === clip ? w : null;
+      };
+      const pw = win("player");
+      const ow = win("ai");
       queue.push({
         due: tick + delay,
         frame: {
@@ -48,6 +62,10 @@ function feed(host: Rig, guest: Rig, delay: number) {
           opponentVel: { x: m.chars.ai.velocity.x, z: m.chars.ai.velocity.z },
           selfClip: m.chars.player.currentActionClip,
           opponentClip: m.chars.ai.currentActionClip,
+          selfClipFrom: pw?.from,
+          selfClipTo: pw?.to,
+          opponentClipFrom: ow?.from,
+          opponentClipTo: ow?.to,
           tick,
           score: [m.score.player, m.score.ai],
           sets: [m.sets.player, m.sets.ai],
@@ -217,5 +235,64 @@ describe("the guest's ball, played back from the feed", () => {
       f.stepGuest();
     }
     expect(Number.isFinite(guest.match.ball.state.pos.x)).toBe(true);
+  });
+
+  it("shows the opponent at the same constant delay as the ball", () => {
+    // The chase-easing this replaced ran on its own clock: visible catch-up
+    // sprints beside a ball on the timeline. One delay must describe the
+    // whole screen.
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    guest.match.netFollower = true;
+    const f = feed(host, guest, DELAY);
+    const guestAi: { x: number; z: number }[] = [];
+    const step = (input: Partial<InputState> = {}) => {
+      f.stepHost(input);
+      f.deliver();
+      f.stepGuest();
+      const p = guest.match.chars.ai.position;
+      guestAi.push({ x: p.x, z: p.z });
+    };
+    for (let i = 0; i < 180; i++) step();
+    step({ strikePressed: true });
+    for (let i = 1; i < 900; i++) step(i % 24 === 0 ? { popPressed: true } : {});
+
+    let bestOffset = -1;
+    let bestMean = Infinity;
+    for (let offset = DELAY + 2; offset <= DELAY + BUFFER + 5; offset++) {
+      let sum = 0;
+      let n = 0;
+      for (let t = 300; t < guestAi.length - 30; t++) {
+        const truth = f.history[t - offset];
+        if (!truth) continue;
+        sum += Math.hypot(guestAi[t].x - truth.aiX, guestAi[t].z - truth.aiZ);
+        n += 1;
+      }
+      if (n > 100 && sum / n < bestMean) {
+        bestMean = sum / n;
+        bestOffset = offset;
+      }
+    }
+
+    expect(bestOffset).toBeGreaterThanOrEqual(DELAY + 2);
+    expect(bestOffset).toBeLessThanOrEqual(DELAY + BUFFER + 5);
+    // Interpolation between 30 Hz samples of a run keeps sub-centimetre to a
+    // few centimetres error; the old chase easing measured in body lengths.
+    expect(bestMean).toBeLessThan(0.08);
+  });
+
+  it("starts a received clip at its windowed fraction, not from zero", () => {
+    // A clip arriving ten ticks after it started must start ten ticks in —
+    // starting it from its head is the kick lagging the ball by the latency.
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    guest.match.netFollower = true;
+    const f = feed(host, guest, DELAY);
+    playRally(f, guest, 900);
+
+    const opp = guest.match.chars.ai as unknown as FakeCharacter;
+    expect(opp.played.length).toBeGreaterThan(0);
+    expect(opp.startFracs.some((fr) => fr > 0.05 && fr < 1)).toBe(true);
+    expect(opp.startFracs.every((fr) => fr >= 0 && fr <= 1)).toBe(true);
   });
 });

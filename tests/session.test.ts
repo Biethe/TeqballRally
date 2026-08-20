@@ -49,24 +49,33 @@ function fakeConn() {
  */
 function fakeMatch() {
   const applySnapshot = vi.fn();
+  const drainNet = vi.fn(() => [] as { kind: "kick" | "table" | "net" | "ground" | "side" | "body"; pos?: { x: number; y: number; z: number } }[]);
+  const queueFx = vi.fn();
   const match = {
     versus: false,
     netFollower: false,
+    netPublish: false,
     score: { player: 0, ai: 0 },
     sets: { player: 0, ai: 0 },
     serveOwner: "player",
     state: "rally",
     versusInput: { moveX: 0, moveZ: 0, strikePressed: false, strikeHeld: false, strikePower: 0, popPressed: false, confirmPressed: false },
     lockedState: { player: false, ai: false },
+    clipWindow: { player: null, ai: null } as Record<
+      "player" | "ai",
+      { clip: string; from: number; to: number } | null
+    >,
     matchWinner: null,
     ball: { state: { pos: new Vector3(0, 1, 0), vel: new Vector3(0, 0, 0) }, held: false },
     chars: {
-      player: { position: new Vector3(-3, 0.4, 0), velocity: new Vector3(0, 0, 0) },
-      ai: { position: new Vector3(3, 0.4, 0), velocity: new Vector3(0, 0, 0), busy: false },
+      player: { position: new Vector3(-3, 0.4, 0), velocity: new Vector3(0, 0, 0), currentActionClip: null as string | null },
+      ai: { position: new Vector3(3, 0.4, 0), velocity: new Vector3(0, 0, 0), busy: false, currentActionClip: null as string | null },
     },
     applySnapshot,
+    drainNet,
+    queueFx,
   };
-  return { match: match as unknown as MatchController, applySnapshot };
+  return { match: match as unknown as MatchController, applySnapshot, drainNet, queueFx, fake: match };
 }
 
 function session(handlers: SessionHandlers = {}, role: "host" | "guest" = "host") {
@@ -340,6 +349,58 @@ describe("host and guest exchange", () => {
 
     expect(h.match.versusInput.strikePressed).toBe(true);
   });
+
+  it("carries each seat's clip window with its snapshot", () => {
+    // The guest plays a clip at the fraction its window gives the playback
+    // clock; without the window the animation restarts from zero on arrival.
+    const h = session({}, "host");
+    h.fake.chars.player.currentActionClip = "CenterHeadKick";
+    h.fake.clipWindow.player = { clip: "CenterHeadKick", from: 50, to: 110 };
+    run(h.s, 0.1);
+    const snap = h.sent.find((m) => m.t === "snap") as SnapshotMessage;
+
+    expect(snap.hostClipFrom).toBe(50);
+    expect(snap.hostClipTo).toBe(110);
+  });
+
+  it("does not send a stale window beside a different clip", () => {
+    const h = session({}, "host");
+    h.fake.chars.player.currentActionClip = "ChestKick";
+    h.fake.clipWindow.player = { clip: "CenterHeadKick", from: 50, to: 110 };
+    run(h.s, 0.1);
+    const snap = h.sent.find((m) => m.t === "snap") as SnapshotMessage;
+
+    expect(snap.hostClipFrom).toBeUndefined();
+    expect(snap.hostClipTo).toBeUndefined();
+  });
+
+  it("publishes the match's contact events stamped with the sim tick", () => {
+    const h = session({}, "host");
+    h.drainNet.mockReturnValue([{ kind: "kick" }, { kind: "table", pos: { x: 1, y: 0.9, z: 0 } }]);
+    h.s.step(SIM_DT);
+
+    const fx = h.sent.filter((m) => m.t === "fx");
+    expect(fx).toHaveLength(2);
+    expect(fx[0]).toMatchObject({ kind: "kick", tick: 1 });
+    expect(fx[1]).toMatchObject({ kind: "table", pos: { x: 1, y: 0.9, z: 0 } });
+    // Drained once: the same events must not ride out again next step.
+    h.drainNet.mockReturnValue([]);
+    h.s.step(SIM_DT);
+    expect(h.sent.filter((m) => m.t === "fx")).toHaveLength(2);
+  });
+
+  it("freezes the sim tick during a negotiated pause", () => {
+    // Snapshots, clip windows and fx events are all stamped in one clock, so
+    // the clock stands still with the match instead of running on without it.
+    const h = pausable("host");
+    h.deliver({ t: "pause", tick: 1, action: "request" });
+    h.s.respondToPause(true);
+    run(h.s, 0.1);
+    const snaps = h.sent.filter((m) => m.t === "snap");
+
+    expect(snaps.length).toBeGreaterThan(1); // traffic keeps flowing
+    expect(new Set(snaps.map((s) => s.tick)).size).toBe(1); // one frozen tick
+  });
 });
 
 describe("guest applies the authoritative frame", () => {
@@ -402,6 +463,50 @@ describe("guest applies the authoritative frame", () => {
     g.deliver(snapshot());
 
     expect(g.applySnapshot.mock.calls[0][0]).toMatchObject({ selfLocked: false });
+  });
+
+  it("hands over clip windows swapped with the seats", () => {
+    const g = session({}, "guest");
+    g.deliver(
+      snapshot({
+        guestClip: "ChestKick",
+        guestClipFrom: 10,
+        guestClipTo: 40,
+        hostClip: "RightKneeReception",
+        hostClipFrom: 70,
+        hostClipTo: 120,
+      })
+    );
+
+    // After reframe, the host's "guest" seat is this peer.
+    expect(g.applySnapshot.mock.calls[0][0]).toMatchObject({
+      selfClip: "ChestKick",
+      selfClipFrom: 10,
+      selfClipTo: 40,
+      opponentClip: "RightKneeReception",
+      opponentClipFrom: 70,
+      opponentClipTo: 120,
+    });
+  });
+
+  it("delivers valid contact events to the match, and drops the rest", () => {
+    const g = session({}, "guest");
+    g.deliver({ t: "fx", tick: 5, kind: "kick" });
+    g.deliver({ t: "fx", tick: 6, kind: "table", pos: { x: 1, y: 0.9, z: 0 } });
+    // Deliberately malformed: the validator must drop them, not crash on them.
+    g.deliver({ t: "fx", tick: 7, kind: "bogus" } as unknown as GameMessage);
+    g.deliver({ t: "fx", kind: "kick" } as unknown as GameMessage);
+
+    expect(g.queueFx).toHaveBeenCalledTimes(2);
+    expect(g.queueFx.mock.calls[0][0]).toEqual({ tick: 5, kind: "kick" });
+    expect(g.queueFx.mock.calls[1][0]).toEqual({ tick: 6, kind: "table" });
+  });
+
+  it("ignores contact events arriving at a host", () => {
+    const h = session({}, "host");
+    h.deliver({ t: "fx", tick: 5, kind: "kick" });
+
+    expect(h.queueFx).not.toHaveBeenCalled();
   });
 });
 

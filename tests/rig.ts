@@ -48,6 +48,8 @@ export class FakeCharacter {
   reserve = 1;
   /** Every clip this possession played, in order, for the assertions below. */
   played: string[] = [];
+  /** The start fraction each playAction was given, parallel to `played`. */
+  startFracs: number[] = [];
   private action: { name: string; left: number; total: number; callbacks: { frac: number; fn: () => void }[]; onEnd?: () => void } | null = null;
   private lunge: { from: Vector3; to: Vector3; dur: number; t: number } | null = null;
 
@@ -101,6 +103,7 @@ export class FakeCharacter {
     if (!this.groups.has(name)) return false;
     if (opts.loop) return true; // idle/locomotion loops need no simulation here
     this.played.push(name);
+    this.startFracs.push(opts.startFrac ?? 0);
     const frames = info?.frames ?? 60;
     const start = opts.startFrac ?? 0;
     const total = Math.max(0.05, ((1 - start) * frames) / 60 / (opts.speed ?? 1));

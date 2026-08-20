@@ -25,7 +25,7 @@ import { MAX_CATCHUP_TICKS } from "./protocol";
  *
  * Sized against the worst realistic drift: a step budget of four 60 Hz steps
  * per frame loses at most a step every frame a device is saturating, and a
- * device saturating for a whole second at 20 snapshots per second accrues far
+ * device saturating for a whole second at 30 snapshots per second accrues far
  * more than this releases — but saturating devices are not the ones playing
  * smooth online matches, and the clamp below bounds any error the release
  * itself makes.

@@ -19,6 +19,7 @@ import type { Side } from "../ball";
 import type { NetConnection } from "./connection";
 import { TickAge } from "./sync";
 import {
+  isValidFx,
   isValidInput,
   readLoft,
   readTaps,
@@ -166,6 +167,9 @@ export class OnlineSession {
     private handlers: SessionHandlers = {}
   ) {
     match.versus = true;
+    // The host publishes clip windows and contact events alongside snapshots;
+    // a guest has nothing to publish.
+    if (this.isHost) match.netPublish = true;
     conn.setHandlers({
       onMessage: (msg) => this.onNetMessage(msg),
       // A clean disconnect is reported by the relay; silence is noticed by the
@@ -395,6 +399,10 @@ export class OnlineSession {
           opponentVel: msg.guestVel,
           selfClip: msg.hostClip,
           opponentClip: msg.guestClip,
+          selfClipFrom: msg.hostClipFrom,
+          selfClipTo: msg.hostClipTo,
+          opponentClipFrom: msg.guestClipFrom,
+          opponentClipTo: msg.guestClipTo,
           selfLocked: msg.hostLocked === true,
           tick: msg.tick,
           score: msg.score,
@@ -408,6 +416,13 @@ export class OnlineSession {
           sets: msg.sets,
           serveOwner: msg.serveOwner,
         });
+        return;
+      }
+
+      // Guest: a contact to play when the playback clock reaches its tick.
+      case "fx": {
+        if (this.isHost || !isValidFx(msg)) return;
+        this.match.queueFx({ tick: msg.tick, kind: msg.kind });
         return;
       }
 
@@ -431,10 +446,18 @@ export class OnlineSession {
    */
   step(dt: number): void {
     if (this.disposed) return;
-    this.tick++;
+    // Frozen during a negotiated pause, on both peers at once, so the tick
+    // stays the one time base: snapshots, clip windows and fx events are all
+    // stamped in it, and the match stands still while it does.
+    if (!this.isPaused) this.tick++;
     this.conn.tick = this.tick;
 
     if (this.isHost) {
+      // What the sim produced this step — contact events and clip starts —
+      // leaves stamped in this step's tick, beside the snapshots.
+      for (const fx of this.match.drainNet(this.tick)) {
+        this.conn.send(reframe({ t: "fx", tick: this.tick, kind: fx.kind, pos: fx.pos }, this.role));
+      }
       // The host holds the only match, so it publishes; the guest has nothing
       // authoritative to say beyond what its controls are doing.
       this.sinceMove += dt;
@@ -522,6 +545,15 @@ export class OnlineSession {
   /** Host: publish the whole authoritative frame in one message. */
   private sendSnapshot(): void {
     const ball = this.match.ball;
+    // A window only describes the clip currently playing; a stale window from
+    // the previous action must not ride out beside a different clip.
+    const win = (side: "player" | "ai") => {
+      const clip = this.match.chars[side].currentActionClip;
+      const w = this.match.clipWindow[side];
+      return w && w.clip === clip ? w : null;
+    };
+    const hostWin = win("player");
+    const guestWin = win("ai");
     this.conn.send(
       reframe(
         {
@@ -536,6 +568,10 @@ export class OnlineSession {
           guestVel: vec(this.match.chars.ai.velocity),
           hostClip: this.match.chars.player.currentActionClip,
           guestClip: this.match.chars.ai.currentActionClip,
+          hostClipFrom: hostWin?.from,
+          hostClipTo: hostWin?.to,
+          guestClipFrom: guestWin?.from,
+          guestClipTo: guestWin?.to,
           hostLocked: this.match.lockedState.player,
           guestLocked: this.match.lockedState.ai,
           score: [this.match.score.player, this.match.score.ai],

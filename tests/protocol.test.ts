@@ -10,7 +10,9 @@ import {
   applyStrike,
   catchupTicks,
   decode,
+  isValidFx,
   isValidInput,
+  isValidSnapshot,
   readLoft,
   readTaps,
   encode,
@@ -254,6 +256,47 @@ describe("protocol version", () => {
   it("is a positive integer both halves can compare", () => {
     expect(Number.isInteger(PROTOCOL_VERSION)).toBe(true);
     expect(PROTOCOL_VERSION).toBeGreaterThan(0);
+  });
+});
+
+describe("snapshot and fx validation", () => {
+  const snap = (over: Record<string, unknown> = {}) => ({
+    t: "snap",
+    tick: 1,
+    ballPos: { x: 0, y: 1, z: 0 },
+    ballVel: { x: 0, y: 0, z: 0 },
+    ballHeld: false,
+    hostPos: { x: -3, y: 0.4, z: 0 },
+    guestPos: { x: 3, y: 0.4, z: 0 },
+    hostVel: { x: 0, y: 0, z: 0 },
+    guestVel: { x: 0, y: 0, z: 0 },
+    hostClip: null,
+    guestClip: null,
+    score: [0, 0],
+    sets: [0, 0],
+    serveOwner: "player",
+    phase: "rally",
+    ...over,
+  });
+
+  it("accepts a snapshot without clip windows, as an older host sends", () => {
+    expect(isValidSnapshot(snap())).toBe(true);
+  });
+
+  it("accepts clip windows and rejects a broken one", () => {
+    expect(
+      isValidSnapshot(snap({ hostClip: "ChestKick", hostClipFrom: 10, hostClipTo: 40 }))
+    ).toBe(true);
+    expect(isValidSnapshot(snap({ hostClipFrom: NaN }))).toBe(false);
+  });
+
+  it("accepts a well-formed fx event and drops the rest", () => {
+    expect(isValidFx({ t: "fx", tick: 5, kind: "kick" })).toBe(true);
+    expect(isValidFx({ t: "fx", tick: 5, kind: "table", pos: { x: 1, y: 0.9, z: 0 } })).toBe(true);
+    expect(isValidFx({ t: "fx", tick: 5, kind: "bogus" })).toBe(false);
+    expect(isValidFx({ t: "fx", kind: "kick" })).toBe(false);
+    expect(isValidFx({ t: "fx", tick: NaN, kind: "kick" })).toBe(false);
+    expect(isValidFx({ t: "fx", tick: 1, kind: "kick", pos: { x: NaN, y: 0, z: 0 } })).toBe(false);
   });
 });
 

@@ -23,7 +23,12 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { SIM_DT } from "../config";
 import { stepBall, type BallState, type Side } from "../ball";
 
-export const PROTOCOL_VERSION = 1;
+/**
+ * Bumped to 2 for the playback fields (clip windows, fx stream). The relay
+ * refuses to seat peers of different versions together, so a version change is
+ * a clean break rather than a negotiation.
+ */
+export const PROTOCOL_VERSION = 2;
 
 /**
  * Crockford base32: no I, L, O or U. The first three are the characters people
@@ -112,9 +117,10 @@ export interface SnapshotMessage {
   hostPos: Vec3Wire;
   guestPos: Vec3Wire;
   /**
-   * Court velocities, so the receiver can drive the locomotion blend. Easing
-   * toward a reported position yields a residual speed far below the blend's
-   * threshold, which reads as a character sliding in an idle pose.
+   * Court velocities. The guest's interpolation timeline derives velocity from
+   * the positions it interpolates, but the wire value is still the warm-up
+   * source before a second frame exists — and the cost of carrying it is a
+   * dozen bytes.
    */
   hostVel: Vec3Wire;
   guestVel: Vec3Wire;
@@ -126,6 +132,17 @@ export interface SnapshotMessage {
    */
   hostClip: string | null;
   guestClip: string | null;
+  /**
+   * The host ticks at which each playing clip is at fraction 0 and fraction 1.
+   * Two ticks rather than one because clips run at different speeds and start
+   * part-way through; a window pins the animation in the same time base as the
+   * ball and the positions, so the guest plays it at the right fraction of the
+   * right instant instead of restarting it from zero whenever a frame arrives.
+   */
+  hostClipFrom?: number;
+  hostClipTo?: number;
+  guestClipFrom?: number;
+  guestClipTo?: number;
   /**
    * Whether each seat's feet are owned by the semi-assisted run to the drop
    * spot (`runLocked` in the match). The guest needs to know about its own
@@ -218,12 +235,34 @@ export interface PongMessage {
   tick: number;
 }
 
+/** What kind of ball contact an fx event describes. */
+export type FxKind = "kick" | "table" | "net" | "ground" | "side" | "body";
+
+export const FX_KINDS: readonly FxKind[] = ["kick", "table", "net", "ground", "side", "body"];
+
+/**
+ * Host -> guest: a contact happened, on this host tick.
+ *
+ * The guest plays the timeline a fixed interval behind, so the event rides the
+ * same clock: its sound fires when the playback point crosses its tick, beside
+ * the bounce or kick that caused it, rather than on arrival — which is half a
+ * round trip away from where the screen shows the contact.
+ */
+export interface FxMessage {
+  t: "fx";
+  tick: number;
+  kind: FxKind;
+  /** Where the contact happened, when it has a place worth showing. */
+  pos?: Vec3Wire;
+}
+
 export type GameMessage =
   | PauseMessage
   | RematchMessage
   | SetupMessage
   | InputMessage
   | SnapshotMessage
+  | FxMessage
   | MoveMessage
   | StrikeMessage
   | StateMessage
@@ -389,12 +428,19 @@ export function reframe<T extends GameMessage>(msg: T, role: PeerRole): T {
         guestVel: mirror(msg.hostVel),
         hostClip: msg.guestClip,
         guestClip: msg.hostClip,
+        hostClipFrom: msg.guestClipFrom,
+        hostClipTo: msg.guestClipTo,
+        guestClipFrom: msg.hostClipFrom,
+        guestClipTo: msg.hostClipTo,
         hostLocked: msg.guestLocked,
         guestLocked: msg.hostLocked,
         score: [msg.score[1], msg.score[0]],
         sets: [msg.sets[1], msg.sets[0]],
         serveOwner: msg.serveOwner === "player" ? "ai" : "player",
       };
+    case "fx":
+      // The tick is host time on both ends; only the place reflects.
+      return msg.pos ? { ...msg, pos: mirror(msg.pos) } : msg;
     default:
       // Scores, phases and clock probes carry no geometry.
       return msg;
@@ -520,6 +566,7 @@ function isScorePair(v: unknown): v is [number, number] {
 export function isValidSnapshot(msg: unknown): msg is SnapshotMessage {
   if (typeof msg !== "object" || msg === null) return false;
   const m = msg as Partial<SnapshotMessage>;
+  const optTick = (v: number | undefined) => v === undefined || Number.isFinite(v);
   return (
     m.t === "snap" &&
     Number.isFinite(m.tick) &&
@@ -532,9 +579,25 @@ export function isValidSnapshot(msg: unknown): msg is SnapshotMessage {
     isFiniteVec(m.guestVel) &&
     (m.hostClip === null || typeof m.hostClip === "string") &&
     (m.guestClip === null || typeof m.guestClip === "string") &&
+    optTick(m.hostClipFrom) &&
+    optTick(m.hostClipTo) &&
+    optTick(m.guestClipFrom) &&
+    optTick(m.guestClipTo) &&
     isScorePair(m.score) &&
     isScorePair(m.sets) &&
     (m.serveOwner === "player" || m.serveOwner === "ai")
+  );
+}
+
+/** An fx event is small and harmless; a malformed one is simply not played. */
+export function isValidFx(msg: unknown): msg is FxMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<FxMessage>;
+  return (
+    m.t === "fx" &&
+    Number.isFinite(m.tick) &&
+    (FX_KINDS as readonly string[]).includes(m.kind ?? "") &&
+    (m.pos === undefined || isFiniteVec(m.pos))
   );
 }
 

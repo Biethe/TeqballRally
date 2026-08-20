@@ -9,9 +9,7 @@ import {
   sampleFlight,
   solveLaunch,
   solveLaunchClearingNet,
-  stepBall,
   type BallEvent,
-  type BallState,
   type BodyCollider,
   type FlightSample,
   type Side,
@@ -79,6 +77,8 @@ import {
   SPAWN,
   TABLE_SCALE,
   WIN_SCORE,
+  CLIPS,
+  clipStartFraction,
   type BodyPart,
   type CameraMode,
 } from "./config";
@@ -86,6 +86,8 @@ import type { InputState } from "./input";
 import { aiServePattern } from "./ai";
 import type { AudioManager } from "./audio";
 import { reconcile } from "./net/reconcile";
+import { MAX_CATCHUP_TICKS, type FxKind } from "./net/protocol";
+import { PlaybackBuffer, PLAYBACK_DELAY_TICKS, clipFractionAt } from "./net/playback";
 import {
   clampToPlay,
   canSmashFrom,
@@ -297,12 +299,11 @@ const TABLE_BOUNCE_DEBOUNCE = 0.25;
  * and a mistake.
  */
 const LONG_RALLY_TOUCHES = 6;
-// Guest-side character easing between the host's 20 Hz snapshots: run toward
-// the reported spot, snap if the gap is too big to be a run, and take the
-// position exactly once close, so the locomotion blend can reach idle.
+// Guest-side guards for the playback timeline: a gap beyond this is not a
+// correction but a cold start or a reset, and is taken outright; smaller
+// joins glide over FOLLOWER_BLEND_SECONDS.
 const FOLLOWER_SNAP = 3.0;
-const FOLLOWER_CONVERGE = 0.12;
-const FOLLOWER_ARRIVE = 0.01;
+const FOLLOWER_BLEND_SECONDS = 0.25;
 
 /** Position on a sampled flight at (or just after) time `t`, clipped to before any ground bounce. */
 function flightAt(flight: FlightSample[], t: number): Vector3 {
@@ -362,6 +363,28 @@ export class MatchController {
    * stick that is no longer driving anything.
    */
   lockedState: Record<Side, boolean> = { player: false, ai: false };
+  /**
+   * Online host: this controller's match is being published to a guest. Gates
+   * the clip-window and fx bookkeeping, which a local match has no use for.
+   */
+  netPublish = false;
+  /**
+   * The host-tick window in which each seat's action clip plays: the tick at
+   * which the clip is at fraction 0 and the one at which it is at fraction 1.
+   * Carried by the snapshot so the guest plays the clip in the same time base
+   * as the ball and the positions — at the right fraction of the right
+   * instant, instead of restarting it from zero on arrival.
+   */
+  clipWindow: Record<Side, { clip: string; from: number; to: number } | null> = {
+    player: null,
+    ai: null,
+  };
+  /** Clips started since the last drain; the session stamps them with its tick. */
+  private clipStarts: { side: Side; clip: string; startFrac: number; durTicks: number }[] = [];
+  /** Contacts since the last drain, for the guest's fx stream (capped). */
+  private fxQueue: { kind: FxKind; pos?: { x: number; y: number; z: number } }[] = [];
+  /** Guest: inbound fx events awaiting their moment on the playback clock. */
+  private guestFx: { tick: number; kind: FxKind }[] = [];
   versusInput: InputState = {
     moveX: 0,
     moveZ: 0,
@@ -1029,19 +1052,32 @@ export class MatchController {
   /**
    * Guest-side frame: no rules, only presentation.
    *
-   * The ball keeps stepping locally between snapshots — `stepBall` is pure and
-   * identical on both peers, so this interpolates correctly rather than
-   * guessing, and each arriving snapshot corrects any drift. Characters are
-   * eased toward their reported positions rather than snapped, so a 20 Hz feed
-   * still reads as running.
+   * Everything on screen is read off one playback timeline — a clock running
+   * a fixed interval behind the newest authoritative frame — so the ball,
+   * both players, the action clips and the contact sounds all describe the
+   * same instant. Between reported frames the ball rides the shared pure
+   * physics and the players are interpolated, which is what turns a 30 Hz
+   * feed into smooth 60 Hz motion. The one exception is this peer's own
+   * character during a rally, which is predicted from the stick so controls
+   * stay instant; it rides the timeline whenever the host owns its feet.
    */
   private updateAsFollower(dt: number, input: InputState): void {
     this.matchClock += dt;
-    this.followerStep += 1;
-    // The ball is either played back from the snapshot buffer — smooth, a
-    // constant interval behind — or, before the buffer is warm and whenever
-    // it starves, stepped locally the old way.
-    if (!this.playBufferedBall()) this.ball.update(dt);
+    if (this.playback.consumeReengaged()) {
+      // The feed came back after starving: the timeline restarted wherever
+      // the host is now. Glide onto it instead of snapping the screen.
+      this.followerBlend.player = FOLLOWER_BLEND_SECONDS;
+      this.followerBlend.ai = FOLLOWER_BLEND_SECONDS;
+    }
+    const view = this.playback.advance();
+    if (view) {
+      this.ball.held = view.ballHeld;
+      this.ball.state.pos.set(view.ball.x, view.ball.y, view.ball.z);
+      this.ball.state.vel.set(view.ballVel.x, view.ballVel.y, view.ballVel.z);
+      this.ball.update(0); // mesh follows; no physics with dt 0
+      this.fireDueFx(view.renderTick);
+      this.updateFollowerClips(view.renderTick);
+    }
     // The landing X is help the joined player needs as much as the host's;
     // it reads the same delayed ball state the ball itself is shown in, so
     // the marker and the flight always agree.
@@ -1052,8 +1088,8 @@ export class MatchController {
         this.followerPhase === "rally" && !this.ball.held ? this.computeLandingSpot() : null;
       this.updateFollowerLandingMarker();
     }
+    let selfPredicted = false;
     for (const side of ["player", "ai"] as Side[]) {
-      const target = this.followerPose[side];
       const c = this.chars[side];
 
       // Prediction, for this peer's own character only. Waiting for the host
@@ -1067,12 +1103,13 @@ export class MatchController {
       // listening to the stick at all: while the run to the drop spot owns
       // the feet there (`selfLocked`), predicting from it is predicting from
       // nothing, and the two would race every reception.
-      if (
+      const predicting =
         side === "player" &&
         !c.busy &&
         this.followerPhase === "rally" &&
-        !this.followerSelfLocked
-      ) {
+        !this.followerSelfLocked;
+      if (predicting) {
+        selfPredicted = true;
         // Portrait predicts from the tap target, not the axes: in portrait the
         // axes only ever carry a swipe's leftover aim, and walking on that is
         // the player drifting diagonally after every kick.
@@ -1080,102 +1117,102 @@ export class MatchController {
           if (this.moveTarget) c.moveToward(this.moveTarget, c.def.speed, dt);
           else c.move(0, 0, 0, dt);
         } else c.move(input.moveX, input.moveZ, c.def.speed, dt);
-        if (target) {
-          const fixed = reconcile({ x: c.position.x, z: c.position.z }, target, dt);
+        if (this.followerSelfPose) {
+          const fixed = reconcile(
+            { x: c.position.x, z: c.position.z },
+            this.followerSelfPose,
+            dt
+          );
           c.position.x = fixed.x;
           c.position.z = fixed.z;
         }
         c.update(dt);
         continue;
       }
+      if (side === "player" && this.selfPredicting) {
+        // Prediction just let go of the feet — busy, locked, or the point
+        // ended — and the timeline takes over from wherever the prediction
+        // left the character. Glide rather than snap across the join.
+        this.followerBlend.player = FOLLOWER_BLEND_SECONDS;
+      }
 
-      if (target && !c.busy) {
-        const dx = target.x - c.position.x;
-        const dz = target.z - c.position.z;
-        const gap = Math.hypot(dx, dz);
+      if (view) {
+        const tv = side === "player" ? view.self : view.opponent;
+        const gap = Math.hypot(tv.x - c.position.x, tv.z - c.position.z);
         if (gap > FOLLOWER_SNAP) {
-          c.position.x = target.x;
-          c.position.z = target.z;
-        } else if (gap > FOLLOWER_ARRIVE) {
-          const speed = Math.min(gap / FOLLOWER_CONVERGE, c.def.speed);
-          const step = Math.min(gap, speed * dt);
-          c.position.x += (dx / gap) * step;
-          c.position.z += (dz / gap) * step;
+          // Too far to be a correction: cold start or a reset. Take it outright.
+          c.position.x = tv.x;
+          c.position.z = tv.z;
+          this.followerBlend[side] = 0;
+        } else if (this.followerBlend[side] > 0) {
+          this.followerBlend[side] = Math.max(0, this.followerBlend[side] - dt);
+          const fixed = reconcile({ x: c.position.x, z: c.position.z }, { x: tv.x, z: tv.z }, dt);
+          c.position.x = fixed.x;
+          c.position.z = fixed.z;
         } else {
-          c.position.x = target.x;
-          c.position.z = target.z;
+          // The timeline is already smooth at 60 Hz: take it exactly. Easing
+          // toward it would only add a second, slower motion on top.
+          c.position.x = tv.x;
+          c.position.z = tv.z;
         }
-        // The blend runs off what the host reported, not off how far this
-        // frame happened to travel.
-        const v = this.followerVel[side];
-        c.velocity.set(v.x, 0, v.z);
+        // Velocity comes from the timeline's own positions, so the locomotion
+        // blend describes the motion actually on screen.
+        c.velocity.set(tv.vx, 0, tv.vz);
       }
       c.update(dt);
     }
+    this.selfPredicting = selfPredicted;
   }
 
   /**
-   * Show the ball from the snapshot buffer, `BUFFER_DELAY_TICKS` behind the
-   * newest frame. Returns false when the buffer cannot own the ball this
-   * frame — not warm yet, or starving — and the caller steps it locally.
+   * Fire every contact whose tick the playback clock has reached. A kick is
+   * the one with a sound; the other kinds carry their moment for the day they
+   * get one.
    */
-  private playBufferedBall(): boolean {
-    if (!this.bufferEngaged || this.snapBuffer.length < 2) return false;
-    if (this.followerStep - this.lastSnapLocalStep > MatchController.FEED_STALE_STEPS) {
-      return false;
-    }
-    // The instant being shown: the newest frame's tick less the buffer delay,
-    // advancing one local step per step — both clocks tick once per fixed
-    // step, so the playback point keeps moving between frames too.
-    const renderTick =
-      this.newestSnapTick -
-      MatchController.BUFFER_DELAY_TICKS +
-      (this.followerStep - this.lastSnapLocalStep);
-    // Bracketing states: `a` the newest one not after the render point.
-    let a: (typeof this.snapBuffer)[number] | null = null;
-    let b: (typeof this.snapBuffer)[number] | null = null;
-    for (const e of this.snapBuffer) {
-      if (e.tick <= renderTick) a = e;
-      else {
-        b = e;
-        break;
+  private fireDueFx(renderTick: number): void {
+    if (this.guestFx.length === 0) return;
+    const remaining: typeof this.guestFx = [];
+    for (const fx of this.guestFx) {
+      if (fx.tick <= renderTick) {
+        if (fx.kind === "kick") this.audio.playKick();
+      } else {
+        remaining.push(fx);
       }
     }
-    // The render point runs ahead of the oldest buffered state for a step or
-    // two after engagement; local stepping covers that gap.
-    if (!a) return false;
+    this.guestFx = remaining;
+  }
 
-    if (a.held) {
-      // A held ball rides the hand: between reported positions, no physics,
-      // and no easing — the palm knows exactly where it is.
-      this.ball.held = true;
-      const span = b && b.tick > a.tick ? b.tick - a.tick : 1;
-      const f = Math.max(0, Math.min(1, (renderTick - a.tick) / span));
-      const target = b ? Vector3.Lerp(a.pos, b.pos, f) : a.pos;
-      this.ball.state.pos.copyFrom(target);
-      this.ball.state.vel.setAll(0);
-      this.ball.update(0); // mesh follows; no physics with dt 0
-      return true;
+  /**
+   * Play each side's action clip at the fraction its window gives the
+   * playback clock. Starting a clip here rather than on snapshot arrival is
+   * the whole of the animation sync: the guest's kick winds up and strikes at
+   * the same instant as the ball's launch, wherever in the clip the frame
+   * happened to arrive.
+   */
+  private updateFollowerClips(renderTick: number): void {
+    for (const side of ["player", "ai"] as Side[]) {
+      const w = this.followerClipWin[side];
+      const c = this.chars[side];
+      if (!w) {
+        if (this.followerClipKey[side]) {
+          c.stopAction();
+          this.followerClipKey[side] = null;
+        }
+        continue;
+      }
+      const key = `${w.clip}@${w.from}`;
+      if (this.followerClipKey[side] === key) continue;
+      if (renderTick >= w.to) {
+        // Already over by the time playback reaches it: a late join must not
+        // replay it. Remembered, so it is never reconsidered.
+        this.followerClipKey[side] = key;
+        continue;
+      }
+      if (renderTick >= w.from) {
+        c.playAction(w.clip, { startFrac: clipFractionAt(w.from, w.to, renderTick) });
+        this.followerClipKey[side] = key;
+      }
     }
-
-    // Free flight: the shared pure physics, stepped forward from the
-    // bracketing state — the host's own trajectory, save the limb steering
-    // only the host applies. The playback point advances one tick per tick,
-    // so the ideal itself is a smooth 60 Hz flight; the ball is placed on it
-    // exactly, because easing toward a moving ball lags it by metres at
-    // smash pace, and the snap that lag ends in IS the visible jump. A host
-    // bend the buffer learns about late lands as one small kink when the
-    // frame that carries it arrives — rare, and where the ball is being hit
-    // anyway.
-    const ideal: BallState = { pos: a.pos.clone(), vel: a.vel.clone() };
-    const steps = Math.min(Math.max(0, renderTick - a.tick), 12);
-    for (let i = 0; i < steps; i++) stepBall(ideal, SIM_DT);
-
-    this.ball.held = false;
-    this.ball.state.pos.copyFrom(ideal.pos);
-    this.ball.state.vel.copyFrom(ideal.vel);
-    this.ball.update(0);
-    return true;
   }
 
   /**
@@ -1222,104 +1259,58 @@ export class MatchController {
     return { ...input, moveX: 0, moveZ: 0 };
   }
 
-  /** Latest reported pose, court velocity and action clip, per side. */
-  private followerPose: Record<Side, { x: number; z: number } | null> = { player: null, ai: null };
-  private followerVel: Record<Side, { x: number; z: number }> = {
-    player: { x: 0, z: 0 },
-    ai: { x: 0, z: 0 },
+  /**
+   * The guest's single playback timeline. Every arriving frame joins it, and
+   * everything on screen is read a fixed interval behind the newest one —
+   * because twenty corrections a second were twenty visible kinks in a fast
+   * flight, and a chase-eased character beside a snapped ball was two objects
+   * from two different moments. The price is a constant delay; the prize is
+   * that the whole screen describes one instant.
+   */
+  private playback = new PlaybackBuffer();
+  /**
+   * Latest reported clip window per side, in host ticks. A clip with no
+   * reported window keeps the infinite one: started on first sight at its
+   * head, which is all an older host could ever offer.
+   */
+  private followerClipWin: Record<Side, { clip: string; from: number; to: number } | null> = {
+    player: null,
+    ai: null,
   };
-  private followerClip: Record<Side, string | null> = { player: null, ai: null };
+  /** Clip instance ("name@from") playing or already passed, per side. */
+  private followerClipKey: Record<Side, string | null> = { player: null, ai: null };
+  /** Seconds of gliding onto the timeline left, per side. */
+  private followerBlend: Record<Side, number> = { player: 0, ai: 0 };
+  /** This peer's own character was predicted last step. */
+  private selfPredicting = false;
+  /** Latest lead-carried self pose; the reconcile target while predicting. */
+  private followerSelfPose: { x: number; z: number } | null = null;
   /** Host's match phase; prediction only runs during a rally. */
   private followerPhase = "";
   /**
    * The host currently owns this peer's feet (the run to the drop spot is
    * engaged there), so local prediction from the stick is suspended and the
-   * character follows the snapshot instead.
+   * character follows the timeline instead.
    */
   private followerSelfLocked = false;
-
-  /**
-   * The ball the guest shows is played back from a short buffer of reported
-   * states rather than corrected in place. Twenty corrections a second are
-   * twenty visible kinks in a fast flight; rendering a couple of intervals
-   * behind and stepping the shared pure physics between the buffered states
-   * turns the same feed into one continuous arc. The price is the delay, and
-   * it is constant where the kinks were random.
-   */
-  private snapBuffer: { tick: number; pos: Vector3; vel: Vector3; held: boolean }[] = [];
-  private newestSnapTick = -1;
-  /** Local step the newest snapshot arrived on, for the starvation check. */
-  private lastSnapLocalStep = -1;
-  /** Local step counter, advanced once per follower frame. */
-  private followerStep = 0;
-  private bufferEngaged = false;
   private followerMarkerIn = 0;
-  /** How far behind the newest frame the buffered ball is shown, in ticks. */
-  private static readonly BUFFER_DELAY_TICKS = 6;
-  private static readonly SNAP_BUFFER_MAX = 4;
-  /** A feed older than this is a starving one; fall back to local stepping. */
-  private static readonly FEED_STALE_STEPS = 18;
-
-  /**
-   * Take one side of a snapshot.
-   *
-   * The reported velocity is kept as well as the position, because the
-   * locomotion blend reads velocity and the residual speed of easing toward a
-   * 20 Hz target sits below its threshold — a character that slid while
-   * standing still in an idle pose was exactly that.
-   *
-   * A clip that has changed is started here, since a guest runs no rules and
-   * would otherwise never play a kick, reception or serve at all.
-   */
-  private applyFollowerSide(
-    side: Side,
-    pos: { x: number; z: number },
-    vel: { x: number; z: number },
-    clip: string | null
-  ): void {
-    this.followerPose[side] = { x: pos.x, z: pos.z };
-    this.followerVel[side] = { x: vel.x, z: vel.z };
-    if (clip !== this.followerClip[side]) {
-      this.followerClip[side] = clip;
-      if (clip) this.chars[side].playAction(clip);
-      else this.chars[side].stopAction();
-    }
-  }
-
-  /**
-   * How far a snapshot's ball may be from the predicted one before the
-   * correction is taken all at once, in metres.
-   *
-   * Under it the error is eased away; over it easing would read as the ball
-   * sliding sideways through the air, which is worse than a jump.
-   */
-  private static readonly BALL_SNAP = 0.9;
-  /** Fraction of the remaining ball error taken per snapshot. */
-  private static readonly BALL_CORRECT = 0.45;
 
   /**
    * Apply an authoritative frame from the host. Everything here is already in
    * this peer's own coordinates — the wire layer reflects and swaps seats
    * before it arrives.
    *
-   * `lead` is how many simulation ticks old the frame is: half the measured
-   * round trip. **Everything in it is fast-forwarded by that much before it is
-   * shown**, and that is the whole of what makes a guest's screen agree with
-   * itself.
+   * The frame does not go straight to the screen: it joins the playback
+   * timeline, and the screen reads that timeline a fixed interval behind the
+   * newest frame. Ball, players, clips and sounds all come off the same
+   * clock, which is the whole of what makes a guest's screen agree with
+   * itself — an earlier design showed the ball half a round trip in the past
+   * under a player drawn now, and no amount of easing made two moments look
+   * like one.
    *
-   * Without it the guest ran two clocks. Its own character was simulated at 60
-   * Hz from its own controls, live; the ball was snapped twenty times a second
-   * to where it had been half a round trip ago. So the player moved smoothly
-   * and the ball stuttered backwards against them — on a good phone with a bad
-   * enough connection, badly. It is not a rendering problem and it is not
-   * fixed by turning the graphics down, which is exactly why it looked like
-   * one: the ball was simply being shown at a different moment in time from
-   * the player chasing it.
-   *
-   * The ball is projected with the same pure `stepBall` both peers run, so the
-   * fast-forward reproduces the host's own physics rather than guessing at it.
-   * Characters are carried forward along their reported velocity, which is
-   * what they were doing when the frame was taken.
+   * `lead` is how old the frame already is in simulation ticks. Only the
+   * predicted self pose is carried forward by it: that one object is shown
+   * live, so its reconcile target must be live too.
    */
   applySnapshot(snap: {
     ballPos: { x: number; y: number; z: number };
@@ -1331,9 +1322,14 @@ export class MatchController {
     opponentVel: { x: number; z: number };
     selfClip: string | null;
     opponentClip: string | null;
+    /** Host ticks bracketing each clip: fraction 0 and fraction 1. */
+    selfClipFrom?: number;
+    selfClipTo?: number;
+    opponentClipFrom?: number;
+    opponentClipTo?: number;
     /** The host owns this peer's feet (the run to the drop spot is engaged). */
     selfLocked?: boolean;
-    /** The host tick the frame was sampled at; keys the ball playback buffer. */
+    /** The host tick the frame was sampled at; keys the playback timeline. */
     tick: number;
     score: [number, number];
     sets: [number, number];
@@ -1345,8 +1341,8 @@ export class MatchController {
     // the phase change here is what gives the joined player the same final
     // whistle — winner, celebration, result screen — instead of a court that
     // simply stops making sense.
-    const finishedNow =
-      snap.phase === "over" && this.followerPhase !== "over" && this.state !== "over";
+    const prevPhase = this.followerPhase;
+    const finishedNow = snap.phase === "over" && prevPhase !== "over" && this.state !== "over";
     this.followerPhase = snap.phase;
     this.followerSelfLocked = snap.selfLocked === true;
     if (finishedNow) {
@@ -1356,60 +1352,60 @@ export class MatchController {
       this.matchWinner = snap.sets[0] >= SETS_TO_WIN ? "player" : "ai";
       this.ui.onMatchEnd(this.matchWinner);
     }
-
-    // The reported ball state joins the playback buffer, keyed by the host's
-    // tick; once two states are buffered the buffer owns the ball and the
-    // fast-forward/ease below is retired for as long as it stays fed.
-    if (this.snapBuffer.length === 0 || snap.tick > this.newestSnapTick) {
-      this.snapBuffer.push({
-        tick: snap.tick,
-        pos: new Vector3(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z),
-        vel: new Vector3(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z),
-        held: snap.ballHeld,
-      });
-      if (this.snapBuffer.length > MatchController.SNAP_BUFFER_MAX) this.snapBuffer.shift();
-      this.newestSnapTick = snap.tick;
-    }
-    this.lastSnapLocalStep = this.followerStep;
-    if (this.snapBuffer.length >= 2) this.bufferEngaged = true;
-
-    if (!this.bufferEngaged) {
-      // Where the host's ball would be *now*, run forward through the same
-      // pure physics both peers share.
-      const ahead: BallState = {
-        pos: new Vector3(snap.ballPos.x, snap.ballPos.y, snap.ballPos.z),
-        vel: new Vector3(snap.ballVel.x, snap.ballVel.y, snap.ballVel.z),
-      };
-      if (!snap.ballHeld) {
-        for (let i = 0; i < lead; i++) stepBall(ahead, SIM_DT);
-      }
-      const held = snap.ballHeld;
-      this.ball.held = held;
-      this.ball.state.vel.copyFrom(ahead.vel);
-      // A held ball is sitting in somebody's hand: there is nothing to predict
-      // and any easing would drag it out of the palm. Otherwise the correction
-      // is eased, because a ball that is only a few centimetres out is better
-      // walked back than teleported — and after the fast-forward above, a few
-      // centimetres is what it normally is.
-      const gap = Vector3.Distance(this.ball.state.pos, ahead.pos);
-      if (held || gap > MatchController.BALL_SNAP) {
-        this.ball.state.pos.copyFrom(ahead.pos);
-      } else {
-        this.ball.state.pos.addInPlace(
-          ahead.pos.subtract(this.ball.state.pos).scale(MatchController.BALL_CORRECT)
-        );
-      }
+    // The crowd's cheer arrives with the phase change, the same beat as the
+    // host's — not with a frame that happens to carry it.
+    if (
+      (snap.phase === "point" || snap.phase === "over") &&
+      prevPhase !== "point" &&
+      prevPhase !== "over" &&
+      prevPhase !== ""
+    ) {
+      this.audio.playApplause();
     }
 
-    // The characters are carried forward the same way, so the three things
-    // moving on screen are all being shown at the same instant.
-    const seconds = lead * SIM_DT;
-    const carried = (p: { x: number; z: number }, v: { x: number; z: number }) => ({
-      x: p.x + v.x * seconds,
-      z: p.z + v.z * seconds,
+    // The whole frame joins the playback timeline, keyed by the host's tick.
+    this.playback.push({
+      tick: snap.tick,
+      ball: { x: snap.ballPos.x, y: snap.ballPos.y, z: snap.ballPos.z },
+      ballVel: { x: snap.ballVel.x, y: snap.ballVel.y, z: snap.ballVel.z },
+      ballHeld: snap.ballHeld,
+      self: { x: snap.selfPos.x, z: snap.selfPos.z },
+      opponent: { x: snap.opponentPos.x, z: snap.opponentPos.z },
+      selfVel: { x: snap.selfVel.x, z: snap.selfVel.z },
+      opponentVel: { x: snap.opponentVel.x, z: snap.opponentVel.z },
     });
-    this.applyFollowerSide("player", carried(snap.selfPos, snap.selfVel), snap.selfVel, snap.selfClip);
-    this.applyFollowerSide("ai", carried(snap.opponentPos, snap.opponentVel), snap.opponentVel, snap.opponentClip);
+
+    // The one object shown live: its reconcile target is carried forward by
+    // the frame's age, so prediction corrects against where the host is now,
+    // not where it was when the frame was sampled.
+    const seconds = lead * SIM_DT;
+    this.followerSelfPose = {
+      x: snap.selfPos.x + snap.selfVel.x * seconds,
+      z: snap.selfPos.z + snap.selfVel.z * seconds,
+    };
+
+    // Clip windows. A clip reported without one keeps the infinite window:
+    // played from its head on first sight, which degrades to the old
+    // behaviour rather than to nothing.
+    const win = (clip: string | null, from?: number, to?: number) =>
+      clip
+        ? {
+            clip,
+            from: from ?? Number.NEGATIVE_INFINITY,
+            to: to ?? Number.POSITIVE_INFINITY,
+          }
+        : null;
+    this.followerClipWin.player = win(snap.selfClip, snap.selfClipFrom, snap.selfClipTo);
+    this.followerClipWin.ai = win(snap.opponentClip, snap.opponentClipFrom, snap.opponentClipTo);
+
+    // An fx event older than the playback point can never be due again — a
+    // reconnect lands ticks far ahead, and without this the guest would play
+    // an entire rally's sounds in one burst on return.
+    if (this.guestFx.length > 0) {
+      const floor = snap.tick - PLAYBACK_DELAY_TICKS - MAX_CATCHUP_TICKS;
+      this.guestFx = this.guestFx.filter((fx) => fx.tick >= floor);
+    }
+
     const changed =
       this.score.player !== snap.score[0] ||
       this.score.ai !== snap.score[1] ||
@@ -1437,6 +1433,9 @@ export class MatchController {
    * underneath it.
    */
   private emitLaunch(side: Side, action: "serve" | "strike" | "pop", clip: string, spin: number): void {
+    // Every launch is a kick the guest should hear beside the contact, on the
+    // playback clock rather than on arrival.
+    this.pushFx("kick", this.ball.state.pos);
     this.emit({
       type: "ball-launched",
       side,
@@ -1446,6 +1445,74 @@ export class MatchController {
       clip,
       spin,
     });
+  }
+
+  /**
+   * Take everything the match produced for the wire this step, stamped in the
+   * session's tick — the same clock the snapshots carry, which is what lets
+   * the guest line clips and sounds up with the positions they belong to.
+   * Called by the session once per host step.
+   */
+  drainNet(tick: number): { kind: FxKind; pos?: { x: number; y: number; z: number } }[] {
+    for (const cs of this.clipStarts) {
+      const from = tick - cs.startFrac * cs.durTicks;
+      this.clipWindow[cs.side] = { clip: cs.clip, from, to: from + cs.durTicks };
+    }
+    this.clipStarts.length = 0;
+    const out = this.fxQueue;
+    this.fxQueue = [];
+    return out;
+  }
+
+  private pushFx(kind: FxKind, pos?: Vector3): void {
+    if (!this.netPublish) return;
+    // A cap rather than a queue without end: a burst of contacts is still one
+    // rally's worth of sounds, and anything beyond that is a stuck ball.
+    if (this.fxQueue.length >= 32) return;
+    this.fxQueue.push({ kind, pos: pos ? { x: pos.x, y: pos.y, z: pos.z } : undefined });
+  }
+
+  /**
+   * Guest: an fx event arrived. Held until the playback clock crosses its
+   * tick, so the sound sits beside the bounce or kick that caused it.
+   */
+  queueFx(entry: { tick: number; kind: FxKind }): void {
+    if (this.guestFx.length >= 32) return;
+    this.guestFx.push(entry);
+  }
+
+  /**
+   * Start a seat's action clip and, when publishing, record the tick window
+   * the guest needs to play it at the right fraction of the right instant.
+   */
+  private playSideAction(
+    side: Side,
+    clip: string,
+    opts: {
+      startFrac?: number;
+      speed?: number;
+      callbacks?: { frac: number; fn: () => void }[];
+      onEnd?: () => void;
+      loop?: boolean;
+    } = {}
+  ): boolean {
+    const played = this.chars[side].playAction(clip, opts);
+    if (played && this.netPublish) {
+      const frames = CLIPS[clip]?.frames;
+      if (frames) {
+        const durTicks = frames / (opts.speed ?? 1);
+        // The same floor playAction applies, so the window describes the clip
+        // as actually started; a loop has no fraction to begin at.
+        const startFrac = opts.loop ? 0 : Math.max(opts.startFrac ?? 0, clipStartFraction(clip));
+        this.clipStarts.push({ side, clip, startFrac, durTicks });
+      }
+    }
+    return played;
+  }
+
+  private stopSideAction(side: Side): void {
+    this.chars[side].stopAction();
+    this.clipWindow[side] = null;
   }
 
   // ---------------------------------------------------------------- serve
@@ -1476,8 +1543,8 @@ export class MatchController {
     this.serveShot = { power: 0.5, loft: 1 };
     // A point celebration may still be playing; it must not block the walk
     // to the serve spot.
-    this.chars.player.stopAction();
-    this.chars.ai.stopAction();
+    this.stopSideAction("player");
+    this.stopSideAction("ai");
     this.strikeableSide = null;
     this.touchCount = 0;
     this.autoSetupRun = { player: false, ai: false };
@@ -1671,7 +1738,7 @@ export class MatchController {
     const airTime = Math.max(0.25, (contactF - tossF) * durSec);
     this.state = "serve_anim";
     this.ui.hint(null);
-    server.playAction(clip, {
+    this.playSideAction(this.serveOwner, clip, {
       speed: 1.0,
       callbacks: [
         {
@@ -2208,7 +2275,7 @@ export class MatchController {
       this.emit({ type: "touch-committed", side, action: "strike", afterSetup: popped });
     };
 
-    const played = c.playAction(clip, {
+    const played = this.playSideAction(side, clip, {
       startFrac: plan.startFrac,
       speed: STRIKE_SPEED,
       callbacks: [{ frac: contactFraction(clip), fn: launch }],
@@ -2356,7 +2423,7 @@ export class MatchController {
       if (side === "player" && !this.versus) this.ui.meterResult?.(quality);
       this.emit({ type: "touch-committed", side, action: "pop" });
     };
-    const played = c.playAction(clip, {
+    const played = this.playSideAction(side, clip, {
       startFrac: plan.startFrac,
       speed: POP_SPEED,
       callbacks: [{ frac: contactFraction(clip), fn: pop }],
@@ -2513,7 +2580,7 @@ export class MatchController {
     const pool = fitting.length > 0 ? fitting : avail;
     const clip = pool[Math.floor(Math.random() * pool.length)];
     const speed = fitSec > 0 ? Math.max(1, durOf(clip) / fitSec) : 1;
-    c.playAction(clip, { speed, onEnd });
+    this.playSideAction(side, clip, { speed, onEnd });
   }
 
   /**
@@ -2578,7 +2645,7 @@ export class MatchController {
         const loser = other(setWinner);
         const winChar = this.chars[setWinner];
         this.playCelebration(setWinner, 0, () => winChar.playAction("Idle", { loop: true }));
-        this.chars[loser].playAction("Defeat", {
+        this.playSideAction(loser, "Defeat", {
           onEnd: () => this.chars[loser].playAction("Idle", { loop: true }),
         });
         this.ui.onMatchEnd(setWinner);
@@ -2622,21 +2689,22 @@ export class MatchController {
       c.effort = 1;
       c.reserve = 1;
     }
-    this.chars.player.stopAction();
-    this.chars.ai.stopAction();
+    this.stopSideAction("player");
+    this.stopSideAction("ai");
+    this.clipStarts.length = 0;
+    this.fxQueue.length = 0;
+    this.guestFx.length = 0;
     // A rematch over a socket is a fresh match on the same rigs: the follower's
     // view of the previous one — poses, clips, the final phase — must not
     // carry across, or a stale "Defeat" keeps playing into the first serve.
-    this.followerPose = { player: null, ai: null };
-    this.followerVel = { player: { x: 0, z: 0 }, ai: { x: 0, z: 0 } };
-    this.followerClip = { player: null, ai: null };
+    this.playback.reset();
+    this.followerSelfPose = null;
+    this.followerClipWin = { player: null, ai: null };
+    this.followerClipKey = { player: null, ai: null };
+    this.followerBlend = { player: 0, ai: 0 };
+    this.selfPredicting = false;
     this.followerPhase = "";
     this.followerSelfLocked = false;
-    this.snapBuffer = [];
-    this.newestSnapTick = -1;
-    this.lastSnapLocalStep = -1;
-    this.followerStep = 0;
-    this.bufferEngaged = false;
     this.followerMarkerIn = 0;
     this.meterEcho = null;
     this.landingSpot = null;
@@ -2715,6 +2783,13 @@ export class MatchController {
     this.ball.update(dt, (e) => this.pendingEvents.push(e), colliders);
     for (const e of this.pendingEvents) {
       this.onBallEvent(e);
+      // The guest hears/sees contacts on its playback clock; kick events ride
+      // the launch instead, which is the moment worth the message.
+      if (e.type === "table") this.pushFx("table", e.pos);
+      else if (e.type === "ground") this.pushFx("ground", e.pos);
+      else if (e.type === "side") this.pushFx("side", e.pos);
+      else if (e.type === "net") this.pushFx("net");
+      else if (e.type === "body") this.pushFx("body");
       if (this.tutorialFrozen) break;
     }
     this.pendingEvents.length = 0;

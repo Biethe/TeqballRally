@@ -7,7 +7,9 @@ import {
   makeStrike,
   mirror,
   reframe,
+  type FxMessage,
   type MoveMessage,
+  type SnapshotMessage,
 } from "../src/net/protocol";
 
 const move = (x: number, z: number): MoveMessage => ({
@@ -106,6 +108,51 @@ describe("reframe", () => {
 
     const ping = { t: "ping" as const, sent: 1234, tick: 9 };
     expect(reframe(ping, "guest")).toEqual(ping);
+  });
+
+  it("swaps a snapshot's clip windows with the seats", () => {
+    // The window belongs to its seat: sending the host's window to the guest's
+    // clip would play each player's kick on the other's animation.
+    const snap: SnapshotMessage = {
+      t: "snap",
+      tick: 3,
+      ballPos: { x: 0, y: 1, z: 0 },
+      ballVel: { x: 0, y: 0, z: 0 },
+      ballHeld: false,
+      hostPos: { x: -3, y: 0.4, z: 0 },
+      guestPos: { x: 3, y: 0.4, z: 0 },
+      hostVel: { x: 0, y: 0, z: 0 },
+      guestVel: { x: 0, y: 0, z: 0 },
+      hostClip: "ChestKick",
+      guestClip: "RightKneeReception",
+      hostClipFrom: 10,
+      hostClipTo: 40,
+      guestClipFrom: 70,
+      guestClipTo: 120,
+      score: [0, 0],
+      sets: [0, 0],
+      serveOwner: "player",
+      phase: "rally",
+    };
+    const wire = reframe(snap, "guest");
+    expect(wire.hostClip).toBe("RightKneeReception");
+    expect(wire.hostClipFrom).toBe(70);
+    expect(wire.hostClipTo).toBe(120);
+    expect(wire.guestClip).toBe("ChestKick");
+    expect(wire.guestClipFrom).toBe(10);
+    expect(wire.guestClipTo).toBe(40);
+  });
+
+  it("mirrors an fx event's place but keeps its time and kind", () => {
+    // The tick is host time on both ends; only the geometry reflects.
+    const fx: FxMessage = { t: "fx", tick: 42, kind: "table", pos: { x: 1.2, y: 0.9, z: 0.3 } };
+    const wire = reframe(fx, "guest");
+    expect(wire.tick).toBe(42);
+    expect(wire.kind).toBe("table");
+    expect(wire.pos).toEqual({ x: -1.2, y: 0.9, z: -0.3 });
+
+    const bare: FxMessage = { t: "fx", tick: 7, kind: "kick" };
+    expect(reframe(bare, "guest")).toEqual(bare);
   });
 });
 
