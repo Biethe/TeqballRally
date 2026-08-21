@@ -142,11 +142,19 @@ jobs:
       # (A committed keystore is convenient but ships the signing credentials in
       # the repository — keep the repo private and prefer CI secrets for shared
       # projects. See the header note.)
+      # Works out whether a signed AAB can be produced. The secret is read via
+      # the env (not in an `if`, which can't see secrets) and surfaced as step
+      # outputs; steps below gate on those outputs instead.
       - name: Detect signing availability
         id: detect-signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "has_secret=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_secret=false" >> "$GITHUB_OUTPUT"
+          fi
           if [ -n "$KEYSTORE_BASE64" ] || [ -f android/keystore.properties ]; then
             echo "has_signing=true" >> "$GITHUB_OUTPUT"
           else
@@ -159,7 +167,7 @@ jobs:
       # runs (secrets aren't forwarded to workflow_call) and on forks without
       # them, where a committed keystore — if any — is still used.
       - name: Prepare release signing
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: ${{ steps.detect-signing.outputs.has_secret == 'true' }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
