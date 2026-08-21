@@ -1,12 +1,23 @@
-name: Android APK
+name: Android build
 
-# Builds an installable debug APK on GitHub's runners, which can reach the
-# Android SDK endpoints. Use this to get a build onto a phone without a
-# development machine to hand.
+# Builds on GitHub's runners, which can reach the Android SDK endpoints, so a
+# phone can be provisioned without a development machine to hand.
 #
-# The APK is attached to the run as an artifact. Open the run on a phone,
-# download "teqrallly-debug-apk", unzip it and install app-debug.apk. Android
-# will ask you to allow installs from unknown sources.
+# Two artifacts:
+#   * teqrallly-debug-apk — an installable debug APK for sideload testers.
+#     Open the run on a phone, download it, unzip and install app-debug.apk.
+#     Android will ask you to allow installs from unknown sources.
+#   * teqrallly-release-aab — a signed Android App Bundle for the Play Store
+#     (closed test track). Only produced when the signing secrets are set;
+#     upload it to the console. Not produced on deploy-chained runs.
+#
+# Signing is optional so the debug APK keeps building everywhere. To enable the
+# AAB, add these repository secrets under Settings -> Secrets and variables ->
+# Actions -> Secrets:
+#   KEYSTORE_BASE64   the upload keystore (.jks) base64-encoded
+#   KEYSTORE_PASSWORD the keystore password
+#   KEY_ALIAS         the key alias
+#   KEY_PASSWORD      the key password
 
 on:
   workflow_dispatch:
@@ -124,6 +135,51 @@ jobs:
         working-directory: android
         run: ./gradlew --no-daemon assembleDebug
 
+      # Works out whether a signed AAB can be produced: either the signing
+      # secrets are set, or a keystore + android/keystore.properties have been
+      # committed to the repo. Either way bundleRelease below will find what it
+      # needs; otherwise it is skipped so the debug APK still builds everywhere.
+      # (A committed keystore is convenient but ships the signing credentials in
+      # the repository — keep the repo private and prefer CI secrets for shared
+      # projects. See the header note.)
+      - name: Detect signing availability
+        id: detect-signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] || [ -f android/keystore.properties ]; then
+            echo "has_signing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_signing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only when the signing secrets are present: materialise the upload
+      # keystore next to android/keystore.properties exactly as a local release
+      # build expects, overwriting any committed one. Absent on deploy-chained
+      # runs (secrets aren't forwarded to workflow_call) and on forks without
+      # them, where a committed keystore — if any — is still used.
+      - name: Prepare release signing
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > android/release-key.jks
+          cat > android/keystore.properties <<EOF
+          storeFile=release-key.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+          echo "Release signing configured for bundleRelease."
+
+      - name: Bundle release AAB
+        if: ${{ steps.detect-signing.outputs.has_signing == 'true' }}
+        working-directory: android
+        run: ./gradlew --no-daemon bundleRelease
+
       - name: Report APK size
         run: |
           apk=android/app/build/outputs/apk/debug/app-debug.apk
@@ -142,6 +198,27 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Report AAB size
+        if: ${{ steps.detect-signing.outputs.has_signing == 'true' }}
+        run: |
+          aab=android/app/build/outputs/bundle/release/app-release.aab
+          ls -la "$aab"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### AAB (Play Store) built" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$(du -h "$aab" | cut -f1)\` — commit \`${GITHUB_SHA:0:7}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Upload this to the Play Console closed test track." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload AAB
+        if: ${{ steps.detect-signing.outputs.has_signing == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: teqrallly-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+          retention-days: 90
 
       # Artifacts download as a zip that has to be extracted before Android
       # will install anything — awkward on a phone, which is exactly where
@@ -167,8 +244,10 @@ jobs:
             --notes "Commit \`${GITHUB_SHA:0:7}\` on \`${GITHUB_REF_NAME}\`.
           Relay: \`${RELAY:-none — online play disabled in this build}\`
 
-          Install on Android: open the .apk below and allow installs from unknown sources.
-          Debug build — not for the Play Store." \
+           Install on Android: open the .apk below and allow installs from unknown sources.
+           Debug build — not for the Play Store. The signed AAB for the Play
+           closed test is attached to this run as the teqrallly-release-aab
+           artifact (only when signing secrets are configured)." \
             --prerelease \
             --target "$GITHUB_SHA"
           echo "" >> "$GITHUB_STEP_SUMMARY"

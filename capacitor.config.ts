@@ -21,6 +21,9 @@ const config: CapacitorConfig = {
     allowMixedContent: false,
   },
   server: {
+    // Must be https for a packaged/production build: a packaged app's origin
+    // is https://localhost, and a secure origin is required to open the secure
+    // (wss://) relay. (http was only for local LAN-relay debugging.)
     androidScheme: "https",
     // To iterate against a dev server instead of a bundled build, run
     //   npm run dev -- --host

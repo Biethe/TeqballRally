@@ -1422,13 +1422,11 @@ async function boot(): Promise<void> {
         { id: "btn-set-gameplay", label: tr("settings.gameplay"), sub: tr("settings.gameplay.sub") },
         { id: "btn-set-audio", label: tr("settings.audio"), sub: tr("settings.audio.sub") },
         { id: "btn-set-kit", label: tr("settings.kit"), sub: tr("settings.kit.sub") },
-        { id: "btn-set-pro", label: tr("settings.pro"), sub: tr("settings.pro.sub") },
       ],
       (id) => {
         if (id === "btn-set-display") showSettingsGroup("display", back);
         else if (id === "btn-set-gameplay") showSettingsGroup("gameplay", back);
         else if (id === "btn-set-kit") showSettingsGroup("kit", back);
-        else if (id === "btn-set-pro") showSettingsGroup("pro", back);
         else showSettingsGroup("audio", back);
       },
       undefined,
@@ -1900,11 +1898,6 @@ async function boot(): Promise<void> {
         if (!isValidSetup(msg)) return;
         theirs = { character: msg.character, ball: msg.ball };
         launch();
-      },
-      // A rematch mints a fresh match id; the result of the new match reports
-      // against it, never against the settled one.
-      onMatchId: (id) => {
-        onlineMatchId = id;
       },
       // A phone drops its socket for a few seconds all the time. Say what is
       // happening rather than freezing silently, and say when it is over —
@@ -2716,6 +2709,9 @@ async function boot(): Promise<void> {
         // is the authoritative one — it owns the rules and the serve order —
         // and the guest's is presentation; the snapshots that follow re-drive
         // everything it shows.
+        onMatchId: (id) => {
+          onlineMatchId = id;
+        },
         onRematch: () => {
           input.setTouchControlsEnabled(true);
           ui.showHUD();

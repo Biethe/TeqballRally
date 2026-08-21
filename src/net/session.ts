@@ -116,6 +116,8 @@ export interface SessionHandlers {
    * new one.
    */
   onRematch?: () => void;
+  /** The relay minted a fresh match id for both seats (the new match's name). */
+  onMatchId?: (id: string) => void;
 }
 
 export class OnlineSession {
@@ -145,6 +147,11 @@ export class OnlineSession {
   /** The rematch negotiation, from the end screen. */
   private rematch: RematchState = "none";
   private rematchWait = 0;
+  /**
+   * True once the current rematch's reset has run, so a second signal
+   * (`newmatch` arriving after the local agreement) cannot reset twice.
+   */
+  private rematchStarted = false;
   /** Guest presses awaiting a simulation step on the host. */
   private pendingGuest = { strike: false, pop: false, confirm: false };
   /** Guest: the age of each arriving snapshot, measured off its tick stamp. */
@@ -172,6 +179,11 @@ export class OnlineSession {
     if (this.isHost) match.netPublish = true;
     conn.setHandlers({
       onMessage: (msg) => this.onNetMessage(msg),
+      // The relay broadcasts the fresh match id to both seats. Driving the
+      // reset from it (rather than the direct `accept` packet) means a dropped
+      // accept can never leave one player stranded on the result screen while
+      // the other is already playing.
+      onMatchId: (id) => this.onRelayMatchId(id),
       // A clean disconnect is reported by the relay; silence is noticed by the
       // step loop. Either starts the same countdown. A rematch left hanging in
       // the air is simply closed — there is nobody to play it with.
@@ -250,6 +262,9 @@ export class OnlineSession {
     if (this.rematch === next) return;
     this.rematch = next;
     this.rematchWait = 0;
+    // A fresh negotiation can lead to another rematch; let the next `newmatch`
+    // drive a new reset rather than being ignored by the `started` guard.
+    if (next === "asking" || next === "asked") this.rematchStarted = false;
     this.handlers.onRematchState?.(next, detail);
   }
 
@@ -313,13 +328,34 @@ export class OnlineSession {
   }
 
   /**
-   * Both sides agreed; the new match starts now, on both peers at once.
-   * The host asks the relay for the fresh match id the result will settle
-   * against; a press queued on the end screen must not fire in the new match.
+   * Both sides agreed; the new match starts now. The host asks the relay for
+   * the fresh match id, and the reset itself is driven by the relay's
+   * `newmatch` broadcast (see `onRelayMatchId`) so it reaches both seats
+   * reliably — not from the `accept` packet, which a single dropped frame can
+   * lose and leave one player on the result screen.
    */
   private beginRematch(): void {
     if (this.rematch !== "asking" && this.rematch !== "asked") return;
+    this.setRematch("none");
     if (this.isHost) this.conn.newMatch();
+    // Restart this peer at once for responsiveness. The `newmatch` that
+    // follows re-drives both seats idempotently, so neither can miss it.
+    this.startRematch();
+  }
+
+  /**
+   * Run the actual match reset on both peers.
+   *
+   * Called locally from `beginRematch` for immediacy and by `onRelayMatchId`
+   * when the relay's `newmatch` arrives — the broadcast form is what makes the
+   * restart survive a dropped `accept` packet. The `rematchStarted` guard
+   * makes the second call a no-op.
+   */
+  private startRematch(): void {
+    if (this.rematchStarted) return;
+    // Only a finished match is being replayed; a stray call mid-play is ignored.
+    if (this.match.matchWinner === null && this.match.state !== "over") return;
+    this.rematchStarted = true;
     this.pendingGuest = { strike: false, pop: false, confirm: false };
     this.localInput = {
       ...this.localInput,
@@ -338,8 +374,13 @@ export class OnlineSession {
       popPressed: false,
       confirmPressed: false,
     };
-    this.setRematch("none");
     this.handlers.onRematch?.();
+  }
+
+  /** The relay minted a fresh match id for both seats — the reliable restart. */
+  private onRelayMatchId(id: string): void {
+    this.handlers.onMatchId?.(id);
+    this.startRematch();
   }
 
   /** Inbound. Everything is validated before it can touch the simulation. */
