@@ -122,7 +122,9 @@ console.log("\nportrait: the screen is the controller");
   const start = await readMatch(page);
   check(start.portraitClass === true, "the touch layer switches to its portrait layout");
   check(start.joyShown === false, "the move stick is gone");
-  check(start.hintsShown === true, "the gesture legend is up");
+  // The legend was retired: a permanent strip of instructions across the bottom
+  // of the court costs more playing area than two gestures are worth explaining.
+  check(start.hintsShown === false, "the gesture legend is not taking up court");
 
   // Who serves first is a coin toss. Re-toss it until it is the player's, so
   // the serve gesture is actually reachable from here.

@@ -117,6 +117,55 @@ export function coinsFor(won: boolean, difficulty: Difficulty, trophies: number)
   return Math.round(base * (1 + tierFor(trophies).bonus));
 }
 
+/**
+ * A competition, and where the player finished it.
+ *
+ * A cup is two matches for the player and a league is three, which is why the
+ * two pay differently: the prize is for the run, not for the final.
+ */
+export type CompetitionKind = "cup" | "league";
+
+/** What finishing a run is worth, on top of the matches it was made of. */
+const TROPHY_PRIZE: Record<CompetitionKind, number[]> = {
+  // By finishing place, best first. Fourth pays nothing extra — the matches
+  // themselves already paid, and a prize for coming last is not a prize.
+  cup: [45, 22, 10, 0],
+  league: [70, 34, 15, 0],
+};
+
+const COIN_PRIZE: Record<CompetitionKind, number[]> = {
+  cup: [220, 110, 45, 0],
+  league: [340, 165, 70, 0],
+};
+
+/**
+ * What finishing a competition pays, over and above its matches.
+ *
+ * Without this a cup was worth exactly the two friendlies it was made of, and
+ * winning the trophy paid the same as winning the third-place play-off — the
+ * champion was a line of text. A run asks for three matches in a sitting and
+ * for the nerve to hold a lead across them, and the prize is what makes that
+ * worth choosing over three friendlies.
+ *
+ * Second and third still pay. Getting to a final and losing it is a good run,
+ * and a competition that pays nothing for it teaches the player to abandon a
+ * cup the moment the semi goes badly.
+ *
+ * Coins take the tier bonus like every other purse (`coinsFor`); trophies do
+ * not, because trophies are what the tier is made of.
+ */
+export function competitionPrize(
+  kind: CompetitionKind,
+  place: number,
+  trophies: number
+): { coins: number; trophies: number } {
+  const at = Math.max(0, Math.min(3, Math.round(place) - 1));
+  return {
+    coins: Math.round(COIN_PRIZE[kind][at] * (1 + tierFor(trophies).bonus)),
+    trophies: TROPHY_PRIZE[kind][at],
+  };
+}
+
 /** Whether a trophy change crossed a rung, and which way. */
 export function rankChange(before: number, after: number): "promoted" | "relegated" | null {
   const from = tierFor(before);

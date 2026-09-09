@@ -30,6 +30,7 @@ import {
   isUnlocked,
   levelOf,
   rollOver,
+  awardCompetition,
   settleMatch,
   upgradeCost,
   withCareer,
@@ -37,7 +38,7 @@ import {
 } from "../src/progress";
 import { seasonKey, seasonReward, seasonTier, seasonTierId, softReset } from "../src/season";
 import { CHARACTERS, SETS_TO_WIN, WIN_SCORE } from "../src/config";
-import { RATING_KEYS, rating, totalPower } from "../src/ratings";
+import { RATING_CAP, RATING_KEYS, SPAN, rating, totalPower } from "../src/ratings";
 import { ALL_TIP_KEYS, randomTip, tipPool } from "../src/tips";
 import { t } from "../src/i18n";
 
@@ -269,9 +270,64 @@ describe("a career", () => {
     expect(gain(base.precision, maxed.precision)).toBeGreaterThan(
       gain(base.agility, maxed.agility)
     );
-    // Pace is the character's, not the career's.
-    expect(maxed.power).toBe(base.power);
-    expect(maxed.serve).toBe(base.serve);
+    // Pace and the serve move too now. They used to be the character's alone,
+    // which left two bars on the card frozen for an entire career.
+    expect(maxed.power).toBeGreaterThan(base.power);
+    expect(maxed.serve).toBeGreaterThan(base.serve);
+  });
+
+  it("takes every character to the top of every bar, eventually", () => {
+    // The promise the ceiling now makes. Before this, one combination out of
+    // twenty-eight ever reached the cap and the starter reached none of them,
+    // so the bar stopped moving while the player kept playing.
+    //
+    // Every character, not just the starter: ENGLAND begins further from its
+    // agility ceiling than BRAZIL does, so a rate tuned to the starter alone
+    // left exactly one character permanently short.
+    for (const def of CHARACTERS) {
+      const maxed = withCareer(def, MAX_LEVEL);
+      for (const key of RATING_KEYS) {
+        expect(rating(maxed, key), `${def.label} ${key}`).toBe(RATING_CAP);
+      }
+    }
+  });
+
+  it("stops training a trait once its bar is full", () => {
+    // A trait that kept growing after the card read 99 would be power the
+    // player could feel and could not see. SPAIN saturates several levels
+    // early, and has to be identical at those levels and at the last one.
+    const spain = CHARACTERS[3];
+    const early = withCareer(spain, MAX_LEVEL - 3);
+    const last = withCareer(spain, MAX_LEVEL);
+
+    for (const key of RATING_KEYS) {
+      if (rating(early, key) !== RATING_CAP) continue;
+      expect(rating(last, key), key).toBe(RATING_CAP);
+    }
+    expect(last.speed).toBeLessThanOrEqual(SPAN.reactivity.max);
+    expect(last.power).toBeLessThanOrEqual(SPAN.power.max);
+  });
+
+  it("gets a better character there sooner", () => {
+    // What the roster ladder means once the top is reachable: a head start,
+    // not a different ceiling. Both arrive; one arrives earlier.
+    const levelsToMax = (def: (typeof CHARACTERS)[number]): number => {
+      for (let level = 1; level <= MAX_LEVEL; level++) {
+        if (RATING_KEYS.every((key) => rating(withCareer(def, level), key) === RATING_CAP)) return level;
+      }
+      return Infinity;
+    };
+
+    expect(levelsToMax(CHARACTERS[3])).toBeLessThan(levelsToMax(CHARACTERS[0]));
+    expect(levelsToMax(CHARACTERS[0])).toBeLessThanOrEqual(MAX_LEVEL);
+  });
+
+  it("leaves a fresh character somewhere to get to", () => {
+    for (const def of CHARACTERS) {
+      for (const key of RATING_KEYS) {
+        expect(rating(def, key), `${def.label} ${key}`).toBeLessThan(RATING_CAP);
+      }
+    }
   });
 
   it("locks the roster behind trophies, and keeps it unlocked", () => {
@@ -353,6 +409,68 @@ describe("a career", () => {
     const career = { ...freshCareer(DAY), coins: 99999 };
 
     expect(levelOf(buyUpgrade(career, gated), gated)).toBe(1);
+  });
+});
+
+describe("finishing a competition", () => {
+  it("pays a prize on top of the matches it was made of", () => {
+    // The whole point. Before this a cup was worth exactly the two friendlies
+    // it contained, and the trophy was a line of text.
+    const { career, prize } = awardCompetition(freshCareer(DAY), "cup", 1);
+
+    expect(prize.coins).toBeGreaterThan(0);
+    expect(prize.trophies).toBeGreaterThan(0);
+    expect(career.coins).toBe(prize.coins);
+    expect(career.trophies).toBe(prize.trophies);
+  });
+
+  it("pays a league more than a cup, because it is a longer run", () => {
+    const cup = awardCompetition(freshCareer(DAY), "cup", 1).prize;
+    const league = awardCompetition(freshCareer(DAY), "league", 1).prize;
+
+    expect(league.coins).toBeGreaterThan(cup.coins);
+    expect(league.trophies).toBeGreaterThan(cup.trophies);
+  });
+
+  it("pays less the lower you finish, and nothing for last", () => {
+    // Getting to a final and losing it is still a good run. A competition that
+    // paid only the winner would teach a player to abandon a cup the moment
+    // the semi went badly.
+    const at = (place: number) => awardCompetition(freshCareer(DAY), "cup", place).prize;
+
+    expect(at(1).coins).toBeGreaterThan(at(2).coins);
+    expect(at(2).coins).toBeGreaterThan(at(3).coins);
+    expect(at(3).coins).toBeGreaterThan(0);
+    expect(at(4).coins).toBe(0);
+    expect(at(4).trophies).toBe(0);
+  });
+
+  it("never takes anything away", () => {
+    // Unlike a match, where the trophy stake can go negative. Finishing a
+    // competition is not something a player should be able to be punished for.
+    for (const kind of ["cup", "league"] as const) {
+      for (let place = 1; place <= 4; place++) {
+        const { prize } = awardCompetition(freshCareer(DAY), kind, place);
+        expect(prize.coins, `${kind} ${place}`).toBeGreaterThanOrEqual(0);
+        expect(prize.trophies, `${kind} ${place}`).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  it("survives a place outside the podium being asked for", () => {
+    // The caller derives the place from a sorted table; a roster change that
+    // made it five-handed should pay nothing, not crash on an undefined.
+    expect(() => awardCompetition(freshCareer(DAY), "league", 9)).not.toThrow();
+    expect(awardCompetition(freshCareer(DAY), "league", 9).prize.coins).toBe(0);
+  });
+
+  it("moves the ladder, and what the ladder remembers", () => {
+    // A run that promoted a player has to survive the season roll, which reads
+    // `best` and `seasonBest` rather than the live total.
+    const { career } = awardCompetition(freshCareer(DAY), "league", 1);
+
+    expect(career.best).toBe(career.trophies);
+    expect(career.seasonBest).toBe(career.trophies);
   });
 });
 

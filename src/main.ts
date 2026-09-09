@@ -92,7 +92,9 @@ import {
   withCareer,
   type Career,
   type MatchOutcome,
+  awardCompetition,
 } from "./progress";
+import { type CompetitionKind } from "./league";
 import {
   clearCompetition,
   describeCompetition,
@@ -2157,14 +2159,13 @@ async function boot(): Promise<void> {
   };
 
   /**
-   * The coached lesson.
+   * The coached lesson, entered through the picker like every other mode.
    *
-   * `forced` is the first launch: no character choice and no way back out,
-   * because the whole point is that a player who has never seen a teqball
-   * rally is not yet in a position to choose anything. Afterwards it is an
-   * ordinary menu item, entered through the picker like every other mode.
+   * It used to have a `forced` first-launch path that skipped the picker
+   * entirely. First launch opens the title screen and runs the UI tour now, so
+   * nothing has passed it in a long time and the branch went with it.
    */
-  const showPractice = (forced = false) => {
+  const showPractice = () => {
     // The trainer is fixed, so it is a safe useful prefetch while the user is
     // choosing their own player.
     scheduleAssetPrefetch("/models/characters/SpanishPlayer.glb", 700);
@@ -2186,13 +2187,6 @@ async function boot(): Promise<void> {
         onEnd: () => match?.reset(),
       });
     };
-    if (forced) {
-      // Straight in, with the roster's first player and ball. Being asked to
-      // pick a character before being shown what a character does is a choice
-      // nobody can make.
-      begin(CHARACTERS[0].id, BALLS[0].id);
-      return;
-    }
     showSelect(tr("select.title"), begin, showModes, "PRACTICE");
   };
 
@@ -2211,6 +2205,32 @@ async function boot(): Promise<void> {
    * of the player shows, so the match they get agrees with the comparison they
    * were just looking at.
    */
+  /**
+   * The opponent, trained to about where the player is.
+   *
+   * Picking a *character* to match the player stopped being enough once a
+   * career could take one to the top of every bar: the strongest thing on the
+   * roster starts at 486 total power and a maxed player is 693, so every
+   * opponent in the game was two hundred points light and the reward for a
+   * long career was that the game stopped resisting.
+   *
+   * The level is chosen the same way the character is — by closing on the
+   * player's own total — so an untrained player still meets untrained
+   * opponents and nothing about the early game moves.
+   */
+  const trainedToMatch = (def: CharacterDef, target: number): CharacterDef => {
+    let best = def;
+    let bestGap = Math.abs(totalPower(def) - target);
+    for (let level = 2; level <= MAX_LEVEL; level++) {
+      const at = withCareer(def, level);
+      const gap = Math.abs(totalPower(at) - target);
+      if (gap >= bestGap) continue;
+      best = at;
+      bestGap = gap;
+    }
+    return best;
+  };
+
   const matchedOpponent = (playerDef: CharacterDef, ownId: string): CharacterDef => {
     const others = CHARACTERS.filter((c) => c.id !== ownId);
     const mine = totalPower(playerDef);
@@ -2220,9 +2240,9 @@ async function boot(): Promise<void> {
     let roll = Math.random() * weights.reduce((sum, w) => sum + w, 0);
     for (let i = 0; i < others.length; i++) {
       roll -= weights[i];
-      if (roll <= 0) return others[i];
+      if (roll <= 0) return trainedToMatch(others[i], mine);
     }
-    return others[others.length - 1];
+    return trainedToMatch(others[others.length - 1], mine);
   };
 
   const showDifficulty = () => {
@@ -2458,10 +2478,13 @@ async function boot(): Promise<void> {
       difficulty,
       labels: [tr("hud.you"), opponent.label],
       onEnd: (winner, sets) => {
-        // Settled, but not reported here: a competition already has a screen
-        // that says what the match did, and a second one between every round
-        // would turn a cup run into a series of receipts.
-        settleCareer(winner === "player", human.id, difficulty);
+        // Settled, but not *reported* here: a competition already has a screen
+        // that says what the match did, and a full result card between every
+        // round would turn a cup run into a series of receipts. What the round
+        // paid is carried to that screen as one line instead.
+        const { outcome } = settleCareer(winner === "player", human.id, difficulty);
+        compEarned.coins += outcome.coins;
+        compEarned.trophies += outcome.trophies;
         // Stop the court before the standings go up over it. A competition is
         // the one flow that leaves a finished match standing while it waits for
         // a press, and nothing else was stopping it — the ball stayed live, the
@@ -2480,6 +2503,47 @@ async function boot(): Promise<void> {
     return withCareer(base, levelOf(career, base.id));
   };
 
+  /**
+   * What the run has paid so far.
+   *
+   * A competition is the one flow where the player plays several matches
+   * without a result card between them, so without this they would finish a
+   * cup with no idea what any of it earned. Reset when a run starts, and
+   * deliberately not restored on resume: the coins from a session two days ago
+   * are already in the wallet, and re-announcing them would read as paying
+   * twice.
+   */
+  let compEarned = { coins: 0, trophies: 0 };
+
+  /**
+   * Close a run out: pay the prize for where the player finished, tell them
+   * what the whole thing was worth, and let the arena react if they won it.
+   *
+   * The prize is paid here rather than inside `settleCareer` because it is not
+   * a match result — it is for the run, and it is the thing that makes a cup
+   * worth choosing over the two friendlies it is otherwise identical to.
+   */
+  const finishCompetition = (kind: CompetitionKind, place: number): string[] => {
+    const { career: paid, prize } = awardCompetition(career, kind, place);
+    career = paid;
+    saveCareer(career);
+    compEarned.coins += prize.coins;
+    compEarned.trophies += prize.trophies;
+    clearCompetition();
+    refreshWallet();
+    if (place === 1) {
+      // Both already exist and were wired only to individual points, which is
+      // the one moment of a match that does not need them most.
+      cheerCrowd();
+      audio.playApplause();
+    }
+    return prize.coins > 0 ? [`${tr("comp.prize")} — ${earnedRow()}`] : [earnedRow()];
+  };
+
+  /** The earnings line the standings screens carry. */
+  const earnedRow = (): string =>
+    `<b>+${compEarned.trophies}</b> ${tr("result.trophies")} · <b>+${compEarned.coins}</b> ${tr("result.coins")}`;
+
   const startCompetition = (format: CompetitionFormat, charId: string, ballId: string) => {
     const human = compChar(charId);
     const others = CHARACTERS.filter((c) => c.id !== human.id).sort(() => Math.random() - 0.5);
@@ -2494,11 +2558,13 @@ async function boot(): Promise<void> {
       ...(format === "league" ? { table: [0, 0, 0, 0].map(() => ({ pts: 0, diff: 0 })) } : {}),
     };
     storeCompetition(run);
+    compEarned = { coins: 0, trophies: 0 };
     resumeCompetition(run);
   };
 
   /** Play a saved run from the round it stopped at. */
   const resumeCompetition = (run: SavedCompetition) => {
+    compEarned = { coins: 0, trophies: 0 };
     const players = run.players.map(compChar);
     const [human, ...others] = players;
     if (run.format === "cup") runCup(human, others, run.ballId, run);
@@ -2534,6 +2600,7 @@ async function boot(): Promise<void> {
         ui.showStandings("CUP — SEMI-FINALS", [
           scoreline(human, sf1Opp, sets),
           scoreline(sf2a, sf2b, sf2.sets),
+          earnedRow(),
           `next: ${finalName} — ${human.label} vs ${finalOpp.label}`,
         ], "PLAY FINAL", () => {
           playCompMatch(human, finalOpp, ballId, "hard", (wonFinal, finalSets) => {
@@ -2555,11 +2622,17 @@ async function boot(): Promise<void> {
                    `3rd — ${human.label}`, `4th — ${finalOpp.label}`]
                 : [`🏆 CHAMPION — ${simWinner.label}`, `2nd — ${simLoser.label}`,
                    `3rd — ${finalOpp.label}`, `4th — ${human.label}`];
-            clearCompetition();
-            ui.showStandings("CUP — FINAL RESULT", [
-              `your final: ${scoreline(human, finalOpp, finalSets)}`,
-              ...standings,
-            ], "BACK TO MENU", () => leaveMatch());
+            // Where the player actually finished, which the standings order
+            // already encodes: champion, runner-up, third or fourth.
+            const place = won ? (wonFinal ? 1 : 2) : wonFinal ? 3 : 4;
+            const paid = finishCompetition("cup", place);
+            ui.showStandings(
+              "CUP — FINAL RESULT",
+              [`your final: ${scoreline(human, finalOpp, finalSets)}`, ...standings, "—", ...paid],
+              "BACK TO MENU",
+              () => leaveMatch(),
+              place === 1
+            );
           });
         });
     };
@@ -2627,12 +2700,27 @@ async function boot(): Promise<void> {
           // Written before the standings go up, so the run survives a player
           // who reads the table and then closes the app.
           storeCompetition({ ...run, round: round + 1, table });
-          ui.showStandings(`LEAGUE — ROUND ${round + 1}`, rows, "PLAY NEXT ROUND", () => playRound(round + 1));
+          ui.showStandings(
+            `LEAGUE — ROUND ${round + 1}`,
+            [...rows, earnedRow()],
+            "PLAY NEXT ROUND",
+            () => playRound(round + 1)
+          );
         } else {
-          clearCompetition();
+          // The table is already sorted, so the player's place is where they
+          // appear in it.
+          const order = players
+            .map((p, i) => ({ p, ...table[i] }))
+            .sort((x, y) => y.pts - x.pts || y.diff - x.diff);
+          const place = order.findIndex((r) => r.p.id === human.id) + 1;
+          const paid = finishCompetition("league", place);
           const champion = tableRows()[0];
-          ui.showStandings("LEAGUE — FINAL TABLE", [...rows, "—", `🏆 ${champion}`], "BACK TO MENU", () =>
-            leaveMatch()
+          ui.showStandings(
+            "LEAGUE — FINAL TABLE",
+            [...rows, "—", `🏆 ${champion}`, ...paid],
+            "BACK TO MENU",
+            () => leaveMatch(),
+            place === 1
           );
         }
       });

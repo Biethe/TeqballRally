@@ -51,10 +51,14 @@ const READ: Record<RatingKey, (def: CharacterDef) => number> = {
  * What each trait's bar runs between, in the units `config.ts` uses.
  *
  * Chosen to sit outside the roster on both ends: below the starter so a
- * beginner does not read as a flat wall of minimums, and above the best a
- * trained SPAIN reaches so the top of the bar keeps meaning something.
+ * beginner does not read as a flat wall of minimums, and above what any
+ * character starts at, so the top of the bar is somewhere to get to.
+ *
+ * Exported because it is also where training stops (`withCareer` in
+ * `src/progress.ts`). A trait that kept growing after its bar had filled would
+ * be power the card had stopped reporting.
  */
-const SPAN: Record<RatingKey, { min: number; max: number }> = {
+export const SPAN: Record<RatingKey, { min: number; max: number }> = {
   reactivity: { min: 3.8, max: 6.6 },
   power: { min: 0.7, max: 1.8 },
   control: { min: 0.7, max: 1.9 },
@@ -67,14 +71,23 @@ const SPAN: Record<RatingKey, { min: number; max: number }> = {
 /** Nobody is bad at everything, so no bar reads zero. */
 export const RATING_FLOOR = 40;
 /**
- * And nobody is perfect.
+ * And nobody is quite perfect.
  *
- * The bar is marked out of 100 and stops at 95 — the last five points are not
- * for sale, at any level, with any ball, on any character. A scale whose top
- * is reachable is a scale that stops saying anything the moment somebody gets
- * there, and "maxed" is a worse thing for a player to feel than "nearly".
+ * The bar is marked out of 100 and stops at 99. It used to stop at 95 on the
+ * reasoning that a reachable top stops saying anything the moment somebody
+ * gets there — but the top was not merely hard to reach, it was unreachable:
+ * across four characters and seven abilities exactly one combination ever
+ * touched it, because levelling did not move `power` or `serve` at all and the
+ * rest gained too little to cross their spans. A ceiling nobody can approach
+ * is not tension, it is a bar that stops moving while the player keeps
+ * playing.
+ *
+ * So 99 is now genuinely reachable, in every ability, on any character — it
+ * just costs a long career (`MAX_LEVEL` in `src/progress.ts`), and costs the
+ * weaker characters more of one. The last point stays unsold, because a 100
+ * would invite the question of what comes after it.
  */
-export const RATING_CAP = 95;
+export const RATING_CAP = 99;
 
 /** One trait, `RATING_FLOOR`–`RATING_CAP`, on a bar marked out of 100. */
 export function rating(def: CharacterDef, key: RatingKey): number {

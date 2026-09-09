@@ -538,31 +538,36 @@ describe("the traits that decide a rally", () => {
   it("trains effort without erasing the character that was picked", () => {
     const brazil = CHARACTERS.find((c) => c.label === "BRAZIL")!;
     const england = CHARACTERS.find((c) => c.label === "ENGLAND")!;
-    const trainedBrazil = withCareer(brazil, MAX_LEVEL);
-    const trainedEngland = withCareer(england, MAX_LEVEL);
 
     // Levelling lifts them…
-    expect(trainedBrazil.agility).toBeGreaterThan(brazil.agility);
-    expect(trainedBrazil.stamina).toBeGreaterThan(brazil.stamina);
-    // …and training does not reorder the roster: ENGLAND is a rung above
-    // BRAZIL on the ladder and stays there with both trained to the cap.
-    expect(trainedEngland.agility).toBeLessThan(trainedBrazil.agility);
-    expect(trainedEngland.stamina).toBeGreaterThan(trainedBrazil.stamina);
+    expect(withCareer(brazil, MAX_LEVEL).agility).toBeGreaterThan(brazil.agility);
+    expect(withCareer(brazil, MAX_LEVEL).stamina).toBeGreaterThan(brazil.stamina);
+
+    // …and the character is what the whole middle of a career feels like.
+    // ENGLAND is a rung above BRAZIL and stays there the whole way up: its
+    // agility is the weaker of the two at every level it is still climbing.
+    const mid = Math.ceil(MAX_LEVEL / 2);
+    expect(withCareer(england, mid).agility).toBeLessThan(withCareer(brazil, mid).agility);
+    expect(withCareer(england, mid).stamina).toBeGreaterThan(withCareer(brazil, mid).stamina);
+
+    // At the very top they meet, and that is the point of the ceiling being
+    // reachable at all: the roster decides how long a career takes, not what
+    // it can end as. A player who has put fifty matches into the starter has
+    // earned the same player as somebody who bought their way past it.
+    expect(withCareer(england, MAX_LEVEL).agility).toBe(withCareer(brazil, MAX_LEVEL).agility);
   });
 
-  it("leaves power and the serve to the character when levelling", () => {
-    // A level has to be felt, so it lifts most of what a player notices —
-    // precision, agility, stamina, and a little speed and reach with it. Pace
-    // and the serve are what make ENGLAND ENGLAND, and training out of them
-    // would turn four characters into one.
+  it("moves every trait when levelling, including pace and the serve", () => {
+    // These two used to be left to the character, which read well and meant
+    // that two bars on the card never moved for the whole of a career. What
+    // makes ENGLAND ENGLAND is where it starts and how few levels it needs to
+    // saturate, not a permanent ceiling on what it can be trained into.
     const def = CHARACTERS[0];
     const trained = withCareer(def, MAX_LEVEL);
 
-    expect(trained.power).toBe(def.power);
-    expect(trained.serve).toBe(def.serve);
-    expect(trained.precision).toBeGreaterThan(def.precision);
-    expect(trained.speed).toBeGreaterThan(def.speed);
-    expect(trained.volley).toBeGreaterThan(def.volley);
+    for (const key of ["power", "serve", "precision", "speed", "volley", "agility", "stamina"] as const) {
+      expect(trained[key], key).toBeGreaterThan(def[key]);
+    }
   });
 });
 

@@ -1,6 +1,14 @@
 import { CHARACTERS, type CharacterDef } from "./config";
+import { SPAN, type RatingKey } from "./ratings";
 import { creditFor, dailyChallenges, dayKey, isComplete, type MatchTally } from "./challenges";
-import { coinsFor, rankChange, trophyDelta, type Difficulty } from "./league";
+import {
+  coinsFor,
+  competitionPrize,
+  rankChange,
+  trophyDelta,
+  type CompetitionKind,
+  type Difficulty,
+} from "./league";
 import {
   seasonKey,
   seasonReward,
@@ -118,32 +126,61 @@ export const XP_PER_LEVEL = 5;
 export function upgradeCost(level: number): number {
   return 120 + (level - 1) * (120 + (level - 1) * 40);
 }
-/** A character stops improving here, so a long career is not an unbeatable one. */
-export const MAX_LEVEL = 6;
+/**
+ * A character stops improving here.
+ *
+ * Twelve rather than six, because the ceiling is the grind now. Every ability
+ * reaches the top of its bar at this level on every character — the roster
+ * ladder is no longer a permanent difference in what a player can become, it
+ * is how much of a career it takes them to get there, and a better character
+ * saturates several levels earlier than a starter does.
+ *
+ * A level comes free every `XP_PER_LEVEL` matches with a character, so this is
+ * about fifty-five matches of playing, or a great many coins of impatience
+ * (`upgradeCost` is quadratic).
+ */
+export const MAX_LEVEL = 12;
 
 /**
  * The character as this career has made it.
  *
- * A level lifts most of what a player can feel — how straight the hard kicks
- * go, how quickly they get moving, how long the legs last, and a little top
- * speed and reach with it. Broader than it used to be, and on purpose: a level
- * that only tightened the kick spread was correct and invisible, and a player
- * who cannot feel what they bought stops buying.
+ * Every ability moves now, including `power` and `serve`, which used to be
+ * left alone on the reasoning that they belonged to the character. They did —
+ * and the cost was that Spain's power sat at 58 and its serve at 61 forever,
+ * two bars on the card that a player could watch stay still through an entire
+ * career. What makes England England is where it *starts* and how few levels
+ * it needs, which survives all of this.
  *
- * Precision still leads, because it is the trait the spread divides by
+ * The rates are set so that the weakest character in the roster reaches the
+ * top of every bar at `MAX_LEVEL` (`RATING_CAP` in `src/ratings.ts`). Stronger
+ * ones get there sooner and spend the remaining levels already saturated,
+ * which is exactly what the ladder should mean once the top is reachable at
+ * all: a head start, not a different ceiling.
+ *
+ * Precision still leads, because it is the trait the kick spread divides by
  * (`src/aim.ts`): an improved player is one whose hard kicks stay in rather
- * than one who simply kicks harder. Power is left alone entirely — that
- * belongs to the character, and it is what makes ENGLAND ENGLAND.
+ * than one who simply kicks harder.
  */
 export function withCareer(def: CharacterDef, level: number): CharacterDef {
   const steps = Math.max(0, Math.min(MAX_LEVEL, level) - 1);
+  // Clamped to the top of the bar that reports them. Without this a character
+  // whose card already read 99 kept getting quietly faster and harder-hitting
+  // for another three levels — power the player could feel, could not see, and
+  // could not have been told about.
+  const grow = (value: number, rate: number, key: RatingKey): number =>
+    Math.min(SPAN[key].max, value * (1 + rate * steps));
   return {
     ...def,
-    precision: def.precision * (1 + 0.1 * steps),
-    agility: def.agility * (1 + 0.06 * steps),
-    stamina: def.stamina * (1 + 0.07 * steps),
-    speed: def.speed * (1 + 0.022 * steps),
-    volley: def.volley * (1 + 0.03 * steps),
+    precision: grow(def.precision, 0.11, "control"),
+    volley: grow(def.volley, 0.105, "volley"),
+    stamina: grow(def.stamina, 0.11, "stamina"),
+    power: grow(def.power, 0.095, "power"),
+    serve: grow(def.serve, 0.085, "serve"),
+    // The widest gap in the roster: ENGLAND starts at 0.80 where the starter
+    // is at 0.95, so the rate that gets the *starter* there leaves ENGLAND
+    // short of its own ceiling for good.
+    agility: grow(def.agility, 0.115, "agility"),
+    speed: grow(def.speed, 0.045, "reactivity"),
   };
 }
 
@@ -416,6 +453,36 @@ export function settleMatch(
       completed,
       season: ended,
     },
+  };
+}
+
+/**
+ * Pay the prize for finishing a competition.
+ *
+ * Separate from `settleMatch` because it is not a match: it is paid once, for
+ * the run as a whole, after its last result has already been settled. Keeping
+ * it apart is also what stops the per-match trophy stake and the prize being
+ * confused for one another — the stake can go negative, this never does.
+ *
+ * `best` and `seasonBest` move with the trophies, or a run that promoted a
+ * player would be forgotten by the ladder the moment the season rolled.
+ */
+export function awardCompetition(
+  career: Career,
+  kind: CompetitionKind,
+  place: number
+): { career: Career; prize: { coins: number; trophies: number } } {
+  const prize = competitionPrize(kind, place, career.trophies);
+  const after = career.trophies + prize.trophies;
+  return {
+    career: {
+      ...career,
+      coins: career.coins + prize.coins,
+      trophies: after,
+      best: Math.max(career.best, after),
+      seasonBest: Math.max(career.seasonBest, after),
+    },
+    prize,
   };
 }
 

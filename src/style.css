@@ -275,6 +275,37 @@ body {
   animation-fill-mode: both;
 }
 
+/* What the menus stand on.
+
+   The transition below irises open and shut with `clip-path`, and outside that
+   circle nothing in the DOM paints — so for the length of the animation the
+   only thing on those pixels is #game-canvas, which draws the live arena every
+   frame whether a match is on or not. Back-navigation is the worst of it: a
+   380ms collapse to nothing followed by a 540ms reveal from nothing, most of a
+   second of bare court between two menus.
+
+   This sits under every screen (z-index 10) and over the canvas, painted with
+   the same gradient `.screen` uses, so the iris opens onto more of the menu.
+   The screens that genuinely want the 3D behind them — the HUD, the picker
+   with its model viewer, the result card over a finished match — hide it
+   (`showSceneBehind` in src/ui.ts). */
+#menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 50% 20%, rgba(25, 90, 220, 0.24) 0%, transparent 62%),
+    radial-gradient(ellipse at 40% 5%, rgba(40, 100, 230, 0.14) 0%, transparent 55%),
+    radial-gradient(ellipse at 60% 5%, rgba(40, 100, 230, 0.14) 0%, transparent 55%),
+    radial-gradient(ellipse at 50% 58%, rgba(60, 130, 255, 0.1) 0%, transparent 40%),
+    linear-gradient(180deg, #14396b 0%, #0e1d36 45%, #061224 100%);
+}
+
+#menu-backdrop.hidden {
+  display: none;
+}
+
 .screen.transparent {
   background: none;
   pointer-events: none;
@@ -2762,14 +2793,14 @@ button.pad-focus {
    and the gesture scheme have to switch on the same condition, and a rule that
    could disagree with the code would leave a stick on screen that no longer
    does anything. */
+/* The gesture legend goes with them. One line of instructions is not worth a
+   permanent strip of the playing area on the smallest screen the game runs on,
+   and the scheme is two gestures — a player has both inside one rally. */
 #touch-layer.portrait .joy-base,
 #touch-layer.portrait #strike-btn,
-#touch-layer.portrait #pop-btn {
+#touch-layer.portrait #pop-btn,
+#touch-portrait-hints {
   display: none;
-}
-
-#touch-layer.portrait #touch-portrait-hints {
-  display: flex;
 }
 
 @media (max-width: 680px) {
@@ -5252,14 +5283,6 @@ button.pad-focus {
    fill. The rule throughout is the same one: readable, and never a place the
    ball can hide. */
 
-/* Portrait plays by gesture and the legend explaining that sat across the
-   bottom of the court permanently. One line of instructions is not worth a
-   strip of the playing area on the smallest screen the game runs on — the
-   scheme is two gestures, and a player finds them in the first rally. */
-#touch-portrait-hints {
-  display: none;
-}
-
 /* Stamina is glass in both orientations. Portrait keeps it bottom-right, out
    of the way of a thumb that steers by tapping the court. */
 #stamina {
@@ -5463,5 +5486,77 @@ button.pad-focus {
 
   .end-btns {
     gap: 8px;
+  }
+}
+
+
+/* ===================================================================
+   Confetti
+   ===================================================================
+
+   For finishing a competition on top, and nothing else — a reward that fires
+   for every result is wallpaper. DOM and CSS rather than a particle system:
+   the project has none, the title screen's drifting motes are built the same
+   way, and a run ends about once every twenty minutes.
+
+   `pointer-events: none` throughout: the BACK TO MENU button is underneath it
+   and has to stay pressable while the paper is still falling. */
+.confetti {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.confetti i {
+  position: absolute;
+  top: -8vh;
+  left: var(--x, 50%);
+  width: 8px;
+  height: 14px;
+  background: var(--tint, var(--gold));
+  opacity: 0;
+  border-radius: 1px;
+  animation: confetti-fall var(--dur, 3s) linear var(--delay, 0s) forwards;
+}
+
+@keyframes confetti-fall {
+  0% {
+    opacity: 0;
+    transform: translateY(0) rotate(0deg);
+  }
+  8% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(112vh) rotate(var(--rot, 360deg));
+  }
+}
+
+/* The winner's own line, so the eye lands on it before reading the table. */
+#standings-screen.celebrating .standings-row:first-child {
+  color: var(--gold);
+  text-shadow: 0 0 18px rgba(245, 197, 24, 0.45);
+}
+
+/* A phone in landscape has no vertical room to spare and the paper is falling
+   through the only readable part of the screen, so there is less of it and it
+   clears faster. */
+@media (max-height: 500px) {
+  .confetti i {
+    width: 6px;
+    height: 10px;
+    animation-duration: 1.9s;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confetti {
+    display: none;
   }
 }

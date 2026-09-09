@@ -454,6 +454,17 @@ function seasonTierId(seasonBest) {
   return tierFor(seasonBest).id;
 }
 
+// src/ratings.ts
+var SPAN = {
+  reactivity: { min: 3.8, max: 6.6 },
+  power: { min: 0.7, max: 1.8 },
+  control: { min: 0.7, max: 1.9 },
+  stamina: { min: 0.65, max: 1.8 },
+  serve: { min: 0.7, max: 1.6 },
+  agility: { min: 0.65, max: 1.8 },
+  volley: { min: 0.7, max: 1.85 }
+};
+
 // src/progress.ts
 var STARTING_CHAMPION = CHARACTERS[0].id;
 var MAX_TITLES = 36;
@@ -485,16 +496,22 @@ var XP_PER_LEVEL = 5;
 function upgradeCost(level) {
   return 120 + (level - 1) * (120 + (level - 1) * 40);
 }
-var MAX_LEVEL = 6;
+var MAX_LEVEL = 12;
 function withCareer(def, level) {
   const steps = Math.max(0, Math.min(MAX_LEVEL, level) - 1);
+  const grow = (value, rate, key) => Math.min(SPAN[key].max, value * (1 + rate * steps));
   return {
     ...def,
-    precision: def.precision * (1 + 0.1 * steps),
-    agility: def.agility * (1 + 0.06 * steps),
-    stamina: def.stamina * (1 + 0.07 * steps),
-    speed: def.speed * (1 + 0.022 * steps),
-    volley: def.volley * (1 + 0.03 * steps)
+    precision: grow(def.precision, 0.11, "control"),
+    volley: grow(def.volley, 0.105, "volley"),
+    stamina: grow(def.stamina, 0.11, "stamina"),
+    power: grow(def.power, 0.095, "power"),
+    serve: grow(def.serve, 0.085, "serve"),
+    // The widest gap in the roster: ENGLAND starts at 0.80 where the starter
+    // is at 0.95, so the rate that gets the *starter* there leaves ENGLAND
+    // short of its own ceiling for good.
+    agility: grow(def.agility, 0.115, "agility"),
+    speed: grow(def.speed, 0.045, "reactivity")
   };
 }
 function levelOf(career, id) {

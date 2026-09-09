@@ -353,6 +353,38 @@ export interface TrainingPauseState {
 }
 
 /** DOM-based menus and HUD (crisper than canvas UI and trivially responsive). */
+/**
+ * Paper for a winner.
+ *
+ * DOM and CSS rather than a particle system, because the project has no
+ * particle system and this does not justify introducing one — the title
+ * screen's drifting motes are built exactly this way, and a competition
+ * finishes about once every twenty minutes.
+ *
+ * Deterministic-ish by construction: the pieces are spread evenly across the
+ * width and only their fall time and tilt vary, so it reads as a shower rather
+ * than as a random clump. Everything else lives in `@keyframes confetti-fall`.
+ */
+function confettiLayer(): HTMLDivElement {
+  const layer = document.createElement("div");
+  layer.className = "confetti";
+  layer.setAttribute("aria-hidden", "true");
+  const colours = ["var(--teq)", "var(--gold)", "var(--arena-light)", "#ffffff", "var(--mint)"];
+  const pieces = 34;
+  for (let i = 0; i < pieces; i++) {
+    const piece = document.createElement("i");
+    // Even across the width, nudged so the columns do not read as a comb.
+    const x = ((i + 0.5) / pieces) * 100 + (i % 3) - 1;
+    piece.style.setProperty("--x", `${x.toFixed(2)}%`);
+    piece.style.setProperty("--delay", `${((i % 7) * 0.13).toFixed(2)}s`);
+    piece.style.setProperty("--dur", `${(2.4 + (i % 5) * 0.35).toFixed(2)}s`);
+    piece.style.setProperty("--rot", `${(i % 2 ? 1 : -1) * (180 + (i % 4) * 140)}deg`);
+    piece.style.setProperty("--tint", colours[i % colours.length]);
+    layer.appendChild(piece);
+  }
+  return layer;
+}
+
 export class UI {
   private root: HTMLElement;
   private loadingEl: HTMLDivElement;
@@ -390,6 +422,7 @@ export class UI {
   private clubEl: HTMLDivElement;
   /** The coins/trophies strip drawn over the title screen. */
   private walletEl: HTMLDivElement;
+  private backdropEl: HTMLDivElement;
   private bannerTimer: number | null = null;
   private meterEl: HTMLDivElement;
   private staminaEl: HTMLDivElement;
@@ -747,12 +780,7 @@ export class UI {
     this.uiTutorialEl.innerHTML = `
       <div class="tutorial-card" role="dialog" aria-modal="true">
         <div class="tutorial-top-bar">
-          <div class="tutorial-progress-dots">
-            <span class="dot active"></span>
-            <span class="dot"></span>
-            <span class="dot"></span>
-            <span class="dot"></span>
-          </div>
+          <div class="tutorial-progress-dots"></div>
           <button class="tutorial-skip-btn" id="btn-tutorial-skip" type="button"></button>
         </div>
         <div class="tutorial-body">
@@ -766,6 +794,20 @@ export class UI {
           </button>
         </div>
       </div>`;
+
+    // What the menus stand on.
+    //
+    // The screen transition irises open and shut with `clip-path`, and outside
+    // that circle nothing in the DOM paints at all — so for the length of the
+    // animation the only thing on those pixels is the game canvas, which is
+    // drawing the live arena every frame whether a match is on or not. The
+    // effect is worth keeping; opening it onto the court is not.
+    //
+    // Painted with the same arena gradient the screens use, so the iris opens
+    // onto more of the menu rather than onto anything.
+    this.backdropEl = document.createElement("div");
+    this.backdropEl.id = "menu-backdrop";
+    this.root.appendChild(this.backdropEl);
 
     // The wallet rides above the title screen rather than inside it: it is the
     // one thing that has to look the same on every screen that shows it.
@@ -822,6 +864,23 @@ export class UI {
       el.classList.add("hidden");
     }
     this.walletEl.classList.add("hidden");
+    this.backdropEl.classList.remove("hidden");
+  }
+
+  /**
+   * Let the 3D scene through for the screens that are meant to sit over it.
+   *
+   * Called by the few screens that want the court or the model viewer behind
+   * them. Everything else gets the backdrop by default, because `hideAll` puts
+   * it back before every screen change — a new menu has to opt out of covering
+   * the arena rather than remember to opt in.
+   *
+   * The overlays that never call `hideAll` — pause, the end card, the training
+   * card — inherit whatever the screen underneath chose, which is what they
+   * want: they are drawn over a live match and blur it rather than hide it.
+   */
+  private showSceneBehind(): void {
+    this.backdropEl.classList.add("hidden");
   }
 
   /** Full-screen menu; each option's `id` becomes the button's DOM id. */
@@ -908,13 +967,28 @@ export class UI {
   }
 
   /** Competition interstitial: a titled block of result/table rows and one continue button. */
-  showStandings(title: string, rows: string[], buttonLabel: string, onContinue: () => void): void {
+  /**
+   * The screen between a competition's rounds, and at the end of one.
+   *
+   * `won` is the player's own result, not row one's: the table is the same
+   * shape whoever is on top of it, and until this existed the screen could not
+   * tell a champion from a fourth place. It is what the confetti hangs off.
+   */
+  showStandings(
+    title: string,
+    rows: string[],
+    buttonLabel: string,
+    onContinue: () => void,
+    won = false
+  ): void {
     this.hideAll();
     this.standingsEl.innerHTML = `
       <div class="logo small">${title}</div>
       <div class="standings-rows">${rows.map((r) => `<div class="standings-row">${r}</div>`).join("")}</div>
       <button class="big-btn" id="btn-standings-continue">${buttonLabel}</button>`;
     this.standingsEl.querySelector<HTMLButtonElement>("#btn-standings-continue")!.onclick = () => onContinue();
+    this.standingsEl.classList.toggle("celebrating", won);
+    if (won) this.standingsEl.prepend(confettiLayer());
     this.standingsEl.classList.remove("hidden");
   }
 
@@ -1456,6 +1530,10 @@ export class UI {
    * Guided UI tour shown on first launch to orient the player around the dashboard.
    */
   showUiTutorial(onDone: () => void): void {
+    // Same test the loading tips use, for the same reason: a card telling a
+    // desktop player how to hold their phone is a card that wastes the one
+    // moment they are actually reading.
+    const touch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
     const steps = [
       {
         badge: "🏓",
@@ -1463,6 +1541,19 @@ export class UI {
         text: t("tutorial.step1.text"),
         highlight: null,
       },
+      // Second, because it decides how they hold the thing before they press
+      // anything. Both schemes are complete and the game swaps between them
+      // live, and until now nothing on any screen said so.
+      ...(touch
+        ? [
+            {
+              badge: "📱",
+              title: t("tutorial.orientation.title"),
+              text: t("tutorial.orientation.text"),
+              highlight: null,
+            },
+          ]
+        : []),
       {
         badge: "⚡",
         title: t("tutorial.step2.title"),
@@ -1484,6 +1575,12 @@ export class UI {
     ];
 
     let currentStep = 0;
+
+    // Built from the steps rather than written out in the markup: the tour is
+    // four cards on a desktop and five on a phone, and a fixed row of dots
+    // would quietly lie about how much is left.
+    const dotRow = this.uiTutorialEl.querySelector<HTMLDivElement>(".tutorial-progress-dots")!;
+    dotRow.innerHTML = steps.map((_, i) => `<span class="dot${i === 0 ? " active" : ""}"></span>`).join("");
 
     const clearHighlights = () => {
       document.querySelectorAll(".ui-tutorial-spotlight").forEach((el) => {
@@ -1822,6 +1919,7 @@ export class UI {
    */
   showResult(view: ResultView): void {
     this.hideAll();
+    this.showSceneBehind();
     this.revealScreen(this.resultEl);
     this.showWallet();
     const sign = (n: number) => (n > 0 ? `+${n}` : `${n}`);
@@ -2500,6 +2598,7 @@ export class UI {
 
   showSelect(opts: SelectOptions): void {
     this.hideAll();
+    this.showSceneBehind();
     this.revealScreen(this.selectEl);
     this.selectEl.querySelector<HTMLHeadingElement>(".select-title")!.textContent =
       opts.title ?? t("select.title");
@@ -2719,6 +2818,7 @@ export class UI {
 
   showHUD(): void {
     this.hideAll();
+    this.showSceneBehind();
     this.hudEl.classList.remove("hidden");
   }
 

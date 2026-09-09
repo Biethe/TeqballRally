@@ -414,6 +414,34 @@ out afterwards.
 the session, overriding both the remembered choice and auto-detection. `?q=low`
 and `?light=1` still parse, and now resolve to `medium`.
 
+## The first launch, and the menus over the court
+
+A new player gets the title screen and a short skippable tour
+(`ui.showUiTutorial`), gated on one `coached` flag in `src/settings.ts`. The
+tour is four cards on a desktop and five on a phone: the extra one says the
+game plays **both ways up**.
+
+That card exists because the feature was real and completely undiscoverable.
+Portrait moves by tapping the court and kicks with a swipe, landscape has a
+stick and two buttons, `Input` swaps between them live on `orientationchange`
+so turning the phone mid-rally works — and nothing on any screen had ever said
+so. The dots under the cards are built from the steps rather than written into
+the markup, so a tour that is sometimes four cards and sometimes five cannot
+lie about how much is left.
+
+The menus themselves stand on `#menu-backdrop`. The screen transition irises
+open and shut with `clip-path`, and outside that circle nothing in the DOM
+paints at all — so for the length of the animation the only thing on those
+pixels was the game canvas, which draws the live arena every frame whether a
+match is on or not. Back-navigation was the worst of it: a 380 ms collapse to
+nothing followed by a 540 ms reveal from nothing, most of a second of bare court
+between two menus. The backdrop is one element under every screen, painted with
+the same gradient the screens use, so the iris opens onto more of the menu. The
+four screens that genuinely want the 3D behind them — the HUD, the picker with
+its model viewer, the result card and the pause card over a live match — call
+`showSceneBehind()`, and everything else gets it by default, because a new menu
+should have to opt out of covering the arena rather than remember to opt in.
+
 ## Phone layout
 
 `scripts/ui-shots.mjs` captures every screen at the dimensions of the devices
@@ -502,6 +530,30 @@ is sized against them — the daily challenge goals, the server's bounds on a
 posted result — and `tests/progress.test.ts` holds every goal to being
 reachable in a session, so shortening a set again cannot quietly turn a daily
 challenge into a weekly one.
+
+## What a competition is worth
+
+A cup is two matches and a league three, and until recently finishing one paid
+exactly what those matches paid on their own: winning the trophy was worth the
+same as winning the third-place play-off, and a cup was indistinguishable from
+two friendlies at the same difficulties. The champion was a line of text.
+
+`competitionPrize` in `src/league.ts` pays for the run itself, once, on top of
+its matches — by format, because a league is the longer sitting, and by
+finishing place. Second and third still pay: getting to a final and losing it
+is a good run, and a competition that paid only the winner would teach a player
+to abandon a cup the moment the semi went badly. Fourth pays nothing extra,
+because a prize for coming last is not a prize.
+
+The screen between rounds carries a running total of what the run has earned so
+far, which is the one thing a competition never used to say. It is a line, not a
+result card: a full card between every round would turn a cup into a series of
+receipts, which is why the per-match card is suppressed there in the first
+place. Winning the whole thing brings out confetti — DOM and CSS, like the
+title screen's drifting motes, because the project has no particle system and
+one competition every twenty minutes does not justify introducing one — and
+finally calls `cheerCrowd()` and `playApplause()`, both of which already existed
+and were wired only to individual points.
 
 ## A competition you can put down
 
@@ -974,19 +1026,40 @@ minute costs a player a moment and never a match.
 multiplier on a spread radius — into seven traits on a 0–100 scale, plus a
 TOTAL POWER that is just those added up.
 
-**The bar is marked out of 100 and stops at 95.** The last five points are not
-for sale: not at the level cap, not with any ball, not on any character. A
-scale whose top is reachable stops saying anything the moment somebody gets
-there, and "maxed" is a worse thing for a player to feel than "nearly". The
-floor is 40, so no bar reads zero.
+**The bar is marked out of 100 and stops at 99, and 99 is reachable.** It used
+to stop at 95 on the reasoning that a reachable top stops saying anything the
+moment somebody gets there. The trouble was that the top was not merely hard to
+reach, it was unreachable: across four characters and seven abilities exactly
+one combination ever touched it, because levelling did not move `power` or
+`serve` at all and the rest gained too little to cross their spans. A ceiling
+nobody can approach is not tension — it is a bar that stops moving while the
+player keeps playing.
+
+So every ability now reaches the top on every character, at `MAX_LEVEL` (12,
+about fifty-five matches). What the roster ladder decides is **how long that
+takes**: FRANCE saturates at level 8, SPAIN at 9, BRAZIL and ENGLAND not until
+12. A head start, not a different ceiling. The last point stays unsold, because
+a 100 would invite the question of what comes after it. The floor is 40, so no
+bar reads zero.
+
+Training is clamped to the top of the bar that reports it (`SPAN` is exported
+for exactly this). Without that clamp a character whose card already read 99
+went on quietly getting faster for another three levels — SPAIN reached 8.37 m/s
+against a 6.6 ceiling — which is power the player can feel, cannot see, and
+could not have been told about.
+
+Because a maxed player is 693 total power and the strongest thing on the roster
+*starts* at 486, `matchedOpponent` now trains the CPU to the player's own total
+as well as picking a character near it. Otherwise the reward for a long career
+was that the game stopped resisting.
 
 The span each trait is measured against is **fixed** rather than derived from
 the roster. Deriving it meant every number on every card moved whenever a
 character was added or retuned — a player who had trained BRAZIL to 71 CONTROL
 would open the game after an update to find it said 64, having lost nothing.
-Fixed bounds also leave headroom above the best character in the game, which is
-what makes the ladder legible: SPAIN is near the top of the bar because SPAIN
-is near the top of the roster, not because SPAIN defines it.
+Fixed bounds also leave headroom above where every character *starts*, which is
+what makes the ladder legible: SPAIN begins near the top of the bar because
+SPAIN is near the top of the roster, not because SPAIN defines it.
 
 The same numbers appear in three places: the picker, the roster cards, and the
 head-to-head on the card before the whistle. That last one is the only moment a
