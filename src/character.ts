@@ -1,4 +1,4 @@
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
@@ -11,6 +11,9 @@ import {
   CHARACTER_SCALE,
   COURT,
   FOOT_FACTOR,
+  INTERACTION_VOLUME_DEFAULTS,
+  INTERACTION_VOLUME_OVERRIDES,
+  REACH_ASSIST,
   RECEPTION_ZONE,
   type BodyPart,
   type CharacterDef,
@@ -18,6 +21,7 @@ import {
 } from "./config";
 import { brightenKit, fixMetallicMaterials } from "./scene";
 import { importModel } from "./protected";
+import { volumeToWorld, type InteractionVolumeDef, type WorldVolume } from "./interaction";
 
 /**
  * The clips locomotion blends between.
@@ -233,11 +237,12 @@ export function leashPush(
  * every decision worth making about a touch is made. Outside it, only the
  * component heading *away* from the ball is damped, fading across the soft band
  * rather than stopping dead at its edge, and past the band a slow leash is
- * added toward the ball.
+ * added toward the ball — as much of it as `assist` has earned.
  *
- * Sideways movement is never touched. Circling the contact point to change
- * which side of the ball you meet it on is the adjustment the zone exists to
- * protect, not the one it exists to stop.
+ * Sideways movement is never touched, by the damping or by the leash.
+ * Circling the contact point to change which side of the ball you meet it on
+ * is the adjustment the zone exists to protect, not the one it exists to stop
+ * — and on this game's stick it is also how the coming touch is aimed.
  *
  * Pure and exported for the same reason `approachVelocity` is: this decides how
  * a player is allowed to move, it has to behave identically on both peers of a
@@ -248,19 +253,26 @@ export function nearAnchorPush(
   toAnchorZ: number,
   mx: number,
   mz: number,
-  speed: number
+  speed: number,
+  assist = 1
 ): [number, number] {
   const d = Math.hypot(toAnchorX, toAnchorZ);
   if (d <= RECEPTION_ZONE.radius || d < 1e-4) return [mx, mz];
   const ux = toAnchorX / d;
   const uz = toAnchorZ / d;
   const past = Math.min(1, (d - RECEPTION_ZONE.radius) / RECEPTION_ZONE.soft);
-  // How hard the player is asking for something, measured before the damping
-  // below — the damped push is the answer, not the question, and reading the
-  // leash off it would let the zone lean on its own output and pull a player
-  // back through a full-stick push.
-  const asked = Math.min(1, Math.hypot(mx, mz));
+  // How hard the player is pushing *away*, measured before the damping below —
+  // the damped push is the answer, not the question, and reading the leash off
+  // it would let the zone lean on its own output and pull a player back
+  // through a full-stick push.
+  //
+  // Only the outward half counts. On this game's stick a held direction is
+  // also how a set-up is aimed, so fading the leash on any push at all meant
+  // that crafting a touch quietly cancelled the help needed to reach the ball
+  // and play it. Pushing across the flight, or toward it, now keeps every bit
+  // of the leash — which is the same rule the damping below already follows.
   const par = mx * ux + mz * uz;
+  const leaving = Math.min(1, Math.max(0, -par));
   if (par < 0) {
     const keep = 1 + (RECEPTION_ZONE.minPush - 1) * past;
     mx += ux * par * (keep - 1);
@@ -271,15 +283,51 @@ export function nearAnchorPush(
   // are pushing, whichever way they are pushing.
   //
   // Both halves matter. It can never out-pull the controls — a leash a player
-  // cannot push against is a movement lock with extra steps, and at full stick
-  // this one is not there at all — and it is what closes the gap between the
+  // cannot push against is a movement lock with extra steps, and at a full
+  // push away this one is not there at all — and it is what closes the gap
+  // between the
   // zone and the arm's length a reception is actually taken from: a player who
   // drifted out and let go ends up back in the play rather than watching it
   // land two paces away.
-  const pull = (RECEPTION_ZONE.leash / Math.max(0.5, speed)) * past * (1 - asked);
+  //
+  // `assist` is how much of it the time in hand has earned (`assistStrength`).
+  // The damping above is unconditional — walking off a reception you started
+  // is a mistake whatever the clock says — but *closing* on a ball that is
+  // going to beat the player anyway is help they have not earned, and giving
+  // it would be the automatic control this is deliberately not.
+  const pull = (RECEPTION_ZONE.leash / Math.max(0.5, speed)) * past * (1 - leaving) * assist;
   mx += ux * pull;
   mz += uz * pull;
   return [mx, mz];
+}
+
+/**
+ * Spare time in hand: how long the ball takes to arrive, less how long a full
+ * run would take to cover the ground to meet it.
+ *
+ * Negative means the ball wins — the player cannot get there however hard they
+ * run — and nothing downstream should make that up for them. A fast shot and a
+ * well-placed one have to be able to win the point, which is the whole reason
+ * this is a time and not a radius: a ball three metres away with a second of
+ * hang is reachable, and the same ball driven flat is not.
+ */
+export function reachSlack(dist: number, eta: number, speed: number): number {
+  return eta - dist / Math.max(0.1, speed);
+}
+
+/**
+ * How much of the assist this much spare time has earned, from 0 to 1.
+ *
+ * Nothing at all while the ball is winning, then ramping in across
+ * `REACH_ASSIST.slackFull` seconds so the help arrives as the player gets on
+ * terms with the flight rather than switching on at a line. What it scales is
+ * the *shaping* of a run — the bend and the closing pull — never the decision
+ * to run, which stays the player's: at full strength a standing player is
+ * still standing.
+ */
+export function assistStrength(slack: number): number {
+  if (slack <= 0) return 0;
+  return Math.min(1, slack / REACH_ASSIST.slackFull);
 }
 
 /**
@@ -292,7 +340,7 @@ export function nearAnchorPush(
  * character standing still watching a ball go past, and that is a worse thing
  * to watch than a slow one chasing it.
  */
-export const MIN_EFFORT = 0.16;
+export const MIN_EFFORT = 0.05;
 
 /**
  * The least of the *reserve* a match can grind a player down to.
@@ -302,7 +350,7 @@ export const MIN_EFFORT = 0.16;
  * the second — they get whatever is left of the ones they started with, which
  * is the whole reason fitness, and everything sold for it, is worth having.
  */
-export const MIN_RESERVE = 0.45;
+export const MIN_RESERVE = 0.30;
 
 /**
  * A loaded, rigged character: kinematic movement plus a two-layer animation
@@ -330,6 +378,18 @@ export class Character {
   private actionYawOffset = 0;
   velocity = new Vector3();
   private animationsFrozen = false;
+
+  /**
+   * Interaction volumes measured from each clip's contact pose, keyed by clip.
+   *
+   * Built once at load from the same pose pass that records contact offsets:
+   * centre and orientation are the striking limb's own, sizes come from
+   * `INTERACTION_VOLUME_DEFAULTS`/`_OVERRIDES`. Pure data — all runtime
+   * placement goes through `contactVolumeTransform`.
+   */
+  readonly interactionVolumes = new Map<string, InteractionVolumeDef>();
+  /** Limb orientation at the contact frame, root-local (measured with it). */
+  private contactOrientations = new Map<string, Quaternion>();
 
   /** Active contact lunge: glides the root while an action clip plays. */
   private lungeState: { from: Vector3; to: Vector3; dur: number; t: number } | null = null;
@@ -372,12 +432,14 @@ export class Character {
     for (const m of res.meshes) {
       if (!m.parent) m.parent = inner;
     }
-    // Normalise model height to the character's real-world height.
+    // Normalise model height to the character's real-world height and center horizontally.
     const { min, max } = wrapper.getHierarchyBoundingVectors(true);
     const rawH = max.y - min.y;
     const s = rawH > 0.01 ? h / rawH : 1;
     inner.scaling.setAll(s);
+    inner.position.x = -((min.x + max.x) * 0.5) * s;
     inner.position.y = -min.y * s;
+    inner.position.z = -((min.z + max.z) * 0.5) * s;
 
     const char = new Character(wrapper, h, def);
     char.meshes = res.meshes;
@@ -393,8 +455,6 @@ export class Character {
     // Sample each clip once at its contact frame to learn where the striking
     // limb will be — the ball is flown to exactly that point during a wind-up.
     char.measureContactOffsets();
-    const idle = char.groups.get("Idle");
-    if (idle) trimIdleTail(idle);
     // Locomotion clips all loop with blended weights.
     for (const name of LOCO_CLIPS) {
       const g = char.groups.get(name);
@@ -440,22 +500,15 @@ export class Character {
     return this.actionClip;
   }
 
-  /** Progress of the current action clip in [0, 1], or null when idle. */
-  actionFraction(): number | null {
-    const g = this.action;
-    if (!g) return null;
-    const anim = g.animatables[0];
-    if (!anim) return null;
-    return (anim.masterFrame - g.from) / (g.to - g.from || 1);
-  }
-
   private nodeCache = new Map<string, TransformNode | null>();
   /** Striking-limb position at each clip's contact frame, in unrotated character space. */
   private contactOffsets = new Map<string, Vector3>();
 
   /**
    * Pose each contact clip at its contact frame (once, at load, while the rig
-   * sits unrotated at the origin) and record the striking bone's position.
+   * sits unrotated at the origin) and record the striking bone's position —
+   * and, for the interaction volumes, its orientation too. Both are read from
+   * the same pose so a contact point and its volume can never disagree.
    */
   private measureContactOffsets(): void {
     for (const [clip, bone] of Object.entries(CLIP_CONTACT_BONE)) {
@@ -468,8 +521,74 @@ export class Character {
       g.goToFrame(g.from + cf * (g.to - g.from));
       node.computeWorldMatrix(true);
       this.contactOffsets.set(clip, node.getAbsolutePosition().clone());
+      this.contactOrientations.set(clip, node.absoluteRotationQuaternion.clone());
       g.stop();
     }
+    this.buildInteractionVolumes();
+  }
+
+  /**
+   * Turn the measured contact poses into interaction volume definitions.
+   *
+   * Centre and orientation come from the pose itself; size comes from the
+   * per-part defaults, and a per-clip override (`INTERACTION_VOLUME_OVERRIDES`)
+   * can shift the centre by a delta — a delta, because every rig measures its
+   * own centre and one absolute number cannot fit every body — and replace
+   * size fields. Head clips get the forehead push baked into their centre so
+   * the volume sits on the face rather than inside the skull, matching what
+   * `HEAD_CONTACT_PUSH` does for the bare contact point at serve time.
+   */
+  private buildInteractionVolumes(): void {
+    for (const [clip, off] of this.contactOffsets) {
+      const part = bodyPartOf(clip);
+      if (!part) continue;
+      const override = INTERACTION_VOLUME_OVERRIDES[clip];
+      const dims = { ...INTERACTION_VOLUME_DEFAULTS[part], ...(override?.dims ?? {}) };
+      const cx = off.x;
+      const cy = off.y;
+      const cz = off.z + (part === "head" ? HEAD_CONTACT_PUSH : 0);
+      const q = this.contactOrientations.get(clip) ?? Quaternion.Identity();
+      const d = override?.d ?? [0, 0, 0];
+      this.interactionVolumes.set(clip, {
+        clip,
+        part,
+        shape: dims.shape ?? "sphere",
+        center: [cx + d[0], cy + d[1], cz + d[2]],
+        measuredCenter: [cx, cy, cz],
+        quat: [q.x, q.y, q.z, q.w],
+        dims,
+      });
+    }
+  }
+
+  /**
+   * The clip's interaction volume placed in the world for the character's
+   * current position and yaw, or null if the clip has no contact geometry.
+   *
+   * The yaw handling is exactly `clipContactPoint`'s — root yaw minus the
+   * action offset plus the clip's own — so the volume and the legacy point it
+   * grew around always agree about where "here" is, mid-action included.
+   */
+  contactVolumeTransform(clip: string): WorldVolume | null {
+    const def = this.interactionVolumes.get(clip);
+    if (!def) return null;
+    const yaw = this.root.rotation.y - this.actionYawOffset + clipYawOffset(clip);
+    return volumeToWorld(def, this.root.position, yaw);
+  }
+
+  /**
+   * A world point expressed in the clip's root-local volume space — the exact
+   * inverse of `contactVolumeTransform`'s placement, so a dragged volume can
+   * be written back as the same local numbers the config stores.
+   */
+  worldToClipLocal(clip: string, world: Vector3): Vector3 | null {
+    if (!this.interactionVolumes.has(clip)) return null;
+    const yaw = this.root.rotation.y - this.actionYawOffset + clipYawOffset(clip);
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    const dx = world.x - this.root.position.x;
+    const dz = world.z - this.root.position.z;
+    return new Vector3(dx * cos - dz * sin, world.y - this.root.position.y, dx * sin + dz * cos);
   }
 
   /**
@@ -653,6 +772,31 @@ export class Character {
     this.restoreActionYaw();
   }
 
+  /**
+   * Abandon the current action and land back on the locomotion blend, without
+   * firing any of its frame callbacks.
+   *
+   * `finishAction` is what a playing clip calls when it truly ends — but it
+   * flushes pending callbacks, which is the last thing an abandoned one should
+   * do: a debug tool pausing a strike mid-wind-up must not launch the ball on
+   * close. This is the quiet exit: stop, un-turn, restore weights, resume
+   * walking. Used by tooling that takes the action layer over temporarily.
+   */
+  cancelActionToLoco(): void {
+    if (this.action) {
+      this.action.stop();
+      this.action = null;
+      this.actionClip = null;
+      this.actionCallbacks = [];
+      this.actionOnEnd = null;
+    }
+    this.lungeState = null;
+    this.restoreActionYaw();
+    this.setLocoWeight(this.currentLoco, 1);
+    const g = this.groups.get(this.currentLoco);
+    if (g && !g.isPlaying) g.start(true, 1.0);
+  }
+
   private restoreActionYaw(): void {
     if (this.actionYawOffset !== 0) {
       this.root.rotation.y -= this.actionYawOffset;
@@ -766,21 +910,6 @@ export class Character {
     for (const s of this.skeletons) s.dispose();
     this.skeletons = [];
     this.root.dispose(false, true);
-  }
-}
-
-/**
- * The last few frames of the Idle clip drift off to one side, which made the
- * loop snap back at the seam. Trim that tail from every targeted animation —
- * the runtime clamps any start() range to the remaining keys, so all Idle
- * call sites then loop cleanly over the shortened clip at normal speed.
- */
-const IDLE_TRIM_FRAMES = 0;
-export function trimIdleTail(group: AnimationGroup): void {
-  const cutoff = group.to - IDLE_TRIM_FRAMES;
-  for (const ta of group.targetedAnimations) {
-    const keys = ta.animation.getKeys().filter((k) => k.frame <= cutoff);
-    if (keys.length >= 2) ta.animation.setKeys(keys);
   }
 }
 

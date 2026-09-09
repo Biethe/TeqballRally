@@ -28,6 +28,7 @@ import {
   WIN_SCORE,
   clearTable,
   contactDelaySeconds,
+  kitForCharacter,
   onTableFootprint,
   portraitCameraShot,
   contactFraction,
@@ -59,9 +60,9 @@ describe("tableSurfaceY", () => {
 
 describe("clip timing helpers", () => {
   it("expresses the contact frame as a fraction of the clip", () => {
-    // RightFootKick: contact on frame 23 of 75.
-    expect(contactFraction("RightFootKick")).toBeCloseTo(23 / 75, 10);
-    expect(contactFraction("LeftFootKick")).toBeCloseTo(40 / 85, 10);
+    // RightFootKick: contact on frame 30 of 75.
+    expect(contactFraction("RightFootKick")).toBeCloseTo(30 / 75, 10);
+    expect(contactFraction("LeftFootKick")).toBeCloseTo(38 / 85, 10);
   });
 
   it("returns 0 for clips with no contact and for unknown clips", () => {
@@ -96,10 +97,10 @@ describe("clip timing helpers", () => {
   });
 
   it("clamps the start fraction at 0 when the lead exceeds the wind-up", () => {
-    // RightHeadKick contacts on frame 16, so a 1 s lead cannot fit before it.
+    // RightHeadKick contacts on frame 15, so a 1 s lead cannot fit before it.
     expect(windupStartFraction("RightHeadKick", 1, 1)).toBe(0);
     // From frame 0 the delay is then the clip's full pre-contact time.
-    expect(contactDelaySeconds("RightHeadKick", 1, 0)).toBeCloseTo(16 / 60, 10);
+    expect(contactDelaySeconds("RightHeadKick", 1, 0)).toBeCloseTo(15 / 60, 10);
   });
 
   it("plays the wind-up faster at higher animation speed", () => {
@@ -351,9 +352,46 @@ describe("court and match rules", () => {
 });
 
 describe("CHARACTERS", () => {
+  it("keeps the official shirt and shorts colours with the player in every screen", () => {
+    const france = CHARACTERS.find((character) => character.id === "FrenchPlayer");
+    const england = CHARACTERS.find((character) => character.id === "EnglishPlayer");
+    expect(france).toBeDefined();
+    expect(england).toBeDefined();
+
+    expect(kitForCharacter(france!, { name: "Jules", number: "7", crest: "shield" })).toMatchObject({
+      colour: "white",
+      shortsColor: "navy",
+      shortsCrestColor: "royal",
+    });
+    expect(kitForCharacter(england!, { name: "Alex", number: "10", crest: "disc" })).toMatchObject({
+      name: "Alex",
+      number: "10",
+      crest: "disc",
+      colour: "white",
+      shirtFabricColor: "royal",
+      shortsColor: "white",
+      shortsFabricColor: "navy",
+    });
+    expect(kitForCharacter(england!, { name: "", number: "", crest: "none" })).toMatchObject({
+      number: "10",
+      crest: "shield",
+      colour: "white",
+      shirtFabricColor: "royal",
+      shortsColor: "white",
+      shortsFabricColor: "navy",
+      shortsCrestColor: "white",
+    });
+  });
+
   it("has unique ids and labels", () => {
     expect(new Set(CHARACTERS.map((c) => c.id)).size).toBe(CHARACTERS.length);
     expect(new Set(CHARACTERS.map((c) => c.label)).size).toBe(CHARACTERS.length);
+  });
+
+  it("gives every player a distinct showcase MenuPose animation", () => {
+    const poses = CHARACTERS.map((c) => c.menuPose);
+    expect(poses.every((p) => typeof p === "string" && p.length > 0)).toBe(true);
+    expect(new Set(poses).size).toBe(CHARACTERS.length);
   });
 
   it("gives every player plausible traits", () => {
@@ -535,4 +573,3 @@ describe("the speed ceiling", () => {
     expect(fastest * BALL_PACE).toBeLessThanOrEqual(MAX_SPEED);
   });
 });
-

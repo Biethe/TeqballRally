@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { leashPush, nearAnchorPush } from "../src/character";
+import { assistStrength, leashPush, nearAnchorPush, reachSlack } from "../src/character";
 import {
+  ANCHOR_STEP_BACK,
   AUTO_RECEPTION_REACH,
   AUTO_RUN,
   LUNGE_MAX,
   PLAYER_REACH,
+  REACH_ASSIST,
   RECEPTION_ZONE,
 } from "../src/config";
 
@@ -48,11 +50,15 @@ describe("the room a player has around the ball", () => {
 
   it("leaves sideways adjustment completely alone", () => {
     // Circling the contact point to change which foot takes the ball is the
-    // adjustment the zone exists to protect, not the one it exists to stop.
+    // adjustment the zone exists to protect, not the one it exists to stop —
+    // and on this game's stick it is also how the coming touch is aimed, so
+    // not one bit of it may be taken away.
     const [ox, oz] = nearAnchorPush(RECEPTION_ZONE.radius + RECEPTION_ZONE.soft, 0, 0, 1, SPEED);
 
     expect(oz).toBe(1);
-    expect(ox).toBe(0);
+    // Going sideways is not going away, so the leash is untouched by it: the
+    // player still closes on the ball while they choose their side of it.
+    expect(ox).toBeGreaterThan(0);
   });
 
   it("is a soft boundary, not a wall", () => {
@@ -78,19 +84,29 @@ describe("the room a player has around the ball", () => {
     );
   });
 
-  it("fades the leash out as the player takes over", () => {
+  it("fades the leash out as the player pushes away", () => {
     // A leash a player cannot push against is a movement lock with extra
-    // steps. At full stick it is not there at all; it is only ever using the
-    // room the player is not.
+    // steps. At a full push away it is not there at all, so leaving is always
+    // a decision they can make — it is only ever using the room they are not.
+    //
+    // Measured against a push *away* rather than any push at all: the stick
+    // also aims the coming touch, and a leash that faded on a sideways hold
+    // would quietly cancel the help needed to reach the ball and play it.
     const far = RECEPTION_ZONE.radius + RECEPTION_ZONE.soft * 2;
-    const idle = nearAnchorPush(far, 0, 0, 0, SPEED)[0];
-    const half = nearAnchorPush(far, 0, 0, 0.5, SPEED)[0];
-    const full = nearAnchorPush(far, 0, 0, 1, SPEED)[0];
+    // The leash on its own: the same push with the assist switched off keeps
+    // the damping and drops the pull, so the difference is the pull alone.
+    const leash = (mx: number): number =>
+      nearAnchorPush(far, 0, mx, 0, SPEED)[0] - nearAnchorPush(far, 0, mx, 0, SPEED, 0)[0];
+    const idle = leash(0);
+    const half = leash(-0.5);
+    const full = leash(-1);
 
     expect(idle).toBeGreaterThan(half);
     expect(half).toBeGreaterThan(0);
     expect(full).toBe(0);
-    expect(RECEPTION_ZONE.leash).toBeLessThan(SPEED * 0.5);
+    // And it can never out-run the player it is helping: the assist closes a
+    // gap, it does not carry anybody faster than their own legs would.
+    expect(RECEPTION_ZONE.leash).toBeLessThan(SPEED);
   });
 
   it("keeps the free zone inside what a player can actually reach from", () => {
@@ -98,9 +114,13 @@ describe("the room a player has around the ball", () => {
     // ball dropping at the anchor is playable from anywhere inside it, so
     // moving freely can never cost a reception that was there to be made.
     expect(RECEPTION_ZONE.radius).toBeLessThan(PLAYER_REACH + LUNGE_MAX);
-    // And wide enough to be worth having: further than the vicinity an
-    // automatic first reception is granted from.
-    expect(RECEPTION_ZONE.radius).toBeGreaterThan(AUTO_RECEPTION_REACH);
+    // And the promise made literal. The anchor stands `ANCHOR_STEP_BACK`
+    // behind the drop, so the ball is always that much further away than the
+    // anchor is: a free radius wider than the reach less that step would open
+    // a band where the player is told their feet are their own and then cannot
+    // reach the ball from where they stood, which is exactly how an idle
+    // player was left watching a reception that was theirs to make.
+    expect(RECEPTION_ZONE.radius + ANCHOR_STEP_BACK).toBeLessThanOrEqual(AUTO_RECEPTION_REACH);
   });
 
   it("releases the locked run inside playing reach of the drop", () => {
@@ -111,10 +131,9 @@ describe("the room a player has around the ball", () => {
     // And the re-engage distance is a true hysteresis: the anchor has to move
     // further than the arrival covers before the run picks back up.
     expect(AUTO_RUN.reengage).toBeGreaterThan(AUTO_RUN.arrive);
-    // The assist is semi-: it engages only in the ball's vicinity, which sits
-    // outside the re-engage band — the run never grabs a player who merely
-    // wanders past its arrival circle.
-    expect(AUTO_RUN.vicinity).toBeGreaterThan(AUTO_RUN.reengage);
+    // The re-engage band is still inside reach, so a run that picks back up
+    // was never a run the player could have stood still through.
+    expect(AUTO_RUN.reengage).toBeLessThan(PLAYER_REACH);
   });
 
   it("shapes the run rather than moving the player", () => {
@@ -130,6 +149,72 @@ describe("the room a player has around the ball", () => {
         );
       }
     }
+  });
+});
+
+describe("how much help the clock has earned", () => {
+  const SPEED_ = 4.5;
+
+  it("gives nothing away once the ball is winning the race", () => {
+    // Three metres to cover in a tenth of a second is not a reception the
+    // player missed, it is a shot that beat them — and a well-placed shot has
+    // to be able to win the point.
+    expect(reachSlack(3, 0.1, SPEED_)).toBeLessThan(0);
+    expect(assistStrength(reachSlack(3, 0.1, SPEED_))).toBe(0);
+  });
+
+  it("counts the ground and the clock together, not either alone", () => {
+    // The same distance is reachable off a lofted ball and hopeless off a
+    // driven one. That distinction is the whole reason this is a time.
+    expect(assistStrength(reachSlack(2, 1.2, SPEED_))).toBeGreaterThan(0);
+    expect(assistStrength(reachSlack(2, 0.3, SPEED_))).toBe(0);
+    // And the same clock is generous up close and hopeless far away.
+    expect(assistStrength(reachSlack(0.5, 0.5, SPEED_))).toBeGreaterThan(0);
+    expect(assistStrength(reachSlack(6, 0.5, SPEED_))).toBe(0);
+  });
+
+  it("fades in rather than switching on at a line", () => {
+    // A cliff would be felt as the assist grabbing the player. Spare time has
+    // to buy help smoothly or the boundary becomes the thing they learn.
+    let prev = 0;
+    for (let slack = 0; slack <= REACH_ASSIST.slackFull; slack += 0.05) {
+      const now = assistStrength(slack);
+      expect(now).toBeGreaterThanOrEqual(prev);
+      prev = now;
+    }
+    expect(assistStrength(REACH_ASSIST.slackFull)).toBe(1);
+  });
+
+  it("never exceeds full help however long the ball hangs", () => {
+    // A ball floating for three seconds must not buy a stronger pull than one
+    // floating for one: past `slackFull` the player has all the time they
+    // need, and more of it is not more assistance.
+    for (const slack of [0.5, 1, 3, 30]) {
+      expect(assistStrength(slack), `${slack}`).toBe(1);
+    }
+  });
+
+  it("is what the leash is scaled by, and can switch it off entirely", () => {
+    // The gate has to reach the one term that actually closes distance, or it
+    // is a decoration on top of an assist that helps regardless.
+    const far = RECEPTION_ZONE.radius + RECEPTION_ZONE.soft;
+
+    expect(nearAnchorPush(far, 0, 0, 0, SPEED, 1)[0]).toBeGreaterThan(0);
+    expect(nearAnchorPush(far, 0, 0, 0, SPEED, 0)).toEqual([0, 0]);
+    expect(nearAnchorPush(far, 0, 0, 0, SPEED, 0.5)[0]).toBeLessThan(
+      nearAnchorPush(far, 0, 0, 0, SPEED, 1)[0]
+    );
+  });
+
+  it("still damps a player walking off a reception when it has earned nothing", () => {
+    // Losing the race is a reason not to be *helped* to the ball. It is not a
+    // reason to be allowed to wander out of a touch already under way, so the
+    // outward damping is deliberately not on the gate.
+    const far = RECEPTION_ZONE.radius + RECEPTION_ZONE.soft;
+    const [ox] = nearAnchorPush(far, 0, -1, 0, SPEED, 0);
+
+    expect(ox).toBeGreaterThan(-1);
+    expect(ox).toBeLessThan(0);
   });
 });
 

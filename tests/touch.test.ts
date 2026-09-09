@@ -69,6 +69,21 @@ describe("grading a contact", () => {
     expect(hopeless).toBeGreaterThan(0);
   });
 
+  it("never grades a contact as perfect if the ball is not visually tight to the limb", () => {
+    // Even if timing and height are spotless, a 6cm visual gap cannot be perfect
+    const gapped = gradeContact(with_({ visualGap: 0.06 }));
+    expect(gapped).toBeLessThan(BANDS.perfect);
+    expect(touchBand(gapped)).not.toBe("perfect");
+
+    // A 15cm visual gap cannot be good
+    const largeGap = gradeContact(with_({ visualGap: 0.15 }));
+    expect(largeGap).toBeLessThan(BANDS.good);
+    expect(touchBand(largeGap)).toBe("poor");
+
+    // Clean contact without visual gap grades perfect
+    expect(touchBand(gradeContact(with_({ visualGap: 0.01 })))).toBe("perfect");
+  });
+
   it("is the same grade for the same contact, every time", () => {
     const e = with_({ heightError: 0.21, reach: 0.4, timing: -0.06 });
     const first = gradeContact(e);

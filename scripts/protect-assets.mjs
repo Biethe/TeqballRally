@@ -23,6 +23,15 @@ import {
 } from "./scramble.mjs";
 
 const ROOT = process.argv[2] ?? "dist";
+
+try {
+  if (typeof process.loadEnvFile === "function" && existsSync(".env")) {
+    process.loadEnvFile(".env");
+  }
+} catch {
+  // Ignored if .env cannot be loaded
+}
+
 const KEY = process.env.VITE_ASSET_KEY;
 
 // A release encrypted with a passphrase written in a public repository is not

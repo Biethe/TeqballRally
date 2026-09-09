@@ -32,8 +32,13 @@ server/data/
 # access the ability to publish as this app. Keep them off the machine too —
 # losing them means Play will not accept an update until Google resets the key.
 android/keystore.properties
+# ...and wherever else they land. The properties file was sitting untracked and
+# un-ignored at the repo root, which the rule above does not match, and a
+# certificate is not a .jks so nothing caught that either.
+keystore.properties
 *.jks
 *.keystore
+*.pem
 
 # Raw Blender exports. Packing (scripts/pack-model.sh) is lossy and one-way,
 # so the unpacked originals are kept out of the repo rather than committed
@@ -59,3 +64,8 @@ assets/*
 !assets/meshopt_decoder.js
 art-source/
 art-bundle.teq
+*.glb
+*.gltf
+*.fbx
+*.blend
+*.blend1

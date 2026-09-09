@@ -41,6 +41,8 @@ export interface ContactErrors {
   lunge: number;
   /** Half-width of the window the contact may be planned in, in seconds. */
   window: number;
+  /** Visual spatial gap between striking limb/volume and ball after lunging (metres). */
+  visualGap?: number;
 }
 
 /**
@@ -83,11 +85,29 @@ export function gradeContact(e: ContactErrors): number {
   const heightTerm = clamp01(Math.abs(e.heightError) / (height * QUALITY.heightSpan));
   const reachTerm = clamp01(Math.abs(e.reach) / Math.max(0.05, e.lunge));
   const timingTerm = clamp01(Math.abs(e.timing) / Math.max(0.02, e.window));
+  const gap = e.visualGap ?? 0;
+  const gapTerm = clamp01(gap / 0.12);
+
   const penalty =
     QUALITY.weight.height * heightTerm +
     QUALITY.weight.reach * reachTerm +
-    QUALITY.weight.timing * timingTerm;
-  return Math.max(QUALITY.floor, Math.min(1, 1 - penalty));
+    QUALITY.weight.timing * timingTerm +
+    0.45 * gapTerm;
+
+  let grade = Math.max(QUALITY.floor, Math.min(1, 1 - penalty));
+
+  // A touch can NEVER be "perfect" if the ball is not visually tight to the limb (< 4cm)
+  if (gap > 0.04) {
+    grade = Math.min(grade, BANDS.perfect - 0.05);
+  }
+  if (gap > 0.10) {
+    grade = Math.min(grade, BANDS.good - 0.05);
+  }
+  if (gap > 0.20) {
+    grade = Math.min(grade, BANDS.poor - 0.05);
+  }
+
+  return Math.max(QUALITY.floor, grade);
 }
 
 export function touchBand(quality: number): TouchBand {

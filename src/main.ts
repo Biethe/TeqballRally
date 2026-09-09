@@ -25,7 +25,7 @@ import {
   venueFromSearch,
 } from "./venue";
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
-import { CRESTS, KIT_COLOURS, applyKit } from "./kit";
+import { CRESTS, applyKit } from "./kit";
 import {
   SUPPLIES,
   buy as buySupply,
@@ -93,6 +93,14 @@ import {
   type Career,
   type MatchOutcome,
 } from "./progress";
+import {
+  clearCompetition,
+  describeCompetition,
+  readCompetition,
+  storeCompetition,
+  type CompetitionFormat,
+  type SavedCompetition,
+} from "./competition";
 import type { SeasonEnd } from "./season";
 import { nextTier, tierFor, tierProgress } from "./league";
 import {
@@ -144,6 +152,7 @@ import {
   GROUND_Y,
   SETS_TO_WIN,
   SIM_DT,
+  kitForCharacter,
   type CameraMode,
   type CharacterDef,
 } from "./config";
@@ -213,22 +222,14 @@ async function boot(): Promise<void> {
   window.addEventListener("keydown", unlock);
 
   ui.showLoading(tr("loading.court"));
-  // The opening clip runs over the loading screen rather than in front of it,
-  // so the scene builds during it and the wait costs nothing. `?intro=0` skips
-  // it, which is what the headless verification scripts use.
-  const introClip =
-    new URLSearchParams(location.search).get("intro") === "0"
-      ? Promise.resolve()
-      : ui.playIntroClip();
 
   /**
-   * Pull the player models and the ball into the browser cache while the clip
-   * plays.
+   * Pull the player models and the ball into the browser cache while navigating
+   * menus.
    *
-   * This is what the clip's four seconds are for. The character models are the
-   * heaviest thing the game loads — around 4 MB each — and fetching them here
-   * means the picker opens on a model that is already local instead of showing
-   * "Loading…" over an empty stage.
+   * The character models are the heaviest thing the game loads — around 4 MB each —
+   * and fetching them in background means the picker opens on a model that is already
+   * local instead of showing "Loading…" over an empty stage.
    *
    * Failures are ignored on purpose: this only warms a cache, and every one of
    * these files is fetched again properly at the point it is used.
@@ -273,6 +274,7 @@ async function boot(): Promise<void> {
   audio.setSoundEnabled(prefs.sound);
   const gs: GameScene = await createGameScene(canvas, settingsFor(qualityTier), venueFor(venueId));
   const viewer = new ModelViewer(gs.engine, canvas);
+  viewer.setKit(prefs.kit);
   (window as unknown as Record<string, unknown>).__viewer = viewer;
   // Test hook, alongside the viewer's: swaps venues through the same call the
   // settings screen makes and reports what the scene holds afterwards, which
@@ -330,8 +332,9 @@ async function boot(): Promise<void> {
   /** Held separately from the session so the lobby can own it before a match exists. */
   let netConn: NetConnection | null = null;
 
-  // Dev knob: ?ts=8 speeds up game time for headless testing.
-  const timeScale = Number(new URLSearchParams(location.search).get("ts") ?? 1) || 1;
+  // Dev knob / preference: speeds up game time.
+  let timeScale = Number(new URLSearchParams(location.search).get("ts") ?? prefs.gameSpeed) || 1.25;
+  gs.scene.animationTimeScale = timeScale;
 
   // Prefetching the next picker item lets it download while the player reads
   // the menu. Do not spend a metered/very-slow connection's bandwidth on a
@@ -402,11 +405,32 @@ async function boot(): Promise<void> {
   };
   window.addEventListener("keydown", (e) => {
     if (e.code === "F2") toggleFreecam();
+    if (e.code === "F3") void openVolumeInspector();
     if (e.key === "Shift" && freecam) freecam.speed = 1.2;
   });
   window.addEventListener("keyup", (e) => {
     if (e.key === "Shift" && freecam) freecam.speed = 0.35;
   });
+
+  // Interaction-volume inspector (F3): play/scrub contact clips and validate
+  // their measured volumes against the real rig. Dev tool, freecam mould —
+  // it reads the match's characters but never writes to the simulation.
+  //
+  // Loaded on demand and only in development. It is a thousand lines of editor
+  // that no player can reach, and a phone should not be made to download it.
+  let volumeInspector: { toggle: () => void; update: () => void } | null = null;
+  const openVolumeInspector = async (): Promise<void> => {
+    if (!import.meta.env.DEV) return;
+    if (!volumeInspector) {
+      const { ContactVolumeInspector } = await import("./debugvolumes");
+      const made = new ContactVolumeInspector(gs.scene, () =>
+        match ? [match.chars.player, match.chars.ai] : []
+      );
+      (window as unknown as Record<string, unknown>).__volumesLog = () => made.logReport();
+      volumeInspector = made;
+    }
+    volumeInspector.toggle();
+  };
 
   const idleInput: InputState = {
     moveX: 0,
@@ -458,7 +482,7 @@ async function boot(): Promise<void> {
   const latchedP1 = newLatch();
   // The frame delta is already clamped to MAX_FRAME_DT before the time scale is
   // applied, so this bound is simply that clamp expressed in simulation steps.
-  const maxSimSteps = Math.ceil((MAX_FRAME_DT * timeScale) / SIM_DT) + 1;
+  const getMaxSimSteps = () => Math.ceil((MAX_FRAME_DT * Math.max(timeScale, 2.0)) / SIM_DT) + 4;
 
   // ---- pause ----
   let paused = false;
@@ -533,12 +557,18 @@ async function boot(): Promise<void> {
   // Overlays (end, pause) come last so they win over the screens they cover.
   const NAV_SCREENS = ["title-screen", "menu-screen", "standings-screen", "select-screen", "end-screen", "pause-screen"];
   let navFocus: HTMLButtonElement | null = null;
+  // Looked up once. These are static elements and this runs before every early
+  // return in the render loop, so during a match it was six document lookups a
+  // frame to discover that no menu was open.
+  let navScreens: HTMLElement[] | null = null;
   const menuNav = () => {
     const nav = input.pollMenuNav(); // poll every frame so edge states stay fresh
+    navScreens ??= NAV_SCREENS.map((id) => document.getElementById(id)).filter(
+      (el): el is HTMLElement => el !== null
+    );
     let target: HTMLElement | null = null;
-    for (const id of NAV_SCREENS) {
-      const el = document.getElementById(id);
-      if (el && !el.classList.contains("hidden")) target = el;
+    for (const el of navScreens) {
+      if (!el.classList.contains("hidden")) target = el;
     }
     if (!target) {
       navFocus?.classList.remove("pad-focus");
@@ -656,7 +686,8 @@ async function boot(): Promise<void> {
       // run none — which is why the presses are latched rather than sampled.
       simAccumulator += dt;
       let steps = 0;
-      while (simAccumulator >= SIM_DT && steps < maxSimSteps) {
+      const maxSteps = getMaxSimSteps();
+      while (simAccumulator >= SIM_DT && steps < maxSteps) {
         const stepInput = consumeInput(latchedP1);
         // A guest's controls belong to the host's match, so they go to the
         // wire before the local update — which, as a follower, ignores them.
@@ -668,7 +699,6 @@ async function boot(): Promise<void> {
         // like a disconnect and forfeit the game it was meant to interrupt.
         if (!session?.isPaused) {
           match.update(SIM_DT, freecam ? idleInput : stepInput, (d) => aiCtl?.update(d));
-          practiceCoach?.update(SIM_DT, stepInput);
           // The lesson is finished the moment the last coached step is done.
           // Remembered immediately rather than when they leave the screen, so
           // a player who closes the app mid-knockabout is not made to sit
@@ -686,7 +716,7 @@ async function boot(): Promise<void> {
       }
       // A frame long enough to exhaust the step budget (tab restore, a GC
       // pause) drops the remainder instead of trying to catch up forever.
-      if (steps >= maxSimSteps) simAccumulator = 0;
+      if (steps >= maxSteps) simAccumulator = 0;
       if (!freecam) match.updateCamera(gs.camera, cameraMode);
     }
     // Presentation, on wall-clock time and outside the fixed step: neither may
@@ -721,6 +751,7 @@ async function boot(): Promise<void> {
     // Scenery runs on wall-clock time and outside the simulation: it must not
     // consume simulation steps, and it keeps moving through a menu sitting
     // over the court.
+    volumeInspector?.update();
     gs.scene.render();
   });
 
@@ -809,20 +840,45 @@ async function boot(): Promise<void> {
     input.setTouchControlsEnabled(false);
     refreshWallet();
     ui.showTitle({
-      onPlay: () => {
-        audio.startMusic();
+      onPlay: async () => {
         // Prefetch the decorative gym only after the first screen is visible.
-        // The model viewer and selection menus give it time to arrive without
-        // making the initial page appear stuck on “Building the court…”.
         void gs.ensureArena();
+
+        const skipIntro = new URLSearchParams(location.search).get("intro") === "0";
+        if (!skipIntro) {
+          const clip = ui.playIntroClip();
+          await clip;
+          if (preloaded < preloadUrls.length) {
+            ui.showIntroProgress(preloaded / preloadUrls.length, "Loading players…");
+            await Promise.race([preload, new Promise((r) => setTimeout(r, 2500))]);
+          }
+          ui.hideIntroClip();
+        }
+
+        audio.startMusic();
         showModes();
       },
-      onChampions: showChampions,
-      onChallenges: showChallenges,
-      onSupplies: () => showSupplies(showTitle),
-      onProfile: () => showProfile(),
+      onChampions: () => {
+        audio.startMusic();
+        showChampions();
+      },
+      onChallenges: () => {
+        audio.startMusic();
+        showChallenges();
+      },
+      onSupplies: () => {
+        audio.startMusic();
+        showSupplies(showTitle);
+      },
+      onProfile: () => {
+        audio.startMusic();
+        showProfile();
+      },
       profileLabel: identity?.name ?? null,
-      onSettings: () => showSettings(showTitle),
+      onSettings: () => {
+        audio.startMusic();
+        showSettings(showTitle);
+      },
       challengeReady: rewardWaiting(),
     });
   };
@@ -1621,16 +1677,6 @@ async function boot(): Promise<void> {
             control: { kind: "action", label: tr("settings.kit.edit") },
           },
           {
-            id: "kit-colour",
-            label: tr("settings.kit.colour"),
-            hint: tr("settings.kit.colour.hint"),
-            control: {
-              kind: "choice",
-              value: prefs.kit.colour,
-              options: KIT_COLOURS.map((c) => ({ id: c.id, label: c.label })),
-            },
-          },
-          {
             id: "kit-crest",
             label: tr("settings.kit.crest"),
             hint: tr("settings.kit.crest.hint"),
@@ -1716,6 +1762,19 @@ async function boot(): Promise<void> {
       if (group === "gameplay") {
         return [
           {
+            id: "gameSpeed",
+            label: tr("settings.gameSpeed"),
+            hint: tr("settings.gameSpeed.hint"),
+            control: {
+              kind: "choice",
+              value: String(prefs.gameSpeed),
+              options: [
+                { id: "1.25", label: tr("settings.gameSpeed.normal") },
+                { id: "1.45", label: tr("settings.gameSpeed.fast") },
+              ],
+            },
+          },
+          {
             id: "autoReception",
             label: tr("settings.autoReception"),
             hint: tr("settings.autoReception.hint"),
@@ -1759,19 +1818,11 @@ async function boot(): Promise<void> {
                 if (isName) prefs.kit.name = entered;
                 else prefs.kit.number = entered;
                 storePreferences(prefs);
+                viewer.setKit(prefs.kit);
                 render();
               },
               onBack: () => render(),
             });
-            return;
-          }
-          if (id === "kit-colour" && typeof value === "string") {
-            const picked = KIT_COLOURS.find((c) => c.id === value);
-            if (picked) {
-              prefs.kit.colour = picked.id;
-              storePreferences(prefs);
-            }
-            render();
             return;
           }
           if (id === "kit-crest" && typeof value === "string") {
@@ -1779,6 +1830,7 @@ async function boot(): Promise<void> {
             if (picked) {
               prefs.kit.crest = picked;
               storePreferences(prefs);
+              viewer.setKit(prefs.kit);
             }
             render();
             return;
@@ -1834,6 +1886,15 @@ async function boot(): Promise<void> {
           if (id === "language" && isLanguage(value)) {
             prefs.language = value;
             setLanguage(value);
+          }
+          if (id === "gameSpeed" && typeof value === "string") {
+            const num = Number(value) || 1.25;
+            prefs.gameSpeed = num;
+            timeScale = num;
+            gs.scene.animationTimeScale = timeScale;
+            storePreferences(prefs);
+            render();
+            return;
           }
           if (id === "autoReception" && typeof value === "boolean") {
             prefs.autoReception = value;
@@ -1907,12 +1968,17 @@ async function boot(): Promise<void> {
       onReconnected: () => ui.banner(tr("net.reconnected")),
     });
 
-    showSelect(tr("select.title"), (charId, ballId) => {
-      mine = { character: charId, ball: ballId };
-      conn.send({ t: "setup", character: charId, ball: ballId });
-      ui.showLobbyStatus("READY", "Waiting for your opponent to choose…", null, abandonLobby);
-      launch();
-    }, showOnline);
+    showSelect(
+      tr("select.title"),
+      (charId, ballId) => {
+        mine = { character: charId, ball: ballId };
+        conn.send({ t: "setup", character: charId, ball: ballId });
+        ui.showLobbyStatus("READY", "Waiting for your opponent to choose…", null, abandonLobby);
+        launch();
+      },
+      showOnline,
+      "ONLINE"
+    );
   };
 
   /** Abandon whatever the lobby was doing and return to the mode menu. */
@@ -2127,7 +2193,7 @@ async function boot(): Promise<void> {
       begin(CHARACTERS[0].id, BALLS[0].id);
       return;
     }
-    showSelect(tr("select.title"), begin, showModes);
+    showSelect(tr("select.title"), begin, showModes, "PRACTICE");
   };
 
   /**
@@ -2169,32 +2235,37 @@ async function boot(): Promise<void> {
       ],
       (id) => {
         const diff = id.replace("btn-diff-", "") as DifficultyLevel;
-        showSelect(tr("select.title"), (charId, ballId) => {
-          const base = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
-          // The level the career has this character at is applied here, at the
-          // one place a match is built, so an upgrade is felt in the next game
-          // rather than being a number on a card.
-          const playerDef = withCareer(base, levelOf(career, base.id));
-          const opponent = matchedOpponent(playerDef, charId);
-          void startMatch(playerDef, ballId, {
-            opponent,
-            difficulty: diff,
-            labels: [tr("hud.you"), opponent.label],
-            onEnd: (winner) => {
-              settleAndShow(
-                winner === "player",
-                base.id,
-                diff,
-                () => leaveMatch(),
-                () => {
-                  input.setTouchControlsEnabled(true);
-                  ui.showHUD();
-                  match?.reset();
-                }
-              );
-            },
-          });
-        }, showDifficulty);
+        showSelect(
+          tr("select.title"),
+          (charId, ballId) => {
+            const base = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+            // The level the career has this character at is applied here, at the
+            // one place a match is built, so an upgrade is felt in the next game
+            // rather than being a number on a card.
+            const playerDef = withCareer(base, levelOf(career, base.id));
+            const opponent = matchedOpponent(playerDef, charId);
+            void startMatch(playerDef, ballId, {
+              opponent,
+              difficulty: diff,
+              labels: [tr("hud.you"), opponent.label],
+              onEnd: (winner) => {
+                settleAndShow(
+                  winner === "player",
+                  base.id,
+                  diff,
+                  () => leaveMatch(),
+                  () => {
+                    input.setTouchControlsEnabled(true);
+                    ui.showHUD();
+                    match?.reset();
+                  }
+                );
+              },
+            });
+          },
+          showDifficulty,
+          `FRIENDLY · ${diff.toUpperCase()}`
+        );
       },
       tr("difficulty.sub"),
       showModes
@@ -2202,17 +2273,46 @@ async function boot(): Promise<void> {
   };
 
   const showFormats = () => {
+    // A run left half-played is offered back before anything else on the
+    // screen. It goes here rather than on the title screen deliberately: PLAY
+    // is the only thing the first screen says, and a competition the player
+    // may have forgotten about is not worth breaking that for.
+    const saved = readCompetition();
+    const resumeBtn = saved
+      ? [
+          {
+            id: "btn-format-resume",
+            label: tr("comp.resume"),
+            sub: describeCompetition(saved, (cid) => CHARACTERS.find((c) => c.id === cid)?.label ?? cid),
+            primary: true,
+          },
+        ]
+      : [];
     ui.showMenu(
       tr("comp.title"),
       [
-        { id: "btn-format-cup", label: tr("comp.cup"), sub: tr("comp.cup.sub"), primary: true },
+        ...resumeBtn,
+        { id: "btn-format-cup", label: tr("comp.cup"), sub: tr("comp.cup.sub"), primary: !saved },
         { id: "btn-format-league", label: tr("comp.league"), sub: tr("comp.league.sub") },
       ],
       (id) => {
+        if (id === "btn-format-resume" && saved) {
+          resumeCompetition(saved);
+          return;
+        }
         const format = id === "btn-format-cup" ? ("cup" as const) : ("league" as const);
-        showSelect(tr("select.title"), (charId, ballId) => {
-          startCompetition(format, charId, ballId);
-        }, showFormats);
+        // Picking a format when a run is saved is the decision to abandon it:
+        // `startCompetition` overwrites the save, and it happens after the
+        // character and ball have been chosen, so backing out of that screen
+        // still leaves the old run intact.
+        showSelect(
+          tr("select.title"),
+          (charId, ballId) => {
+            startCompetition(format, charId, ballId);
+          },
+          showFormats,
+          `COMPETITION · ${format.toUpperCase()}`
+        );
       },
       tr("comp.sub"),
       showModes
@@ -2222,21 +2322,19 @@ async function boot(): Promise<void> {
   const showSelect = (
     title: string,
     onConfirm: (charId: string, ballId: string) => void,
-    onBack: () => void
+    onBack: () => void,
+    modeLabel?: string
   ) => {
     viewer.activate();
     // The shirt may have been edited since the last visit to this screen.
-    viewer.setKit(prefs.kit);
+    // Kit colors are now fixed per character (official kit colors).
     input.setTouchControlsEnabled(false);
     // The first ball is what the picker opens on, so it is the one most likely
     // to be played. Begin it at idle priority while the selected character
     // preview is being readied.
     scheduleAssetPrefetch(`/models/Ball_and_Table/${BALLS[0].id}.glb`, 900);
     ui.showSelect({
-      // The whole roster, locked ones included. Filtering them out left a new
-      // player looking at a carousel of one and no sign there was anything
-      // else — the arrows moved nothing. Shown blurred with the price on them,
-      // the same screen says the game has four players and what each costs.
+      modeLabel,
       characters: CHARACTERS,
       balls: BALLS,
       locked: Object.fromEntries<string>([
@@ -2376,28 +2474,63 @@ async function boot(): Promise<void> {
     });
   };
 
-  const startCompetition = (format: "cup" | "league", charId: string, ballId: string) => {
-    const base = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
-    const human = withCareer(base, levelOf(career, base.id));
-    const others = CHARACTERS.filter((c) => c.id !== human.id).sort(() => Math.random() - 0.5);
-    if (format === "cup") runCup(human, others, ballId);
-    else runLeague(human, others, ballId);
+  /** A character at its current career level, by id. */
+  const compChar = (id: string): CharacterDef => {
+    const base = CHARACTERS.find((c) => c.id === id) ?? CHARACTERS[0];
+    return withCareer(base, levelOf(career, base.id));
   };
 
-  const runCup = (human: CharacterDef, others: CharacterDef[], ballId: string) => {
+  const startCompetition = (format: CompetitionFormat, charId: string, ballId: string) => {
+    const human = compChar(charId);
+    const others = CHARACTERS.filter((c) => c.id !== human.id).sort(() => Math.random() - 0.5);
+    // Starting a competition replaces whatever was saved. The draw is made
+    // once and written down with it: reshuffling on resume would hand the
+    // player a different tournament from the one they were halfway through.
+    const run: SavedCompetition = {
+      format,
+      players: [human.id, ...others.slice(0, 3).map((c) => c.id)],
+      ballId,
+      round: 0,
+      ...(format === "league" ? { table: [0, 0, 0, 0].map(() => ({ pts: 0, diff: 0 })) } : {}),
+    };
+    storeCompetition(run);
+    resumeCompetition(run);
+  };
+
+  /** Play a saved run from the round it stopped at. */
+  const resumeCompetition = (run: SavedCompetition) => {
+    const players = run.players.map(compChar);
+    const [human, ...others] = players;
+    if (run.format === "cup") runCup(human, others, run.ballId, run);
+    else runLeague(human, others, run.ballId, run);
+  };
+
+  const runCup = (
+    human: CharacterDef,
+    others: CharacterDef[],
+    ballId: string,
+    run: SavedCompetition
+  ) => {
     // Draw: SF1 = human vs others[0], SF2 = others[1] vs others[2].
     const [sf1Opp, sf2a, sf2b] = others;
-    ui.showStandings("CUP — THE DRAW", [
-      `SEMI-FINAL 1 — ${human.label} vs ${sf1Opp.label}`,
-      `SEMI-FINAL 2 — ${sf2a.label} vs ${sf2b.label}`,
-      `then the losers meet for 3rd place and the winners for the trophy`,
-    ], "PLAY SEMI-FINAL", () => {
-      playCompMatch(human, sf1Opp, ballId, "normal", (won, sets) => {
-        const sf2 = simulateMatch(sf2a, sf2b);
+
+    /**
+     * The half of the cup that follows the semi-finals.
+     *
+     * Reached twice: once by playing the semi, and once by resuming a run that
+     * already had. Both arrive with the same four facts, so the tournament a
+     * player comes back to is the one they left.
+     */
+    const toFinal = (won: boolean, sets: [number, number], sf2: { winA: boolean; sets: [number, number] }) => {
         const sf2Winner = sf2.winA ? sf2a : sf2b;
         const sf2Loser = sf2.winA ? sf2b : sf2a;
         const finalOpp = won ? sf2Winner : sf2Loser;
         const finalName = won ? "WINNER FINAL" : "LOSER FINAL (3rd place)";
+        storeCompetition({
+          ...run,
+          round: 1,
+          cup: { wonSemi: won, semiSets: sets, sf2Sets: sf2.sets, sf2WinA: sf2.winA },
+        });
         ui.showStandings("CUP — SEMI-FINALS", [
           scoreline(human, sf1Opp, sets),
           scoreline(sf2a, sf2b, sf2.sets),
@@ -2422,17 +2555,39 @@ async function boot(): Promise<void> {
                    `3rd — ${human.label}`, `4th — ${finalOpp.label}`]
                 : [`🏆 CHAMPION — ${simWinner.label}`, `2nd — ${simLoser.label}`,
                    `3rd — ${finalOpp.label}`, `4th — ${human.label}`];
+            clearCompetition();
             ui.showStandings("CUP — FINAL RESULT", [
               `your final: ${scoreline(human, finalOpp, finalSets)}`,
               ...standings,
             ], "BACK TO MENU", () => leaveMatch());
           });
         });
+    };
+
+    // Resumed after the semi-finals: replay none of them, just go to the tie
+    // they were about to play.
+    if (run.round > 0 && run.cup) {
+      toFinal(run.cup.wonSemi, run.cup.semiSets, { winA: run.cup.sf2WinA, sets: run.cup.sf2Sets });
+      return;
+    }
+
+    ui.showStandings("CUP — THE DRAW", [
+      `SEMI-FINAL 1 — ${human.label} vs ${sf1Opp.label}`,
+      `SEMI-FINAL 2 — ${sf2a.label} vs ${sf2b.label}`,
+      `then the losers meet for 3rd place and the winners for the trophy`,
+    ], "PLAY SEMI-FINAL", () => {
+      playCompMatch(human, sf1Opp, ballId, "normal", (won, sets) => {
+        toFinal(won, sets, simulateMatch(sf2a, sf2b));
       });
     });
   };
 
-  const runLeague = (human: CharacterDef, others: CharacterDef[], ballId: string) => {
+  const runLeague = (
+    human: CharacterDef,
+    others: CharacterDef[],
+    ballId: string,
+    run: SavedCompetition
+  ) => {
     const players = [human, ...others]; // human = index 0
     // Standard 4-player round robin; the human plays one match per round.
     const rounds: [number, number][][] = [
@@ -2440,7 +2595,8 @@ async function boot(): Promise<void> {
       [[0, 2], [1, 3]],
       [[0, 3], [1, 2]],
     ];
-    const table = players.map(() => ({ pts: 0, diff: 0 }));
+    // Carried from the save, so a resumed league keeps every result it had.
+    const table = run.table ?? players.map(() => ({ pts: 0, diff: 0 }));
     const record = (a: number, b: number, sets: [number, number]) => {
       table[a].pts += sets[0] > sets[1] ? 3 : 0;
       table[b].pts += sets[1] > sets[0] ? 3 : 0;
@@ -2468,8 +2624,12 @@ async function boot(): Promise<void> {
           ...tableRows(),
         ];
         if (round < rounds.length - 1) {
+          // Written before the standings go up, so the run survives a player
+          // who reads the table and then closes the app.
+          storeCompetition({ ...run, round: round + 1, table });
           ui.showStandings(`LEAGUE — ROUND ${round + 1}`, rows, "PLAY NEXT ROUND", () => playRound(round + 1));
         } else {
+          clearCompetition();
           const champion = tableRows()[0];
           ui.showStandings("LEAGUE — FINAL TABLE", [...rows, "—", `🏆 ${champion}`], "BACK TO MENU", () =>
             leaveMatch()
@@ -2477,6 +2637,13 @@ async function boot(): Promise<void> {
         }
       });
     };
+    // A resumed league goes straight back to its next round: the player has
+    // already read the schedule, and showing it again would look like the run
+    // had restarted from the top.
+    if (run.round > 0) {
+      playRound(run.round);
+      return;
+    }
     ui.showStandings("LEAGUE — SCHEDULE", [
       `round 1: ${human.label} vs ${players[1].label} · ${players[2].label} vs ${players[3].label}`,
       `round 2: ${human.label} vs ${players[2].label} · ${players[1].label} vs ${players[3].label}`,
@@ -2536,8 +2703,9 @@ async function boot(): Promise<void> {
     // kit — printing the player's name on both is the version of this feature
     // that reads as a bug. Awaited so the first frame already shows it, and
     // never allowed to throw: a name on a shirt must not cost anyone a match.
+    const playerKit = kitForCharacter(playerDef, prefs.kit);
     try {
-      await applyKit(playerChar.meshes, prefs.kit, (url, invertY) => {
+      await applyKit(playerChar.meshes, playerKit, (url, invertY) => {
         const painted = new Texture(url, gs.scene, undefined, invertY);
         painted.name = "shirt (kit)";
         return painted;
@@ -2744,7 +2912,14 @@ async function boot(): Promise<void> {
           ui,
           () => input.hasGamepad(),
           () => input.isTouch,
-          () => input.isTouch && input.isPortrait
+          () => input.isTouch && input.isPortrait,
+          () => {
+            if (!prefs.coached) {
+              prefs.coached = true;
+              storePreferences(prefs);
+            }
+            leaveMatch();
+          }
         )
       : null;
     practiceCoach?.start();
@@ -2772,26 +2947,16 @@ async function boot(): Promise<void> {
     };
   };
 
-  // Everything above is ready; what is still owed is the clip's running time
-  // and whatever is left of the asset download. The clip holds on its last
-  // frame while the bar finishes, rather than cutting to a spinner.
-  await introClip;
-  ui.showIntroProgress(preloaded / preloadUrls.length, "Loading players…");
-  // Not a hard gate: a slow connection should reach the title screen and let
-  // the player read the menu while the rest arrives.
-  await Promise.race([preload, new Promise((r) => setTimeout(r, 4000))]);
-  ui.hideIntroClip();
+  ui.hideLoading();
 
-  // The very first launch goes into the lesson and nowhere else. Teqball is a
-  // sport most people have never played, with controls nobody can guess, and a
-  // title screen offering four modes to somebody who has not seen a rally is a
-  // title screen they close. Every launch after this one starts as normal.
+  // On first launch, open the title dashboard and show a simple, skippable UI tour.
   if (!prefs.coached) {
-    showPractice(true);
+    showTitle();
+    ui.showUiTutorial(() => {
+      prefs.coached = true;
+      storePreferences(prefs);
+    });
   } else if (endedSeason) {
-    // A season that ended while they were away is the first thing they see —
-    // before the title screen, because the trophy count on it is already the
-    // reset one and a player deserves to be told why.
     showSeasonEnd(endedSeason, showTitle);
   } else {
     showTitle();

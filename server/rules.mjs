@@ -38,15 +38,40 @@ var SPAWN = {
   // extra y lift if a model's feet still sink into the floor
 };
 var CHARACTER_SCALE = 0.8 * TABLE_SCALE;
+var ANCHOR_STEP_BACK = 0.24 * TABLE_SCALE;
 var RECEPTION_ZONE = {
-  /** Free radius around the anchor: full control, no damping at all (m). */
-  radius: 1.55 * TABLE_SCALE,
+  /**
+   * Free radius around the anchor: full control, no damping at all (m).
+   *
+   * Derived, not chosen. The anchor stands `ANCHOR_STEP_BACK` behind the drop
+   * so the ball comes down in front of the player, which puts the ball that
+   * much *further* away than the anchor is — so a free radius set any wider
+   * than `AUTO_RECEPTION_REACH - ANCHOR_STEP_BACK` opens a band where the
+   * player is told their feet are their own and then cannot reach the ball
+   * from where they stood. That band is what stranded an idle player just
+   * outside a reception that was theirs to make.
+   *
+   * `1.36 - 0.24 = 1.12`, in the same table units as everything else here.
+   */
+  radius: 1.12 * TABLE_SCALE,
   /** Beyond the radius, the band the outward push fades across (m). */
   soft: 0.85 * TABLE_SCALE,
   /** What is left of an outward push at the far edge of the soft band. */
   minPush: 0.18,
-  /** Speed the leash draws a player back from beyond the band (m/s). */
-  leash: 1.15 * TABLE_SCALE,
+  /**
+   * Speed the leash draws a player back from beyond the band (m/s).
+   *
+   * This is the assisted shift itself, so it has to be worth something: at a
+   * walking pace it closed a quarter of a two-metre gap in the time a ball
+   * takes to come down, which is help the player can feel and cannot use.
+   *
+   * What keeps it an assist rather than a lock is not its size but its shape.
+   * It fades out with how hard the player is pushing and is gone entirely at
+   * full stick, so a held push always wins and leaving is always a decision
+   * they can make; and it can never exceed a full run, so nothing here moves
+   * anybody faster than their own legs would.
+   */
+  leash: 2.56 * TABLE_SCALE,
   /**
    * Hard cap around a set-up the player made themselves (m).
    *
@@ -63,14 +88,6 @@ var RECEPTION_ZONE = {
    */
   hardCap: 0.64 * TABLE_SCALE
 };
-var AUTO_RUN = {
-  /** How close to the anchor the player must be before the run engages (m). */
-  vicinity: 2.2,
-  /** Distance to the anchor at which the run counts as arrived (m). */
-  arrive: 0.35 * TABLE_SCALE,
-  /** If the anchor moves further than this after arrival, chase it again (m). */
-  reengage: 1.05 * TABLE_SCALE
-};
 var SIDE_FOV = 1;
 var SIDE_HALF_WIDTH = COURT.maxX + 0.6;
 var SIDE_SLANT = SIDE_HALF_WIDTH / Math.tan(SIDE_FOV / 2);
@@ -85,13 +102,14 @@ var PORTRAIT_HEIGHT = Math.sqrt(
   Math.max(0, PORTRAIT_SLANT * PORTRAIT_SLANT - PORTRAIT_STANDOFF * PORTRAIT_STANDOFF)
 );
 var CAMERA = {
-  back: 7.4,
+  back: 7.8,
   // distance behind the serve spot along the table axis (m)
-  height: 5.1,
+  height: 6.2,
   // height above the ground (m)
-  // Height above the ground the camera looks at (table centre). Lower = the
-  // camera tilts further down; the old follow-camera aimed at ~0.9.
-  lookY: 0.55,
+  // Point along court axis the camera aims down at (towards table bed and court).
+  lookX: -0.6,
+  // Height above the ground the camera looks at. Lower = tilts cleanly down toward court floor.
+  lookY: 0.15,
   /** Landscape lens, pinned vertically. Shared by the scene's default camera. */
   fov: 0.72,
   // Portrait is a tall, narrow window on the same court. The lens is pinned
@@ -108,7 +126,8 @@ var CAMERA = {
     // to know which baseline the solve was measured from.
     back: COURT.maxX + PORTRAIT_STANDOFF - SPAWN.x,
     height: PORTRAIT_HEIGHT,
-    lookY: 0.95,
+    lookX: -0.6,
+    lookY: 0.15,
     fov: PORTRAIT_FOV,
     /** How far the camera may pan before the table leaves the frame. */
     pan: PORTRAIT_HALF_WIDTH - TABLE.halfWid,
@@ -222,7 +241,9 @@ var CHARACTERS = [
     serve: 0.85,
     agility: 0.95,
     volley: 0.88,
-    weakFoot: 55
+    weakFoot: 55,
+    officialKitColor: "green",
+    menuPose: "MenuPose_Backflip"
   },
   // The powerhouse. The hardest ball and the best serve in the game, and the
   // slowest to get going — a hammer of a right foot and very little on the
@@ -240,7 +261,15 @@ var CHARACTERS = [
     serve: 1.28,
     agility: 0.8,
     volley: 0.95,
-    weakFoot: 50
+    weakFoot: 50,
+    officialKitColor: "white",
+    officialKitFabricColor: "royal",
+    officialKitShortsColor: "white",
+    officialKitShortsFabricColor: "navy",
+    shortsCrestColor: "white",
+    officialKitNumber: "10",
+    officialKitCrest: "shield",
+    menuPose: "MenuPose"
   },
   // The all-rounder. Nothing to hide behind and nothing that lets him down,
   // and comfortably better than either player below him.
@@ -257,7 +286,11 @@ var CHARACTERS = [
     serve: 1.1,
     agility: 1.15,
     volley: 1.12,
-    weakFoot: 75
+    weakFoot: 75,
+    officialKitColor: "white",
+    officialKitShortsColor: "navy",
+    shortsCrestColor: "royal",
+    menuPose: "MenuPose1"
   },
   // The technician, and the top of the ladder. Two-footed, so there is no weak
   // side to exploit and nothing forces a header.
@@ -274,7 +307,9 @@ var CHARACTERS = [
     serve: 1.05,
     agility: 1.3,
     volley: 1.4,
-    weakFoot: 100
+    weakFoot: 100,
+    officialKitColor: "gold",
+    menuPose: "MenuPose2"
   }
 ];
 

@@ -7,6 +7,10 @@
 // Scale the ball and the characters with it — the three only look right in
 // proportion to each other.
 export const TABLE_SCALE = 1.25;
+import { type Kit, type KitColourId } from "./kit";
+
+export type CrestId = "none" | "shield" | "disc" | "star";
+
 export const TABLE = {
   length: 3.0 * TABLE_SCALE,
   width: 1.5 * TABLE_SCALE,
@@ -178,13 +182,42 @@ export const TABLE_VISUAL = {
 // CHARACTERS below). Scales the model and gameplay proportions together.
 export const CHARACTER_SCALE = 0.8 * TABLE_SCALE;
 
-// Soft magnetism toward the incoming ball: when the ball is dropping onto the
-// player's side and the stick pushes roughly toward its interception point,
-// the run direction is bent onto that point so the player arrives in reach.
-// Pushing away (or not pushing) is never overridden.
+/**
+ * Soft magnetism toward the incoming ball.
+ *
+ * When the stick pushes roughly toward where the ball will be met, the run is
+ * bent onto that point so the player arrives in reach. Pushing away, or not
+ * pushing at all, is never overridden — this shapes a run, it does not start
+ * one.
+ *
+ * How much of it is earned comes from time, not distance (`assistStrength` in
+ * `src/character.ts`). A ball the player could still get to at a full run is
+ * worth helping with; one that is going to beat them is not, and that is what
+ * lets a fast or well-placed shot still win the point.
+ */
+/**
+ * How far behind the drop a player stands to meet it (m).
+ *
+ * The ball has to come down in front of them rather than on top of them. It
+ * also means the ball is always this much further away than the anchor is,
+ * which is what `RECEPTION_ZONE.radius` is derived against.
+ */
+export const ANCHOR_STEP_BACK = 0.24 * TABLE_SCALE;
+
 export const REACH_ASSIST = {
-  radius: 2.0, // assist only engages within this distance of the intercept (m)
-  strength: 0.5, // 0 = off, 1 = full auto-run when pushing straight at the ball
+  /** The vicinity of the contact point where the bend applies at all (m). */
+  radius: 0.65,
+  /** How hard a directly-aimed push is bent onto the contact point. */
+  strength: 0.35,
+  /**
+   * Spare seconds at which the assist is fully earned.
+   *
+   * Under this the help fades out with the time available, reaching nothing at
+   * the moment the ball starts winning the race. Short on purpose: this is the
+   * difference between a comfortable arrival and a scramble, not a window in
+   * which the game plays the approach.
+   */
+  slackFull: 0.45,
 };
 
 /**
@@ -203,14 +236,38 @@ export const REACH_ASSIST = {
  * dropping on them, which is the whole failure this exists for.
  */
 export const RECEPTION_ZONE = {
-  /** Free radius around the anchor: full control, no damping at all (m). */
-  radius: 1.55 * TABLE_SCALE,
+  /**
+   * Free radius around the anchor: full control, no damping at all (m).
+   *
+   * Derived, not chosen. The anchor stands `ANCHOR_STEP_BACK` behind the drop
+   * so the ball comes down in front of the player, which puts the ball that
+   * much *further* away than the anchor is — so a free radius set any wider
+   * than `AUTO_RECEPTION_REACH - ANCHOR_STEP_BACK` opens a band where the
+   * player is told their feet are their own and then cannot reach the ball
+   * from where they stood. That band is what stranded an idle player just
+   * outside a reception that was theirs to make.
+   *
+   * `1.36 - 0.24 = 1.12`, in the same table units as everything else here.
+   */
+  radius: 1.12 * TABLE_SCALE,
   /** Beyond the radius, the band the outward push fades across (m). */
   soft: 0.85 * TABLE_SCALE,
   /** What is left of an outward push at the far edge of the soft band. */
   minPush: 0.18,
-  /** Speed the leash draws a player back from beyond the band (m/s). */
-  leash: 1.15 * TABLE_SCALE,
+  /**
+   * Speed the leash draws a player back from beyond the band (m/s).
+   *
+   * This is the assisted shift itself, so it has to be worth something: at a
+   * walking pace it closed a quarter of a two-metre gap in the time a ball
+   * takes to come down, which is help the player can feel and cannot use.
+   *
+   * What keeps it an assist rather than a lock is not its size but its shape.
+   * It fades out with how hard the player is pushing and is gone entirely at
+   * full stick, so a held push always wins and leaving is always a decision
+   * they can make; and it can never exceed a full run, so nothing here moves
+   * anybody faster than their own legs would.
+   */
+  leash: 2.56 * TABLE_SCALE,
   /**
    * Hard cap around a set-up the player made themselves (m).
    *
@@ -229,23 +286,30 @@ export const RECEPTION_ZONE = {
 };
 
 /**
- * The semi-assisted run to the ball's drop spot.
+ * The run back under a set-up the player made themselves.
  *
- * The assist is deliberately half a control: while the ball is still far off,
- * the player's feet are their own. Only once they are in the ball's vicinity
- * does the run take over — from there it goes to the anchor on its own and the
- * stick is not listened to, because overriding it there was exactly how players
- * walked past the ball. The run releases at the drop spot, where choosing a
- * side of the ball becomes the decision to make, and picks the run back up if
- * the anchor moves far enough that the arrival no longer covers it.
+ * This is the one place the game takes the feet, and it is deliberate: a ball
+ * you have just popped up is already in the air and going nowhere else, so
+ * there is nothing left to decide and nothing to be gained from letting a
+ * thumb walk away from it. An oriented reception played out to the side used
+ * to strand the player exactly here — the ball placed wide, the run called
+ * off, the next touch gone through no fault of theirs.
+ *
+ * A ball coming *at* the player is the opposite case and is not handled here.
+ * That approach is never locked: it is shaped by `REACH_ASSIST` and
+ * `RECEPTION_ZONE`, which bend and hold a run the player is making, so getting
+ * to a ball from the other side of the court stays something they do.
+ *
+ * The run releases at the drop, where choosing a side of the ball becomes the
+ * decision worth making, and picks back up if the anchor moves far enough that
+ * the arrival no longer covers it — which is the recovery a set-up that came
+ * off the body badly should demand.
  */
 export const AUTO_RUN = {
-  /** How close to the anchor the player must be before the run engages (m). */
-  vicinity: 2.2,
   /** Distance to the anchor at which the run counts as arrived (m). */
-  arrive: 0.35 * TABLE_SCALE,
+  arrive: 0.35,
   /** If the anchor moves further than this after arrival, chase it again (m). */
-  reengage: 1.05 * TABLE_SCALE,
+  reengage: 1.05,
 };
 
 /**
@@ -359,11 +423,12 @@ const PORTRAIT_HEIGHT = Math.sqrt(
 // it is — is carried by figures that have to be big enough to read them on a
 // phone. Pull back and the game becomes two dots and a table.
 export const CAMERA = {
-  back: 7.4, // distance behind the serve spot along the table axis (m)
-  height: 5.1, // height above the ground (m)
-  // Height above the ground the camera looks at (table centre). Lower = the
-  // camera tilts further down; the old follow-camera aimed at ~0.9.
-  lookY: 0.55,
+  back: 7.8, // distance behind the serve spot along the table axis (m)
+  height: 6.2, // height above the ground (m)
+  // Point along court axis the camera aims down at (towards table bed and court).
+  lookX: -0.6,
+  // Height above the ground the camera looks at. Lower = tilts cleanly down toward court floor.
+  lookY: 0.15,
   /** Landscape lens, pinned vertically. Shared by the scene's default camera. */
   fov: 0.72,
   // Portrait is a tall, narrow window on the same court. The lens is pinned
@@ -380,7 +445,8 @@ export const CAMERA = {
     // to know which baseline the solve was measured from.
     back: COURT.maxX + PORTRAIT_STANDOFF - SPAWN.x,
     height: PORTRAIT_HEIGHT,
-    lookY: 0.95,
+    lookX: -0.6,
+    lookY: 0.15,
     fov: PORTRAIT_FOV,
     /** How far the camera may pan before the table leaves the frame. */
     pan: PORTRAIT_HALF_WIDTH - TABLE.halfWid,
@@ -530,15 +596,15 @@ export const CLIPS: Record<string, ClipInfo> = {
   RightKneeReception: { contact: 40, frames: 76 },
   Celebration1: { contact: -1, frames: 102 },
   Celebration2: { contact: -1, frames: 113 },
-  CenterHeadKick: { contact: 24, frames: 61 },
-  ChestKick: { contact: 35, frames: 67 },
-  ChestPrepLeft: { contact: 51, frames: 61 },
+  CenterHeadKick: { contact: 20, frames: 61 },
+  ChestKick: { contact: 34, frames: 67 },
+  ChestPrepLeft: { contact: 54, frames: 61 },
   ChestPrepRight: { contact: 50, frames: 61 },
-  ChestReception: { contact: 51, frames: 74 },
+  ChestReception: { contact: 47, frames: 74 },
   Defeat: { contact: -1, frames: 201 },
   Idle: { contact: -1, frames: 40 },
-  InnerLeftFootReception: { contact: 19, frames: 40 },
-  InnerRightFootReception: { contact: 48, frames: 72 },
+  InnerLeftFootReception: { contact: 15, frames: 40 },
+  InnerRightFootReception: { contact: 42, frames: 72 },
   jogBackward: { contact: -1, frames: 53 },
   JogForward: { contact: -1, frames: 72 },
   JogStrafeLeft: { contact: -1, frames: 41 },
@@ -550,15 +616,15 @@ export const CLIPS: Record<string, ClipInfo> = {
   JogStrafeRightInPlace: { contact: -1, frames: 34 },
   WalkStrafeLeftInPlace: { contact: -1, frames: 56 },
   WalkStrafeRightInPlace: { contact: -1, frames: 58 },
-  LeftFootKick: { contact: 40, frames: 85 },
-  LeftHeadKick: { contact: 24, frames: 52 },
-  LeftKneeReception: { contact: 53, frames: 69 },
-  RightFootKick: { contact: 23, frames: 75 },
-  RightHeadKick: { contact: 16, frames: 53 },
-  BackflipRightFoot: { contact: 49, frames: 84 },
-  BackflipLeftFoot: { contact: 56, frames: 102 },
-  HeadServeLeft: { toss: 26, contact: 73, frames: 121 },
-  HeadServeRight: { toss: 28, contact: 69, frames: 104 },
+  LeftFootKick: { contact: 38, frames: 85 },
+  LeftHeadKick: { contact: 17, frames: 52 },
+  LeftKneeReception: { contact: 46, frames: 69 },
+  RightFootKick: { contact: 30, frames: 75 },
+  RightHeadKick: { contact: 15, frames: 53 },
+  BackflipRightFoot: { contact: 45, frames: 84 },
+  BackflipLeftFoot: { contact: 55, frames: 102 },
+  HeadServeLeft: { toss: 26, contact: 70, frames: 121 },
+  HeadServeRight: { toss: 28, contact: 67, frames: 104 },
   ServeLeftFoot: { toss: 21, contact: 65, frames: 120 },
   ServeRightFoot: { toss: 44, contact: 92, frames: 120 },
 };
@@ -737,6 +803,90 @@ export function contactDelaySeconds(name: string, speed: number, startFrac: numb
   return Math.max(0, ((c.contact / c.frames - startFrac) * c.frames) / (60 * speed));
 }
 
+// ---------------------------------------------------------------------------
+// Interaction volumes.
+//
+// Where a clip can plausibly touch the ball, measured from the actual mocap
+// pose at its contact frame (see `measureContactGeometry` in character.ts).
+// The centre and orientation always come from that pose; only the size is a
+// constant here, because a limb's striking surface is a shape, not a point.
+//
+// Shapes:
+//   sphere  — radius r; orientation-independent, so the honest default until a
+//             clip's bone axes have been inspected in the debug view (F3)
+//   box     — half-extents hx/hy/hz along the limb bone's own axes
+//   capsule — cylinder of length `length` (metres) along the bone's Y, radius r
+// ---------------------------------------------------------------------------
+export type InteractionShape = "box" | "sphere" | "capsule";
+
+export interface InteractionDims {
+  shape?: InteractionShape;
+  /** Box half-extents along the limb's local axes (metres). */
+  hx?: number;
+  hy?: number;
+  hz?: number;
+  /** Sphere radius, or capsule cross-section radius (metres). */
+  r?: number;
+  /** Capsule cylinder length between the hemispherical caps (metres). */
+  length?: number;
+}
+
+/**
+ * Default volume size per body part.
+ *
+ * Radii are roughly "limb half-thickness + ball", sized to read as the part
+ * rather than a bubble around the whole player. Tune per clip through
+ * `INTERACTION_VOLUME_OVERRIDES` once the F3 inspector has shown how the
+ * default sits on the real pose — these are deliberately conservative.
+ */
+export const INTERACTION_VOLUME_DEFAULTS: Record<BodyPart, Required<InteractionDims>> = {
+  foot: { shape: "sphere", hx: 0.13, hy: 0.055, hz: 0.09, r: 0.13, length: 0.16 },
+  knee: { shape: "sphere", hx: 0.11, hy: 0.11, hz: 0.13, r: 0.12, length: 0.2 },
+  chest: { shape: "sphere", hx: 0.22, hy: 0.26, hz: 0.16, r: 0.24, length: 0.34 },
+  head: { shape: "sphere", hx: 0.14, hy: 0.16, hz: 0.14, r: 0.18, length: 0.1 },
+};
+
+/**
+ * Per-clip tuning, layered over the measured pose and the part defaults.
+ *
+ * `d` is an offset added to the volume centre the rig measured — a delta, not
+ * an absolute position, because every character's rig measures its own centre
+ * (a taller player's knee is higher) and one absolute number would fit one
+ * body and misplace every other. `dims` replaces whole size fields; anything
+ * absent stays at the per-part default.
+ *
+ * Values here are exactly what the F3 inspector's "⎘ override" button prints
+ * after a drag-and-type tuning session — paste them in, reload, compare.
+ */
+export interface InteractionVolumeOverride {
+  d?: [number, number, number];
+  dims?: InteractionDims;
+}
+
+export const INTERACTION_VOLUME_OVERRIDES: Record<string, InteractionVolumeOverride> = {BackflipLeftFoot: { d: [0.1509, 0.0711, 0.0167], dims: { r: 0.02 } },
+  BackflipRightFoot: { d: [0.2963, 0.1643, 0.016], dims: { r: 0.01 } },
+  CenterHeadKick: { d: [0, 0.116, 0.0254], dims: { r: 0.01 } },
+  ChestKick: { d: [0, 0.0084, 0.216], dims: { r: 0.01 } },
+  ChestPrepLeft: { d: [-0.0745, 0.0595, 0.2099], dims: { r: 0.01 } },
+  ChestPrepRight: { d: [0.1229, 0.1061, 0.2021], dims: { r: 0.01 } },
+  ChestReception: { d: [0, 0.089, 0.2187], dims: { r: 0.01 } },
+  HeadServeLeft: { d: [-0.0457, 0.081, -0.1227], dims: { r: 0.01 } },
+  HeadServeRight: { d: [0.0166, 0.0857, 0], dims: { r: 0.01 } },
+  InnerLeftFootReception: { d: [0, -0.0896, 0.1266], dims: { r: 0.01 } },
+  InnerRightFootReception: { d: [0, -0.1604, 0.1198], dims: { r: 0.01 } },
+  LeftFootKick: { d: [-0.1129, 0.0176, 0.0178], dims: { r: 0.01 } },
+  LeftHeadKick: { d: [0.0952, 0.0987, -0.0273], dims: { r: 0.01 } },
+  LeftKneeReception: { d: [-0.0382, 0.1152, -0.0665], dims: { r: 0.01 } },
+  // No offset: the pasted one put this clip's contact 0.79 m in front of the
+  // player and 0.46 m up, where every other entry in this table is under 0.3
+  // and its own mirror (`LeftFootKick`) is under 0.12. Measured pose only
+  // until the F3 inspector has been used to tune it properly.
+  RightFootKick: { dims: { r: 0.01 } },
+  RightHeadKick: { d: [-0.0753, 0.0749, -0.1024], dims: { r: 0.01 } },
+  RightKneeReception: { d: [-0.0224, 0.1159, -0.0458], dims: { r: 0.01 } },
+  ServeLeftFoot: { d: [-0.0645, 0.128, 0.1511], dims: { r: 0.01 } },
+  ServeRightFoot: { d: [0.1587, 0.0127, 0.1767], dims: { r: 0.01 } },};
+
 export type Foot = "left" | "right";
 
 export interface CharacterDef {
@@ -804,7 +954,23 @@ export interface CharacterDef {
    * what makes a player able to attack a high ball instead of waiting for it.
    */
   volley: number;
+  /** The official kit colour for this character (no user override). */
+  officialKitColor: KitColourId;
+  /** Optional shirt fabric tint. */
+  officialKitFabricColor?: KitColourId;
+  /** Optional override for the shorts mark colour (e.g., England navy shorts on royal shirt). */
+  officialKitShortsColor?: KitColourId;
+  /** Optional shorts fabric tint. */
+  officialKitShortsFabricColor?: KitColourId;
+  /** Optional override for the shorts crest colour (e.g., France has white kit but royal blue shorts badge). */
+  shortsCrestColor?: KitColourId;
+  /** Default print for this character when the player has not chosen their own. */
+  officialKitNumber?: string;
+  officialKitCrest?: CrestId;
+  /** Primary distinct showcase MenuPose animation shown in the viewport/character selector. */
+  menuPose?: string;
 }
+
 
 /**
  * The roster, in the order it unlocks — and it is a **ladder**.
@@ -834,21 +1000,42 @@ export const CHARACTERS: CharacterDef[] = [
   // The beginner. Every trait sits at the bottom of its span, so every later
   // character and every level bought is felt against this one.
   { id: "BrazilianPlayer", label: "BRAZIL", height: 1.76, strongFoot: "right", speed: 4.5, power: 0.9, precision: 0.88, backflips: "strong",
-    stamina: 0.82, serve: 0.85, agility: 0.95, volley: 0.88, weakFoot: 55 },
+    stamina: 0.82, serve: 0.85, agility: 0.95, volley: 0.88, weakFoot: 55, officialKitColor: "green", menuPose: "MenuPose_Backflip" },
   // The powerhouse. The hardest ball and the best serve in the game, and the
   // slowest to get going — a hammer of a right foot and very little on the
   // left, so the header is his answer to anything on that side.
   { id: "EnglishPlayer", label: "ENGLAND", height: 1.86, strongFoot: "right", speed: 4.7, power: 1.38, precision: 0.95, backflips: "none",
-    stamina: 1.18, serve: 1.28, agility: 0.8, volley: 0.95, weakFoot: 50 },
+    stamina: 1.18, serve: 1.28, agility: 0.8, volley: 0.95, weakFoot: 50, officialKitColor: "white", officialKitFabricColor: "royal", officialKitShortsColor: "white", officialKitShortsFabricColor: "navy", shortsCrestColor: "white", officialKitNumber: "10", officialKitCrest: "shield", menuPose: "MenuPose" },
   // The all-rounder. Nothing to hide behind and nothing that lets him down,
   // and comfortably better than either player below him.
   { id: "FrenchPlayer", label: "FRANCE", height: 1.8, strongFoot: "left", speed: 5.3, power: 1.12, precision: 1.12, backflips: "strong",
-    stamina: 1.1, serve: 1.1, agility: 1.15, volley: 1.12, weakFoot: 75 },
+    stamina: 1.1, serve: 1.1, agility: 1.15, volley: 1.12, weakFoot: 75, officialKitColor: "white", officialKitShortsColor: "navy", shortsCrestColor: "royal", menuPose: "MenuPose1" },
   // The technician, and the top of the ladder. Two-footed, so there is no weak
   // side to exploit and nothing forces a header.
   { id: "SpanishPlayer", label: "SPAIN", height: 1.72, strongFoot: "both", speed: 5.6, power: 1.05, precision: 1.34, backflips: "both",
-    stamina: 1.16, serve: 1.05, agility: 1.3, volley: 1.4, weakFoot: 100 },
+    stamina: 1.16, serve: 1.05, agility: 1.3, volley: 1.4, weakFoot: 100, officialKitColor: "gold", menuPose: "MenuPose2" },
 ];
+
+/**
+ * Combine the player's personal print with the selected character's official
+ * colours. The selector and a live match share this so they cannot disagree
+ * about which shirt or shorts a character wears.
+ */
+export function kitForCharacter(
+  character: CharacterDef,
+  personal: Pick<Kit, "name" | "number" | "crest">
+): Kit {
+  return {
+    name: personal.name,
+    number: personal.number || character.officialKitNumber || "",
+    crest: personal.crest === "none" ? character.officialKitCrest ?? "none" : personal.crest,
+    colour: character.officialKitColor,
+    shirtFabricColor: character.officialKitFabricColor,
+    shortsColor: character.officialKitShortsColor,
+    shortsFabricColor: character.officialKitShortsFabricColor,
+    shortsCrestColor: character.shortsCrestColor,
+  };
+}
 
 // Strong/weak-foot modifiers, applied to any clip that uses a specific foot
 // (foot kicks, inner-foot lobs, backflips, foot serves). Two-footed players

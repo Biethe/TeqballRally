@@ -20,8 +20,10 @@ import {
   MIN_RESERVE,
   bodyPartOf,
   footFactor,
+  assistStrength,
   nearAnchorPush,
   leashPush,
+  reachSlack,
   pickReceptionClip,
   chooseStrike,
   strikeBackflipFoot,
@@ -62,6 +64,7 @@ import {
   KICK_SPEED_CAP_DEFAULT,
   TABLE,
   MAX_TOUCHES,
+  ANCHOR_STEP_BACK,
   AUTO_RECEPTION_REACH,
   AUTO_RUN,
   RECEPTION_ZONE,
@@ -72,13 +75,13 @@ import {
   SERVE_CLEARANCE,
   SERVE_POWER,
   SERVE_X,
-  SETS_TO_WIN,
-  SIM_DT,
-  SPAWN,
   TABLE_SCALE,
   WIN_SCORE,
   CLIPS,
   clipStartFraction,
+  SIM_DT,
+  SPAWN,
+  SETS_TO_WIN,
   type BodyPart,
   type CameraMode,
 } from "./config";
@@ -88,6 +91,11 @@ import type { AudioManager } from "./audio";
 import { reconcile } from "./net/reconcile";
 import { MAX_CATCHUP_TICKS, type FxKind } from "./net/protocol";
 import { PlaybackBuffer, PLAYBACK_DELAY_TICKS, clipFractionAt } from "./net/playback";
+import {
+  distanceToVolume,
+  trajectoryVsVolume,
+  type WorldVolume,
+} from "./interaction";
 import {
   clampToPlay,
   canSmashFrom,
@@ -207,28 +215,9 @@ const CONTACT_WINDOW = { min: 0.1, max: 0.4 };
  * chased everything early is visibly labouring later, and fitness — with
  * everything sold for it — is worth having.
  */
-const EFFORT = { drain: 0.05, rest: 0.03, restBetweenPoints: 0.08, reserveLoss: 0.16 };
+const EFFORT = { drain: 0.10, rest: 0.01, restBetweenPoints: 0.02, reserveLoss: 0.30 };
 /** Below this fraction of top speed a player counts as standing still. */
 const STILL_ENOUGH = 0.2;
-// Final polish only: nudge the ball at most this far onto the limb at the
-// contact frame (covers prediction drift). Bigger misses stay visible.
-const CONTACT_SNAP = 0.18 * TABLE_SCALE;
-/**
- * Final approach: inside this window before the planned contact the ball is
- * steered onto the limb, and released by the countdown itself (the animation
- * callback can lag a frame, which let the ball fly past the limb).
- *
- * It is long enough to be a curve rather than a correction. The gain ramps
- * from nearly nothing at the start of the window to fully committed at the
- * contact frame, so the ball bends onto the foot over several frames instead
- * of jumping onto it in the last two — the difference between a touch that
- * looks played and one that looks snapped.
- */
-const STEER_WINDOW = 0.3;
-/** Gain on the steering, per second, at the start and at the end of the window. */
-const STEER_GAIN = { start: 5, end: 26 };
-// Beyond this gap the touch is a genuine miss — no steering, no snap.
-const STEER_MAX_GAP = 0.6 * TABLE_SCALE;
 /**
  * Furthest a set-up touch can place the ball from the player who takes it.
  *
@@ -271,9 +260,10 @@ const AIM_SPEED = 5.4;
  */
 const SAFE_POWER = 0.62;
 
-// Celebration pool: any of these NLA tracks present on the model may play,
-// for point wins and the match win alike.
-const CELEBRATIONS = ["EndOfGameVictory", "Celebration1", "Celebration2"];
+// Point celebration pool: Celebration* animations for upon point winning.
+const POINT_CELEBRATIONS = ["Celebration1", "Celebration2"];
+// Match-end victory pool: EndOfGameVictory, MenuPose_Backflip, Stunt2, Stunt3.
+const MATCH_WIN_CELEBRATIONS = ["EndOfGameVictory", "MenuPose_Backflip", "Stunt2", "Stunt3"];
 // Beat between the rally ending and the winner starting to celebrate (s).
 const CELEBRATE_DELAY = 0.4;
 // Body capsule radius as a fraction of character height (the ball deflects
@@ -314,6 +304,18 @@ function flightAt(flight: FlightSample[], t: number): Vector3 {
     if (s.t >= t) break;
   }
   return last.pos;
+}
+
+/**
+ * Where a side's next contact is due, and when the ball gets there.
+ *
+ * The two travel together because every assist that reads the spot also has to
+ * ask whether the player can still be at it in time: a metre away is help
+ * worth giving with a second in hand and a lost point with a tenth.
+ */
+interface Anchor {
+  pos: Vector3;
+  eta: number;
 }
 
 export class MatchController {
@@ -462,14 +464,6 @@ export class MatchController {
    */
   private autoRunArrived: Record<Side, boolean> = { player: false, ai: false };
   /**
-   * Engagement latch for the semi-assisted run: the run only takes the feet
-   * once the player is in the ball's vicinity (`AUTO_RUN.vicinity`) — while
-   * the ball is still far off, the feet are the player's own. Once engaged it
-   * stays engaged until the possession changes, so a ball that moves after the
-   * run started is still chased.
-   */
-  private autoRunEngaged: Record<Side, boolean> = { player: false, ai: false };
-  /**
    * Horizontal pace each side last struck the ball at (m/s).
    *
    * The reception of that strike is judged against this rather than against
@@ -503,8 +497,6 @@ export class MatchController {
    */
   private contactSync: {
     point: Vector3;
-    char?: Character;
-    clip?: string;
     timeLeft?: number;
     fire?: () => void;
   } | null = null;
@@ -523,65 +515,184 @@ export class MatchController {
    * would mean measuring the same contact twice and eventually disagreeing
    * about it.
    */
+  /**
+   * Evaluate a single candidate clip against the incoming ball trajectory.
+   *
+   * Returns null if the ball cannot reach this interaction volume, or if the
+   * volume is not reachable by the player in time.
+   */
+  private evaluateCandidate(
+    char: Character,
+    clip: string,
+    flight: FlightSample[],
+    maxLead: number,
+    earlyBy: number,
+    speed: number
+  ): { t: number; pos: Vector3; startFrac: number; quality: number; sense: -1 | 0 | 1; worldVol: WorldVolume } | null {
+    const worldVol = char.contactVolumeTransform(clip);
+    if (!worldVol) return null;
+
+    // Find the first trajectory sample that intersects the volume (with ball radius)
+    const hit = trajectoryVsVolume(worldVol, flight, BALL_RADIUS);
+    if (!hit.hit) return null;
+
+    const t = hit.t;
+    if (t > maxLead || t < CONTACT_WINDOW.min) return null;
+
+    // Check reachability: distance needed from limb's rest position to the ball's hit point
+    const volCenter = worldVol.center;
+    const lunge = LUNGE_MAX * char.def.agility;
+    const lungeDist = Math.hypot(hit.pos.x - volCenter.x, hit.pos.z - volCenter.z);
+    const unreachedLunge = Math.max(0, lungeDist - lunge);
+
+    // If the ball is too far for the character's lunge to bridge, reject this candidate
+    if (unreachedLunge > 0.20) return null;
+
+    // Compute quality based on how well the ball trajectory fits the volume and visual tightness
+    const window = CONTACT_WINDOW.max * char.def.volley;
+    const maxLeadSec = Math.min(window, contactDelaySeconds(clip, speed, 0));
+    const sweet = (CONTACT_WINDOW.min + maxLeadSec) / 2;
+    const half = Math.max(0.08, (maxLeadSec - CONTACT_WINDOW.min) / 2);
+    const timing = t - sweet + earlyBy;
+    
+    const volDist = Math.max(0, distanceToVolume(worldVol, hit.pos) - BALL_RADIUS);
+    const visualGap = volDist + unreachedLunge;
+
+    const quality = gradeContact({
+      heightError: hit.pos.y - volCenter.y,
+      reach: lungeDist,
+      timing,
+      height: char.height,
+      lunge,
+      window: half,
+      visualGap,
+    });
+
+    const startFrac = windupStartFraction(clip, speed, t);
+    const sense = timingSense(timing, half);
+
+    return {
+      t,
+      pos: hit.pos.clone(),
+      startFrac,
+      quality,
+      sense,
+      worldVol,
+    };
+  }
+
+  /**
+   * Plan a touch using the animation-derived interaction volumes.
+   *
+   * Evaluates all valid contact clips for the incoming ball trajectory,
+   * selects the best reachable candidate, and returns the contact plan.
+   */
   private planContact(
     char: Character,
     clip: string,
     speed: number,
     flight: FlightSample[],
-    /** Seconds this touch was asked for before the ball was ready for it. */
     earlyBy = 0
   ): { t: number; pos: Vector3; startFrac: number; quality: number; sense: -1 | 0 | 1 } {
-    const cp = char.clipContactPoint(clip);
-    const contactY = cp ? cp.y : char.position.y + char.height * 0.5;
-    // The clip can't wind up longer than its pre-contact frames allow.
-    // Volley is how early a ball can be taken: it widens the window in which a
-    // strike may be planned, which is what lets a player attack a high ball
-    // instead of waiting for it to drop into reach.
     const window = CONTACT_WINDOW.max * char.def.volley;
     const maxLead = Math.min(window, contactDelaySeconds(clip, speed, 0));
-    let best = flight[0];
-    let bestCost = Infinity;
-    const lunge = LUNGE_MAX * char.def.agility;
-    for (const s of flight) {
-      // Never schedule the contact on a ball that already bounced on the
-      // floor — the touch must happen before the ball touches down.
-      if (s.t > maxLead || s.grounded) break;
-      const overreach = cp
-        ? Math.max(0, Math.hypot(s.pos.x - cp.x, s.pos.z - cp.z) - lunge)
-        : 0;
-      const cost =
-        Math.abs(s.pos.y - contactY) + 1.5 * overreach + (s.t < CONTACT_WINDOW.min ? 0.5 : 0);
-      if (cost < bestCost) {
-        bestCost = cost;
-        best = s;
+
+    // Get all candidate clips for this type of touch
+    const candidates = this.getCandidateClips(char, clip, speed);
+    let best: { t: number; pos: Vector3; startFrac: number; quality: number; sense: -1 | 0 | 1; worldVol: WorldVolume } | null = null;
+    let bestScore = -Infinity;
+
+    for (const candidateClip of candidates) {
+      const result = this.evaluateCandidate(char, candidateClip, flight, maxLead, earlyBy, speed);
+      if (!result) continue;
+
+      // Score combines quality and reachability
+      const score = result.quality * 100 - (result.t * 10); // prefer earlier contact
+      if (score > bestScore) {
+        bestScore = score;
+        best = result;
       }
     }
-    // Where in the window the contact fell. The middle is the touch a player
-    // meant to play; either end is one they were hurried into or waited too
-    // long for. `earlyBy` folds in a press made before the ball was playable at
-    // all — the buffered touch still happens, it is simply not a clean one.
-    const sweet = (CONTACT_WINDOW.min + maxLead) / 2;
-    const half = Math.max(0.08, (maxLead - CONTACT_WINDOW.min) / 2);
-    const timing = best.t - sweet + earlyBy;
-    const quality = gradeContact({
-      heightError: best.pos.y - contactY,
-      reach: cp ? Math.hypot(best.pos.x - cp.x, best.pos.z - cp.z) : 0,
-      timing,
-      height: char.height,
-      lunge,
-      window: half,
-    });
+
+    // Fallback to original single-clip logic if no volume-based candidate worked
+    if (!best) {
+      const cp = char.clipContactPoint(clip);
+      const contactY = cp ? cp.y : char.position.y + char.height * 0.5;
+      const window = CONTACT_WINDOW.max * char.def.volley;
+      const maxLead = Math.min(window, contactDelaySeconds(clip, speed, 0));
+      let bestSample = flight[0];
+      let bestCost = Infinity;
+      const lunge = LUNGE_MAX * char.def.agility;
+      for (const s of flight) {
+        if (s.t > maxLead || s.grounded) break;
+        const lungeDist = cp ? Math.hypot(s.pos.x - cp.x, s.pos.z - cp.z) : 0;
+        const overreach = Math.max(0, lungeDist - lunge);
+        const cost =
+          Math.abs(s.pos.y - contactY) + 1.5 * overreach + (s.t < CONTACT_WINDOW.min ? 0.5 : 0);
+        if (cost < bestCost) {
+          bestCost = cost;
+          bestSample = s;
+        }
+      }
+      const sweet = (CONTACT_WINDOW.min + maxLead) / 2;
+      const half = Math.max(0.08, (maxLead - CONTACT_WINDOW.min) / 2);
+      const timing = bestSample.t - sweet;
+      const reachDist = cp ? Math.hypot(bestSample.pos.x - cp.x, bestSample.pos.z - cp.z) : 0;
+      const unreached = Math.max(0, reachDist - lunge);
+      const quality = gradeContact({
+        heightError: bestSample.pos.y - contactY,
+        reach: reachDist,
+        timing,
+        height: char.height,
+        lunge,
+        window: half,
+        visualGap: unreached,
+      });
+      return {
+        t: bestSample.t,
+        pos: bestSample.pos,
+        startFrac: windupStartFraction(clip, speed, bestSample.t),
+        quality,
+        sense: timingSense(timing, half),
+      };
+    }
+
     return {
       t: best.t,
       pos: best.pos,
-      startFrac: windupStartFraction(clip, speed, best.t),
-      quality,
-      sense: timingSense(timing, half),
+      startFrac: best.startFrac,
+      quality: best.quality,
+      sense: best.sense,
     };
   }
 
   /**
-   * Start the lunge that carries the clip's contact point onto the planned
+   * Get all candidate clips for a given touch type.
+   */
+  private getCandidateClips(char: Character, originalClip: string, speed: number): string[] {
+    const contactY = char.clipContactPoint(originalClip)?.y ?? char.position.y + char.height * 0.5;
+    const isStrike = speed > 1.0;
+    const candidates: string[] = [];
+    const originalPart = bodyPartOf(originalClip) ?? "foot";
+
+    // Get all candidate clips of the chosen body part that have interaction volumes
+    for (const [clip, def] of char.interactionVolumes) {
+      if (!CLIPS[clip] || CLIPS[clip].contact < 0) continue;
+      if (def.part !== originalPart) continue;
+      if (isStrike && def.part === "head" && contactY / char.height < 0.7) continue;
+      candidates.push(clip);
+    }
+
+    if (!candidates.includes(originalClip)) {
+      candidates.unshift(originalClip);
+    }
+
+    return candidates;
+  }
+
+
+  /**
+   * Start the lunge that carries the clip's contact volume onto the planned
    * ball position, and open the wind-up window (rule events suspend; the
    * release fires from the countdown in update()).
    */
@@ -591,17 +702,16 @@ export class MatchController {
     plan: { t: number; pos: Vector3 },
     fire: () => void
   ): void {
-    this.contactSync = { point: plan.pos.clone(), char, clip, timeLeft: plan.t, fire };
-    const target = this.contactLungeTarget(char, clip, plan.pos);
+    const worldVol = char.contactVolumeTransform(clip);
+    this.contactSync = { point: (worldVol?.center ?? plan.pos).clone(), timeLeft: plan.t, fire };
+    const target = worldVol && this.contactLungeTarget(char, worldVol.center, plan.pos);
     if (target && plan.t >= 0.05) char.lungeTo(target, plan.t);
   }
 
-  /** Target root position that places a clip's striking limb on `point`. */
-  private contactLungeTarget(char: Character, clip: string, point: Vector3): Vector3 | null {
-    const cp = char.clipContactPoint(clip);
-    if (!cp) return null;
-    let dx = point.x - cp.x;
-    let dz = point.z - cp.z;
+  /** Target root position that places a clip's interaction volume on `point`. */
+  private contactLungeTarget(char: Character, volCenter: Vector3, point: Vector3): Vector3 {
+    let dx = point.x - volCenter.x;
+    let dz = point.z - volCenter.z;
     const d = Math.hypot(dx, dz);
     // Agility is how far a player can stretch for a ball at the edge of reach.
     const reach = LUNGE_MAX * char.def.agility;
@@ -616,18 +726,6 @@ export class MatchController {
     // around the table rather than stopped short of its end.
     const clear = clearTable(tx, tz);
     return new Vector3(clear.x, char.position.y, clear.z);
-  }
-
-  /**
-   * Final polish at the contact frame: nudge the ball the last few centimetres
-   * onto the limb. Capped at CONTACT_SNAP so it can never read as a warp —
-   * a genuinely missed lunge stays a visible near-miss.
-   */
-  private snapBallToLimb(char: Character, clip: string): void {
-    const limb = char.clipContactPoint(clip);
-    if (limb && Vector3.Distance(limb, this.ball.state.pos) <= CONTACT_SNAP) {
-      this.ball.state.pos.copyFrom(limb);
-    }
   }
 
   /** The serve toss arc's end point; consumed at the serve's contact frame. */
@@ -655,8 +753,37 @@ export class MatchController {
    * would start pinned to the last one's slack.
    */
   private leashSlack: Record<Side, number> = { player: Infinity, ai: Infinity };
-  private anchor: Record<Side, Vector3 | null> = { player: null, ai: null };
+  private anchor: Record<Side, Anchor | null> = { player: null, ai: null };
+
   private repredictIn = 0;
+
+  /**
+   * How far the ball is from this side's chest, which is what every reach in
+   * the game is measured against — the touch is played with the body, not with
+   * the spot on the floor the character stands on.
+   */
+  private ballFromChest(side: Side): number {
+    const c = this.chars[side];
+    const chest = c.position.add(new Vector3(0, c.height * 0.55, 0));
+    return Vector3.Distance(chest, this.ball.state.pos);
+  }
+
+  /**
+   * A step behind a point on the ball's flight, clamped into the court and
+   * pushed clear of the table.
+   *
+   * The step back is what puts the ball down *in front of* the player rather
+   * than on top of them. Both anchors want the same thing from the same two
+   * lines, so they ask for it in one place.
+   */
+  private standingSpot(side: Side, on: Vector3): Vector3 {
+    const sgn = sign(side);
+    const clear = clearTable(
+      sgn * Math.min(COURT.maxX, Math.max(COURT.minX, sgn * on.x + ANCHOR_STEP_BACK)),
+      Math.max(-COURT.maxZ, Math.min(COURT.maxZ, on.z))
+    );
+    return new Vector3(clear.x, GROUND_Y, clear.z);
+  }
 
   /**
    * Where `side` should be standing for the next touch, or null when no touch
@@ -669,7 +796,7 @@ export class MatchController {
    * came off the body badly moves the anchor to where the ball actually is —
    * which is exactly the recovery a poor first touch should demand.
    */
-  private computeAnchor(side: Side): Vector3 | null {
+  private computeAnchor(side: Side): Anchor | null {
     if (this.ball.held) return null;
     if (this.strikeableSide === side && this.touchCount > 0) {
       // A set-up popped very high or driven flat has no sample in `dropSpot`'s
@@ -678,6 +805,9 @@ export class MatchController {
       // measured against, so losing it un-pins the player at the exact moment
       // the ball is hardest to stay with, and it is where the auto-run is
       // heading, which otherwise stops dead.
+      // The retained anchor's `eta` goes stale with it, which costs nothing:
+      // only the incoming-ball assist reads the clock, and this branch is a
+      // ball the player set up themselves, where the run is not on a gate.
       return this.dropSpot(side, sampleFlight(this.ball.state, 1.8)) ?? this.anchor[side];
     }
     return this.computeIntercept(side);
@@ -688,11 +818,11 @@ export class MatchController {
    * meet this ball at a sensible height, a step behind the drop so the ball
    * comes down in front of them rather than on top of them.
    */
-  private dropSpot(side: Side, flight: FlightSample[]): Vector3 | null {
+  private dropSpot(side: Side, flight: FlightSample[]): Anchor | null {
     const c = this.chars[side];
     const ideal = c.height * 0.55;
     let prevY = this.ball.state.pos.y;
-    let best: { pos: Vector3; cost: number } | null = null;
+    let best: { pos: Vector3; t: number; cost: number } | null = null;
     for (const s of flight) {
       if (s.grounded) break;
       const descending = s.pos.y <= prevY + 0.002;
@@ -700,15 +830,10 @@ export class MatchController {
       const h = s.pos.y - GROUND_Y;
       if (!descending || h < 0.25 || h > 1.3) continue;
       const cost = Math.abs(h - ideal);
-      if (!best || cost < best.cost) best = { pos: s.pos, cost };
+      if (!best || cost < best.cost) best = { pos: s.pos, t: s.t, cost };
     }
     if (!best) return null;
-    const sgn = sign(side);
-    const clear = clearTable(
-      sgn * Math.min(COURT.maxX, Math.max(COURT.minX, sgn * best.pos.x + 0.3)),
-      Math.max(-COURT.maxZ, Math.min(COURT.maxZ, best.pos.z))
-    );
-    return new Vector3(clear.x, GROUND_Y, clear.z);
+    return { pos: this.standingSpot(side, best.pos), eta: best.t };
   }
 
   /**
@@ -716,7 +841,7 @@ export class MatchController {
    * half — where it hangs at playable height off the table. This is where the
    * reach assist pulls that side's human when they push toward it.
    */
-  private computeIntercept(side: Side): Vector3 | null {
+  private computeIntercept(side: Side): Anchor | null {
     if (this.ball.held || this.touchCount > 0) return null;
     const sgn = sign(side);
     let samples: FlightSample[];
@@ -736,41 +861,46 @@ export class MatchController {
       const offTable = !onTableFootprint(s.pos.x, s.pos.z);
       const h = s.pos.y - GROUND_Y;
       if (offTable && sgn * s.pos.x > 0 && h < 1.15 && h > 0.3) {
-        // Slightly behind the arrival point, so the assist parks the player
-        // beside the flight path (in reach) rather than chest-first into it.
-        const clear = clearTable(
-          sgn * Math.min(COURT.maxX, Math.max(COURT.minX, sgn * s.pos.x + 0.3)),
-          Math.max(-COURT.maxZ, Math.min(COURT.maxZ, s.pos.z))
-        );
-        return new Vector3(clear.x, GROUND_Y, clear.z);
+        return { pos: this.standingSpot(side, s.pos), eta: s.t };
       }
     }
     return null;
   }
 
   /**
-   * Player run with a soft reach assist: pushing roughly toward the incoming
-   * ball's interception point bends the run onto it (stronger the more
-   * directly they push), so the player — not the ball — closes the final gap.
-   * No input, or input away from the ball, is never overridden.
+   * Bend a run the player is already making onto the spot the ball is coming
+   * to, so they arrive in reach rather than a boot's width off it.
+   *
+   * Three things have to be true before it touches anything: the player is
+   * pushing, they are pushing roughly the right way, and the ball has not
+   * already won the race. The last of those is `assistStrength`, and it is
+   * what keeps this an assist — a shot placed where the player cannot get to
+   * it in time is a point, and no amount of bending should change that.
+   *
+   * It never starts a run and never lengthens one. Standing still, or pushing
+   * away, is answered with exactly what was asked for.
    */
-  /** Bend a court-space stick push toward the side's intercept spot (reach assist). */
-  private bendAssist(pos: Vector3, spot: Vector3 | null, mx: number, mz: number): [number, number] {
+  private bendAssist(
+    side: Side,
+    pos: Vector3,
+    anchor: Anchor | null,
+    mx: number,
+    mz: number,
+    speed: number
+  ): [number, number] {
+    if (!anchor) return [mx, mz];
+    const earned = this.assistEarned(side, pos, anchor, speed);
+    if (earned <= 0) return [mx, mz];
     const len = Math.hypot(mx, mz);
-    if (len > 0.2 && spot) {
-      const dx = spot.x - pos.x;
-      const dz = spot.z - pos.z;
-      const d = Math.hypot(dx, dz);
-      if (d > 0.05 && d < REACH_ASSIST.radius) {
-        const dot = (mx * dx + mz * dz) / (len * d);
-        if (dot > 0.15) {
-          const k = REACH_ASSIST.strength * dot;
-          mx = mx * (1 - k) + (dx / d) * len * k;
-          mz = mz * (1 - k) + (dz / d) * len * k;
-        }
-      }
-    }
-    return [mx, mz];
+    if (len <= 0.2) return [mx, mz];
+    const dx = anchor.pos.x - pos.x;
+    const dz = anchor.pos.z - pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d <= 0.05 || d >= REACH_ASSIST.radius) return [mx, mz];
+    const dot = (mx * dx + mz * dz) / (len * d);
+    if (dot <= 0.15) return [mx, mz];
+    const k = REACH_ASSIST.strength * dot * earned;
+    return [mx * (1 - k) + (dx / d) * len * k, mz * (1 - k) + (dz / d) * len * k];
   }
 
   /**
@@ -794,18 +924,36 @@ export class MatchController {
   private holdNearAnchor(
     side: Side,
     pos: Vector3,
-    anchor: Vector3 | null,
+    anchor: Anchor | null,
     mx: number,
     mz: number,
     speed: number
   ): [number, number] {
     if (!anchor) return [mx, mz];
+    const toX = anchor.pos.x - pos.x;
+    const toZ = anchor.pos.z - pos.z;
     // The two are alternatives, never layered: inside your own set-up the hard
     // cap replaces the soft zone entirely.
     if (this.leashed(side)) {
-      return leashPush(anchor.x - pos.x, anchor.z - pos.z, mx, mz, this.leashRadius(side, pos, anchor));
+      return leashPush(toX, toZ, mx, mz, this.leashRadius(side, pos, anchor.pos));
     }
-    return nearAnchorPush(anchor.x - pos.x, anchor.z - pos.z, mx, mz, speed);
+    return nearAnchorPush(toX, toZ, mx, mz, speed, this.assistEarned(side, pos, anchor, speed));
+  }
+
+  /**
+   * How much help the assist has earned this frame, from 0 to 1.
+   *
+   * Two things switch it off entirely. Until the ball has bounced on this
+   * side's half it is not yet their ball, and drawing a player onto a shot
+   * they have not been given is the game reading the rally for them. And once
+   * the ball is going to beat them however hard they run, closing the gap is
+   * help they have not earned — which is what leaves a fast or well-placed
+   * shot able to win the point.
+   */
+  private assistEarned(side: Side, pos: Vector3, anchor: Anchor, speed: number): number {
+    if (this.strikeableSide !== side) return 0;
+    const d = Math.hypot(anchor.pos.x - pos.x, anchor.pos.z - pos.z);
+    return assistStrength(reachSlack(d, anchor.eta, speed));
   }
 
   /**
@@ -844,34 +992,37 @@ export class MatchController {
   }
 
   /**
-   * Whether this side's feet are owned by the run to the ball's drop spot.
+   * Whether this side's feet are owned by the run back under their own set-up.
    *
-   * Semi-assisted on purpose. While the ball is still far off the feet are
-   * the player's own; the run engages only once they are in its vicinity, and
-   * from there it releases once they are close enough to the anchor — from
-   * there, shifting left or right of the ball is the decision a touch is made
-   * of, and it has to be theirs — picking back up if the anchor moves far
-   * enough that the arrival no longer covers it. Engagement latches: a ball
-   * that moves after the run started is still the run's business.
+   * This is the only place the game takes the feet, and only ever for a ball
+   * this player put up themselves. It cannot be refused and cannot be pushed
+   * out of: a ball already in the air is going nowhere else, so there is
+   * nothing left for the stick to decide and everything to lose by letting a
+   * thumb walk away from it. An oriented reception played wide used to strand
+   * the player exactly here — the run switched itself off the moment the ball
+   * cleared a lateral band, which is precisely when it was needed.
    *
-   * Landscape only for the player: portrait steers by tapping the court, and
-   * a tap the game declines to walk toward reads as a dead control. The stick
-   * is not listened to while locked — that was the whole failure: pushing
-   * anywhere cancelled the run, so a push that meant nothing in particular
-   * walked the player off the ball.
+   * A ball coming *at* the player is never locked. That approach belongs to
+   * them: `bendAssist` and `holdNearAnchor` shape the run they are making, and
+   * a shot placed where they cannot reach it in time is still a point.
+   *
+   * The run releases at the drop so the stick can choose which side of the
+   * ball to take it on, and picks back up if the anchor moves further than the
+   * arrival covers — the recovery a set-up that came off the body badly should
+   * demand.
    */
   private runLocked(side: Side): boolean {
     if (this.state !== "rally" || this.ball.held) return false;
-    if (side === "player" && this.portraitControls) return false;
+    if (!(this.strikeableSide === side && this.touchCount > 0 && this.autoSetupRun[side])) {
+      this.autoRunArrived[side] = false;
+      return false;
+    }
     const anchor = this.anchor[side];
     if (anchor === null) return false;
-    if (!(this.touchCount === 0 || this.autoSetupRun[side])) return false;
     const c = this.chars[side];
-    const d = Math.hypot(anchor.x - c.position.x, anchor.z - c.position.z);
-    if (!this.autoRunEngaged[side]) {
-      if (d > AUTO_RUN.vicinity) return false;
-      this.autoRunEngaged[side] = true;
-    }
+    const d = Math.hypot(anchor.pos.x - c.position.x, anchor.pos.z - c.position.z);
+    // Hysteresis, so a player standing on the drop is not flicked between the
+    // run and the stick frame by frame as the anchor breathes.
     if (d <= AUTO_RUN.arrive) this.autoRunArrived[side] = true;
     else if (d > AUTO_RUN.reengage) this.autoRunArrived[side] = false;
     return !this.autoRunArrived[side];
@@ -924,16 +1075,18 @@ export class MatchController {
     // walk. That was the "stored shift": the tap missed its touch, quietly
     // became a destination, and released the player across the court later.
     this.moveTarget = null;
-    if (this.touchCount === 0 && this.autoFirstReception) {
-      this.receptionAim = aim;
-      return;
-    }
     const pending = this.pendingTouch;
     if (pending && pending.side === "player" && pending.kind === "pop") {
       // Already committed and waiting for the ball to drop: re-aim it where
       // the player is now pointing rather than queue a second one behind it.
       pending.aimX = aim.x;
       pending.aimZ = aim.z;
+    }
+    if (this.touchCount === 0 && this.autoFirstReception) {
+      this.receptionAim = aim;
+      return;
+    }
+    if (pending && pending.side === "player" && pending.kind === "pop") {
       return;
     }
     this.bufferedPress = { kind: "pop", aimX: aim.x, aimZ: aim.z, ttl: TAP_PRESS_BUFFER };
@@ -947,12 +1100,28 @@ export class MatchController {
    * animation is still playing is the player asking for the next one, and
    * treating it as anything else is how a tap turns into an unwanted walk.
    */
-  private touchImminent(): boolean {
+  private touchImminent(side: Side = "player"): boolean {
     if (this.state !== "rally" || this.ball.held) return false;
-    if (this.strikeableSide !== "player") return false;
-    const c = this.chars.player;
-    const chest = c.position.add(new Vector3(0, c.height * 0.55, 0));
-    return Vector3.Distance(chest, this.ball.state.pos) <= AUTO_RECEPTION_REACH * 1.6;
+    if (this.strikeableSide !== side) return false;
+    return this.ballFromChest(side) <= AUTO_RECEPTION_REACH * 1.6;
+  }
+
+  /**
+   * The last stretch of an approach, where the stick stops being a run and
+   * becomes the shape of the touch.
+   *
+   * On an incoming ball one stick does two jobs: it steers the approach, and
+   * held at the moment of contact it aims the set-up (`autoReceive`). Those
+   * only ever conflict at the very end — a player holding a direction as the
+   * ball lands on them is crafting a touch, not asking to walk away from one —
+   * so here the feet go to the assist and the push is read as aim alone.
+   *
+   * Deliberately only the last stretch. Everything before it belongs to the
+   * player: a ball can still be left, and a ball that beats them to the spot
+   * is still a point.
+   */
+  private receptionSettling(side: Side): boolean {
+    return this.touchCount === 0 && this.anchor[side] !== null && this.touchImminent(side);
   }
 
   /** Where a tap asked the next set-up touch to put the ball, as a carry vector. */
@@ -994,9 +1163,13 @@ export class MatchController {
       player.move(mx, mz, player.def.speed, dt);
       return;
     }
-    const [bx, bz] = this.bendAssist(player.position, anchor, input.moveX, input.moveZ);
-    const [mx, mz] = this.holdNearAnchor("player", player.position, anchor, bx, bz, player.def.speed);
-    player.move(mx, mz, player.def.speed, dt);
+    // Full pace. Getting to a ball placed away from you is the effort the
+    // assist is there to reward, not to stand in for, and it cannot be made
+    // at a walk.
+    const speed = player.def.speed;
+    const [bx, bz] = this.bendAssist("player", player.position, anchor, input.moveX, input.moveZ, speed);
+    const [mx, mz] = this.holdNearAnchor("player", player.position, anchor, bx, bz, speed);
+    player.move(mx, mz, speed, dt);
   }
 
 
@@ -1549,7 +1722,6 @@ export class MatchController {
     this.touchCount = 0;
     this.autoSetupRun = { player: false, ai: false };
     this.autoRunArrived = { player: false, ai: false };
-    this.autoRunEngaged = { player: false, ai: false };
     this.lockedState = { player: false, ai: false };
     this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
@@ -1840,10 +2012,8 @@ export class MatchController {
     if (this.state !== "rally" || this.servePhase === "toss") return false;
     if (this.strikeableSide !== side) return false;
     if (this.pendingTouch) return false; // a queued touch is already waiting
-    const c = this.chars[side];
-    if (c.busy) return false;
-    const chest = c.position.add(new Vector3(0, c.height * 0.55, 0));
-    return Vector3.Distance(chest, this.ball.state.pos) <= reach;
+    if (this.chars[side].busy) return false;
+    return this.ballFromChest(side) <= reach;
   }
 
   /**
@@ -1873,6 +2043,10 @@ export class MatchController {
   indoorVenue = false;
   private autoReceive(side: Side, stick: InputState | null): void {
     if (!this.autoFirstReception || this.touchCount > 0 || this.ball.held) return;
+    // Reach is the whole test. A lateral band used to sit in front of it, so a
+    // ball placed wide cost the player the free reception *and* the run to it
+    // — two answers to one shot, when being out of reach is already the one
+    // that matters.
     if (!this.canTouch(side, AUTO_RECEPTION_REACH)) return;
     // The first touch is the start of the plan, so it is aimed: a portrait
     // tap if one was left, else the stick held at the moment of contact, else
@@ -2050,7 +2224,9 @@ export class MatchController {
    *
    * Written for the input harness, which otherwise has no way to see whether a
    * hold's arc survived the trip from the button to the ball — it used to watch
-   * the charge accumulator, which no longer exists. Read by nothing in the game.
+   * the charge accumulator, which no longer exists. Read by nothing in the
+   * game itself — `scripts/verify-portrait.mjs` is the only consumer, so it
+   * looks unused to a grep over `src/` alone.
    */
   lastPlayerAim: { power: number; loft: number } | null = null;
 
@@ -2104,7 +2280,6 @@ export class MatchController {
     this.pointTouches++;
     this.autoSetupRun[side] = false;
     this.autoRunArrived[side] = false;
-    this.autoRunEngaged[side] = false;
     this.leashSlack[side] = Infinity;
     if (side === "player") this.ui.hint(null);
     // Portrait has no tap sequence the bar can track, so the bar echoes the
@@ -2130,21 +2305,9 @@ export class MatchController {
     if (!c.groups.has(clip) && clip.startsWith("Backflip")) {
       clip = `${lateral >= 0 ? "Right" : "Left"}FootKick`;
     }
-    // A backflip is played with the back to the table. It is the one clip that
-    // has to be turned, and the reason is in how it was captured.
-    //
-    // The mocap performer faces the camera and kicks *away* from it. For an
-    // ordinary kick that works out: the table is behind them, they kick toward
-    // it, and a rig facing the table plays it correctly with no correction. A
-    // bicycle kick is different in kind — it is struck up and over the
-    // player's own head, so it travels **opposite** to the way they face.
-    // Played by a rig squared up with the table like everything else, it
-    // therefore throws the ball away from the table, which is what was on
-    // screen.
-    //
-    // This was measured once and read backwards. The half-turn does move the
-    // Backflips are played facing away from the table — see `clipYawOffset`,
-    // which owns that and applies it to the plan and the pose alike.
+    // Backflips are played facing away from the table. `clipYawOffset` owns
+    // that turn and applies it to the plan and the pose alike, so the reason
+    // it exists is written there rather than restated here.
     //
     // It costs frequency, deliberately. The contact sits further from the body
     // than `LUNGE_MAX` can carry a player mid-swing, so a flip only commits when
@@ -2170,7 +2333,7 @@ export class MatchController {
       fired = true;
       this.contactSync = null;
       if (this.state !== "rally") return; // safety: the point ended mid-wind-up
-      this.snapBallToLimb(c, clip);
+      // Ball position is already at the volume center from the planned trajectory
       // Where it was aimed, plus the spread that aim earned. The stretch term
       // is how far the striker had to reach for the contact: a ball taken at
       // arm's length is not struck as cleanly as one met in front.
@@ -2293,7 +2456,9 @@ export class MatchController {
    * must cross the net, so it is converted into a strike.
    */
   tryControlTouch(side: Side, aimX = 0, aimZ = 0, reach = PLAYER_REACH, timingSlip = 0): boolean {
-    if (!this.canTouch(side, reach)) return false;
+    if (!this.canTouch(side, reach)) {
+      return false;
+    }
     if (this.touchCount >= MAX_TOUCHES - 1) {
       // Out of touches: the set-up becomes the finish, aimed where this side's
       // aim already points and struck at a middling pace.
@@ -2359,7 +2524,7 @@ export class MatchController {
       fired = true;
       this.contactSync = null;
       if (this.state !== "rally") return;
-      this.snapBallToLimb(c, clip);
+      // Ball position is already at the volume center from the planned trajectory
       const pos = this.ball.state.pos;
       const len = Math.hypot(aimX, aimZ);
       let target: Vector3;
@@ -2417,8 +2582,7 @@ export class MatchController {
       if (side === "player" || this.versus) {
         this.autoSetupRun[side] = true;
         this.autoRunArrived[side] = false;
-        this.autoRunEngaged[side] = false;
-        this.anchor[side] = this.computeAnchor(side);
+            this.anchor[side] = this.computeAnchor(side);
       }
       if (side === "player" && !this.versus) this.ui.meterResult?.(quality);
       this.emit({ type: "touch-committed", side, action: "pop" });
@@ -2465,7 +2629,6 @@ export class MatchController {
           this.lastPart[e.side] = null;
           this.autoSetupRun[e.side] = false;
           this.autoRunArrived[e.side] = false;
-          this.autoRunEngaged[e.side] = false;
       this.leashSlack[e.side] = Infinity;
           // A fresh possession starts aimed at the middle of the other half,
           // so an aim left in a corner never carries silently into it.
@@ -2527,7 +2690,6 @@ export class MatchController {
     this.strikeableSide = null;
     this.autoSetupRun = { player: false, ai: false };
     this.autoRunArrived = { player: false, ai: false };
-    this.autoRunEngaged = { player: false, ai: false };
     this.lockedState = { player: false, ai: false };
     this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
@@ -2565,22 +2727,37 @@ export class MatchController {
   private celebration: { side: Side; delay: number } | null = null;
 
   /**
-   * Play a random clip from the celebration pool. With `fitSec`, prefers clips
-   * that fit the window naturally and speeds one up as a last resort.
+   * Play a random clip from the point celebration pool (Celebration* animations).
+   * With `fitSec`, prefers clips that fit the window naturally and speeds one up as a last resort.
    */
-  private playCelebration(side: Side, fitSec = 0, onEnd?: () => void): void {
+  private playPointCelebration(side: Side, fitSec = 0, onEnd?: () => void): void {
     const c = this.chars[side];
-    const avail = CELEBRATIONS.filter((n) => c.groups.has(n));
-    if (avail.length === 0) return;
+    const avail = [...c.groups.keys()].filter((n) => /^Celebration\d*$/i.test(n));
+    const list = avail.length > 0 ? avail : POINT_CELEBRATIONS.filter((n) => c.groups.has(n));
+    if (list.length === 0) return;
     const durOf = (n: string): number => {
       const g = c.groups.get(n)!;
       return (g.to - g.from) / 60;
     };
-    const fitting = fitSec > 0 ? avail.filter((n) => durOf(n) <= fitSec * 1.4) : avail;
-    const pool = fitting.length > 0 ? fitting : avail;
+    const fitting = fitSec > 0 ? list.filter((n) => durOf(n) <= fitSec * 1.4) : list;
+    const pool = fitting.length > 0 ? fitting : list;
     const clip = pool[Math.floor(Math.random() * pool.length)];
     const speed = fitSec > 0 ? Math.max(1, durOf(clip) / fitSec) : 1;
     this.playSideAction(side, clip, { speed, onEnd });
+  }
+
+  /**
+   * Play a random clip from the match victory pool (EndOfGameVictory, Backflip, Stunt1, Stunt3).
+   */
+  private playMatchWinCelebration(side: Side, onEnd?: () => void): void {
+    const c = this.chars[side];
+    const avail = MATCH_WIN_CELEBRATIONS.filter((n) => c.groups.has(n));
+    if (avail.length === 0) {
+      this.playPointCelebration(side, 0, onEnd);
+      return;
+    }
+    const clip = avail[Math.floor(Math.random() * avail.length)];
+    this.playSideAction(side, clip, { speed: 1, onEnd });
   }
 
   /**
@@ -2642,9 +2819,10 @@ export class MatchController {
         // Game over: the set just won was the deciding one.
         this.state = "over";
         this.matchWinner = setWinner;
+        this.celebration = null;
         const loser = other(setWinner);
         const winChar = this.chars[setWinner];
-        this.playCelebration(setWinner, 0, () => winChar.playAction("Idle", { loop: true }));
+        this.playMatchWinCelebration(setWinner, () => winChar.playAction("Idle", { loop: true }));
         this.playSideAction(loser, "Defeat", {
           onEnd: () => this.chars[loser].playAction("Idle", { loop: true }),
         });
@@ -2736,30 +2914,13 @@ export class MatchController {
     this.stepEffort(dt);
 
     // Committed rally touch: release the ball on the planned-contact countdown
-    // (frame-exact, unlike the animation callback which can lag and let the
-    // ball fly behind the limb), and steer it the last few centimetres onto
-    // the striking limb so the contact reads clean. A gap beyond
-    // STEER_MAX_GAP stays an honest miss.
+    // (frame-exact). The ball follows its natural trajectory to the interaction
+    // volume — no magnetic steering or snapping.
     const cs = this.contactSync;
     if (cs?.fire && cs.timeLeft !== undefined) {
       cs.timeLeft -= dt;
       if (cs.timeLeft <= 0) {
         cs.fire();
-      } else if (cs.timeLeft <= STEER_WINDOW && !this.ball.held && cs.char && cs.clip) {
-        const limb = cs.char.clipContactPoint(cs.clip);
-        const b = this.ball.state;
-        if (limb && Vector3.Distance(limb, b.pos) < STEER_MAX_GAP) {
-          const t = cs.timeLeft;
-          // Ease in: barely a nudge at the far edge of the window, fully
-          // committed at the contact frame. A constant gain applied over three
-          // frames is a visible jerk; this is a curve onto the foot.
-          const closing = 1 - t / STEER_WINDOW;
-          const gain = STEER_GAIN.start + (STEER_GAIN.end - STEER_GAIN.start) * closing * closing;
-          const k = Math.min(1, dt * gain);
-          b.vel.x += ((limb.x - b.pos.x) / t - b.vel.x) * k;
-          b.vel.y += ((limb.y - b.pos.y) / t + 0.5 * GRAVITY * t - b.vel.y) * k;
-          b.vel.z += ((limb.z - b.pos.z) / t - b.vel.z) * k;
-        }
       }
     }
     if (this.tutorialFrozen) return;
@@ -2864,7 +3025,7 @@ export class MatchController {
             // player who asked for it a second before the ball was there did
             // not time it, and the ball they get says so.
             if (p.kind === "strike") this.tryStrike(p.side, p.aim, early);
-            else this.tryControlTouch(p.side, p.aimX, p.aimZ, PLAYER_REACH, early);
+            else this.tryControlTouch(p.side, p.aimX, p.aimZ, this.touchCount === 0 ? AUTO_RECEPTION_REACH : PLAYER_REACH, early);
           }
         }
         // Track where the incoming ball can be intercepted, for the reach assist.
@@ -2886,7 +3047,12 @@ export class MatchController {
         // arrival: overriding the run there is exactly how the player walked
         // past the ball, and the decisions the stick is for — which side of
         // the ball to take it on — begin where the run ends, not during it.
-        const locked = this.runLocked("player");
+        // Two different things own the feet, at two different moments. The
+        // settle is the last stretch of an approach the player made; the lock
+        // is a ball they put up themselves. Neither is the old takeover that
+        // played the whole approach for them.
+        const settling = this.receptionSettling("player");
+        const locked = settling || this.runLocked("player");
         this.lockedState.player = locked;
         // The run owns the feet while it lasts, so anywhere the player had
         // asked to stand is spent, not stored: left queued, it would take over
@@ -2896,7 +3062,7 @@ export class MatchController {
         // locomotion velocity has to be gone, not merely decaying.
         if (player.busy) player.velocity.setAll(0);
         else if (aiming && !locked) player.move(0, 0, 0, dt);
-        else if (locked) player.moveToward(this.anchor.player!, player.def.speed, dt);
+        else if (locked) player.moveToward(this.anchor.player!.pos, player.def.speed, dt);
         else this.movePlayer(input, dt);
         // Presses are buffered briefly and retried, so releasing just before
         // the ball becomes strikeable (or drops into reach) still lands the
@@ -2935,11 +3101,10 @@ export class MatchController {
           this.celebration.delay -= dt;
           if (this.celebration.delay <= 0) {
             // Fit inside what remains of the between-points window.
-            this.playCelebration(this.celebration.side, 2.3 - CELEBRATE_DELAY - 0.1);
+            this.playPointCelebration(this.celebration.side, 2.3 - CELEBRATE_DELAY - 0.1);
             this.celebration = null;
           }
         }
-        if (this.timer > 1.4) this.ball.held = true;
         if (this.timer > 2.3 && this.pointWinner !== null) {
           this.pointWinner = null;
           this.finishPoint();
@@ -3057,15 +3222,15 @@ export class MatchController {
     const c = this.chars.ai;
     // Same locked run to the drop spot as player 1: the stick is not listened
     // to until the arrival, on the incoming ball and on P2's own set-up pop.
-    const locked = this.runLocked("ai");
+    const locked = this.receptionSettling("ai") || this.runLocked("ai");
     this.lockedState.ai = locked;
     const aiming = this.updateAiming("ai", v, dt);
     if (c.busy) c.velocity.setAll(0);
     else if (aiming && !locked) c.velocity.setAll(0);
-    else if (locked) c.moveToward(this.anchor.ai!, c.def.speed, dt);
+    else if (locked) c.moveToward(this.anchor.ai!.pos, c.def.speed, dt);
     else {
       // Same reach assist as player 1, toward this side's intercept.
-      const [bx, bz] = this.bendAssist(c.position, this.anchor.ai, v.moveX, v.moveZ);
+      const [bx, bz] = this.bendAssist("ai", c.position, this.anchor.ai, v.moveX, v.moveZ, c.def.speed);
       const [mx, mz] = this.holdNearAnchor("ai", c.position, this.anchor.ai, bx, bz, c.def.speed);
       c.move(mx, mz, c.def.speed, dt);
     }
@@ -3099,7 +3264,8 @@ export class MatchController {
    * running the same match at different frame rates.
    */
   private cameraZ = 0;
-  private cameraX = -SPAWN.x - CAMERA.portrait.back;
+  private cameraX = -SPAWN.x - CAMERA.back;
+  private cameraY = CAMERA.height;
   private cameraDt = 1 / 60;
   private cameraLast = 0;
   /** Who won the game, while the end-of-match shot is being held on them. */
@@ -3131,29 +3297,45 @@ export class MatchController {
         // Portrait plays from closer in, so the players read at phone size.
         const shot = portrait && !this.versus ? CAMERA.portrait : CAMERA;
         const baseX = -SPAWN.x - shot.back;
-        // Portrait follows the player, because portrait is where it has to:
-        // the lens is pinned horizontally, so the frame narrows towards the
-        // near end and a player deep in their own half is barely a metre from
-        // either edge of it. Landscape stays locked off.
-        let camX = baseX;
+        const c = this.chars.player;
+        const isRally = this.state === "rally";
+
+        let wantZ = 0;
+        let wantX = baseX;
+        let wantY = shot.height;
+
         if (portrait && !this.versus) {
-          const c = this.chars.player;
-          const want = portraitCameraShot(c.position.x, c.position.z, baseX);
-          const k = Math.min(1, this.cameraDt / CAMERA.portrait.tau);
-          this.cameraZ += (want.z - this.cameraZ) * k;
-          this.cameraX += (want.x - this.cameraX) * k;
-          camX = this.cameraX;
+          const portShot = portraitCameraShot(c.position.x, c.position.z, baseX);
+          wantZ = isRally
+            ? Math.max(-CAMERA.portrait.pan, Math.min(CAMERA.portrait.pan, portShot.z + c.position.z * 0.4))
+            : portShot.z;
+          wantX = isRally ? baseX + Math.max(0, (c.position.x - (-SPAWN.x)) * 0.25) : baseX;
+          wantY = shot.height + (isRally ? Math.abs(c.position.z) * 0.2 : 0);
+        } else if (!this.versus) {
+          // Landscape: during rallies, sway laterally with the player to create
+          // a pronounced dynamic angle on the player while keeping the table in the middle of the frame.
+          const maxSway = 3.0;
+          wantZ = isRally ? Math.max(-maxSway, Math.min(maxSway, c.position.z * 0.68)) : 0;
+          wantX = isRally ? baseX + Math.max(0, (c.position.x - (-SPAWN.x)) * 0.25) : baseX;
+          // Elevation during wide rallies gives extra overview when covering deep corners.
+          wantY = shot.height + (isRally ? Math.abs(c.position.z) * 0.3 + Math.max(0, (c.position.x - (-SPAWN.x)) * 0.2) : 0);
         } else {
-          this.cameraZ = 0;
-          this.cameraX = baseX;
-          camX = baseX;
+          wantZ = 0;
+          wantX = baseX;
+          wantY = shot.height;
         }
-        // The camera and what it looks at slide together, so the court is
-        // panned across rather than swivelled at — a swivel from this close
-        // reads as the whole arena leaning.
-        const target = new Vector3(0, GROUND_Y + shot.lookY, this.cameraZ);
-        camera.position.set(camX, GROUND_Y + shot.height, this.cameraZ);
+
+        const tau = portrait ? CAMERA.portrait.tau : 0.24;
+        const k = Math.min(1, this.cameraDt / tau);
+        this.cameraZ += (wantZ - this.cameraZ) * k;
+        this.cameraX += (wantX - this.cameraX) * k;
+        this.cameraY += (wantY - this.cameraY) * k;
+
+        // Look down towards the table and near court, framing both players and the table.
+        const target = new Vector3(shot.lookX ?? -0.6, GROUND_Y + shot.lookY, 0);
+        camera.position.set(this.cameraX, GROUND_Y + this.cameraY, this.cameraZ);
         camera.setTarget(target);
+
         // Match the scene's responsive default in solo play, while retaining
         // the deliberately wider half-width lens in local versus. This also
         // restores the correct lens after leaving the wide top view.

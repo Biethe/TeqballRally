@@ -21,6 +21,8 @@ export interface Preferences {
   camera: CameraMode;
   /** Whether standing near an incoming ball takes the first touch for you. */
   autoReception: boolean;
+  /** Gameplay speed multiplier (e.g. 0.85, 1.0, 1.25, 1.5). */
+  gameSpeed: number;
   /**
    * Whether the coached lesson has been played through once.
    *
@@ -41,6 +43,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   sound: true,
   camera: "court",
   autoReception: true,
+  gameSpeed: 1.25,
   coached: false,
   kit: { ...BLANK_KIT },
 };
@@ -64,6 +67,7 @@ export function readPreferences(): Preferences {
         typeof stored.autoReception === "boolean"
           ? stored.autoReception
           : DEFAULT_PREFERENCES.autoReception,
+      gameSpeed: stored.gameSpeed === 1.45 ? 1.45 : 1.25,
       coached: stored.coached === true,
       kit: readKit(stored.kit),
     };

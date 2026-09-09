@@ -49,6 +49,7 @@ const player = (over: Partial<CharacterDef> = {}): CharacterDef => ({
   serve: 1,
   agility: 1,
   volley: 1,
+  officialKitColor: "white",
   ...over,
 });
 

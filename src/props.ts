@@ -27,12 +27,12 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { importModel } from "./protected";
 
 /** Prop families in `Props.glb`, by the prefix their nodes are named with. */
-export type PropKind = "house" | "tree" | "car" | "palm" | "bush";
+export type PropKind = "house" | "tree" | "palm" | "bush";
 
 /** Every prop of a kind, ready to be thin instanced. */
 export type PropLibrary = Map<PropKind, Mesh[]>;
 
-const KINDS: PropKind[] = ["house", "tree", "car", "palm", "bush"];
+const KINDS: PropKind[] = ["house", "tree", "palm", "bush"];
 
 /**
  * Metres tall, per kind, applied uniformly to every prop in it.
@@ -48,75 +48,58 @@ const KINDS: PropKind[] = ["house", "tree", "car", "palm", "bush"];
  * two-hundred-metre-long slab lying behind the fence.
  */
 const HEIGHT: Record<PropKind, number> = {
-  house: 20,
-  tree: 6.4,
-  car: 1.55,
-  palm: 7.2,
-  bush: 1.5,
+  house: 24.0,
+  tree: 7.2,
+  palm: 7.8,
+  bush: 1.8,
 };
 
 /**
- * Where each family of props comes from.
- *
- * Three packs rather than one, because the houses and the planting were
- * replaced wholesale and re-exporting them into a single file would mean
- * renaming every node to a convention none of the packs use. Each source says
- * which kinds it can provide, so a venue that wants no planting never
- * downloads any, and how to read a kind out of that pack's own naming.
+ * Where each family of props comes from:
+ * - Plants.glb: textured realistic park trees (Tree-01-1..Tree-03-4), hedges, and bushes
+ * - Buildings.glb: textured metropolitan city buildings and skyscrapers
+ * - Props.glb: tropical coconut palms (palm_1..6)
  */
 interface PropSource {
   dir: string;
   file: string;
   provides: PropKind[];
   kindOf: (name: string) => PropKind | null;
-  /**
-   * Whether this pack's own materials are worth keeping.
-   *
-   * The original pack carries no textures at all — its colour was sampled into
-   * vertex colours at build time — so one shared white material is exactly
-   * right for it and costs nothing. The buildings and the planting are
-   * textured, and handing them that same material paints every building white
-   * and every leaf grey, which is precisely what it did.
-   */
   keepMaterials: boolean;
 }
 
 const SOURCES: PropSource[] = [
   {
-    dir: "/models/Buildings/",
-    file: "Buildings.glb",
-    provides: ["house"],
-    // Every building in the pack is `bina`, `bina.001`, `bina.002`… `Plane` is
-    // the slab they were exported standing on, and is not a prop.
-    kindOf: (n) => (/^bina(\.\d+)?$/i.test(n) ? "house" : null),
-    keepMaterials: true,
-  },
-  {
     dir: "/models/Plants/",
     file: "Plants.glb",
     provides: ["tree", "bush"],
-    // Tree-01-1 … Tree-03-4, plus Hedge-01 and Bush-01…05. The kit's ground
-    // cover — clover, grass, flowers — is deliberately left out: it is metres
-    // across at this scale and never seen from the court.
     kindOf: (n) =>
       /^tree-/i.test(n) ? "tree" : /^(bush|hedge)-/i.test(n) ? "bush" : null,
     keepMaterials: true,
   },
   {
+    dir: "/models/Buildings/",
+    file: "Buildings.glb",
+    provides: ["house"],
+    kindOf: (n) => (/^bina(\.\d+)?$/i.test(n) ? "house" : null),
+    keepMaterials: true,
+  },
+  {
     dir: "/models/Props/",
     file: "Props.glb",
-    provides: ["car", "palm"],
-    // The original pack, still the only source of parked cars and palms.
+    provides: ["palm"],
     kindOf: (n) => {
-      const kind = KINDS.find((k) => new RegExp(`^${k}_\\d+$`).test(n));
-      return kind === "car" || kind === "palm" ? kind : null;
+      const match = n.match(/^([a-z]+)_\d+$/i);
+      if (!match) return null;
+      const kind = match[1].toLowerCase() as PropKind;
+      return kind === "palm" ? kind : null;
     },
     keepMaterials: false,
   },
 ];
 
-/** Foliage is drawn from both sides; a wall is not. */
-const DOUBLE_SIDED: ReadonlySet<PropKind> = new Set<PropKind>(["tree", "bush", "palm"]);
+/** Foliage and props are drawn double-sided so canopies and details don't disappear from reverse angles. */
+const DOUBLE_SIDED: ReadonlySet<PropKind> = new Set<PropKind>(KINDS);
 
 /**
  * Load the prop library, keeping only the kinds asked for.
@@ -255,11 +238,18 @@ export async function loadProps(scene: Scene, kinds: PropKind[]): Promise<PropLi
         : Mesh.MergeMeshes(parts, true, true, undefined, false, true);
     if (!m) continue;
     m.name = name;
-    // Measured after merging, so a tree is scaled by its own full height and
-    // not by whichever of its parts happened to be read first.
+
+    // Re-centre the mesh horizontally to (0,0) and ground its bottom at y = 0
     m.refreshBoundingInfo();
-    const box = m.getBoundingInfo().boundingBox;
-    const scale = HEIGHT[kind] / Math.max(0.001, box.maximum.y - box.minimum.y);
+    const box1 = m.getBoundingInfo().boundingBox;
+    m.position.set(-box1.center.x, -box1.minimumWorld.y, -box1.center.z);
+    m.bakeCurrentTransformIntoVertices();
+    m.refreshBoundingInfo();
+
+    // Scale to canonical prop height
+    const box2 = m.getBoundingInfo().boundingBox;
+    const height = Math.max(0.001, box2.maximumWorld.y - box2.minimumWorld.y);
+    const scale = HEIGHT[kind] / height;
     m.scaling.setAll(scale);
     m.bakeCurrentTransformIntoVertices();
     m.refreshBoundingInfo();

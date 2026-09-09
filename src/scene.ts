@@ -115,7 +115,7 @@ export async function createGameScene(
   scene.clearColor = new Color4(venue.sky[0], venue.sky[1], venue.sky[2], 1);
 
   const camera = new TargetCamera("cam", new Vector3(-SPAWN.x - CAMERA.back, GROUND_Y + CAMERA.height, 0), scene);
-  camera.setTarget(new Vector3(0, GROUND_Y + CAMERA.lookY, 0));
+  camera.setTarget(new Vector3(CAMERA.lookX ?? -0.6, GROUND_Y + CAMERA.lookY, 0));
   camera.minZ = 0.1;
 
   // Colour grade.

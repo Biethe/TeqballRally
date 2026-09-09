@@ -16,15 +16,15 @@
 | RightKneeReception | 40 | 76 |
 | Celebration1 | — | 102 |
 | Celebration2 | — | 113 |
-| CenterHeadKick | 24 | 61 |
-| ChestKick | 35 | 67 |
-| ChestPrepLeft | 51 | 61 |
+| CenterHeadKick | 20 | 61 |
+| ChestKick | 34 | 67 |
+| ChestPrepLeft | 54 | 61 |
 | ChestPrepRight | 50 | 61 |
-| ChestReception | 51 | 74 |
+| ChestReception | 47 | 74 |
 | Defeat | — | 201 |
 | Idle | — | 40 |
-| InnerLeftFootReception | 19 | 40 |
-| InnerRightFootReception | 48 | 72 |
+| InnerLeftFootReception | 15 | 40 |
+| InnerRightFootReception | 42 | 72 |
 | jogBackward | — | 53 |
 | JogForward | — | 72 |
 | JogStrafeLeft | — | 41 |
@@ -33,19 +33,19 @@
 | JogStrafeRightInPlace | — | 34 |
 | WalkStrafeLeftInPlace | — | 56 |
 | WalkStrafeRightInPlace | — | 58 |
-| LeftFootKick | 40 | 85 |
-| LeftHeadKick | 24 | 52 |
-| LeftKneeReception | 53 | 69 |
-| RightFootKick | 23 | 75 |
-| RightHeadKick | 16 | 53 |
-| BackflipRightFoot | 49 | 84 |
-| BackflipLeftFoot | 56 | 102 |
+| LeftFootKick | 38 | 85 |
+| LeftHeadKick | 17 | 52 |
+| LeftKneeReception | 46 | 69 |
+| RightFootKick | 30 | 75 |
+| RightHeadKick | 15 | 53 |
+| BackflipRightFoot | 45 | 84 |
+| BackflipLeftFoot | 55 | 102 |
 
 ## Serves
 
 | Animation | ballLeaveHand | contactFrame | frames |
 | --- | ---: | ---: | ---: |
-| HeadServeLeft | 26 | 73 | 121 |
-| HeadServeRight | 28 | 69 | 104 |
+| HeadServeLeft | 26 | 70 | 121 |
+| HeadServeRight | 28 | 67 | 104 |
 | ServeLeftFoot | 21 | 65 | 120 |
 | ServeRightFoot | 44 | 92 | 120 |

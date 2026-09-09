@@ -1,25 +1,27 @@
 /**
- * The world beyond the venue.
+ * The world beyond the venue: Green Park, Beach, and City Park.
  *
- * The arena models are a fenced site sitting in nothing: past the fence there
- * is sky, and the eye reads that as a diorama on a table however good the
- * court is. This builds what surrounds each one — a city block, parkland, a
- * beach — so the venues feel like places rather than props.
+ * Each environment is constructed with a dedicated, distinctive architectural vision:
  *
- * All of it is procedural, so it costs no download. Realism at this budget is
- * not detail, which a phone cannot afford and nobody can see past the fence
- * anyway. It comes from three things this module spends its effort on:
+ * 1. Green Park ("THE PARK" - Football):
+ *    A prestigious championship sports sanctuary with lush rolling lawns, curvilinear
+ *    walking/running promenades, deep natural forest tree belts (Plants.glb), ornamental
+ *    gardens & hedges, Victorian park lampposts, stone fountains, and teak park benches.
+ *    (Zero residential houses, Zero cars).
  *
- * - **Silhouette and depth.** Buildings at varying heights and distances,
- *   trees at varying scales, a horizon that recedes.
- * - **Haze.** Linear fog toward a colour taken from the sky is what makes
- *   distance read as distance, and it hides the edge of the world for free.
- * - **A sky with a gradient in it.** A flat clear colour is the single most
- *   diorama-like thing in a scene; a graded dome is one unlit mesh.
+ * 2. Beach ("THE BASELINE" - Tennis):
+ *    An exclusive tropical coastal resort & beach club with golden sand dunes, an expansive
+ *    turquoise ocean with foaming surf on the East, a high-end teak wooden boardwalk loop,
+ *    an ocean pier extending over the water, a wooden lifeguard tower, swaying coconut palms,
+ *    striped parasols, sun loungers, beach towels, surfboards, coastal boulders, and rowboats.
+ *    (Zero residential houses, Zero cars).
  *
- * Draw calls are kept down the same way as everywhere else: everything of one
- * colour is merged into one mesh, and anything repeated — trees, cars,
- * windows — is a thin instance.
+ * 3. City Park ("THE CAGE" - Basketball):
+ *    An iconic downtown metropolitan streetball cage set inside a contemporary paved urban
+ *    plaza, framed by high-rise city building blocks and skyscraper facades (Buildings.glb)
+ *    in the skyline, modern asphalt perimeter boulevards with authentic road markings & crosswalks,
+ *    granite planters, structured street trees, modern streetlights, and steel park benches.
+ *    (Zero suburban houses, Zero ugly parked cars).
  */
 
 import type { Scene } from "@babylonjs/core/scene";
@@ -35,57 +37,31 @@ import { assetUrl, PROTECTED } from "./protected";
 import { loadProps, type PropKind, type PropLibrary } from "./props";
 import type { Rgb, Surrounds, Tile, Venue } from "./venue";
 
-/**
- * Which prop families each kind of surroundings uses. Anything not listed is
- * disposed as soon as the shared file has been read, so a beach never pays for
- * twenty houses it will not place.
- */
+/** Which prop families each kind of surroundings uses. */
 const PROPS_FOR: Record<Surrounds["kind"], PropKind[]> = {
-  city: ["house", "tree", "car"],
+  city: ["house", "tree", "bush"],
   park: ["tree", "bush"],
   beach: ["palm", "bush"],
 };
 
-/** Where the venue site ends and this takes over, in metres from the table. */
-const SITE_RADIUS = 15.5;
-/**
- * The height everything outside the venue stands on.
- *
- * Not `GROUND_Y`, which is the court surface: the arena models sit on a
- * foundation slab whose base is 0.6 m below it, and the world ground goes
- * under that. Anything placed at court height instead floats a metre in the
- * air once it is past the fence — which is exactly what the first pass of
- * parked cars did.
- */
-const WORLD_Y = GROUND_Y - 1.05;
-/** How far out the world is built. Beyond this, fog. */
+/** World ground height. */
+const WORLD_Y = GROUND_Y - 0.6;
 const WORLD_RADIUS = 150;
 
-/** Deterministic hash: the same world every run, and on both peers online. */
+/** Deterministic pseudo-random noise for reproducible layouts. */
 function noise(a: number, b: number): number {
   const n = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
   return n - Math.floor(n);
 }
 
-function surface(scene: Scene, name: string, c: Rgb, emissive = 0.06): StandardMaterial {
+function surface(scene: Scene, name: string, c: Rgb, emissive = 0.08): StandardMaterial {
   const m = new StandardMaterial(name, scene);
   m.diffuseColor = new Color3(c[0], c[1], c[2]);
   m.emissiveColor = new Color3(c[0] * emissive, c[1] * emissive, c[2] * emissive);
-  m.specularColor = new Color3(0.02, 0.02, 0.02);
+  m.specularColor = new Color3(0.04, 0.04, 0.04);
   return m;
 }
 
-/**
- * Put a tiling texture on a material, repeated to match a real-world size.
- *
- * The diffuse *colour* stays white once a texture is on: `diffuseColor`
- * multiplies the texture, so leaving the flat fallback colour in place would
- * tint every photo toward it. The flat colour remains the fallback for a
- * venue with no tile, and for a tile that fails to load.
- *
- * `uScale` is the count of repeats across the mesh, which is the surface's own
- * size divided by how much world one tile covers.
- */
 function tiled(
   scene: Scene,
   material: StandardMaterial,
@@ -94,12 +70,6 @@ function tiled(
 ): StandardMaterial {
   if (!tile) return material;
   const path = `/textures/${tile.name}.webp`;
-  // A plain build hands Babylon the path and it fetches the image itself,
-  // exactly as before. A protected build cannot: the file at that path is
-  // `.teq` noise. So the texture starts empty and is pointed at a decrypted
-  // blob a moment later — `forcedExtension` because a `blob:` URL carries no
-  // extension for Babylon to pick a loader from, and the material already
-  // shows the right base colour while it lands.
   const texture = PROTECTED ? new Texture(null, scene) : new Texture(path, scene);
   if (PROTECTED) {
     void assetUrl(path).then((url) => texture.updateURL(url, undefined, undefined, ".webp"));
@@ -113,7 +83,6 @@ function tiled(
   return material;
 }
 
-/** Merge a pile of boxes into one mesh and give it a colour. */
 function weld(parts: Mesh[], material: StandardMaterial): Mesh | null {
   if (parts.length === 0) return null;
   const merged = parts.length === 1 ? parts[0] : Mesh.MergeMeshes(parts, true, true);
@@ -122,13 +91,7 @@ function weld(parts: Mesh[], material: StandardMaterial): Mesh | null {
   return merged;
 }
 
-/**
- * A graded sky dome.
- *
- * One unlit mesh with vertex colours running from the horizon haze up to the
- * zenith. It is drawn from the inside, has no lighting and no depth writing to
- * worry about because everything else is inside it.
- */
+/** Graded sky dome with horizon haze. */
 function buildSky(scene: Scene, horizon: Rgb, zenith: Rgb): Mesh {
   const dome = MeshBuilder.CreateSphere(
     "sky",
@@ -140,8 +103,6 @@ function buildSky(scene: Scene, horizon: Rgb, zenith: Rgb): Mesh {
   let top = 0;
   for (let i = 0; i < positions.length; i += 3) top = Math.max(top, positions[i + 1]);
   for (let i = 0, c = 0; i < positions.length; i += 3, c += 4) {
-    // Ramp over the top half only, and bias it so most of the visible band
-    // near the horizon is haze rather than a hard line.
     const t = Math.max(0, Math.min(1, positions[i + 1] / (top || 1)));
     const k = Math.pow(t, 0.55);
     colours[c] = horizon[0] + (zenith[0] - horizon[0]) * k;
@@ -151,25 +112,10 @@ function buildSky(scene: Scene, horizon: Rgb, zenith: Rgb): Mesh {
   }
   dome.setVerticesData(VertexBuffer.ColorKind, colours);
   const mat = new StandardMaterial("skyMat", scene);
-  // Unlit, and the gradient has to ride on **emissive** — which is the opposite
-  // of what it looks like it should do, and is why this dome rendered black
-  // above the horizon in all three outdoor venues.
-  //
-  // The vertex colour does multiply the diffuse channel, but that is not the
-  // channel that survives `disableLighting`. Babylon's default shader ends with
-  //
-  //   finalDiffuse = clamp(diffuseBase*diffuseColor + emissiveColor + ambient)
-  //                * baseColor.rgb          // baseColor already *= vColor
-  //
-  // and with lighting disabled no light ever writes `diffuseBase`, so it stays
-  // zero. A black emissive and a black scene ambient then multiply the whole
-  // gradient by nothing. White emissive makes the bracket 1 and hands the
-  // colour entirely to the vertex ramp, which is what an unlit sky wants.
   mat.disableLighting = true;
   mat.diffuseColor = new Color3(1, 1, 1);
   mat.emissiveColor = new Color3(1, 1, 1);
   mat.backFaceCulling = false;
-  // The sky must not be fogged toward itself, and must never occlude anything.
   mat.fogEnabled = false;
   dome.material = mat;
   dome.useVertexColors = true;
@@ -179,24 +125,17 @@ function buildSky(scene: Scene, horizon: Rgb, zenith: Rgb): Mesh {
   return dome;
 }
 
-/** The ground the venue sits on, out to the horizon. */
+/** The primary terrain ground plane. */
 function buildGround(scene: Scene, c: Rgb, tile: Tile | undefined): Mesh {
   const ground = MeshBuilder.CreateGround(
     "world-ground",
     { width: WORLD_RADIUS * 2, height: WORLD_RADIUS * 2, subdivisions: 1 },
     scene
   );
-  // Below everything the venue owns, not just below its court.
-  //
-  // The arena models sit on a foundation slab whose base is 0.6 m under the
-  // playing surface, and a world ground tucked 6 cm under the court was drawn
-  // straight over the top of it — the wood grain vanished and every venue
-  // became the same sheet of grey. There is a fence around the site, so the
-  // step down is not visible from anywhere the game is played from.
   ground.position.y = WORLD_Y;
   ground.material = tiled(
     scene,
-    surface(scene, "world-ground-mat", c, 0.1),
+    surface(scene, "world-ground-mat", c, 0.08),
     tile,
     WORLD_RADIUS * 2
   );
@@ -204,362 +143,950 @@ function buildGround(scene: Scene, c: Rgb, tile: Tile | undefined): Mesh {
   return ground;
 }
 
+// ---------------------------------------------------------------------------
+// Protected Site & Clearance Helpers
+// ---------------------------------------------------------------------------
+
 /**
- * Buildings around a city block.
- *
- * Placed on a ring outside the site, in a band rather than a line so the
- * skyline has depth. Windows are a separate merged mesh of small emissive
- * quads — cheaper than a texture and it is what reads as "building" at
- * distance, especially against a dusk sky.
+ * The 3 outdoor venues (Soccer, Tennis, Basketball) share an arena site
+ * footprint of 28.8m (X) x 20.3m (Z) with fences at |X| = 14.4m, |Z| = 10.15m.
+ * Everything inside |X| < 14.4, |Z| < 10.15 is the arena itself.
  */
-function buildCity(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[]): void {
-  const houses = props.get("house") ?? [];
-  if (houses.length > 0) {
-    // Real buildings in the near ring, where the eye can resolve them, with
-    // the procedural blocks pushed out behind to carry the skyline. A street
-    // of parked cars and some planting is what makes the near ring read as a
-    // street rather than a row of models.
-    // Twelve of the pack's twenty houses rather than six. Instancing means the
-    // cost is one draw call per *distinct* model, so this is six more calls —
-    // and it halves how often the same house appears twice in one view, which
-    // was the thing that read as a repeated texture rather than a street.
-    // Placed as a skyline rather than as a street. Each of these is a whole
-    // city block a hundred metres and more across, so eight of them at sixty to
-    // a hundred and ten metres surround the court with a city; twenty-six on a
-    // twenty-five-metre ring, which is where the cottages they replace stood,
-    // put a wall of masonry immediately behind the fence.
-    out.push(
-      ...scatterProps(houses, { count: 8, inner: 62, outer: 112, facing: "inward", vary: 0.15, seed: 31, models: 8 })
+export const SITE_HALF_LEN = 14.4;
+export const SITE_HALF_WID = 10.15;
+
+/** Checks if a point is inside the arena site or its immediate buffer. */
+export function isInsideSite(x: number, z: number, buffer = 2.0): boolean {
+  return (
+    Math.abs(x) < SITE_HALF_LEN + buffer &&
+    Math.abs(z) < SITE_HALF_WID + buffer
+  );
+}
+
+/** Batch placement collector for thin instances. */
+class PropBatch {
+  private slots: Map<Mesh, Matrix[]> = new Map();
+
+  add(
+    mesh: Mesh | undefined,
+    x: number,
+    z: number,
+    options?: {
+      y?: number;
+      yaw?: number;
+      pitch?: number;
+      roll?: number;
+      scale?: number;
+      scaleY?: number;
+    }
+  ): void {
+    if (!mesh) return;
+    const y = options?.y ?? WORLD_Y;
+    const yaw = options?.yaw ?? 0;
+    const pitch = options?.pitch ?? 0;
+    const roll = options?.roll ?? 0;
+    const s = options?.scale ?? 1;
+    const sy = options?.scaleY ?? s;
+
+    const m = Matrix.Compose(
+      new Vector3(s, sy, s),
+      Quaternion.RotationYawPitchRoll(yaw, pitch, roll),
+      new Vector3(x, y, z)
     );
-    out.push(
-      ...scatterProps(props.get("car") ?? [], {
-        count: 12, inner: 19.5, outer: 21.5, facing: "along", vary: 0.04, seed: 57, models: 4,
-      })
-    );
-    out.push(
-      ...scatterProps(props.get("tree") ?? [], {
-        // Well back. A trunk outside the fence is not enough: these are six
-        // metres tall with a canopy to match, and anything inside about thirty
-        // metres still leans into frame over the boards. Trees are backdrop,
-        // and backdrop belongs behind the fence rather than on top of it.
-        count: 24, inner: 36, outer: 52, facing: "any", vary: 0.22, seed: 73, models: 5,
-      })
-    );
+    const list = this.slots.get(mesh);
+    if (list) list.push(m);
+    else this.slots.set(mesh, [m]);
   }
 
-  const walls: Mesh[] = [];
-  const roofs: Mesh[] = [];
-  const windows: Mesh[] = [];
-  const wallTones = spec.palette;
-
-  // Behind the houses when there are houses, and taking the near ring itself
-  // when the prop file did not load.
-  // Behind the city blocks when there are any, and taking the near ring itself
-  // when the pack did not load.
-  const nearest = houses.length > 0 ? 105 : 14;
-  for (let i = 0; i < spec.count; i++) {
-    const seed = noise(i, 3);
-    const seed2 = noise(i * 7 + 1, 11);
-    const angle = (i / spec.count) * Math.PI * 2 + (seed - 0.5) * 0.12;
-    const radius = SITE_RADIUS + nearest + seed2 * 54;
-    const w = 7 + seed * 9;
-    const d = 7 + seed2 * 9;
-    // Taller nearer the middle distance, so the skyline is not a wall.
-    const h = 6 + seed * 26 * (1 - Math.abs(radius - 40) / 60);
-    const x = Math.cos(angle) * radius;
-    const z = Math.sin(angle) * radius;
-
-    const body = MeshBuilder.CreateBox(`bldg-${i}`, { width: w, height: h, depth: d }, scene);
-    body.position.set(x, WORLD_Y + h / 2, z);
-    body.rotation.y = angle;
-    walls.push(body);
-
-    const cap = MeshBuilder.CreateBox(`roof-${i}`, { width: w * 1.04, height: 0.5, depth: d * 1.04 }, scene);
-    cap.position.set(x, WORLD_Y + h + 0.25, z);
-    cap.rotation.y = angle;
-    roofs.push(cap);
-
-    // Window grid on the two faces that can be seen from the court.
-    const floors = Math.max(1, Math.floor(h / 3.2));
-    const bays = Math.max(1, Math.floor(w / 2.6));
-    for (let f = 0; f < floors; f++) {
-      for (let b = 0; b < bays; b++) {
-        if (noise(i * 31 + f, b) > spec.litFraction) continue;
-        const pane = MeshBuilder.CreatePlane(`win-${i}-${f}-${b}`, { width: 1.1, height: 1.4 }, scene);
-        const bx = (b + 0.5 - bays / 2) * (w / bays);
-        pane.position.set(
-          x + Math.cos(angle) * bx - Math.sin(angle) * (d / 2 + 0.06),
-          WORLD_Y + 2.2 + f * 3.2,
-          z + Math.sin(angle) * bx + Math.cos(angle) * (d / 2 + 0.06)
-        );
-        pane.rotation.y = angle + Math.PI;
-        windows.push(pane);
+  apply(library: PropLibrary, out: Mesh[]): void {
+    for (const meshes of library.values()) {
+      for (const mesh of meshes) {
+        const matrices = this.slots.get(mesh);
+        if (!matrices || matrices.length === 0) {
+          mesh.dispose();
+          continue;
+        }
+        const buffer = new Float32Array(matrices.length * 16);
+        matrices.forEach((m, idx) => m.copyToArray(buffer, idx * 16));
+        mesh.thinInstanceSetBuffer("matrix", buffer, 16, true);
+        mesh.thinInstanceCount = matrices.length;
+        mesh.thinInstanceRefreshBoundingInfo(true);
+        mesh.alwaysSelectAsActiveMesh = true;
+        out.push(mesh);
       }
     }
   }
-
-  wallTones.forEach((tone, k) => {
-    const mine = walls.filter((_, i) => i % wallTones.length === k);
-    // One tile size for every building: they are merged into a single mesh per
-    // tone, so the UVs are whatever each box was born with and the repeat has
-    // to suit a typical facade rather than any one of them.
-    const mesh = weld(
-      mine,
-      tiled(scene, surface(scene, `city-wall-${k}`, tone, 0.05), spec.wallTile, 24)
-    );
-    if (mesh) out.push(mesh);
-  });
-  const roof = weld(roofs, surface(scene, "city-roof", spec.accent, 0.04));
-  if (roof) out.push(roof);
-  const glass = weld(windows, surface(scene, "city-glass", spec.lit, 0.9));
-  if (glass) out.push(glass);
 }
 
-/** One tree, merged so a forest of them is a single draw call. */
-function treeMesh(scene: Scene, name: string, trunk: Rgb, leaf: Rgb): Mesh {
-  const stem = MeshBuilder.CreateCylinder(`${name}-trunk`, { diameterTop: 0.22, diameterBottom: 0.34, height: 2.6, tessellation: 6 }, scene);
-  stem.position.y = 1.3;
-  const lower = MeshBuilder.CreateSphere(`${name}-a`, { diameter: 3.4, segments: 5 }, scene);
-  lower.position.y = 3.4;
-  const upper = MeshBuilder.CreateSphere(`${name}-b`, { diameter: 2.4, segments: 5 }, scene);
-  upper.position.set(0.5, 4.5, 0.3);
-  // Vertex colours rather than three materials: one mesh, one draw call.
-  for (const [part, colour] of [
-    [stem, trunk],
-    [lower, leaf],
-    [upper, leaf],
-  ] as [Mesh, Rgb][]) {
-    const n = part.getTotalVertices();
-    const data = new Float32Array(n * 4);
-    for (let i = 0; i < n; i++) {
-      data[i * 4] = colour[0];
-      data[i * 4 + 1] = colour[1];
-      data[i * 4 + 2] = colour[2];
-      data[i * 4 + 3] = 1;
+// ---------------------------------------------------------------------------
+// Procedural Geometry & Amenity Builders
+// ---------------------------------------------------------------------------
+
+function buildRoundedLoop(
+  scene: Scene,
+  name: string,
+  innerHalfLen: number,
+  innerHalfWid: number,
+  width: number,
+  radius: number,
+  y: number,
+  material: StandardMaterial,
+  segmentsPerCorner = 12
+): Mesh {
+  const innerPath: Vector3[] = [];
+  const outerPath: Vector3[] = [];
+
+  const rx = Math.max(0.5, Math.min(radius, innerHalfLen - 0.5, innerHalfWid - 0.5));
+  const cx = innerHalfLen - rx;
+  const cz = innerHalfWid - rx;
+
+  const corners = [
+    { x: cx, z: -cz, startAngle: -Math.PI / 2, endAngle: 0 },
+    { x: cx, z: cz, startAngle: 0, endAngle: Math.PI / 2 },
+    { x: -cx, z: cz, startAngle: Math.PI / 2, endAngle: Math.PI },
+    { x: -cx, z: -cz, startAngle: Math.PI, endAngle: (Math.PI * 3) / 2 },
+  ];
+
+  for (const corner of corners) {
+    for (let i = 0; i <= segmentsPerCorner; i++) {
+      const t = i / segmentsPerCorner;
+      const angle = corner.startAngle + (corner.endAngle - corner.startAngle) * t;
+      const cosA = Math.cos(angle);
+      const sinA = Math.sin(angle);
+
+      const ix = corner.x + cosA * rx;
+      const iz = corner.z + sinA * rx;
+      const ox = corner.x + cosA * (rx + width);
+      const oz = corner.z + sinA * (rx + width);
+
+      innerPath.push(new Vector3(ix, y, iz));
+      outerPath.push(new Vector3(ox, y, oz));
     }
-    part.setVerticesData(VertexBuffer.ColorKind, data);
   }
-  return Mesh.MergeMeshes([stem, lower, upper], true, true) ?? stem;
+
+  innerPath.push(innerPath[0].clone());
+  outerPath.push(outerPath[0].clone());
+
+  const ribbon = MeshBuilder.CreateRibbon(
+    name,
+    { pathArray: [innerPath, outerPath], sideOrientation: Mesh.DOUBLESIDE, closePath: true },
+    scene
+  );
+  ribbon.material = material;
+  ribbon.isPickable = false;
+  return ribbon;
 }
 
-/** A palm: a leaning trunk and a crown of fronds. */
-function palmMesh(scene: Scene, name: string, trunk: Rgb, leaf: Rgb): Mesh {
+function buildStraightSegment(
+  scene: Scene,
+  name: string,
+  x1: number,
+  x2: number,
+  z1: number,
+  z2: number,
+  y: number,
+  material: StandardMaterial
+): Mesh {
+  const lenX = Math.abs(x2 - x1);
+  const lenZ = Math.abs(z2 - z1);
+  const centerX = (x1 + x2) / 2;
+  const centerZ = (z1 + z2) / 2;
+
+  const slab = MeshBuilder.CreateBox(
+    name,
+    { width: Math.max(0.1, lenX), height: 0.02, depth: Math.max(0.1, lenZ) },
+    scene
+  );
+  slab.position.set(centerX, y, centerZ);
+  slab.material = material;
+  slab.isPickable = false;
+  return slab;
+}
+
+/** Teak park bench with dark iron legs and armrests. */
+function buildBenchMesh(scene: Scene, name: string): Mesh {
   const parts: Mesh[] = [];
-  const colours: Rgb[] = [];
-  const stem = MeshBuilder.CreateCylinder(`${name}-trunk`, { diameterTop: 0.2, diameterBottom: 0.36, height: 5.2, tessellation: 6 }, scene);
-  stem.position.y = 2.6;
-  stem.rotation.z = 0.12;
-  parts.push(stem);
-  colours.push(trunk);
-  for (let i = 0; i < 7; i++) {
-    const frond = MeshBuilder.CreateBox(`${name}-frond-${i}`, { width: 2.9, height: 0.09, depth: 0.55 }, scene);
-    const a = (i / 7) * Math.PI * 2;
-    frond.position.set(Math.cos(a) * 1.3 - 0.3, 5.1 - Math.abs(Math.sin(a)) * 0.25, Math.sin(a) * 1.3);
-    frond.rotation.set(0, -a, -0.34);
-    parts.push(frond);
-    colours.push(leaf);
+  const woodMat = surface(scene, `${name}-wood`, [0.55, 0.34, 0.18], 0.06);
+  const metalMat = surface(scene, `${name}-metal`, [0.18, 0.2, 0.24], 0.04);
+
+  for (let i = 0; i < 4; i++) {
+    const slat = MeshBuilder.CreateBox(`${name}-seat-${i}`, { width: 1.8, height: 0.04, depth: 0.1 }, scene);
+    slat.position.set(0, 0.44, (i - 1.5) * 0.12);
+    slat.material = woodMat;
+    parts.push(slat);
   }
-  parts.forEach((part, i) => {
-    const n = part.getTotalVertices();
-    const data = new Float32Array(n * 4);
-    for (let k = 0; k < n; k++) {
-      data[k * 4] = colours[i][0];
-      data[k * 4 + 1] = colours[i][1];
-      data[k * 4 + 2] = colours[i][2];
-      data[k * 4 + 3] = 1;
+  for (let i = 0; i < 3; i++) {
+    const slat = MeshBuilder.CreateBox(`${name}-back-${i}`, { width: 1.8, height: 0.1, depth: 0.04 }, scene);
+    slat.position.set(0, 0.65 + i * 0.12, -0.22);
+    slat.material = woodMat;
+    parts.push(slat);
+  }
+  for (const side of [-0.8, 0.8]) {
+    const leg = MeshBuilder.CreateBox(`${name}-leg-${side}`, { width: 0.06, height: 0.45, depth: 0.5 }, scene);
+    leg.position.set(side, 0.22, 0);
+    leg.material = metalMat;
+    parts.push(leg);
+
+    const post = MeshBuilder.CreateBox(`${name}-post-${side}`, { width: 0.06, height: 0.45, depth: 0.06 }, scene);
+    post.position.set(side, 0.62, -0.22);
+    post.material = metalMat;
+    parts.push(post);
+  }
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  return merged ?? parts[0];
+}
+
+/** Victorian park lamppost / lantern. */
+function buildLamppost(scene: Scene, name: string): Mesh {
+  const parts: Mesh[] = [];
+  const metalMat = surface(scene, `${name}-metal`, [0.15, 0.16, 0.18], 0.04);
+  const lightMat = surface(scene, `${name}-light`, [1.0, 0.95, 0.8], 0.8);
+
+  const base = MeshBuilder.CreateCylinder(`${name}-base`, { diameterTop: 0.2, diameterBottom: 0.35, height: 0.4 }, scene);
+  base.position.y = 0.2;
+  base.material = metalMat;
+  parts.push(base);
+
+  const pole = MeshBuilder.CreateCylinder(`${name}-pole`, { diameter: 0.1, height: 3.4 }, scene);
+  pole.position.y = 1.9;
+  pole.material = metalMat;
+  parts.push(pole);
+
+  const head = MeshBuilder.CreateBox(`${name}-head`, { width: 0.35, height: 0.45, depth: 0.35 }, scene);
+  head.position.y = 3.7;
+  head.material = metalMat;
+  parts.push(head);
+
+  const glass = MeshBuilder.CreateBox(`${name}-glass`, { width: 0.26, height: 0.32, depth: 0.26 }, scene);
+  glass.position.y = 3.7;
+  glass.material = lightMat;
+  parts.push(glass);
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  return merged ?? parts[0];
+}
+
+/** Classic decorative stone park fountain. */
+function buildFountain(scene: Scene, name: string): Mesh {
+  const parts: Mesh[] = [];
+  const stoneMat = surface(scene, `${name}-stone`, [0.72, 0.7, 0.66], 0.08);
+  const waterMat = surface(scene, `${name}-water`, [0.2, 0.55, 0.65], 0.25);
+
+  const basin = MeshBuilder.CreateCylinder(`${name}-basin`, { diameter: 5.0, height: 0.5, tessellation: 24 }, scene);
+  basin.position.y = 0.25;
+  basin.material = stoneMat;
+  parts.push(basin);
+
+  const water = MeshBuilder.CreateCylinder(`${name}-water`, { diameter: 4.6, height: 0.05, tessellation: 24 }, scene);
+  water.position.y = 0.45;
+  water.material = waterMat;
+  parts.push(water);
+
+  const pedestal = MeshBuilder.CreateCylinder(`${name}-pedestal`, { diameter: 1.2, height: 1.4 }, scene);
+  pedestal.position.y = 0.9;
+  pedestal.material = stoneMat;
+  parts.push(pedestal);
+
+  const topTier = MeshBuilder.CreateCylinder(`${name}-top`, { diameter: 2.2, height: 0.3 }, scene);
+  topTier.position.y = 1.6;
+  topTier.material = stoneMat;
+  parts.push(topTier);
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  return merged ?? parts[0];
+}
+
+/** Resort wooden ocean pier extending into the water. */
+function buildOceanPier(scene: Scene, name: string, x1: number, x2: number, z1: number, z2: number): Mesh {
+  const parts: Mesh[] = [];
+  const woodMat = surface(scene, `${name}-wood`, [0.62, 0.46, 0.32], 0.06);
+
+  const deckW = Math.abs(x2 - x1);
+  const deckL = Math.abs(z2 - z1);
+  const midX = (x1 + x2) / 2;
+  const midZ = (z1 + z2) / 2;
+
+  const deck = MeshBuilder.CreateBox(`${name}-deck`, { width: deckW, height: 0.12, depth: deckL }, scene);
+  deck.position.set(midX, WORLD_Y + 0.3, midZ);
+  deck.material = woodMat;
+  parts.push(deck);
+
+  // Pilings & railing posts
+  for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z += 4.0) {
+    for (const x of [x1, x2]) {
+      const piling = MeshBuilder.CreateCylinder(`${name}-pile-${x}-${z}`, { diameter: 0.22, height: 2.5 }, scene);
+      piling.position.set(x, WORLD_Y - 0.8, z);
+      piling.material = woodMat;
+      parts.push(piling);
+
+      const post = MeshBuilder.CreateBox(`${name}-post-${x}-${z}`, { width: 0.1, height: 0.9, depth: 0.1 }, scene);
+      post.position.set(x, WORLD_Y + 0.75, z);
+      post.material = woodMat;
+      parts.push(post);
     }
-    part.setVerticesData(VertexBuffer.ColorKind, data);
-  });
-  return Mesh.MergeMeshes(parts, true, true) ?? stem;
+  }
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  return merged ?? parts[0];
 }
 
-/** How a scattered prop is turned to face. */
-type Facing =
-  /** Any which way — trees, bushes, anything with no front. */
-  | "any"
-  /** Front toward the court: houses look at what they surround. */
-  | "inward"
-  /** Along the ring, like traffic on a road that curves around the site. */
-  | "along";
+/** Striped beach umbrella parasol. */
+function buildUmbrellaMesh(scene: Scene, name: string, c1: Rgb, c2: Rgb): Mesh {
+  const parts: Mesh[] = [];
+  const mat1 = surface(scene, `${name}-c1`, c1, 0.14);
+  const mat2 = surface(scene, `${name}-c2`, c2, 0.14);
+  const poleMat = surface(scene, `${name}-pole`, [0.88, 0.88, 0.9], 0.08);
 
-interface Scatter {
-  count: number;
-  /** Ring the props are spread between, in metres from the table. */
-  inner: number;
-  outer: number;
-  facing: Facing;
-  /** Multiplies the prop's own size; the spread is 1 +/- this. */
-  vary: number;
-  /** Changes the layout without changing anything else about it. */
-  seed: number;
-  /**
-   * How many distinct models to draw from.
-   *
-   * This is a draw-call budget, not a variety knob. Every model used is one
-   * more draw call however many copies it has, so twenty houses placed from
-   * twenty models cost twenty calls and buy nothing a phone can see — six
-   * models at varied scale and rotation read the same at forty metres for a
-   * third of the cost. The rest are disposed.
-   */
-  models: number;
+  const pole = MeshBuilder.CreateCylinder(`${name}-pole`, { diameter: 0.06, height: 2.5 }, scene);
+  pole.position.y = 1.25;
+  pole.material = poleMat;
+  parts.push(pole);
+
+  const canopy = MeshBuilder.CreateCylinder(
+    `${name}-canopy`,
+    { diameterTop: 0.1, diameterBottom: 2.8, height: 0.55, tessellation: 8 },
+    scene
+  );
+  canopy.position.y = 2.3;
+  canopy.material = mat1;
+  parts.push(canopy);
+
+  const trim = MeshBuilder.CreateCylinder(
+    `${name}-trim`,
+    { diameterTop: 2.78, diameterBottom: 2.82, height: 0.15, tessellation: 8 },
+    scene
+  );
+  trim.position.y = 2.05;
+  trim.material = mat2;
+  parts.push(trim);
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  return merged ?? parts[0];
 }
 
-/**
- * Spread a set of props around the site as thin instances.
- *
- * Props are dealt round-robin from the set so a run of houses is not the same
- * house repeated, and each one collects the instances that fall to it — so a
- * street of forty buildings costs one draw call per distinct model, not forty.
- *
- * Everything is derived from `noise`, never `Math.random`: the same world has
- * to appear on both peers of an online match and in every screenshot run.
- */
-function scatterProps(available: Mesh[], spec: Scatter): Mesh[] {
-  // Spread the choice across the set rather than taking the first few, so a
-  // budget of six houses is six different-looking houses.
-  const stride = Math.max(1, Math.floor(available.length / spec.models));
-  const props = available.filter((_, i) => i % stride === 0).slice(0, spec.models);
-  for (const unused of available) {
-    if (!props.includes(unused)) unused.dispose();
+/** Teak beach sunbed lounger with cushion. */
+function buildSunLounger(scene: Scene, name: string, cushionColor: Rgb): Mesh {
+  const parts: Mesh[] = [];
+  const woodMat = surface(scene, `${name}-wood`, [0.65, 0.48, 0.32], 0.06);
+  const cushionMat = surface(scene, `${name}-cushion`, cushionColor, 0.1);
+
+  const frame = MeshBuilder.CreateBox(`${name}-frame`, { width: 0.8, height: 0.25, depth: 2.0 }, scene);
+  frame.position.y = 0.125;
+  frame.material = woodMat;
+  parts.push(frame);
+
+  const cushion = MeshBuilder.CreateBox(`${name}-cushion`, { width: 0.72, height: 0.08, depth: 1.9 }, scene);
+  cushion.position.y = 0.28;
+  cushion.material = cushionMat;
+  parts.push(cushion);
+
+  const headrest = MeshBuilder.CreateBox(`${name}-head`, { width: 0.72, height: 0.14, depth: 0.5 }, scene);
+  headrest.position.set(0, 0.38, -0.65);
+  headrest.rotation.x = -0.35;
+  headrest.material = cushionMat;
+  parts.push(headrest);
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  return merged ?? parts[0];
+}
+
+/** Colorful surfboard planted in sand. */
+function buildSurfboard(scene: Scene, name: string, c: Rgb): Mesh {
+  const board = MeshBuilder.CreateBox(name, { width: 0.5, height: 2.2, depth: 0.08 }, scene);
+  board.material = surface(scene, `${name}-mat`, c, 0.18);
+  return board;
+}
+
+/** Stilted wooden beach lifeguard watchtower. */
+function buildLifeguardTower(scene: Scene, name: string): Mesh {
+  const parts: Mesh[] = [];
+  const woodMat = surface(scene, `${name}-wood`, [0.85, 0.82, 0.75], 0.08);
+  const roofMat = surface(scene, `${name}-roof`, [0.18, 0.42, 0.65], 0.1);
+
+  for (const [x, z] of [[-1.2, -1.2], [1.2, -1.2], [-1.2, 1.2], [1.2, 1.2]]) {
+    const post = MeshBuilder.CreateCylinder(`${name}-post-${x}-${z}`, { diameter: 0.18, height: 3.8 }, scene);
+    post.position.set(x, 1.9, z);
+    post.material = woodMat;
+    parts.push(post);
   }
-  if (props.length === 0) return [];
-  const slots: Matrix[][] = props.map(() => []);
-  for (let i = 0; i < spec.count; i++) {
-    const s = noise(i + spec.seed, spec.seed * 3 + 1);
-    const s2 = noise(i * 5 + spec.seed, spec.seed + 7);
-    const s3 = noise(i * 13 + spec.seed, spec.seed * 2 + 3);
-    const angle = (i / spec.count) * Math.PI * 2 + (s - 0.5) * (Math.PI / spec.count);
-    const radius = spec.inner + s2 * (spec.outer - spec.inner);
-    const scale = 1 + (s3 - 0.5) * 2 * spec.vary;
-    // A house's front is its -z face, so pointing +z outward faces it inward.
-    const yaw =
-      spec.facing === "any"
-        ? s * Math.PI * 2
-        : spec.facing === "inward"
-          ? Math.PI / 2 - angle + (s3 - 0.5) * 0.25
-          : -angle + (s3 < 0.5 ? 0 : Math.PI);
-    slots[i % props.length].push(
-      Matrix.Compose(
-        new Vector3(scale, scale, scale),
-        Quaternion.RotationYawPitchRoll(yaw, 0, 0),
-        new Vector3(Math.cos(angle) * radius, WORLD_Y, Math.sin(angle) * radius)
-      )
-    );
+
+  const floor = MeshBuilder.CreateBox(`${name}-deck`, { width: 3.0, height: 0.15, depth: 3.0 }, scene);
+  floor.position.y = 3.2;
+  floor.material = woodMat;
+  parts.push(floor);
+
+  const cabin = MeshBuilder.CreateBox(`${name}-cabin`, { width: 2.2, height: 1.8, depth: 2.2 }, scene);
+  cabin.position.y = 4.15;
+  cabin.material = woodMat;
+  parts.push(cabin);
+
+  const roof = MeshBuilder.CreateCylinder(`${name}-roof`, { diameterTop: 0.2, diameterBottom: 3.6, height: 0.8, tessellation: 4 }, scene);
+  roof.position.y = 5.4;
+  roof.rotation.y = Math.PI / 4;
+  roof.material = roofMat;
+  parts.push(roof);
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  return merged ?? parts[0];
+}
+
+/** Beach towel on sand. */
+function buildBeachTowel(scene: Scene, name: string, c: Rgb): Mesh {
+  const towel = MeshBuilder.CreateBox(name, { width: 1.8, height: 0.01, depth: 0.9 }, scene);
+  towel.material = surface(scene, `${name}-mat`, c, 0.1);
+  return towel;
+}
+
+/** Smooth beach rock boulder. */
+function buildRock(scene: Scene, name: string, radius: number): Mesh {
+  const rock = MeshBuilder.CreateSphere(name, { diameterX: radius * 2, diameterY: radius * 1.2, diameterZ: radius * 1.6, segments: 4 }, scene);
+  rock.material = surface(scene, `${name}-mat`, [0.52, 0.48, 0.44], 0.04);
+  return rock;
+}
+
+/** Small wooden rowboat resting on the sand shoreline. */
+function buildRowboat(scene: Scene, name: string): Mesh {
+  const parts: Mesh[] = [];
+  const hullMat = surface(scene, `${name}-hull`, [0.42, 0.28, 0.18], 0.05);
+  const seatMat = surface(scene, `${name}-seat`, [0.72, 0.6, 0.45], 0.06);
+
+  const hull = MeshBuilder.CreateBox(`${name}-hull`, { width: 3.2, height: 0.6, depth: 1.3 }, scene);
+  hull.position.y = 0.3;
+  hull.material = hullMat;
+  parts.push(hull);
+
+  for (const pos of [-0.8, 0, 0.8]) {
+    const seat = MeshBuilder.CreateBox(`${name}-seat-${pos}`, { width: 0.25, height: 0.04, depth: 1.18 }, scene);
+    seat.position.set(pos, 0.45, 0);
+    seat.material = seatMat;
+    parts.push(seat);
   }
-  const used: Mesh[] = [];
-  props.forEach((prop, i) => {
-    const matrices = slots[i];
-    if (matrices.length === 0) {
-      // A prop nothing was dealt to would otherwise still be drawn, once, at
-      // the origin — which is the middle of the court.
-      prop.dispose();
-      return;
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  return merged ?? parts[0];
+}
+
+// ---------------------------------------------------------------------------
+// Environment 1: GREEN PARK ("THE PARK")
+// ---------------------------------------------------------------------------
+
+function buildGreenPark(scene: Scene, _spec: Surrounds, props: PropLibrary, out: Mesh[]): void {
+  const pathMat = surface(scene, "park-path-mat", [0.82, 0.78, 0.68], 0.08);
+
+  // 1. Central park promenade surrounding the fence
+  const loop = buildRoundedLoop(
+    scene,
+    "park-loop",
+    SITE_HALF_LEN + 1.2, // 15.6m
+    SITE_HALF_WID + 1.2, // 11.35m
+    3.0,
+    4.0,
+    WORLD_Y + 0.02,
+    pathMat
+  );
+  out.push(loop);
+
+  // 2. Connecting park avenues
+  const southAvenue = buildStraightSegment(scene, "park-south-ave", -(SITE_HALF_LEN + 1.2), -48.0, -1.8, 1.8, WORLD_Y + 0.02, pathMat);
+  out.push(southAvenue);
+
+  const northAvenue = buildStraightSegment(scene, "park-north-ave", SITE_HALF_LEN + 1.2, 48.0, -1.8, 1.8, WORLD_Y + 0.02, pathMat);
+  out.push(northAvenue);
+
+  const westAvenue = buildStraightSegment(scene, "park-west-ave", -1.8, 1.8, SITE_HALF_WID + 1.2, 40.0, WORLD_Y + 0.02, pathMat);
+  out.push(westAvenue);
+
+  const eastAvenue = buildStraightSegment(scene, "park-east-ave", -1.8, 1.8, -(SITE_HALF_WID + 1.2), -40.0, WORLD_Y + 0.02, pathMat);
+  out.push(eastAvenue);
+
+  // 3. Central decorative fountain at North trail plaza
+  const fountain = buildFountain(scene, "park-fountain");
+  fountain.position.set(28.0, WORLD_Y, 0);
+  out.push(fountain);
+
+  // 4. Park Lampposts along avenues
+  const lampposts: Mesh[] = [];
+  const lampPositions = [
+    { x: -18.5, z: 2.8 },
+    { x: -30.0, z: 2.8 },
+    { x: -42.0, z: 2.8 },
+    { x: 18.5, z: 2.8 },
+    { x: 30.0, z: 2.8 },
+    { x: 42.0, z: 2.8 },
+    { x: 0, z: 14.5 },
+    { x: 0, z: 26.0 },
+    { x: 0, z: -14.5 },
+    { x: 0, z: -26.0 },
+  ];
+  for (let i = 0; i < lampPositions.length; i++) {
+    const lp = lampPositions[i];
+    const lamp = buildLamppost(scene, `park-lamp-${i}`);
+    lamp.position.set(lp.x, WORLD_Y, lp.z);
+    lampposts.push(lamp);
+  }
+  const mergedLamps = Mesh.MergeMeshes(lampposts, true, true, undefined, false, true);
+  if (mergedLamps) out.push(mergedLamps);
+
+  // 5. Teak park benches along the promenade
+  const benches: Mesh[] = [];
+  const benchPositions = [
+    { x: 6.0, z: 15.0, yaw: -Math.PI / 2 },
+    { x: -6.0, z: 15.0, yaw: -Math.PI / 2 },
+    { x: 6.0, z: -15.0, yaw: Math.PI / 2 },
+    { x: -6.0, z: -15.0, yaw: Math.PI / 2 },
+    { x: -19.0, z: 6.0, yaw: 0 },
+    { x: -19.0, z: -6.0, yaw: 0 },
+    { x: 19.0, z: 6.0, yaw: Math.PI },
+    { x: 19.0, z: -6.0, yaw: Math.PI },
+  ];
+  for (let i = 0; i < benchPositions.length; i++) {
+    const bp = benchPositions[i];
+    const bench = buildBenchMesh(scene, `park-bench-${i}`);
+    bench.position.set(bp.x, WORLD_Y, bp.z);
+    bench.rotation.y = bp.yaw;
+    benches.push(bench);
+  }
+  const mergedBenches = Mesh.MergeMeshes(benches, true, true, undefined, false, true);
+  if (mergedBenches) out.push(mergedBenches);
+
+  // 6. Realistic Plantings & Forest Belts (Plants.glb) - Clear of the site
+  const batch = new PropBatch();
+  const trees = props.get("tree") ?? [];
+  const bushes = props.get("bush") ?? [];
+
+  if (trees.length > 0) {
+    const treeCoords = [
+      // North park forest & grove (X >= 22m)
+      [26.0, -18.0], [26.0, 18.0], [32.0, -26.0], [34.0, -14.0], [34.0, 14.0], [32.0, 26.0],
+      [42.0, -28.0], [44.0, -16.0], [44.0, 0.0], [44.0, 16.0], [42.0, 28.0],
+      // South park forest & grove (X <= -22m)
+      [-26.0, -18.0], [-26.0, 18.0], [-32.0, -26.0], [-34.0, -14.0], [-34.0, 14.0], [-32.0, 26.0],
+      [-42.0, -28.0], [-44.0, -16.0], [-44.0, 0.0], [-44.0, 16.0], [-42.0, 28.0],
+      // West perimeter woodland (Z >= 16m)
+      [-18.0, 20.0], [-6.0, 22.0], [6.0, 22.0], [18.0, 20.0],
+      [-24.0, 32.0], [-12.0, 34.0], [0.0, 35.0], [12.0, 34.0], [24.0, 32.0],
+      // East perimeter woodland (Z <= -16m)
+      [-18.0, -20.0], [-6.0, -22.0], [6.0, -22.0], [18.0, -20.0],
+      [-24.0, -32.0], [-12.0, -34.0], [0.0, -35.0], [12.0, -34.0], [24.0, -32.0],
+    ];
+
+    for (let i = 0; i < treeCoords.length; i++) {
+      const [tx, tz] = treeCoords[i];
+      if (isInsideSite(tx, tz, 4.0)) continue;
+      const s = 0.95 + noise(i, 7) * 0.25;
+      const yaw = noise(i * 3, 11) * Math.PI * 2;
+      batch.add(trees[i % trees.length], tx, tz, { yaw, scale: s });
     }
-    const buffer = new Float32Array(matrices.length * 16);
-    matrices.forEach((m, k) => m.copyToArray(buffer, k * 16));
-    prop.thinInstanceSetBuffer("matrix", buffer, 16, true);
-    used.push(prop);
-  });
-  return used;
+  }
+
+  // Ornamental hedges and flower beds along paths
+  if (bushes.length > 0) {
+    const bushCoords = [
+      // Symmetrical avenue hedges
+      [-20.0, 3.2], [-26.0, 3.2], [-32.0, 3.2], [-38.0, 3.2],
+      [-20.0, -3.2], [-26.0, -3.2], [-32.0, -3.2], [-38.0, -3.2],
+      [20.0, 3.2], [24.0, 3.2], [32.0, 3.2], [36.0, 3.2],
+      [20.0, -3.2], [24.0, -3.2], [32.0, -3.2], [36.0, -3.2],
+      // Promenade corner shrubs
+      [20.0, 14.5], [20.0, -14.5], [-20.0, 14.5], [-20.0, -14.5],
+    ];
+    for (let i = 0; i < bushCoords.length; i++) {
+      const [bx, bz] = bushCoords[i];
+      if (isInsideSite(bx, bz, 3.0)) continue;
+      const s = 0.9 + noise(i * 5, 13) * 0.28;
+      const yaw = noise(i * 7, 19) * Math.PI * 2;
+      batch.add(bushes[i % bushes.length], bx, bz, { yaw, scale: s });
+    }
+  }
+
+  batch.apply(props, out);
 }
 
-/** Sea, sand and palms. */
+// ---------------------------------------------------------------------------
+// Environment 2: BEACH ("THE BASELINE")
+// ---------------------------------------------------------------------------
+
 function buildBeach(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[]): void {
-  // The sea starts beyond the site and runs to the horizon on one side, so
-  // there is a shoreline to read rather than a ring of water.
-  const sea = MeshBuilder.CreateGround("sea", { width: WORLD_RADIUS * 2, height: WORLD_RADIUS * 1.4 }, scene);
-  sea.position.set(0, WORLD_Y + 0.02, -(WORLD_RADIUS * 0.7 + 34));
-  const seaMat = tiled(scene, surface(scene, "sea", spec.accent, 0.16), spec.accentTile, WORLD_RADIUS);
-  seaMat.specularColor = new Color3(0.35, 0.4, 0.45);
-  seaMat.specularPower = 64;
+  const woodMat = surface(scene, "beach-boardwalk-mat", [0.68, 0.52, 0.36], 0.08);
+
+  // 1. Ocean surface on East side (-Z)
+  const sea = MeshBuilder.CreateGround("sea", { width: WORLD_RADIUS * 2, height: WORLD_RADIUS }, scene);
+  sea.position.set(0, WORLD_Y + 0.02, -(22 + WORLD_RADIUS / 2));
+  const seaMat = tiled(scene, surface(scene, "sea-mat", spec.accent, 0.18), spec.accentTile, WORLD_RADIUS);
+  seaMat.specularColor = new Color3(0.4, 0.48, 0.55);
+  seaMat.specularPower = 48;
   sea.material = seaMat;
   sea.isPickable = false;
   out.push(sea);
 
-  // A line of foam where they meet.
-  const foam = MeshBuilder.CreateGround("foam", { width: WORLD_RADIUS * 2, height: 2.2 }, scene);
-  foam.position.set(0, WORLD_Y + 0.04, -34);
-  foam.material = surface(scene, "foam", spec.lit, 0.4);
+  // Foaming surf along the shoreline
+  const foam = MeshBuilder.CreateGround("foam", { width: WORLD_RADIUS * 2, height: 2.6 }, scene);
+  foam.position.set(0, WORLD_Y + 0.03, -22.0);
+  foam.material = surface(scene, "foam-mat", spec.lit, 0.35);
   foam.isPickable = false;
   out.push(foam);
 
-  const palms = props.get("palm") ?? [];
-  if (palms.length > 0) {
-    // Kept inside the shoreline at z = -34: the ring is a radius, so the far
-    // side of a wider one stands in the sea.
-    out.push(...scatterProps(palms, { count: spec.count, inner: SITE_RADIUS + 3, outer: 30, facing: "any", vary: 0.2, seed: 12, models: 4 }));
-    out.push(
-      ...scatterProps(props.get("bush") ?? [], {
-        // Bushes are small, but two of them still ended up on the centre
-        // court: the site radius is the fence, and a prop placed at it stands
-        // in the run-off inside. Everything starts outside the fence now.
-        count: 24, inner: SITE_RADIUS + 6, outer: 31, facing: "any", vary: 0.3, seed: 44, models: 2,
-      })
-    );
-    return;
-  }
-
-  const palm = palmMesh(scene, "palm", spec.palette[0], spec.palette[1] ?? spec.palette[0]);
-  palm.material = surface(scene, "palm-mat", [1, 1, 1], 0.05);
-  palm.useVertexColors = true;
-  out.push(
-    ...scatterProps([palm], { count: spec.count, inner: SITE_RADIUS + 3, outer: 30, facing: "any", vary: 0.3, seed: 4, models: 1 })
+  // 2. Teak Boardwalk loop surrounding the fence
+  const boardwalk = buildRoundedLoop(
+    scene,
+    "beach-boardwalk",
+    SITE_HALF_LEN + 1.2,
+    SITE_HALF_WID + 1.2,
+    3.2,
+    4.0,
+    WORLD_Y + 0.04,
+    woodMat
   );
+  out.push(boardwalk);
+
+  // South entrance boardwalk
+  const southWalk = buildStraightSegment(scene, "beach-south-walk", -(SITE_HALF_LEN + 1.2), -45.0, -1.8, 1.8, WORLD_Y + 0.04, woodMat);
+  out.push(southWalk);
+
+  // 3. Wooden Ocean Pier / Sun Deck extending over the water
+  const pier = buildOceanPier(scene, "beach-pier", -4.0, 4.0, -(SITE_HALF_WID + 1.2), -38.0);
+  out.push(pier);
+
+  // 4. Stilted Lifeguard Watchtower on the dunes
+  const tower = buildLifeguardTower(scene, "beach-tower");
+  tower.position.set(-26.0, WORLD_Y, 20.0);
+  out.push(tower);
+
+  // 5. Resort Beach Life: Parasols, Loungers, Surfboards, Rowboat, Boulders
+  const beachProps: Mesh[] = [];
+
+  // Luxury Beach Lounge 1 (North-East Beachfront)
+  const umb1 = buildUmbrellaMesh(scene, "umb-1", [0.88, 0.2, 0.18], [0.94, 0.94, 0.96]);
+  umb1.position.set(10.0, WORLD_Y, -17.5);
+  beachProps.push(umb1);
+
+  const bed1 = buildSunLounger(scene, "bed-1", [0.92, 0.45, 0.15]);
+  bed1.position.set(9.0, WORLD_Y, -18.5);
+  bed1.rotation.y = 0.15;
+  beachProps.push(bed1);
+
+  const bed2 = buildSunLounger(scene, "bed-2", [0.92, 0.45, 0.15]);
+  bed2.position.set(11.0, WORLD_Y, -18.5);
+  bed2.rotation.y = -0.15;
+  beachProps.push(bed2);
+
+  const towel1 = buildBeachTowel(scene, "towel-1", [0.15, 0.65, 0.85]);
+  towel1.position.set(10.0, WORLD_Y + 0.02, -19.8);
+  beachProps.push(towel1);
+
+  // Luxury Beach Lounge 2 (South-East Beachfront)
+  const umb2 = buildUmbrellaMesh(scene, "umb-2", [0.15, 0.45, 0.75], [0.94, 0.94, 0.96]);
+  umb2.position.set(-14.0, WORLD_Y, -17.5);
+  beachProps.push(umb2);
+
+  const bed3 = buildSunLounger(scene, "bed-3", [0.18, 0.65, 0.78]);
+  bed3.position.set(-13.0, WORLD_Y, -18.5);
+  bed3.rotation.y = 0.2;
+  beachProps.push(bed3);
+
+  const bed4 = buildSunLounger(scene, "bed-4", [0.18, 0.65, 0.78]);
+  bed4.position.set(-15.0, WORLD_Y, -18.5);
+  bed4.rotation.y = -0.2;
+  beachProps.push(bed4);
+
+  const towel2 = buildBeachTowel(scene, "towel-2", [0.92, 0.35, 0.25]);
+  towel2.position.set(-14.0, WORLD_Y + 0.02, -19.8);
+  beachProps.push(towel2);
+
+  // Pier deck loungers
+  const pierLounger1 = buildSunLounger(scene, "pier-bed-1", [0.94, 0.94, 0.96]);
+  pierLounger1.position.set(-2.0, WORLD_Y + 0.35, -28.0);
+  pierLounger1.rotation.y = Math.PI / 2;
+  beachProps.push(pierLounger1);
+
+  const pierLounger2 = buildSunLounger(scene, "pier-bed-2", [0.94, 0.94, 0.96]);
+  pierLounger2.position.set(2.0, WORLD_Y + 0.35, -28.0);
+  pierLounger2.rotation.y = -Math.PI / 2;
+  beachProps.push(pierLounger2);
+
+  // Surfboards planted in the sand
+  const surf1 = buildSurfboard(scene, "surf-1", [0.95, 0.25, 0.15]);
+  surf1.position.set(16.0, WORLD_Y + 0.8, -15.0);
+  surf1.rotation.set(0.18, 0.4, 0.12);
+  beachProps.push(surf1);
+
+  const surf2 = buildSurfboard(scene, "surf-2", [0.15, 0.7, 0.85]);
+  surf2.position.set(16.6, WORLD_Y + 0.8, -14.6);
+  surf2.rotation.set(0.15, 0.6, -0.08);
+  beachProps.push(surf2);
+
+  // Beached wooden rowboat
+  const boat = buildRowboat(scene, "beach-boat");
+  boat.position.set(24.0, WORLD_Y, -20.0);
+  boat.rotation.y = -0.45;
+  beachProps.push(boat);
+
+  // Coastal Boulders
+  const rockCoords = [
+    { x: 20.0, z: -15.0, r: 1.1 },
+    { x: -10.0, z: -20.0, r: 1.3 },
+    { x: -28.0, z: -20.5, r: 1.6 },
+    { x: 22.0, z: 18.0, r: 0.9 },
+    { x: -22.0, z: 18.0, r: 0.9 },
+  ];
+  for (let i = 0; i < rockCoords.length; i++) {
+    const rc = rockCoords[i];
+    const rock = buildRock(scene, `beach-rock-${i}`, rc.r);
+    rock.position.set(rc.x, WORLD_Y + rc.r * 0.4, rc.z);
+    rock.rotation.set(noise(i, 3), noise(i, 5), noise(i, 7));
+    beachProps.push(rock);
+  }
+
+  const mergedBeachProps = Mesh.MergeMeshes(beachProps, true, true, undefined, false, true);
+  if (mergedBeachProps) out.push(mergedBeachProps);
+
+  // 6. Tropical Coconut Palms (Props.glb) - Kept well clear of the site
+  const batch = new PropBatch();
+  const palms = props.get("palm") ?? [];
+  const bushes = props.get("bush") ?? [];
+
+  if (palms.length > 0) {
+    const palmCoords = [
+      // Beachfront shoreline palms (Z <= -17m)
+      [18.0, -17.5], [12.0, -18.5], [-8.0, -18.5], [-18.0, -17.5], [-24.0, -18.5],
+      // North sandy palms (X >= 22m)
+      [24.0, 2.0], [28.0, -8.0], [26.0, 10.0], [32.0, 18.0], [30.0, -14.0],
+      // West dune palms (Z >= 18m)
+      [16.0, 22.0], [6.0, 24.0], [-6.0, 24.0], [-16.0, 22.0], [-24.0, 24.0],
+      [20.0, 32.0], [4.0, 34.0], [-8.0, 34.0], [-20.0, 32.0],
+      // South promenade palms (X <= -22m)
+      [-26.0, 6.0], [-30.0, -8.0], [-32.0, 12.0], [-34.0, -16.0],
+    ];
+
+    for (let i = 0; i < palmCoords.length; i++) {
+      const [px, pz] = palmCoords[i];
+      if (isInsideSite(px, pz, 3.5)) continue;
+      const s = 0.92 + noise(i, 11) * 0.24;
+      const yaw = noise(i * 5, 17) * Math.PI * 2;
+      batch.add(palms[i % palms.length], px, pz, { yaw, scale: s });
+    }
+  }
+
+  // Coastal shrubs
+  if (bushes.length > 0) {
+    const bushCoords = [
+      [24.0, 16.0], [18.0, 22.0], [-18.0, 22.0], [-24.0, 16.0],
+      [16.0, 12.0], [-16.0, 12.0], [-26.0, 2.0], [-30.0, 2.0],
+    ];
+    for (let i = 0; i < bushCoords.length; i++) {
+      const [bx, bz] = bushCoords[i];
+      if (isInsideSite(bx, bz, 2.0)) continue;
+      const s = 0.85 + noise(i * 3, 7) * 0.3;
+      const yaw = noise(i * 11, 23) * Math.PI * 2;
+      batch.add(bushes[i % bushes.length], bx, bz, { yaw, scale: s });
+    }
+  }
+
+  batch.apply(props, out);
 }
 
-/** Grass, hedges and trees. */
-function buildPark(scene: Scene, spec: Surrounds, props: PropLibrary, out: Mesh[]): void {
+// ---------------------------------------------------------------------------
+// Environment 3: CITY PARK ("THE CAGE")
+// ---------------------------------------------------------------------------
+
+function buildCityPark(scene: Scene, _spec: Surrounds, props: PropLibrary, out: Mesh[]): void {
+  const roadMat = surface(scene, "city-road-mat", [0.16, 0.17, 0.2], 0.05);
+  const yellowLineMat = surface(scene, "city-yellow-mat", [0.92, 0.76, 0.14], 0.15);
+  const whiteLineMat = surface(scene, "city-white-mat", [0.95, 0.95, 0.98], 0.15);
+  const sidewalkMat = surface(scene, "city-sidewalk-mat", [0.65, 0.66, 0.7], 0.08);
+
+  const roadParts: Mesh[] = [];
+  const yellowParts: Mesh[] = [];
+  const whiteParts: Mesh[] = [];
+  const sidewalkParts: Mesh[] = [];
+
+  const ROAD_W = 9.0;
+  const ROAD_NORTH_X = 38.0;
+  const ROAD_SOUTH_X = -38.0;
+  const ROAD_WEST_Z = 34.0;
+  const ROAD_EAST_Z = -34.0;
+
+  // 1. Perimeter Metropolitan Avenue Loop
+  for (const rx of [ROAD_NORTH_X, ROAD_SOUTH_X]) {
+    const road = MeshBuilder.CreateBox(`road-x-${rx}`, { width: ROAD_W, height: 0.02, depth: 104 }, scene);
+    road.position.set(rx, WORLD_Y + 0.01, 0);
+    roadParts.push(road);
+
+    for (let z = -48; z <= 48; z += 4.0) {
+      const dash = MeshBuilder.CreateBox(`dash-x-${rx}-${z}`, { width: 0.16, height: 0.022, depth: 2.0 }, scene);
+      dash.position.set(rx, WORLD_Y + 0.02, z);
+      yellowParts.push(dash);
+    }
+  }
+
+  for (const rz of [ROAD_WEST_Z, ROAD_EAST_Z]) {
+    const road = MeshBuilder.CreateBox(`road-z-${rz}`, { width: 104, height: 0.02, depth: ROAD_W }, scene);
+    road.position.set(0, WORLD_Y + 0.01, rz);
+    roadParts.push(road);
+
+    for (let x = -48; x <= 48; x += 4.0) {
+      const dash = MeshBuilder.CreateBox(`dash-z-${rz}-${x}`, { width: 2.0, height: 0.022, depth: 0.16 }, scene);
+      dash.position.set(x, WORLD_Y + 0.02, rz);
+      yellowParts.push(dash);
+    }
+  }
+
+  // Pedestrian Zebra Crosswalks at 4 intersections
+  for (const cw of [
+    { x: ROAD_NORTH_X, z: ROAD_WEST_Z },
+    { x: ROAD_NORTH_X, z: ROAD_EAST_Z },
+    { x: ROAD_SOUTH_X, z: ROAD_WEST_Z },
+    { x: ROAD_SOUTH_X, z: ROAD_EAST_Z },
+  ]) {
+    for (let k = -2.8; k <= 2.8; k += 0.9) {
+      const stripe = MeshBuilder.CreateBox(`zebra-${cw.x}-${cw.z}-${k}`, { width: ROAD_W - 1.0, height: 0.025, depth: 0.45 }, scene);
+      stripe.position.set(cw.x, WORLD_Y + 0.02, cw.z + k);
+      whiteParts.push(stripe);
+    }
+  }
+
+  // 2. Concrete Urban Plaza & Sidewalks surrounding the fence
+  const sidewalkHeight = 0.12;
+
+  const courtPlaza = buildRoundedLoop(
+    scene,
+    "city-court-plaza",
+    SITE_HALF_LEN + 1.2,
+    SITE_HALF_WID + 1.2,
+    3.5,
+    4.0,
+    WORLD_Y + sidewalkHeight,
+    sidewalkMat
+  );
+  out.push(courtPlaza);
+
+  // Connecting paved avenues from streets to cage
+  for (const pos of [
+    { x: 26.5, z: 0, w: 14.0, d: 5.0 },
+    { x: -26.5, z: 0, w: 14.0, d: 5.0 },
+    { x: 0, z: 22.0, w: 5.0, d: 14.0 },
+    { x: 0, z: -22.0, w: 5.0, d: 14.0 },
+  ]) {
+    const walk = MeshBuilder.CreateBox(`plaza-ave-${pos.x}-${pos.z}`, { width: pos.w, height: sidewalkHeight, depth: pos.d }, scene);
+    walk.position.set(pos.x, WORLD_Y + sidewalkHeight / 2, pos.z);
+    sidewalkParts.push(walk);
+  }
+
+  const mergedRoads = weld(roadParts, roadMat);
+  if (mergedRoads) out.push(mergedRoads);
+
+  const mergedYellow = weld(yellowParts, yellowLineMat);
+  if (mergedYellow) out.push(mergedYellow);
+
+  const mergedWhite = weld(whiteParts, whiteLineMat);
+  if (mergedWhite) out.push(mergedWhite);
+
+  const mergedSidewalks = weld(sidewalkParts, sidewalkMat);
+  if (mergedSidewalks) out.push(mergedSidewalks);
+
+  // 3. Modern Urban Street Benches
+  const benches: Mesh[] = [];
+  for (const bp of [
+    { x: 6.0, z: 15.0, yaw: -Math.PI / 2 },
+    { x: -6.0, z: 15.0, yaw: -Math.PI / 2 },
+    { x: 6.0, z: -15.0, yaw: Math.PI / 2 },
+    { x: -6.0, z: -15.0, yaw: Math.PI / 2 },
+  ]) {
+    const bench = buildBenchMesh(scene, `city-bench-${bp.x}-${bp.z}`);
+    bench.position.set(bp.x, WORLD_Y + sidewalkHeight, bp.z);
+    bench.rotation.y = bp.yaw;
+    benches.push(bench);
+  }
+  const mergedBenches = Mesh.MergeMeshes(benches, true, true, undefined, false, true);
+  if (mergedBenches) out.push(mergedBenches);
+
+  // 4. Metropolitan High-Rise Skyline (Buildings.glb) & Street Landscaping
+  const batch = new PropBatch();
+  const buildings = props.get("house") ?? [];
   const trees = props.get("tree") ?? [];
-  if (trees.length > 0) {
-    out.push(
-      ...scatterProps(trees, {
-        // Same clearance as the city's trees: a canopy that overhangs the
-        // fence reads as a tree standing on the court.
-        count: spec.count, inner: SITE_RADIUS + 18, outer: SITE_RADIUS + 46, facing: "any", vary: 0.28, seed: 9, models: 6,
-      })
-    );
-    // Undergrowth close in, doing the job the hedge ring below was built for:
-    // giving the middle distance something to sit against so the trees do not
-    // float on flat green. Real planting beats the box hedge it replaces, so
-    // the hedge is now only the fallback's companion.
-    out.push(
-      ...scatterProps(props.get("bush") ?? [], {
-        count: 30, inner: SITE_RADIUS + 2, outer: SITE_RADIUS + 26, facing: "any", vary: 0.35, seed: 63, models: 2,
-      })
-    );
-    return;
-  }
-  {
-    const tree = treeMesh(scene, "tree", spec.palette[0], spec.palette[1] ?? spec.palette[0]);
-    tree.material = surface(scene, "tree-mat", [1, 1, 1], 0.05);
-    tree.useVertexColors = true;
-    out.push(
-      ...scatterProps([tree], {
-        count: spec.count, inner: SITE_RADIUS + 4, outer: SITE_RADIUS + 42, facing: "any", vary: 0.35, seed: 9, models: 1,
-      })
-    );
+  const bushes = props.get("bush") ?? [];
+
+  // Frame the park with impressive metropolitan skyscraper/city blocks along the streets
+  if (buildings.length > 0) {
+    const buildingPositions = [
+      // North skyline blocks (behind North avenue)
+      { x: 48.0, z: -24.0, yaw: 0, s: 1.2 },
+      { x: 48.0, z: 0.0, yaw: 0, s: 1.4 },
+      { x: 48.0, z: 24.0, yaw: 0, s: 1.2 },
+      // South skyline blocks (behind South avenue)
+      { x: -48.0, z: -24.0, yaw: Math.PI, s: 1.2 },
+      { x: -48.0, z: 0.0, yaw: Math.PI, s: 1.4 },
+      { x: -48.0, z: 24.0, yaw: Math.PI, s: 1.2 },
+      // West skyline blocks (behind West avenue)
+      { x: -22.0, z: 44.0, yaw: Math.PI / 2, s: 1.3 },
+      { x: 0.0, z: 44.0, yaw: Math.PI / 2, s: 1.5 },
+      { x: 22.0, z: 44.0, yaw: Math.PI / 2, s: 1.3 },
+      // East skyline blocks (behind East avenue)
+      { x: -22.0, z: -44.0, yaw: -Math.PI / 2, s: 1.3 },
+      { x: 0.0, z: -44.0, yaw: -Math.PI / 2, s: 1.5 },
+      { x: 22.0, z: -44.0, yaw: -Math.PI / 2, s: 1.3 },
+      // Corner towers
+      { x: 48.0, z: 44.0, yaw: Math.PI / 4, s: 1.6 },
+      { x: 48.0, z: -44.0, yaw: -Math.PI / 4, s: 1.6 },
+      { x: -48.0, z: 44.0, yaw: (Math.PI * 3) / 4, s: 1.6 },
+      { x: -48.0, z: -44.0, yaw: (-Math.PI * 3) / 4, s: 1.6 },
+    ];
+
+    for (let i = 0; i < buildingPositions.length; i++) {
+      const bp = buildingPositions[i];
+      const mesh = buildings[i % buildings.length];
+      batch.add(mesh, bp.x, bp.z, { yaw: bp.yaw, scale: bp.s });
+    }
   }
 
-  // A hedge line just outside the fence, for the case where the prop file did
-  // not load and the trees are spheres on sticks.
-  const hedges: Mesh[] = [];
-  const segments = 44;
-  for (let i = 0; i < segments; i++) {
-    if (noise(i, 21) > 0.72) continue;
-    const a = (i / segments) * Math.PI * 2;
-    const r = SITE_RADIUS + 2.6;
-    const hedge = MeshBuilder.CreateBox(`hedge-${i}`, { width: 3.2, height: 1.5, depth: 1.1 }, scene);
-    hedge.position.set(Math.cos(a) * r, WORLD_Y + 0.75, Math.sin(a) * r);
-    hedge.rotation.y = -a;
-    hedges.push(hedge);
+  // Structured Urban Street Trees aligned along sidewalks (outside the site)
+  if (trees.length > 0) {
+    const treeCoords = [
+      // North sidewalk tree line
+      [31.0, -24.0], [31.0, -14.0], [31.0, 14.0], [31.0, 24.0],
+      // South sidewalk tree line
+      [-31.0, -24.0], [-31.0, -14.0], [-31.0, 14.0], [-31.0, 24.0],
+      // West sidewalk tree line
+      [-20.0, 27.5], [-10.0, 27.5], [10.0, 27.5], [20.0, 27.5],
+      // East sidewalk tree line
+      [-20.0, -27.5], [-10.0, -27.5], [10.0, -27.5], [20.0, -27.5],
+    ];
+
+    for (let i = 0; i < treeCoords.length; i++) {
+      const [tx, tz] = treeCoords[i];
+      if (isInsideSite(tx, tz, 4.0)) continue;
+      const s = 0.95 + noise(i, 9) * 0.18;
+      const yaw = noise(i * 5, 13) * Math.PI * 2;
+      batch.add(trees[i % trees.length], tx, tz, { y: WORLD_Y + sidewalkHeight, yaw, scale: s });
+    }
   }
-  const hedge = weld(hedges, surface(scene, "hedge", spec.accent, 0.05));
-  if (hedge) out.push(hedge);
+
+  // Ornamental hedges along sidewalks
+  if (bushes.length > 0) {
+    const bushCoords = [
+      [18.0, 16.0], [18.0, -16.0], [-18.0, 16.0], [-18.0, -16.0],
+      [22.0, 8.0], [22.0, -8.0], [-22.0, 8.0], [-22.0, -8.0],
+    ];
+    for (let i = 0; i < bushCoords.length; i++) {
+      const [bx, bz] = bushCoords[i];
+      if (isInsideSite(bx, bz, 2.0)) continue;
+      const s = 0.9 + noise(i * 3, 11) * 0.25;
+      const yaw = noise(i * 7, 29) * Math.PI * 2;
+      batch.add(bushes[i % bushes.length], bx, bz, { y: WORLD_Y + sidewalkHeight, yaw, scale: s });
+    }
+  }
+
+  batch.apply(props, out);
 }
+
+// ---------------------------------------------------------------------------
+// Main Entrypoint: buildSurroundings
+// ---------------------------------------------------------------------------
 
 /**
- * Build everything outside the venue, and set the scene's fog and sky to
- * match. Returns the meshes so the caller can freeze them.
+ * Build everything outside the venue, configure the sky and exponential fog.
+ * Returns all meshes created so caller can parent and freeze them.
  */
 export async function buildSurroundings(scene: Scene, venue: Venue): Promise<Mesh[]> {
   const spec = venue.surrounds;
@@ -569,19 +1096,16 @@ export async function buildSurroundings(scene: Scene, venue: Venue): Promise<Mes
   out.push(buildSky(scene, spec.horizon, venue.sky));
   out.push(buildGround(scene, spec.ground, spec.groundTile));
 
-  // The modelled props. A venue that cannot fetch them still gets its world,
-  // built out of the primitives this module started with.
   const props = await loadProps(scene, PROPS_FOR[spec.kind]).catch((e) => {
     console.warn("Scenery props failed to load:", e);
     return new Map() as PropLibrary;
   });
 
-  if (spec.kind === "city") buildCity(scene, spec, props, out);
+  if (spec.kind === "city") buildCityPark(scene, spec, props, out);
   else if (spec.kind === "beach") buildBeach(scene, spec, props, out);
-  else buildPark(scene, spec, props, out);
+  else buildGreenPark(scene, spec, props, out);
 
-  // Linear fog toward the horizon colour. This is what turns a ring of props
-  // into distance, and it hides the edge of the built world entirely.
+  // Exponential fog toward horizon
   scene.fogMode = 1; // FOGMODE_EXP
   scene.fogDensity = spec.haze;
   scene.fogColor = new Color3(spec.horizon[0], spec.horizon[1], spec.horizon[2]);
@@ -592,3 +1116,6 @@ export async function buildSurroundings(scene: Scene, venue: Venue): Promise<Mes
   }
   return out;
 }
+
+
+

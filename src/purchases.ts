@@ -127,9 +127,9 @@ export function subscribeToArena(listener: (s: ArenaStatus) => void): () => void
   return () => listeners.delete(listener);
 }
 
-/** Whether a store exists at all. False in a browser, and on every harness. */
+/** Whether a store exists at all. False in a browser, during closed testing with test keys, and on every harness. */
 export function purchasesAvailable(): boolean {
-  return Capacitor.isNativePlatform();
+  return Capacitor.isNativePlatform() && API_KEY.startsWith("goog_");
 }
 
 let configured: Promise<boolean> | null = null;

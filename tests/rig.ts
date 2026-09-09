@@ -5,13 +5,15 @@
  * over real physics. It lived inside `possession.test.ts` until the serve and
  * the backflip needed it too; nothing about it is specific to possession.
  */
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Vector3, Quaternion } from "@babylonjs/core/Maths/math.vector";
 import { Ball } from "../src/ball";
 import { MatchController, type MatchEvent, type MatchUI } from "../src/match";
 import { AIController, DIFFICULTIES, type AIDifficulty } from "../src/ai";
 import { bodyPartOf, type Character } from "../src/character";
 import { CLIPS, SIM_DT, CHARACTERS, type BodyPart, type CharacterDef } from "../src/config";
 import type { InputState } from "../src/input";
+import { InteractionVolumeDef, type WorldVolume } from "../src/interaction";
+import type { InteractionShape } from "../src/config";
 
 /**
  * A rally, played without a renderer.
@@ -52,12 +54,45 @@ export class FakeCharacter {
   startFracs: number[] = [];
   private action: { name: string; left: number; total: number; callbacks: { frac: number; fn: () => void }[]; onEnd?: () => void } | null = null;
   private lunge: { from: Vector3; to: Vector3; dur: number; t: number } | null = null;
+  readonly interactionVolumes = new Map<string, InteractionVolumeDef>();
 
   constructor(public height: number, public def: CharacterDef) {
     for (const name of Object.keys(CLIPS)) this.groups.set(name, { from: 0, to: CLIPS[name].frames });
     for (const name of ["Idle", "JogForward", "Celebration1", "Defeat"]) {
       this.groups.set(name, { from: 0, to: 60 });
     }
+    // Build interaction volumes for test characters
+    this.buildInteractionVolumes();
+  }
+
+  private buildInteractionVolumes(): void {
+    for (const [clip, info] of Object.entries(CLIPS)) {
+      if (info.contact < 0) continue;
+      const part = bodyPartOf(clip);
+      if (!part) continue;
+      const dims = { shape: "sphere" as InteractionShape, r: 0.1 };
+      this.interactionVolumes.set(clip, {
+        clip,
+        part,
+        shape: "sphere",
+        center: [0, this.height * 0.5, 0],
+        measuredCenter: [0, this.height * 0.5, 0],
+        quat: [0, 0, 0, 1],
+        dims,
+      });
+    }
+  }
+
+  contactVolumeTransform(clip: string): WorldVolume | null {
+    const def = this.interactionVolumes.get(clip);
+    if (!def) return null;
+    const cp = this.clipContactPoint(clip);
+    const center = cp ? cp.clone() : this.position.add(new Vector3(0, this.height * 0.5, 0));
+    return {
+      def,
+      center,
+      rotation: new Quaternion(def.quat[0], def.quat[1], def.quat[2], def.quat[3]),
+    };
   }
 
   get position(): Vector3 {

@@ -32,6 +32,7 @@ function fontPx(font: string): number {
 function recorder(clothLuma = 0.5) {
   const strokes: { text: string; x: number; y: number }[] = [];
   const fills: { text: string; x: number; y: number }[] = [];
+  const translations: { x: number; y: number }[] = [];
   /** Font size at each fill, so "smaller on the front" can be checked. */
   const sizes: number[] = [];
   /** Every fill colour used, so the colour choice can be checked. */
@@ -60,7 +61,7 @@ function recorder(clothLuma = 0.5) {
     textBaseline: "",
     save: () => {},
     restore: () => {},
-    translate: () => {},
+    translate: (x: number, y: number) => translations.push({ x, y }),
     beginPath: () => {},
     closePath: () => {},
     moveTo: () => {},
@@ -93,7 +94,7 @@ function recorder(clothLuma = 0.5) {
       colours.push(String(ctx.fillStyle));
     },
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, strokes, fills, sizes, colours, strokeColours };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, strokes, fills, translations, sizes, colours, strokeColours };
 }
 
 const SIZE = 1024;
@@ -173,6 +174,17 @@ describe("where the marks land", () => {
     expect(sizes[onFront]).toBeLessThan(sizes[onBack]);
   });
 
+  it("puts a slightly larger front number higher on the torso", () => {
+    const { ctx, fills, sizes } = recorder();
+    paintKit(ctx, SIZE, SIZE, kit({ number: "7" }));
+
+    const onFront = fills.findIndex((m) => m.x > front.x0 && m.x < front.x1);
+    const frontTop = FRONT_PANEL.v0 * SIZE;
+    const frontHeight = (FRONT_PANEL.v1 - FRONT_PANEL.v0) * SIZE;
+    expect(fills[onFront].y).toBeLessThan(frontTop + frontHeight * 0.7);
+    expect(sizes[onFront]).toBeGreaterThan(frontHeight * 0.45);
+  });
+
   it("prints the number low on the back rather than between the shoulders", () => {
     const { ctx, fills } = recorder();
     paintKit(ctx, SIZE, SIZE, kit({ name: "ADA", number: "7" }));
@@ -191,6 +203,16 @@ describe("where the marks land", () => {
     const leg = { x0: SHORTS_LEFT_LEG.u0 * SIZE, x1: SHORTS_LEFT_LEG.u1 * SIZE };
     expect(fills[0].x).toBeGreaterThan(leg.x0);
     expect(fills[0].x).toBeLessThan(leg.x1);
+  });
+
+  it("keeps the shorts badge close to the number without overlapping it", () => {
+    const { ctx, fills, translations } = recorder();
+    paintShorts(ctx, SIZE, SIZE, kit({ number: "7", crest: "shield" }));
+
+    const legTop = SHORTS_LEFT_LEG.v0 * SIZE;
+    const legHeight = (SHORTS_LEFT_LEG.v1 - SHORTS_LEFT_LEG.v0) * SIZE;
+    expect(fills[0].y - translations[0].y).toBeCloseTo(legHeight * 0.22, 6);
+    expect(translations[0].y - legTop).toBeCloseTo(legHeight * 0.43, 6);
   });
 
   it("prints in the colour that was chosen", () => {
@@ -218,8 +240,10 @@ describe("where the marks land", () => {
     const dark = recorder(0.08); // dark cloth, black ink
     paintKit(dark.ctx, SIZE, SIZE, kit({ number: "7", colour: "black" }));
 
-    expect(light.strokeColours.some((c) => /15, 20, 28/.test(c))).toBe(true);
-    expect(dark.strokeColours.some((c) => /245, 248, 255/.test(c))).toBe(true);
+    // Light cloth + white ink -> dark keyline (rgba(10, 20, 28, 0.95))
+    // Dark cloth + black ink -> light keyline (rgba(255, 255, 255, 0.95))
+    expect(light.strokeColours.some((c) => /10, 20, 28/.test(c))).toBe(true);
+    expect(dark.strokeColours.some((c) => /255, 255, 255/.test(c))).toBe(true);
   });
 
   it("puts the number below the name", () => {
@@ -245,7 +269,8 @@ describe("where the marks land", () => {
     paintKit(ctx, SIZE, SIZE, kit({ name: "M".repeat(12) }));
 
     const px = fontPx(String(ctx.font));
-    expect(px * 0.6 * 12).toBeLessThanOrEqual((back.x1 - back.x0) * 0.82 + 1);
+    // Updated from 0.82 to 0.92 to match increased name width in LAYOUT
+    expect(px * 0.6 * 12).toBeLessThanOrEqual((back.x1 - back.x0) * 0.92 + 1);
     expect(fills[0].x).toBeGreaterThan(back.x0);
   });
 

@@ -53,8 +53,6 @@ function fakeUi() {
   };
 }
 
-const IDLE: InputState = { moveX: 0, moveZ: 0 } as InputState;
-const RUNNING: InputState = { moveX: 1, moveZ: 0 } as InputState;
 const CONFIRM: InputState = { moveX: 0, moveZ: 0, confirmPressed: true } as InputState;
 
 /** Get past the pause the coach opens whenever the ball becomes ours. */
@@ -69,132 +67,57 @@ function stepOf(coach: PracticeCoach): DrillStep {
 }
 
 describe("the coached lesson", () => {
-  it("can be finished", () => {
-    // The whole point: a player who does what is asked reaches the end. This
-    // is the test that fails on a dead-end step, whichever step it is.
+  it("can be finished in three streamlined steps", () => {
     const match = fakeMatch();
     const coach = new PracticeCoach(match.controller, fakeUi(), () => false, () => false);
     coach.start();
 
-    // SERVE — aim and serve.
+    // 1. SERVE — aim and serve.
     match.emit({ type: "serve-ready", side: "player" });
     resume(coach);
+    expect(stepOf(coach)).toBe("serve");
     match.emit({ type: "serve-committed", side: "player" });
+    expect(stepOf(coach)).toBe("defend");
 
-    // READ THE BALL — get a touch on what comes back.
+    // 2. DEFEND — receive/pop the ball.
     match.emit({ type: "possession-start", side: "player" });
     resume(coach);
-    match.emit({ type: "touch-committed", side: "player", action: "strike" });
-
-    // BE THERE FIRST — cover some ground.
-    match.emit({ type: "possession-start", side: "player" });
-    resume(coach);
-    for (let i = 0; i < 30; i++) coach.update(1 / 60, RUNNING);
-
-    // AIM YOUR TOUCH — hold a direction, then pop.
-    match.emit({ type: "possession-start", side: "player" });
-    resume(coach);
-    coach.update(1 / 60, RUNNING);
     match.emit({ type: "touch-committed", side: "player", action: "pop" });
+    expect(stepOf(coach)).toBe("attack");
 
-    // STEP IN — stand inside smash range.
-    match.emit({ type: "possession-start", side: "player" });
-    resume(coach);
-    match.setX(0);
-    coach.update(1 / 60, IDLE);
-
-    // STRIKE — hit one from close.
+    // 3. ATTACK — step in and smash.
     match.emit({ type: "possession-start", side: "player" });
     resume(coach);
     match.emit({ type: "touch-committed", side: "player", action: "strike" });
 
-    // EARLY — take one before it drops.
-    match.emit({ type: "possession-start", side: "player" });
-    resume(coach);
-    match.emit({ type: "touch-committed", side: "player", action: "strike" });
-
+    // Completed -> free play
+    expect(stepOf(coach)).toBe("free");
     expect(coach.isFinished).toBe(true);
   });
 
-  it("leaves READ THE BALL when the player plays one", () => {
-    // The regression. Every other step had a way out; this one had none, so
-    // the lesson sat on DEFENDING 2/6 and re-announced itself forever.
+  it("can be skipped immediately at any time", () => {
     const match = fakeMatch();
-    const coach = new PracticeCoach(match.controller, fakeUi(), () => false, () => false);
+    let skipped = false;
+    const coach = new PracticeCoach(
+      match.controller,
+      fakeUi(),
+      () => false,
+      () => false,
+      () => false,
+      () => {
+        skipped = true;
+      }
+    );
     coach.start();
     match.emit({ type: "serve-ready", side: "player" });
-    resume(coach);
-    match.emit({ type: "serve-committed", side: "player" });
-    expect(stepOf(coach)).toBe("watch");
+    expect(coach.isPaused).toBe(true);
 
-    match.emit({ type: "possession-start", side: "player" });
-    resume(coach);
-    match.emit({ type: "touch-committed", side: "player", action: "strike" });
+    coach.skip();
 
-    expect(stepOf(coach)).toBe("chase");
-  });
-
-  it("accepts a pop as reading the ball", () => {
-    // A step about anticipation must not also demand a clean strike: a player
-    // who pops it up has still read where it was going.
-    const match = fakeMatch();
-    const coach = new PracticeCoach(match.controller, fakeUi(), () => false, () => false);
-    coach.start();
-    match.emit({ type: "serve-ready", side: "player" });
-    resume(coach);
-    match.emit({ type: "serve-committed", side: "player" });
-
-    match.emit({ type: "possession-start", side: "player" });
-    resume(coach);
-    match.emit({ type: "touch-committed", side: "player", action: "pop" });
-
-    expect(stepOf(coach)).toBe("chase");
-  });
-
-  /** Drive the coach to the AIM YOUR TOUCH step and hand it back. */
-  function atCraft(portrait = false): { match: ReturnType<typeof fakeMatch>; coach: PracticeCoach } {
-    const m = fakeMatch();
-    const coach = new PracticeCoach(m.controller, fakeUi(), () => false, () => false, () => portrait);
-    coach.start();
-    m.emit({ type: "serve-ready", side: "player" });
-    resume(coach);
-    m.emit({ type: "serve-committed", side: "player" }); // watch
-    m.emit({ type: "possession-start", side: "player" });
-    resume(coach);
-    m.emit({ type: "touch-committed", side: "player", action: "pop" }); // chase
-    m.emit({ type: "possession-start", side: "player" });
-    resume(coach);
-    for (let i = 0; i < 30 && stepOf(coach) === "chase"; i++) coach.update(1 / 60, RUNNING);
-    expect(stepOf(coach)).toBe("craft");
-    return { match: m, coach };
-  }
-
-  it("leaves AIM YOUR TOUCH when the pop was aimed", () => {
-    const { match, coach } = atCraft();
-
-    coach.update(1 / 60, RUNNING); // hold a direction
-    match.emit({ type: "touch-committed", side: "player", action: "pop" });
-
-    expect(stepOf(coach)).toBe("stepIn");
-  });
-
-  it("holds AIM YOUR TOUCH for a pop with no direction held", () => {
-    // The lesson is the aiming, not the popping: a set-up played with an idle
-    // stick proves nothing about it.
-    const { match, coach } = atCraft();
-
-    coach.update(1 / 60, IDLE);
-    match.emit({ type: "touch-committed", side: "player", action: "pop" });
-
-    expect(stepOf(coach)).toBe("craft");
-  });
-
-  it("in portrait any pop aims the touch, because the tap is the aim", () => {
-    const { match, coach } = atCraft(true);
-
-    match.emit({ type: "touch-committed", side: "player", action: "pop" });
-
-    expect(stepOf(coach)).toBe("stepIn");
+    expect(coach.isFinished).toBe(true);
+    expect(coach.isPaused).toBe(false);
+    expect(skipped).toBe(true);
+    expect(match.frozen()).toBe(false);
   });
 
   it("ignores the opponent's touches", () => {
@@ -204,14 +127,14 @@ describe("the coached lesson", () => {
     match.emit({ type: "serve-ready", side: "player" });
     resume(coach);
     match.emit({ type: "serve-committed", side: "player" });
+    expect(stepOf(coach)).toBe("defend");
 
     match.emit({ type: "touch-committed", side: "ai", action: "strike" });
 
-    expect(stepOf(coach)).toBe("watch");
+    expect(stepOf(coach)).toBe("defend");
   });
 
   it("unfreezes the world when the lesson is torn down", () => {
-    // A lesson left frozen is a game that never moves again.
     const match = fakeMatch();
     const coach = new PracticeCoach(match.controller, fakeUi(), () => false, () => false);
     coach.start();

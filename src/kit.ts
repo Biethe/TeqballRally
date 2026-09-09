@@ -13,6 +13,7 @@
  * are two vertical strips of the same texture, and everything below is
  * expressed as fractions of it.
  */
+import { Color3 } from "@babylonjs/core/Maths/math.color";
 
 /** The back panel, in texture coordinates (u right, v down: invertY is false). */
 export const BACK_PANEL = { u0: 0.125, u1: 0.375, v0: 0.125, v1: 0.5 };
@@ -28,14 +29,16 @@ export const FRONT_PANEL = { u0: 0.625, u1: 0.875, v0: 0.125, v1: 0.5 };
  */
 export const SHORTS_LEFT_LEG = { u0: 0.125, u1: 0.375, v0: 0.125, v1: 0.5 };
 
-/** What the printed marks are made of. */
+/** Colours used by kit fabric and printed marks. */
 export const KIT_COLOURS = [
   { id: "white", label: "WHITE", css: "#f5f7fa" },
   { id: "black", label: "BLACK", css: "#12161c" },
   { id: "gold", label: "GOLD", css: "#ffc233" },
   { id: "red", label: "RED", css: "#e23b2e" },
-  { id: "blue", label: "BLUE", css: "#2f7ad6" },
-  { id: "green", label: "GREEN", css: "#39b56a" },
+  { id: "blue", label: "BLUE", css: "#1a4fa3" },
+  { id: "green", label: "GREEN", css: "#1e8a49" },
+  { id: "royal", label: "ROYAL", css: "#0033a0" },
+  { id: "navy", label: "NAVY", css: "#001f5b" },
 ] as const;
 
 export type KitColourId = (typeof KIT_COLOURS)[number]["id"];
@@ -56,6 +59,14 @@ export interface Kit {
   crest: CrestId;
   /** What the marks are printed in. */
   colour: KitColourId;
+  /** Optional shirt fabric tint, preserving the source texture's seams and folds. */
+  shirtFabricColor?: KitColourId;
+  /** Optional shorts fabric tint; also supplies a base for textureless shorts. */
+  shortsFabricColor?: KitColourId;
+  /** Optional override for the shorts mark colour (number). */
+  shortsColor?: KitColourId;
+  /** Optional override for the shorts crest colour (e.g., France has white kit but royal blue shorts badge). */
+  shortsCrestColor?: KitColourId;
 }
 
 export const BLANK_KIT: Kit = { name: "", number: "", crest: "none", colour: "white" };
@@ -72,17 +83,17 @@ export function kitIsBlank(kit: Kit): boolean {
  * code, and so a different shirt only needs new numbers.
  */
 const LAYOUT = {
-  /** Name band: across the upper back, clear of the collar. */
-  name: { y: 0.13, height: 0.11, width: 0.84 },
-  /** The big number: low on the back, and the largest thing on the shirt. */
-  number: { y: 0.72, height: 0.46 },
-  /** The front number: lower than the chest, and smaller than the back's. */
-  frontNumber: { y: 0.72, height: 0.28 },
+  /** Name band: across the upper back, slightly higher, closer to the number. */
+  name: { y: 0.35, height: 0.15, width: 0.92 },
+  /** The big number: lower on the back, bigger and longer. */
+  number: { y: 0.78, height: 0.6, width: 0.7 },
+  /** The front number: high on the torso, clear of the waist, and smaller than the back's. */
+  frontNumber: { y: 0.64, height: 0.48, width: 0.45 },
   /** Crest: top left of the jersey. */
   crest: { x: 0.24, y: 0.24, size: 0.2 },
-  /** Shorts: number on the left leg, crest under it. */
-  shortsNumber: { x: 0.5, y: 0.62, height: 0.22 },
-  shortsCrest: { x: 0.5, y: 0.86, size: 0.14 },
+  /** Shorts: crest on upper thigh, number on mid-thigh. */
+  shortsNumber: { x: 0.5, y: 0.65, height: 0.24, width: 0.6 },
+  shortsCrest: { x: 0.5, y: 0.43, size: 0.16 },
 };
 
 /** A `#rrggbb` colour as three 0-255 channels. */
@@ -158,8 +169,8 @@ function drawCrest(
   const r = size / 2;
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.lineWidth = Math.max(2, size * 0.07);
-  ctx.strokeStyle = "rgba(10, 20, 36, 0.85)";
+  ctx.lineWidth = Math.max(3, size * 0.08);
+  ctx.strokeStyle = "rgba(10, 20, 36, 0.95)";
   ctx.fillStyle = colour;
   ctx.beginPath();
   if (crest === "disc") {
@@ -243,9 +254,11 @@ function stamp(
   const width = ctx.measureText(text).width;
   const cloth = lumaUnder(ctx, x, y, Math.max(width, px), px);
   const ink = lumaOf(colour);
-  if (Math.abs(cloth - ink) < 0.22) {
-    ctx.lineWidth = px * 0.07;
-    ctx.strokeStyle = ink > 0.55 ? "rgba(15, 20, 28, 0.9)" : "rgba(245, 248, 255, 0.9)";
+  // Increased threshold from 0.22 to 0.30 for more aggressive contrast correction
+  if (Math.abs(cloth - ink) < 0.30) {
+    ctx.lineWidth = px * 0.08;
+    // Force dark stroke on light kits, white stroke on dark kits
+    ctx.strokeStyle = ink > 0.55 ? "rgba(10, 20, 28, 0.95)" : "rgba(255, 255, 255, 0.95)";
     ctx.strokeText(text, x, y);
   }
 
@@ -289,7 +302,7 @@ export function paintKit(
     stamp(ctx, number, back, LAYOUT.number, 0.7, colour);
     // The front carries the same number at the same height up the body, and
     // smaller — which is how a real shirt is printed.
-    stamp(ctx, number, front, LAYOUT.frontNumber, 0.4, colour);
+    stamp(ctx, number, front, LAYOUT.frontNumber, LAYOUT.frontNumber.width, colour);
   }
   ctx.restore();
 
@@ -316,14 +329,15 @@ export function paintShorts(
   kit: Kit
 ): void {
   const leg = panelOf(SHORTS_LEFT_LEG, width, height);
-  const colour = kitColour(kit.colour);
+  const shortsColour = kitColour(kit.shortsColor ?? kit.colour);
+  const shortsCrestColour = kitColour(kit.shortsCrestColor ?? kit.colour);
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.strokeStyle = "rgba(10, 20, 36, 0.9)";
   ctx.lineJoin = "round";
   const number = kit.number.trim();
-  if (number) stamp(ctx, number, leg, LAYOUT.shortsNumber, 0.42, colour);
+  if (number) stamp(ctx, number, leg, LAYOUT.shortsNumber, 0.42, shortsColour);
   ctx.restore();
 
   drawCrest(
@@ -332,7 +346,7 @@ export function paintShorts(
     leg.x + leg.w * LAYOUT.shortsCrest.x,
     leg.y + leg.h * LAYOUT.shortsCrest.y,
     Math.min(leg.w, leg.h) * LAYOUT.shortsCrest.size,
-    colour
+    shortsCrestColour
   );
 }
 
@@ -342,8 +356,12 @@ export function readKit(stored: unknown): Kit {
   const k = stored as Partial<Record<keyof Kit, unknown>>;
   const crest = CRESTS.find((c) => c === k.crest) ?? "none";
   const colour = KIT_COLOURS.find((c) => c.id === k.colour)?.id ?? BLANK_KIT.colour;
+  const shortsColor = KIT_COLOURS.find((c) => c.id === k.shortsColor)?.id;
+  const shortsCrestColor = KIT_COLOURS.find((c) => c.id === k.shortsCrestColor)?.id;
   return {
     colour,
+    shortsColor,
+    shortsCrestColor,
     // Capped here rather than only at the input, because storage outlives any
     // validation the screen that wrote it happened to be doing that week.
     name: typeof k.name === "string" ? k.name.slice(0, 12) : "",
@@ -382,11 +400,14 @@ export async function applyKit(
   }
   let painted = false;
   // The shirt and the shorts are separate materials with separate textures.
-  for (const [material, paint] of [
-    ["shirt", paintKit],
-    ["Pants", paintShorts],
+  // A glTF is allowed to omit the latter (England does), so a requested fabric
+  // colour becomes its own canvas base rather than silently losing the print.
+  for (const [material, paint, fabric] of [
+    ["shirt", paintKit, kit.shirtFabricColor],
+    ["pants", paintShorts, kit.shortsFabricColor],
   ] as const) {
-    if (await repaint(meshes, material, kit, paint, makeTexture)) painted = true;
+    if (fabric) tintFabric(meshes, material, fabric);
+    if (await repaint(meshes, material, kit, paint, makeTexture, fabric)) painted = true;
   }
   return painted;
 }
@@ -403,7 +424,32 @@ interface AlbedoTexture {
   readPixels(): Promise<ArrayBufferView> | null;
   invertY: boolean;
 }
-type Mat = { name?: string; albedoTexture?: AlbedoTexture | null };
+type Mat = {
+  name?: string;
+  albedoTexture?: AlbedoTexture | null;
+  emissiveTexture?: unknown;
+  albedoColor?: Color3;
+  emissiveColor?: Color3;
+};
+
+/** The material's colour multiplier tints an artwork texture without erasing its folds. */
+function tintFabric(meshes: { name: string; material: unknown }[], materialName: string, fabric: KitColourId): void {
+  const mat = garmentMaterial(meshes, materialName);
+  if (!mat?.albedoColor) return;
+  const colour = Color3.FromHexString(kitColour(fabric));
+  mat.albedoColor = colour;
+  // `brightenKit` installs the original cloth as a dim emissive texture. Give
+  // that lift the same hue so it cannot bleach a dark-blue kit back to white.
+  mat.emissiveColor = colour.scale(0.16);
+}
+
+function garmentMaterial(meshes: { name: string; material: unknown }[], materialName: string): Mat | undefined {
+  const owner = meshes.find((m) => {
+    const matName = (m.material as Mat | null)?.name?.toLowerCase() || "";
+    return matName.includes(materialName.toLowerCase());
+  });
+  return owner?.material as Mat | undefined;
+}
 
 /** Composite one garment's marks into its own albedo and hand it back. */
 async function repaint(
@@ -411,52 +457,52 @@ async function repaint(
   materialName: string,
   kit: Kit,
   paint: Painter,
-  makeTexture: (dataUrl: string, invertY: boolean) => unknown
+  makeTexture: (dataUrl: string, invertY: boolean) => unknown,
+  fallbackFabric?: KitColourId
 ): Promise<boolean> {
-  const owner = meshes.find((m) => (m.material as Mat | null)?.name === materialName);
-  const mat = owner?.material as Mat | undefined;
+  const mat = garmentMaterial(meshes, materialName);
   const tex = mat?.albedoTexture;
-  if (!mat || !tex) return false;
+  if (!mat) return false;
+  if (!tex && !fallbackFabric) return false;
 
-  const { width, height } = tex.getSize();
-  const pixels = await tex.readPixels();
-  if (!pixels) return false;
+  const { width, height } = tex?.getSize() ?? { width: 1024, height: 1024 };
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
   if (!ctx) return false;
-
-  const src = new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength);
-  const out = new Uint8ClampedArray(src.length);
-  const stride = width * 4;
-  for (let row = 0; row < height; row++) {
-    const from = row * stride;
-    // Not flipped. `readPixels` is documented as bottom-up and that is what
-    // the first version assumed, but these textures were uploaded with
-    // invertY false, so what comes back is already in image order. Flipping it
-    // landed the texture's black UV gutter over the body panels — which is the
-    // dark band that appeared across the shoulders and down the shorts, while
-    // the printed marks stayed correctly placed because they are drawn in
-    // canvas space afterwards.
-    const to = row * stride;
-    for (let i = 0; i < stride; i += 4) {
-      out[to + i] = src[from + i];
-      out[to + i + 1] = src[from + i + 1];
-      out[to + i + 2] = src[from + i + 2];
-      // Forced opaque. The kit textures carry an alpha channel that the
-      // original material ignores, and a canvas PNG hands that alpha back to
-      // Babylon — which then blends the shirt against the scene wherever the
-      // artist happened to leave it low. That is what put a dark band across
-      // the shoulders and black panels down the shorts.
-      out[to + i + 3] = 255;
+  if (tex) {
+    const pixels = await tex.readPixels();
+    if (!pixels) return false;
+    const src = new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength);
+    const out = new Uint8ClampedArray(src.length);
+    const stride = width * 4;
+    for (let row = 0; row < height; row++) {
+      const from = row * stride;
+      // Not flipped. `readPixels` is documented as bottom-up and that is what
+      // the first version assumed, but these textures were uploaded with
+      // invertY false, so what comes back is already in image order.
+      const to = row * stride;
+      for (let i = 0; i < stride; i += 4) {
+        out[to + i] = src[from + i];
+        out[to + i + 1] = src[from + i + 1];
+        out[to + i + 2] = src[from + i + 2];
+        // Forced opaque. The kit textures carry an alpha channel that the
+        // original material ignores, and a canvas PNG hands that alpha back.
+        out[to + i + 3] = 255;
+      }
     }
+    ctx.putImageData(new ImageData(out, width, height), 0, 0);
+  } else {
+    // England's shorts are colour-only in the source GLB. Give their UVs a
+    // solid cloth first, then paint the same marks every textured kit gets.
+    ctx.fillStyle = kitColour(fallbackFabric!);
+    ctx.fillRect(0, 0, width, height);
   }
-  ctx.putImageData(new ImageData(out, width, height), 0, 0);
 
   paint(ctx, width, height, kit);
-  const painted = makeTexture(canvas.toDataURL(), tex.invertY) as Record<string, unknown>;
+  const painted = makeTexture(canvas.toDataURL(), tex?.invertY ?? false) as Record<string, unknown>;
   // A replacement texture starts with Babylon's defaults, not the ones the
   // glTF gave this one. Anything left behind here shows up as the garment
   // being tiled, offset, or lit differently from the rest of the model.
@@ -464,10 +510,16 @@ async function repaint(
   // must be read as sRGB whatever the original was. Inheriting a linear flag
   // told Babylon not to decode it and washed the garment out.
   for (const key of ["coordinatesIndex", "wrapU", "wrapV", "uScale", "vScale", "uOffset", "vOffset", "level"] as const) {
-    const value = (tex as unknown as Record<string, unknown>)[key];
+    const value = (tex as unknown as Record<string, unknown> | undefined)?.[key];
     if (value !== undefined) painted[key] = value;
   }
   painted.hasAlpha = false;
   mat.albedoTexture = painted as never;
+  if (!tex) {
+    // The navy pixels are now the base colour; multiplying them by the
+    // material's navy tint a second time would turn the shorts near-black.
+    mat.albedoColor = Color3.White();
+    mat.emissiveTexture = painted;
+  }
   return true;
 }

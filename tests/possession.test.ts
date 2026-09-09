@@ -5,6 +5,7 @@ import { solveLaunchClearingNet } from "../src/ball";
 import {
   AUTO_RECEPTION_REACH,
   AUTO_RUN,
+  COURT,
   GROUND_Y,
   MAX_TOUCHES,
   PLAYER_REACH,
@@ -92,6 +93,19 @@ describe("a possession, played through the real rules", () => {
   });
 });
 
+/**
+ * The spot a side's next touch is due at, read off the controller.
+ *
+ * Private, and deliberately so — but where the assist puts a player is the
+ * thing these tests are about, and asserting on it beats asserting on a
+ * hand-computed guess at the same number.
+ */
+function readAnchor(r: Rig): { pos: Vector3; eta: number } | null {
+  return (
+    r.match as unknown as { anchor: Record<string, { pos: Vector3; eta: number } | null> }
+  ).anchor.player;
+}
+
 describe("what a contact is worth", () => {
   /**
    * Receive one fed ball, asking for the touch either the moment it comes
@@ -125,9 +139,9 @@ describe("what a contact is worth", () => {
     // Both runs are played from the same place, under where the ball will come
     // down: this is about when the touch was asked for, not where anybody stood.
     r.step(0.35);
-    const anchor = (r.match as unknown as { anchor: Record<string, Vector3 | null> }).anchor.player;
+    const anchor = readAnchor(r);
     if (!anchor) return null;
-    r.player.position.set(anchor.x, GROUND_Y, anchor.z);
+    r.player.position.set(anchor.pos.x, GROUND_Y, anchor.pos.z);
     let pressed = false;
     let above = r.match.ball.state.pos.y;
     for (let i = 0; i < 60 * 4 && r.match.state === "rally" && clip === null; i++) {
@@ -225,6 +239,42 @@ describe("staying with the ball", () => {
     expect(drifted.moved).toBeGreaterThan(0.8);
   });
 
+  it("does not move the player toward the ball by itself before the ball bounces on the table", () => {
+    const r = rig();
+    feedPlayer(r);
+    const initialPos = r.player.position.clone();
+
+    // Step while the incoming ball is in flight before bouncing on the table
+    for (let i = 0; i < 60 * 0.6 && r.match.strikeableSide === null; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+    }
+
+    // Player must remain completely unmoved while idle before table bounce
+    expect(r.match.strikeableSide).toBeNull();
+    expect(Vector3.Distance(initialPos, r.player.position)).toBeLessThan(1e-4);
+  });
+
+  it("gives nothing to a player the ball is going to beat", () => {
+    // What replaced the lateral band this used to check. A band answered "is
+    // the ball roughly in front of me", which said no to a lofted ball two
+    // paces to the side and yes to a drive that was already past. The question
+    // now is the one that decides the point: could they still get there?
+    //
+    // Parked at the far corner with the ball dropping across the court, the
+    // answer is no, and no amount of assist may invent a reception out of it —
+    // a well-placed shot has to be able to win.
+    const r = rig();
+    feedPlayer(r);
+    r.player.position.set(-COURT.maxX + 0.2, GROUND_Y, -COURT.maxZ + 0.2);
+    const from = r.player.position.clone();
+    for (let i = 0; i < 60 * 2 && r.match.state === "rally"; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+    }
+
+    expect(Vector3.Distance(from, r.player.position)).toBeLessThan(1e-4);
+    expect(r.player.played.filter((c) => bodyPartOf(c) !== null)).toEqual([]);
+  });
+
   it("leaves the feet to the player while the ball is far off", () => {
     // The assist is semi-: the run takes over in the ball's vicinity, not the
     // moment it is hit. Standing further out than that, the stick is in charge
@@ -240,23 +290,27 @@ describe("staying with the ball", () => {
     expect(r.player.position.z - from.z).toBeGreaterThan(0.8);
   });
 
-  it("runs to the drop spot even while the stick pushes away", () => {
-    // The inversion the locked run is: the old soft zone let a stick push
-    // cancel the run to the ball, so a push that meant nothing in particular
-    // walked the player off a reception. Holding the direction for the whole
-    // flight must now change nothing — the touch still lands, and the player
-    // ends at the drop rather than where the stick was pointing.
+  it("lets a player who means to leave leave, and costs them the ball for it", () => {
+    // The line between an assist and a takeover, and the one the old run was
+    // on the wrong side of: it went to the drop whatever the stick said, so a
+    // ball could never be abandoned and the approach was not really being
+    // played. Held away for the whole flight, the push wins and the reception
+    // is lost — which is what makes every other reception something the player
+    // did rather than something the game did for them.
+    //
+    // The momentary version of this is the test above, and it still lands:
+    // only a sustained push costs the ball, never a slip.
     const r = rig();
     feedPlayer(r);
+    let drop: Vector3 | null = null;
     for (let i = 0; i < 60 * 3 && r.match.state === "rally"; i++) {
       r.match.update(SIM_DT, { ...idle, moveX: -1, moveZ: 0.8 }, () => {});
+      drop = readAnchor(r)?.pos.clone() ?? drop;
     }
 
-    expect(r.player.played.some((c) => bodyPartOf(c) !== null)).toBe(true);
-    const anchor = (r.match as unknown as { anchor: Record<string, Vector3 | null> }).anchor
-      .player;
-    expect(anchor).not.toBeNull();
-    expect(Vector3.Distance(r.player.position, anchor!)).toBeLessThan(AUTO_RUN.reengage);
+    expect(r.player.played.filter((c) => bodyPartOf(c) !== null)).toEqual([]);
+    expect(drop).not.toBeNull();
+    expect(Vector3.Distance(r.player.position, drop!)).toBeGreaterThan(AUTO_RUN.reengage);
   });
 
   it("hears the stick again once the run has arrived", () => {
@@ -265,9 +319,8 @@ describe("staying with the ball", () => {
     // again — that shift is how a side of the ball is chosen.
     const r = rig();
     feedPlayer(r);
-    // Inside the run's engagement vicinity but well off the drop spot: the
-    // run has work to do.
-    r.player.position.z = -1.2;
+    // Near the drop spot: the run arrives and pops.
+    r.player.position.set(-3.2, GROUND_Y, 0.2);
 
     // Stick idle: the run alone has to bring the reception home.
     let touched = false;
@@ -307,7 +360,16 @@ describe("crafting the first touch", () => {
     r.match.ball.launch(solveLaunchClearingNet(from, target, 1.35));
   };
 
-  /** Step until the automatic reception pops the ball; return the pop's launch velocity. */
+  /**
+   * Step until the automatic reception pops the ball; return the pop's launch
+   * velocity.
+   *
+   * The stick is held only once the ball is nearly on the player, because that
+   * is when it is read as the shape of the touch (`receptionSettling`). Held
+   * from the moment the ball is struck it would mean the other thing the stick
+   * means — run that way — and the player would walk out of the reception they
+   * were trying to craft.
+   */
   const popVel = (r: Rig, stick: Partial<InputState>): Vector3 | null => {
     let vel: Vector3 | null = null;
     r.match.subscribe((e) => {
@@ -316,7 +378,9 @@ describe("crafting the first touch", () => {
       }
     });
     for (let i = 0; i < 60 * 4 && r.match.state === "rally" && !vel; i++) {
-      r.match.update(SIM_DT, { ...idle, ...stick }, () => {});
+      const chest = r.player.position.add(new Vector3(0, r.player.height * 0.55, 0));
+      const onMe = Vector3.Distance(chest, r.match.ball.state.pos) <= AUTO_RECEPTION_REACH * 1.6;
+      r.match.update(SIM_DT, { ...idle, ...(onMe ? stick : {}) }, () => {});
     }
     return vel;
   };

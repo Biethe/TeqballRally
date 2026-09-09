@@ -77,6 +77,9 @@ export interface SelectOptions {
   onVenue?: (id: string) => boolean | Promise<boolean>;
   /** Heading shown above the tabs (defaults to "CHOOSE YOUR SETUP"). */
   title?: string;
+  /** Subtitle / mode indicator shown in the top bar (e.g. "FRIENDLY · NORMAL"). */
+  modeLabel?: string;
+  subtitle?: string;
   /** Called whenever the browsed item changes; resolve when the model is visible. */
   onBrowse: (kind: SelectTab, id: string) => Promise<unknown> | void;
   onConfirm: (characterId: string, ballId: string) => void;
@@ -120,6 +123,8 @@ export interface PracticePanelState {
   goal: string;
   /** The input this step needs, e.g. "HOLD STRIKE" — shown under the goal. */
   control?: string;
+  skip?: string;
+  onSkip?: () => void;
 }
 
 /** One roster card on the CHAMPIONS screen. */
@@ -343,6 +348,8 @@ export interface TrainingPauseState {
   control: string;
   /** Optional continuation cue; defaults to "CONTINUE". */
   resume?: string;
+  skip?: string;
+  onSkip?: () => void;
 }
 
 /** DOM-based menus and HUD (crisper than canvas UI and trivially responsive). */
@@ -390,6 +397,7 @@ export class UI {
   private meterFlashTimer: number | null = null;
   private practiceEl: HTMLDivElement;
   private trainingPauseEl: HTMLDivElement;
+  private uiTutorialEl: HTMLDivElement;
   private cameraBtn: HTMLButtonElement;
   /** Score-line names, set per match ("YOU"/"CPU", "P1"/"P2", country labels…). */
   private labels: [string, string] = ["YOU", "CPU"];
@@ -398,8 +406,64 @@ export class UI {
   /** Set by the app; called when the HUD camera button is tapped. */
   onCameraRequest: (() => void) | null = null;
 
+  private lastOrigin: { x: number; y: number } = { x: 50, y: 68 };
+  private menuWaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private championsScrollTimer: ReturnType<typeof setTimeout> | null = null;
+
+  public setOrigin(origin: { x: number; y: number }): void {
+    this.lastOrigin = origin;
+  }
+
+  public setOriginFromElement(el: HTMLElement | null): void {
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const w = window.innerWidth || document.documentElement.clientWidth || 1;
+    const h = window.innerHeight || document.documentElement.clientHeight || 1;
+    this.lastOrigin = {
+      x: ((r.left + r.width / 2) / w) * 100,
+      y: ((r.top + r.height / 2) / h) * 100,
+    };
+  }
+
+  public revealScreen(el: HTMLElement, origin?: { x: number; y: number }): void {
+    const o = origin ?? this.lastOrigin;
+    el.style.setProperty("--ox", `${o.x.toFixed(2)}%`);
+    el.style.setProperty("--oy", `${o.y.toFixed(2)}%`);
+    el.classList.remove("hidden", "screen-collapse");
+    el.classList.add("screen-reveal");
+  }
+
+  public collapseScreen(el: HTMLElement, backBtn: HTMLElement | null, onDone: () => void): void {
+    if (backBtn) {
+      this.setOriginFromElement(backBtn);
+    }
+    const o = this.lastOrigin;
+    el.style.setProperty("--ox", `${o.x.toFixed(2)}%`);
+    el.style.setProperty("--oy", `${o.y.toFixed(2)}%`);
+    el.classList.remove("screen-reveal");
+    el.classList.add("screen-collapse");
+    setTimeout(() => {
+      el.classList.add("hidden");
+      el.classList.remove("screen-collapse");
+      onDone();
+    }, 360);
+  }
+
   constructor(root: HTMLElement) {
     this.root = root;
+
+    window.addEventListener(
+      "pointerdown",
+      (e) => {
+        const w = window.innerWidth || document.documentElement.clientWidth || 1;
+        const h = window.innerHeight || document.documentElement.clientHeight || 1;
+        this.lastOrigin = {
+          x: (e.clientX / w) * 100,
+          y: (e.clientY / h) * 100,
+        };
+      },
+      { capture: true, passive: true }
+    );
 
     this.loadingEl = this.screen("loading-screen");
     this.loadingEl.innerHTML = `
@@ -422,6 +486,7 @@ export class UI {
     this.introClipEl.classList.add("hidden");
     this.introClipEl.innerHTML = `
       <video id="intro-clip-video" playsinline preload="auto" disablepictureinpicture></video>
+      <button class="intro-clip-skip" id="intro-clip-skip" type="button">Skip</button>
       <div class="intro-progress" id="intro-progress">
         <div class="intro-progress-label" id="intro-progress-label">Loading players…</div>
         <div class="intro-progress-track"><span id="intro-progress-fill"></span></div>
@@ -430,72 +495,130 @@ export class UI {
     this.introProgressEl = this.introClipEl.querySelector<HTMLDivElement>("#intro-progress")!;
     this.introProgressFill = this.introClipEl.querySelector<HTMLSpanElement>("#intro-progress-fill")!;
     this.introProgressLabel = this.introClipEl.querySelector<HTMLDivElement>("#intro-progress-label")!;
+    const skipBtn = this.introClipEl.querySelector<HTMLButtonElement>("#intro-clip-skip");
+    skipBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.introClipDone?.();
+    });
+    this.introClipEl.addEventListener("click", () => {
+      this.introClipDone?.();
+    });
 
     this.titleEl = this.screen("title-screen");
     this.titleEl.innerHTML = `
-      <div class="teq-stage" aria-hidden="true">
-        <div class="teq-table">
-          <span class="teq-half left"></span>
-          <span class="teq-half right"></span>
-          <span class="teq-net"></span>
+      <!-- Arena Environment -->
+      <div class="arena-environment" aria-hidden="true">
+        <div class="arena-light" style="--dur: 12s; --delay: 0s; top: -10%; left: 50%; transform: translateX(-50%); width: 140%; height: 80%; background: radial-gradient(ellipse at 50% 20%, rgba(25,90,220,0.24) 0%, transparent 62%)"></div>
+        <div class="arena-light" style="--dur: 9s; --delay: 1.2s; top: -20%; left: -30%; width: 75%; height: 80%; background: radial-gradient(ellipse at 40% 5%, rgba(40,100,230,0.14) 0%, transparent 55%)"></div>
+        <div class="arena-light" style="--dur: 11s; --delay: 0.5s; top: -20%; right: -30%; width: 75%; height: 80%; background: radial-gradient(ellipse at 60% 5%, rgba(40,100,230,0.14) 0%, transparent 55%)"></div>
+        <svg class="horizon-arc" style="top: 58%; left: 0; width: 100%; height: 44px; overflow: visible" viewBox="0 0 1000 22" preserveAspectRatio="none">
+          <path class="horizon-arc-line" d="M -40 22 Q 500 -4 1040 22" fill="none" stroke="rgba(60,130,255,0.18)" stroke-width="0.7" />
+          <path class="horizon-arc-bloom" d="M -40 22 Q 500 -4 1040 22" fill="none" stroke="rgba(80,150,255,0.06)" stroke-width="8" />
+        </svg>
+        <div class="teq-table" style="bottom: 0; left: 50%; transform: translateX(-50%); width: 130%; height: 28%">
+          <div style="position: absolute; inset: 0; clip-path: polygon(20% 0%, 80% 0%, 100% 100%, 0% 100%); background: linear-gradient(180deg, #122040 0%, #0c1830 100%)"></div>
+          <div style="position: absolute; top: 0; left: 20%; right: 20%; height: 2px; background: linear-gradient(90deg, transparent, rgba(80,140,255,0.4) 30%, rgba(140,190,255,0.5) 50%, rgba(80,140,255,0.4) 70%, transparent)"></div>
+          <div class="center-line" style="position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); width: 2px; background: linear-gradient(180deg, #e07520 0%, rgba(224,117,32,0.25) 100%)"></div>
         </div>
-        <span class="teq-ball"></span>
-        <span class="teq-shadow"></span>
+        <div class="vignette" style="inset: 0; background: radial-gradient(ellipse at 50% 42%, transparent 38%, rgba(6,18,36,0.72) 100%)"></div>
+        <div class="vignette-left" style="top: 0; left: 0; bottom: 0; width: 10%; background: linear-gradient(90deg, rgba(6,18,36,0.58) 0%, transparent 100%)"></div>
+        <div class="vignette-right" style="top: 0; right: 0; bottom: 0; width: 10%; background: linear-gradient(270deg, rgba(6,18,36,0.58) 0%, transparent 100%)"></div>
+        <!-- Particles -->
+        <div class="particle" style="left: 7%; --size: 2px; --dur: 11.2s; --delay: 0s"></div>
+        <div class="particle" style="left: 14%; --size: 3px; --dur: 14.5s; --delay: 2.4s"></div>
+        <div class="particle" style="left: 22%; --size: 2px; --dur: 9.8s; --delay: 1.1s"></div>
+        <div class="particle" style="left: 31%; --size: 2px; --dur: 13.1s; --delay: 4.6s"></div>
+        <div class="particle" style="left: 40%; --size: 3px; --dur: 10.6s; --delay: 0.7s"></div>
+        <div class="particle" style="left: 49%; --size: 2px; --dur: 12.3s; --delay: 3.3s"></div>
+        <div class="particle" style="left: 58%; --size: 2px; --dur: 9.2s; --delay: 5.2s"></div>
+        <div class="particle" style="left: 66%; --size: 3px; --dur: 11.7s; --delay: 1.8s"></div>
+        <div class="particle" style="left: 75%; --size: 2px; --dur: 13.8s; --delay: 3.0s"></div>
+        <div class="particle" style="left: 83%; --size: 2px; --dur: 10.2s; --delay: 0.5s"></div>
       </div>
+      <!-- UI Layer -->
       <main class="title-content">
-        <div class="brand-lockup">
-          <span class="brand-orb" aria-hidden="true"></span>
-          <div>
-            <div class="brand-kicker" id="title-kicker">TABLE FOOTBALL</div>
-            <div class="logo">TeqRallly</div>
-          </div>
+        <!-- Stats Bar -->
+        <div class="stats-bar" style="width: 100%; margin-top: 68px; display: flex; align-items: center; justify-content: space-between; padding: 0 6px">
+          <div class="stat-pill" id="stat-coins"><svg class="coin-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6.5" fill="#f5c518" stroke="#c8a000" stroke-width="0.5"/><text x="7" y="10.5" text-anchor="middle" font-size="7" font-weight="bold" fill="#7a5000">$</text></svg><span id="stat-coins-value">0</span></div>
+          <div class="stat-pill" id="stat-trophies"><svg class="trophy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f5c518" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2z"/></svg><span id="stat-trophies-value">0</span></div>
+          <div class="stat-pill rank" id="stat-rank"><span id="stat-rank-value">ROOKIE I</span></div>
         </div>
-        <p class="title-tagline" id="title-tagline">Fast rallies on the curved table.</p>
-        <button class="big-btn" id="btn-play" data-menu-primary="true">PLAY</button>
-        <nav class="title-hub" aria-label="Career">
-          <button class="ghost-btn" id="btn-title-champions" type="button"></button>
-          <button class="ghost-btn" id="btn-title-challenges" type="button"></button>
-          <button class="ghost-btn" id="btn-title-supplies" type="button"></button>
-          <button class="ghost-btn" id="btn-title-profile" type="button"></button>
-          <button class="ghost-btn" id="btn-title-settings" type="button">SETTINGS</button>
-        </nav>
+
+        <!-- Upper spacer -->
+        <div style="flex: 1"></div>
+
+        <!-- Brand Identity -->
+        <div class="logo-lockup logo-entrance" style="display: flex; flex-direction: column; align-items: center; gap: 8px">
+          <img class="logo-icon" src="/figma/icon.png" alt="TeqRallly" style="width: clamp(78px, 11vh, 98px); height: clamp(78px, 11vh, 98px); border-radius: 22%; object-fit: cover; box-shadow: 0 14px 44px rgba(0,0,0,0.65), 0 0 0 2px rgba(255,255,255,0.14), 0 0 0 5px rgba(255,255,255,0.05)">
+          <p class="logo-tagline logo-tagline-entrance" style="font-family: 'Exo 2', sans-serif; font-weight: 300; font-size: clamp(0.55rem, 1.8vw, 0.62rem); letter-spacing: 0.16em; color: rgba(255,255,255,0.42); margin: 0; font-style: italic; text-align: center">Fast rallies on the curved table.</p>
+        </div>
+
+        <!-- Gap -->
+        <div class="title-gap-lg" style="height: 22px"></div>
+
+        <!-- Primary CTA -->
+        <button class="big-btn" id="btn-play" data-menu-primary="true">
+          <span aria-hidden="true" class="btn-shine-top"></span>
+          <span aria-hidden="true" class="btn-shine-radial"></span>
+          <span class="btn-text">PLAY</span>
+        </button>
+
+        <!-- Gap -->
+        <div class="title-gap-sm" style="height: 14px"></div>
+
+        <!-- Secondary Nav -->
+        <div class="nav-pills" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; width: 100%">
+          <button class="nav-pill" id="btn-title-champions" type="button"></button>
+          <button class="nav-pill" id="btn-title-challenges" type="button"></button>
+          <button class="nav-pill" id="btn-title-supplies" type="button"></button>
+          <button class="nav-pill" id="btn-title-profile" type="button"></button>
+          <button class="nav-pill" id="btn-title-settings" type="button">SETTINGS</button>
+        </div>
+
+        <!-- Lower spacer -->
+        <div style="flex: 1"></div>
       </main>`;
 
     // Select screen is a transparent overlay: the 3D model viewer renders behind it.
     this.selectEl = this.screen("select-screen");
     this.selectEl.classList.add("viewer-select");
     this.selectEl.innerHTML = `
-      <div class="select-top">
-        <div class="select-bar">
-          <button class="select-back" id="btn-select-back" type="button" data-menu-back>← ${t("nav.back")}</button>
-          <div class="select-brand">TeqRallly</div>
+      <div class="select-shell">
+        <div class="select-top">
+          <div class="select-bar">
+            <button class="select-back" id="btn-select-back" type="button" data-menu-back>← ${t("nav.back")}</button>
+            <div class="select-brand">
+              <span class="select-mode-label" id="select-mode-label"></span>
+              <img src="/figma/icon.png" alt="" class="menu-brand-icon" />
+            </div>
+          </div>
+          <h1 class="select-title">CHOOSE YOUR SETUP</h1>
+          <div class="tabs">
+            <button class="tab-btn active" data-tab="character"></button>
+            <button class="tab-btn" data-tab="ball"></button>
+            <button class="tab-btn" data-tab="venue"></button>
+          </div>
         </div>
-        <div class="select-title">CHOOSE YOUR SETUP</div>
-        <div class="tabs">
-          <button class="tab-btn active" data-tab="character"></button>
-          <button class="tab-btn" data-tab="ball"></button>
-          <button class="tab-btn" data-tab="venue"></button>
+        <div class="select-stage">
+          <img class="venue-card hidden" id="venue-card" alt="" />
         </div>
-      </div>
-      <div class="select-stage">
-        <img class="venue-card hidden" id="venue-card" alt="" />
         <aside class="player-profile hidden" id="player-profile" aria-live="polite">
           <div class="profile-stats"></div>
           <div class="profile-traits"></div>
         </aside>
-      </div>
-      <div class="select-bottom">
-        <div class="browse">
-          <button class="arrow-btn" id="btn-prev">◀</button>
-          <div class="item-label">
-            <div id="item-name">…</div>
-            <div id="item-status" class="hidden">Loading…</div>
-            <div id="item-lock" class="hidden"></div>
+        <div class="select-bottom">
+          <div class="browse">
+            <button class="arrow-btn" id="btn-prev" type="button">‹</button>
+            <div class="item-label">
+              <div id="item-name">…</div>
+              <div id="item-status" class="hidden">Loading…</div>
+              <div id="item-lock" class="hidden"></div>
+            </div>
+            <button class="arrow-btn" id="btn-next" type="button">›</button>
           </div>
-          <button class="arrow-btn" id="btn-next">▶</button>
+          <div class="venue-strip hidden" id="venue-strip" aria-label="Venue"></div>
+          <button class="big-btn" id="btn-start" type="button">PLAY</button>
         </div>
-        <div class="venue-strip hidden" id="venue-strip" aria-label="Venue"></div>
-        <button class="big-btn" id="btn-start">PLAY</button>
       </div>`;
 
     this.settingsEl = this.screen("settings-screen");
@@ -586,7 +709,10 @@ export class UI {
         <div class="training-control">
           <span class="training-control-text"></span>
         </div>
-        <button class="training-resume" id="btn-training-resume" type="button"></button>
+        <div class="training-actions">
+          <button class="training-resume" id="btn-training-resume" type="button"></button>
+          <button class="training-skip" id="btn-training-skip" type="button">SKIP PRACTICE</button>
+        </div>
       </div>`;
 
     this.endEl = this.screen("end-screen");
@@ -617,6 +743,30 @@ export class UI {
     this.seasonEl = this.screen("season-screen");
     this.clubEl = this.screen("club-screen");
 
+    this.uiTutorialEl = this.screen("ui-tutorial-screen");
+    this.uiTutorialEl.innerHTML = `
+      <div class="tutorial-card" role="dialog" aria-modal="true">
+        <div class="tutorial-top-bar">
+          <div class="tutorial-progress-dots">
+            <span class="dot active"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </div>
+          <button class="tutorial-skip-btn" id="btn-tutorial-skip" type="button"></button>
+        </div>
+        <div class="tutorial-body">
+          <div class="tutorial-badge" id="tutorial-badge">✦</div>
+          <h2 class="tutorial-title" id="tutorial-title"></h2>
+          <p class="tutorial-text" id="tutorial-text"></p>
+        </div>
+        <div class="tutorial-footer">
+          <button class="big-btn tutorial-next-btn" id="btn-tutorial-next" type="button" data-menu-primary="true">
+            <span class="btn-text"></span>
+          </button>
+        </div>
+      </div>`;
+
     // The wallet rides above the title screen rather than inside it: it is the
     // one thing that has to look the same on every screen that shows it.
     this.walletEl = document.createElement("div");
@@ -636,7 +786,16 @@ export class UI {
   }
 
   private hideAll(): void {
+    this.stopAttractMode();
     this.hideIntroClip();
+    if (this.menuWaveTimer) {
+      clearTimeout(this.menuWaveTimer);
+      this.menuWaveTimer = null;
+    }
+    if (this.championsScrollTimer) {
+      clearTimeout(this.championsScrollTimer);
+      this.championsScrollTimer = null;
+    }
     for (const el of [
       this.loadingEl,
       this.titleEl,
@@ -645,6 +804,7 @@ export class UI {
       this.endEl,
       this.pauseEl,
       this.trainingPauseEl,
+      this.uiTutorialEl,
       this.menuEl,
       this.standingsEl,
       this.settingsEl,
@@ -673,12 +833,13 @@ export class UI {
     onBack?: () => void
   ): void {
     this.hideAll();
+    this.revealScreen(this.menuEl);
     const isModeMenu = title === "GAME MODE";
     this.menuEl.classList.toggle("menu-mode-grid", isModeMenu);
     this.menuEl.innerHTML = `
       <main class="menu-shell">
         <header class="menu-header">
-          <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRallly</div>
+          <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
           ${onBack ? `<button class="menu-back" id="btn-menu-back" type="button" data-menu-back>← ${t("nav.back")}</button>` : ""}
         </header>
         <section class="menu-heading">
@@ -691,24 +852,59 @@ export class UI {
     options.forEach((opt, index) => {
       const primary = opt.primary || (!options.some((item) => item.primary) && index === 0);
       const b = document.createElement("button");
-      b.className = `menu-option${primary ? " is-primary" : ""}`;
+      b.className = `menu-option mode-card${primary ? " is-primary" : ""}`;
       b.id = opt.id;
       b.setAttribute("role", "listitem");
       if (primary) b.dataset.menuPrimary = "true";
+      const content = document.createElement("div");
+      content.className = "mode-card-content";
       const label = document.createElement("strong");
       label.textContent = opt.label;
-      b.appendChild(label);
+      content.appendChild(label);
       if (opt.sub) {
         const sub = document.createElement("small");
         sub.textContent = opt.sub;
-        b.appendChild(sub);
+        content.appendChild(sub);
       }
-      b.onclick = () => onPick(opt.id);
+      b.appendChild(content);
+      b.onclick = () => {
+        this.setOriginFromElement(b);
+        onPick(opt.id);
+      };
       box.appendChild(b);
     });
+
+    // Cascading downward wave glow: one card at a time
+    const cards = box.querySelectorAll<HTMLElement>(".mode-card");
+    if (cards.length > 0) {
+      let step = 0;
+      const triggerWave = () => {
+        if (!this.menuEl || this.menuEl.classList.contains("hidden")) return;
+        const currentCard = cards[step];
+        if (currentCard) {
+          const oldSweep = currentCard.querySelector(".card-sweep");
+          if (oldSweep) oldSweep.remove();
+          const sweep = document.createElement("span");
+          sweep.className = "card-sweep";
+          currentCard.appendChild(sweep);
+        }
+        step++;
+        if (step < cards.length) {
+          this.menuWaveTimer = setTimeout(triggerWave, 280);
+        } else {
+          step = 0;
+          this.menuWaveTimer = setTimeout(triggerWave, 3000);
+        }
+      };
+      this.menuWaveTimer = setTimeout(triggerWave, 300);
+    }
+
     const back = this.menuEl.querySelector<HTMLButtonElement>("#btn-menu-back");
-    if (back) back.onclick = () => onBack?.();
-    this.menuEl.classList.remove("hidden");
+    if (back) {
+      back.onclick = () => {
+        this.collapseScreen(this.menuEl, back, () => onBack?.());
+      };
+    }
   }
 
   /** Competition interstitial: a titled block of result/table rows and one continue button. */
@@ -914,10 +1110,11 @@ export class UI {
     onBack: () => void
   ): void {
     this.hideAll();
+    this.revealScreen(this.settingsEl);
     this.settingsEl.innerHTML = `
       <main class="menu-shell settings-shell">
         <header class="menu-header">
-          <div class="menu-brand"><span class="menu-brand-orb"></span>TeqRallly</div>
+          <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
           <button class="menu-back" id="btn-settings-back" type="button" data-menu-back>← ${t("nav.back")}</button>
         </header>
         <section class="menu-heading"><h1></h1></section>
@@ -992,8 +1189,10 @@ export class UI {
       el.appendChild(control);
       list.appendChild(el);
     }
-    this.settingsEl.querySelector<HTMLButtonElement>("#btn-settings-back")!.onclick = () => onBack();
-    this.settingsEl.classList.remove("hidden");
+    const back = this.settingsEl.querySelector<HTMLButtonElement>("#btn-settings-back")!;
+    back.onclick = () => {
+      this.collapseScreen(this.settingsEl, back, () => onBack());
+    };
   }
 
   /**
@@ -1044,7 +1243,7 @@ export class UI {
   }
 
   /** Put a single coaching instruction over a frozen rally. */
-  showTrainingPause(state: TrainingPauseState, onResume: () => void): void {
+  showTrainingPause(state: TrainingPauseState, onResume: () => void, onSkip?: () => void): void {
     this.trainingPauseEl.querySelector<HTMLDivElement>(".training-progress")!.textContent = state.progress;
     this.trainingPauseEl.querySelector<HTMLDivElement>(".training-title")!.textContent = state.title;
     this.trainingPauseEl.querySelector<HTMLDivElement>(".training-action-text")!.textContent = state.action;
@@ -1053,6 +1252,17 @@ export class UI {
     resume.textContent = state.resume ?? "CONTINUE";
     resume.disabled = false;
     resume.onclick = () => onResume();
+    const skipBtn = this.trainingPauseEl.querySelector<HTMLButtonElement>("#btn-training-skip");
+    if (skipBtn) {
+      skipBtn.textContent = state.skip ?? "SKIP PRACTICE";
+      const skipFn = state.onSkip ?? onSkip;
+      if (skipFn) {
+        skipBtn.classList.remove("hidden");
+        skipBtn.onclick = () => skipFn();
+      } else {
+        skipBtn.classList.add("hidden");
+      }
+    }
     this.trainingPauseEl.classList.remove("hidden");
   }
 
@@ -1073,6 +1283,10 @@ export class UI {
 
   setLoadingText(text: string): void {
     this.loadingText.textContent = text;
+  }
+
+  hideLoading(): void {
+    this.loadingEl.classList.add("hidden");
   }
 
   /**
@@ -1184,7 +1398,12 @@ export class UI {
    * game for the first time should only have to recognise PLAY.
    */
   showTitle(actions: {
-    onPlay: () => void;
+    /**
+     * Starting a match loads assets, so this one is allowed to be async. The
+     * button does not wait on it — the screen it opens reports its own
+     * progress — so the promise is deliberately dropped at the call below.
+     */
+    onPlay: () => void | Promise<void>;
     onChampions: () => void;
     onChallenges: () => void;
     onSupplies: () => void;
@@ -1197,15 +1416,21 @@ export class UI {
   }): void {
     this.hideAll();
     this.showWallet();
-    this.titleEl.querySelector<HTMLDivElement>("#title-kicker")!.textContent = t("title.kicker");
-    this.titleEl.querySelector<HTMLParagraphElement>("#title-tagline")!.textContent = t("title.tagline");
+    this.titleEl.querySelector<HTMLParagraphElement>(".logo-tagline")!.textContent = t("title.tagline");
     const btn = this.titleEl.querySelector<HTMLButtonElement>("#btn-play")!;
-    btn.textContent = t("title.play");
-    btn.onclick = () => actions.onPlay();
+    const btnText = btn.querySelector<HTMLSpanElement>(".btn-text") ?? btn.querySelector("span")!;
+    btnText.textContent = t("title.play");
+    btn.onclick = () => {
+      this.setOriginFromElement(btn);
+      void actions.onPlay();
+    };
     const wire = (id: string, label: string, fn: () => void) => {
       const el = this.titleEl.querySelector<HTMLButtonElement>(id)!;
       el.textContent = label;
-      el.onclick = () => fn();
+      el.onclick = () => {
+        this.setOriginFromElement(el);
+        fn();
+      };
       return el;
     };
     wire("#btn-title-champions", t("career.champions"), actions.onChampions);
@@ -1220,7 +1445,140 @@ export class UI {
     // the shortest way to say the account is real and it is theirs.
     wire("#btn-title-profile", actions.profileLabel ?? t("profile.title"), actions.onProfile);
     wire("#btn-title-settings", t("title.settings"), actions.onSettings);
-    this.titleEl.classList.remove("hidden");
+
+    // Attract mode: pulse the PLAY button after 7s of inactivity
+    this.startAttractMode(btn);
+
+    this.revealScreen(this.titleEl);
+  }
+
+  /**
+   * Guided UI tour shown on first launch to orient the player around the dashboard.
+   */
+  showUiTutorial(onDone: () => void): void {
+    const steps = [
+      {
+        badge: "🏓",
+        title: t("tutorial.step1.title"),
+        text: t("tutorial.step1.text"),
+        highlight: null,
+      },
+      {
+        badge: "⚡",
+        title: t("tutorial.step2.title"),
+        text: t("tutorial.step2.text"),
+        highlight: "#btn-play",
+      },
+      {
+        badge: "👕",
+        title: t("tutorial.step3.title"),
+        text: t("tutorial.step3.text"),
+        highlight: "#btn-title-champions, #btn-title-supplies",
+      },
+      {
+        badge: "🏆",
+        title: t("tutorial.step4.title"),
+        text: t("tutorial.step4.text"),
+        highlight: "#btn-title-challenges, #btn-title-settings",
+      },
+    ];
+
+    let currentStep = 0;
+
+    const clearHighlights = () => {
+      document.querySelectorAll(".ui-tutorial-spotlight").forEach((el) => {
+        el.classList.remove("ui-tutorial-spotlight");
+      });
+    };
+
+    const updateStep = (index: number) => {
+      clearHighlights();
+      currentStep = index;
+      const step = steps[currentStep];
+
+      const dots = this.uiTutorialEl.querySelectorAll<HTMLSpanElement>(".tutorial-progress-dots .dot");
+      dots.forEach((dot, i) => dot.classList.toggle("active", i === currentStep));
+
+      this.uiTutorialEl.querySelector<HTMLDivElement>("#tutorial-badge")!.textContent = step.badge;
+      this.uiTutorialEl.querySelector<HTMLHeadingElement>("#tutorial-title")!.textContent = step.title;
+      this.uiTutorialEl.querySelector<HTMLParagraphElement>("#tutorial-text")!.textContent = step.text;
+
+      const isLast = currentStep === steps.length - 1;
+      const nextBtn = this.uiTutorialEl.querySelector<HTMLButtonElement>("#btn-tutorial-next")!;
+      const btnText = nextBtn.querySelector<HTMLSpanElement>(".btn-text") ?? nextBtn;
+      btnText.textContent = isLast ? t("tutorial.done") : t("tutorial.next");
+
+      const skipBtn = this.uiTutorialEl.querySelector<HTMLButtonElement>("#btn-tutorial-skip")!;
+      skipBtn.textContent = t("tutorial.skip");
+
+      if (step.highlight) {
+        document.querySelectorAll(step.highlight).forEach((el) => {
+          el.classList.add("ui-tutorial-spotlight");
+        });
+      }
+    };
+
+    const closeTutorial = () => {
+      clearHighlights();
+      this.uiTutorialEl.classList.add("hidden");
+      onDone();
+    };
+
+    const skipBtn = this.uiTutorialEl.querySelector<HTMLButtonElement>("#btn-tutorial-skip")!;
+    skipBtn.onclick = () => closeTutorial();
+
+    const nextBtn = this.uiTutorialEl.querySelector<HTMLButtonElement>("#btn-tutorial-next")!;
+    nextBtn.onclick = () => {
+      if (currentStep < steps.length - 1) {
+        updateStep(currentStep + 1);
+      } else {
+        closeTutorial();
+      }
+    };
+
+    updateStep(0);
+    this.uiTutorialEl.classList.remove("hidden");
+  }
+
+  private attractModeTimer: ReturnType<typeof setTimeout> | null = null;
+  private attractModeActive = false;
+  private attractModeHandler: (() => void) | null = null;
+  private attractModePlayBtn: HTMLButtonElement | null = null;
+
+  private startAttractMode(playBtn: HTMLButtonElement): void {
+    this.attractModePlayBtn = playBtn;
+    const reset = () => {
+      if (this.attractModeActive) {
+        this.attractModeActive = false;
+        playBtn.classList.remove("play-attract");
+      }
+      if (this.attractModeTimer) clearTimeout(this.attractModeTimer);
+      this.attractModeTimer = setTimeout(() => {
+        this.attractModeActive = true;
+        playBtn.classList.add("play-attract");
+      }, 7000);
+    };
+    reset();
+    this.attractModeHandler = () => reset();
+    window.addEventListener("pointerdown", this.attractModeHandler, { once: true });
+    window.addEventListener("keydown", this.attractModeHandler, { once: true });
+  }
+
+  private stopAttractMode(): void {
+    if (this.attractModeHandler) {
+      window.removeEventListener("pointerdown", this.attractModeHandler);
+      window.removeEventListener("keydown", this.attractModeHandler);
+      this.attractModeHandler = null;
+    }
+    if (this.attractModeTimer) {
+      clearTimeout(this.attractModeTimer);
+      this.attractModeTimer = null;
+    }
+    if (this.attractModeActive && this.attractModePlayBtn) {
+      this.attractModePlayBtn.classList.remove("play-attract");
+    }
+    this.attractModeActive = false;
+    this.attractModePlayBtn = null;
   }
 
   /**
@@ -1232,14 +1590,19 @@ export class UI {
    * moving while a ball is in the air.
    */
   setWallet(coins: number, trophies: number, tier: string): void {
+    // Update title screen stats bar if visible
+    const coinsEl = this.titleEl.querySelector<HTMLSpanElement>("#stat-coins-value");
+    const trophiesEl = this.titleEl.querySelector<HTMLSpanElement>("#stat-trophies-value");
+    const rankEl = this.titleEl.querySelector<HTMLSpanElement>("#stat-rank-value");
+    if (coinsEl) coinsEl.textContent = coins.toLocaleString();
+    if (trophiesEl) trophiesEl.textContent = trophies.toLocaleString();
+    if (rankEl) rankEl.textContent = tier;
+
+    // Also update the wallet element for other screens
     this.walletEl.innerHTML = `
-      <div class="wallet-chip"><span class="wallet-icon coin" aria-hidden="true"></span><b></b></div>
-      <div class="wallet-chip"><span class="wallet-icon cup" aria-hidden="true"></span><b></b></div>
-      <div class="wallet-rank"></div>`;
-    const values = this.walletEl.querySelectorAll("b");
-    values[0].textContent = coins.toLocaleString();
-    values[1].textContent = trophies.toLocaleString();
-    this.walletEl.querySelector<HTMLDivElement>(".wallet-rank")!.textContent = tier;
+      <div class="stat-pill"><svg class="coin-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6.5" fill="#f5c518" stroke="#c8a000" stroke-width="0.5"/><text x="7" y="10.5" text-anchor="middle" font-size="7" font-weight="bold" fill="#7a5000">$</text></svg><b>${coins.toLocaleString()}</b></div>
+      <div class="stat-pill"><svg class="trophy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f5c518" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2z"/></svg><b>${trophies.toLocaleString()}</b></div>
+      <div class="stat-pill rank"><b>${tier}</b></div>`;
     this.walletEl.setAttribute(
       "aria-label",
       `${t("career.coins")} ${coins}, ${t("career.trophies")} ${trophies}, ${t("career.rank")} ${tier}`
@@ -1259,52 +1622,79 @@ export class UI {
    */
   showChampions(view: ChampionsView): void {
     this.hideAll();
-    this.championsEl.classList.remove("hidden");
+    this.revealScreen(this.championsEl);
     this.showWallet();
+
+    const flagMap: Record<string, string> = {
+      BrazilianPlayer: "🇧🇷",
+      brazil: "🇧🇷",
+      EnglishPlayer: "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+      england: "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+      FrenchPlayer: "🇫🇷",
+      france: "🇫🇷",
+      SpanishPlayer: "🇪🇸",
+      spain: "🇪🇸",
+    };
+
+    const maxPower = Math.max(...view.rows.map((r) => r.power), 1);
+
     this.championsEl.innerHTML = `
-      <div class="career-head">
-        <button class="select-back" type="button" data-menu-back></button>
-        <div>
-          <h2 class="career-title"></h2>
-          <p class="career-sub"></p>
+      <div class="champions-scroll" id="champions-scroll-box">
+        <div class="champions-scroll-content">
+          <div class="career-head">
+            <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
+            <button class="select-back" id="btn-champions-back" type="button" data-menu-back>← ${t("nav.back")}</button>
+          </div>
+          <div class="career-title-wrap">
+            <h1 class="career-title">${t("career.champions")}</h1>
+            <p class="career-sub">${t("career.champions.sub")}</p>
+          </div>
+          <div class="champion-list"></div>
         </div>
       </div>
-      <div class="career-list champion-grid"></div>`;
-    const back = this.championsEl.querySelector<HTMLButtonElement>(".select-back")!;
-    back.textContent = `← ${t("nav.back")}`;
-    back.onclick = () => view.onBack();
-    this.championsEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
-      t("career.champions");
-    this.championsEl.querySelector<HTMLParagraphElement>(".career-sub")!.textContent =
-      t("career.champions.sub");
+      <div class="scroll-hint-anim hidden" id="champions-scroll-hint">
+        <svg width="22" height="34" viewBox="0 0 22 34" fill="none">
+          <rect x="3" y="0" width="16" height="26" rx="8" fill="rgba(255,255,255,0.78)" />
+          <rect x="7" y="2" width="8" height="5" rx="2.5" fill="rgba(255,255,255,0.32)" />
+        </svg>
+        <div style="width: 1.5px; height: 22px; background: linear-gradient(180deg, rgba(255,255,255,0.55) 0%, transparent 100%);"></div>
+      </div>`;
 
-    const grid = this.championsEl.querySelector<HTMLDivElement>(".champion-grid")!;
+    const back = this.championsEl.querySelector<HTMLButtonElement>("#btn-champions-back")!;
+    back.onclick = () => {
+      this.collapseScreen(this.championsEl, back, () => view.onBack());
+    };
+
+    const list = this.championsEl.querySelector<HTMLDivElement>(".champion-list")!;
     for (const row of view.rows) {
       const card = document.createElement("div");
       card.className = row.unlocked ? "champion-card" : "champion-card locked";
       card.dataset.champion = row.id;
+      const flag = flagMap[row.id] || "⚽";
+      const fillPct = Math.round((row.power / maxPower) * 100);
+
       card.innerHTML = `
+        <span class="champion-watermark" aria-hidden="true">${flag}</span>
         <div class="champion-top">
-          <span class="champion-name"></span>
-          <span class="champion-level"></span>
+          <div class="champion-title-lockup">
+            <span class="champion-flag">${flag}</span>
+            <span class="champion-name">${row.label}</span>
+          </div>
+          <span class="champion-level">${row.unlocked ? `${t("career.level")} ${row.level}` : t("career.locked")}</span>
         </div>
-        <div class="champion-power"><span></span><b></b></div>
+        <div class="champion-power-block">
+          <span class="champion-power-num">${row.power}</span>
+          <span class="champion-power-label">${t("career.power")}</span>
+        </div>
+        <div class="bar champion-power-bar"><i style="width: ${fillPct}%"></i></div>
         <div class="champion-traits"></div>
         <div class="champion-foot"></div>`;
-      card.querySelector<HTMLSpanElement>(".champion-name")!.textContent = row.label;
-      card.querySelector<HTMLSpanElement>(".champion-level")!.textContent = row.unlocked
-        ? `${t("career.level")} ${row.level}`
-        : t("career.locked");
-      card.querySelector<HTMLSpanElement>(".champion-power span")!.textContent = t("career.power");
-      card.querySelector<HTMLElement>(".champion-power b")!.textContent = String(row.power);
+
       const traits = card.querySelector<HTMLDivElement>(".champion-traits")!;
       for (const stat of row.stats) {
         const line = document.createElement("div");
         line.className = "champion-trait";
-        line.innerHTML = `<span class="champion-trait-label"></span><span class="bar"><i></i></span><b></b>`;
-        line.querySelector<HTMLSpanElement>(".champion-trait-label")!.textContent = stat.label;
-        line.querySelector<HTMLElement>(".bar i")!.style.width = `${stat.value}%`;
-        line.querySelector<HTMLElement>("b")!.textContent = String(stat.value);
+        line.innerHTML = `<span class="champion-trait-label">${stat.label}</span><div class="bar"><i style="width: ${stat.value}%"></i></div><b>${stat.value}</b>`;
         traits.appendChild(line);
       }
 
@@ -1329,30 +1719,60 @@ export class UI {
         buy.className = "champion-buy";
         buy.disabled = !row.affordable;
         buy.textContent = `${t("career.upgrade")} · ${row.cost}`;
-        buy.onclick = () => view.onUpgrade(row.id);
+        buy.onclick = (e) => {
+          e.stopPropagation();
+          view.onUpgrade(row.id);
+        };
         foot.append(note, buy);
       }
-      grid.appendChild(card);
+      list.appendChild(card);
     }
+
+    // Scroll hint: automated sine scroll and floating indicator if content overflows
+    const scrollBox = this.championsEl.querySelector<HTMLDivElement>("#champions-scroll-box")!;
+    const hintEl = this.championsEl.querySelector<HTMLDivElement>("#champions-scroll-hint")!;
+    if (this.championsScrollTimer) clearTimeout(this.championsScrollTimer);
+    this.championsScrollTimer = setTimeout(() => {
+      if (!scrollBox || scrollBox.scrollHeight <= scrollBox.clientHeight) return;
+      hintEl.classList.remove("hidden");
+      const target = 72;
+      const duration = 1900;
+      const start = performance.now();
+      const tick = (now: number) => {
+        if (!scrollBox || this.championsEl.classList.contains("hidden")) return;
+        const elapsed = now - start;
+        const prog = Math.min(elapsed / duration, 1);
+        scrollBox.scrollTop = target * Math.sin(prog * Math.PI);
+        if (prog < 1) {
+          requestAnimationFrame(tick);
+        } else {
+          scrollBox.scrollTop = 0;
+          setTimeout(() => hintEl.classList.add("hidden"), 300);
+        }
+      };
+      requestAnimationFrame(tick);
+    }, 1100);
   }
 
   /** Today's three, with a countdown that says plainly what "daily" means. */
   showChallenges(view: ChallengesView): void {
     this.hideAll();
-    this.challengesEl.classList.remove("hidden");
+    this.revealScreen(this.challengesEl);
     this.showWallet();
     this.challengesEl.innerHTML = `
       <div class="career-head">
-        <button class="select-back" type="button" data-menu-back></button>
-        <div>
-          <h2 class="career-title"></h2>
-          <p class="career-sub"></p>
-        </div>
+        <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
+        <button class="select-back" id="btn-challenges-back" type="button" data-menu-back>← ${t("nav.back")}</button>
+      </div>
+      <div class="career-title-wrap">
+        <h2 class="career-title"></h2>
+        <p class="career-sub"></p>
       </div>
       <div class="career-list challenge-list"></div>`;
-    const back = this.challengesEl.querySelector<HTMLButtonElement>(".select-back")!;
-    back.textContent = `← ${t("nav.back")}`;
-    back.onclick = () => view.onBack();
+    const back = this.challengesEl.querySelector<HTMLButtonElement>("#btn-challenges-back")!;
+    back.onclick = () => {
+      this.collapseScreen(this.challengesEl, back, () => view.onBack());
+    };
     this.challengesEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
       t("career.challenges");
     this.challengesEl.querySelector<HTMLParagraphElement>(".career-sub")!.textContent =
@@ -1367,12 +1787,15 @@ export class UI {
       card.innerHTML = `
         <div class="challenge-top">
           <span class="challenge-text"></span>
-          <span class="challenge-reward"></span>
+          <div class="challenge-reward">
+            <svg class="coin-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6.5" fill="#f5c518" stroke="#c8a000" stroke-width="0.5"/><text x="7" y="10.5" text-anchor="middle" font-size="7" font-weight="bold" fill="#7a5000">$</text></svg>
+            <span class="challenge-reward-val"></span>
+          </div>
         </div>
         <span class="bar"><i></i></span>
         <div class="challenge-foot"><span class="challenge-count"></span></div>`;
       card.querySelector<HTMLSpanElement>(".challenge-text")!.textContent = row.text;
-      card.querySelector<HTMLSpanElement>(".challenge-reward")!.textContent = `${row.reward} ●`;
+      card.querySelector<HTMLSpanElement>(".challenge-reward-val")!.textContent = String(row.reward);
       card.querySelector<HTMLElement>(".bar i")!.style.width =
         `${Math.round(Math.min(1, row.progress / row.goal) * 100)}%`;
       card.querySelector<HTMLSpanElement>(".challenge-count")!.textContent =
@@ -1399,7 +1822,7 @@ export class UI {
    */
   showResult(view: ResultView): void {
     this.hideAll();
-    this.resultEl.classList.remove("hidden");
+    this.revealScreen(this.resultEl);
     this.showWallet();
     const sign = (n: number) => (n > 0 ? `+${n}` : `${n}`);
     this.resultEl.innerHTML = `
@@ -1455,7 +1878,10 @@ export class UI {
       again.className = "big-btn alt";
       again.id = "btn-result-rematch";
       again.textContent = t("end.rematch");
-      again.onclick = () => view.onRematch?.();
+      again.onclick = () => {
+        this.setOriginFromElement(again);
+        view.onRematch?.();
+      };
       btns.appendChild(again);
     }
     const go = document.createElement("button");
@@ -1464,38 +1890,36 @@ export class UI {
     go.id = "btn-result-continue";
     go.dataset.menuPrimary = "true";
     go.textContent = t("result.continue");
-    go.onclick = () => view.onContinue();
+    go.onclick = () => {
+      this.setOriginFromElement(go);
+      view.onContinue();
+    };
     btns.appendChild(go);
   }
 
   /**
    * The account screen. Two states, one screen.
-   *
-   * Signed out it is a single field and a single button, with the reasons
-   * above it and the catch below it: the profile lives on this device and
-   * there is no password to get it back. That sentence is on the screen rather
-   * than in a help page because it is the one thing a player will wish they
-   * had been told.
-   *
-   * Signed in it is the code, big enough to read out loud, because the code is
-   * the thing every community feature will be built on.
    */
   showProfile(view: ProfileView): void {
     this.hideAll();
-    this.profileEl.classList.remove("hidden");
+    this.revealScreen(this.profileEl);
     this.showWallet();
     const p = view.profile;
     this.profileEl.innerHTML = `
       <div class="career-head">
-        <button class="select-back" type="button" data-menu-back></button>
-        <div><h2 class="career-title"></h2></div>
+        <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
+        <button class="select-back" id="btn-profile-back" type="button" data-menu-back>← ${t("nav.back")}</button>
+      </div>
+      <div class="career-title-wrap">
+        <h2 class="career-title"></h2>
       </div>
       <div class="career-list">
         <div class="account-card"></div>
       </div>`;
-    const back = this.profileEl.querySelector<HTMLButtonElement>(".select-back")!;
-    back.textContent = `← ${t("nav.back")}`;
-    back.onclick = () => view.onBack();
+    const back = this.profileEl.querySelector<HTMLButtonElement>("#btn-profile-back")!;
+    back.onclick = () => {
+      this.collapseScreen(this.profileEl, back, () => view.onBack());
+    };
     this.profileEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
       p ? p.name : t("profile.title");
 
@@ -1526,16 +1950,23 @@ export class UI {
       const create = card.querySelector<HTMLButtonElement>("#btn-profile-create")!;
       create.textContent = view.busy ? t("profile.creating") : t("profile.create");
       create.disabled = view.busy;
-      create.onclick = () => view.onCreate(input.value);
+      create.onclick = () => {
+        this.setOriginFromElement(create);
+        view.onCreate(input.value);
+      };
       const restore = card.querySelector<HTMLButtonElement>("#btn-profile-restore")!;
       restore.textContent = t("recovery.restore");
-      restore.onclick = () => view.onRestore();
+      restore.onclick = () => {
+        this.setOriginFromElement(restore);
+        view.onRestore();
+      };
       input.onkeydown = (e) => {
-        if (e.key === "Enter") view.onCreate(input.value);
+        if (e.key === "Enter") {
+          this.setOriginFromElement(create);
+          view.onCreate(input.value);
+        }
       };
       card.insertBefore(message, fresh);
-      // Focus only on a screen with a keyboard: a phone popping its keyboard
-      // up the instant a screen opens hides half of what it says.
       if (!("ontouchstart" in window)) input.focus();
       return;
     }
@@ -1577,22 +2008,31 @@ export class UI {
     renameBtn.onclick = () => view.onRename(input.value);
     const friends = card.querySelector<HTMLButtonElement>("#btn-profile-friends")!;
     friends.textContent = t("friends.title");
-    friends.onclick = () => view.onFriends();
+    friends.onclick = () => {
+      this.setOriginFromElement(friends);
+      view.onFriends();
+    };
     const club = card.querySelector<HTMLButtonElement>("#btn-profile-club")!;
     club.textContent = t("club.title");
-    club.onclick = () => view.onClub();
+    club.onclick = () => {
+      this.setOriginFromElement(club);
+      view.onClub();
+    };
     const newCode = card.querySelector<HTMLButtonElement>("#btn-profile-newcode")!;
     newCode.textContent = t("recovery.new");
     newCode.disabled = view.busy;
-    newCode.onclick = () => view.onNewCode();
+    newCode.onclick = () => {
+      this.setOriginFromElement(newCode);
+      view.onNewCode();
+    };
     const board = card.querySelector<HTMLButtonElement>("#btn-profile-board")!;
     board.textContent = t("profile.leaderboard");
-    board.onclick = () => view.onLeaderboard();
+    board.onclick = () => {
+      this.setOriginFromElement(board);
+      view.onLeaderboard();
+    };
     card.insertBefore(message, renameBtn);
 
-    // Finished seasons, newest first — the case a shelf of them is for. Absent
-    // entirely for a player who has not finished one, rather than an empty box
-    // captioned with what they have not done yet.
     if (view.titles.length) {
       const shelf = document.createElement("div");
       shelf.className = "season-shelf";
@@ -1609,8 +2049,6 @@ export class UI {
         badge.querySelector("i")!.textContent = `${title.best}`;
         shelf.appendChild(badge);
       }
-      // Above the name field, so the screen reads code, record, seasons — and
-      // the name and the buttons that change it stay together at the bottom.
       card.insertBefore(shelf, card.querySelector(".account-field"));
     }
   }
@@ -1618,21 +2056,23 @@ export class UI {
   /** Everyone, in order. The caller's own row is pinned if it fell off the end. */
   showLeaderboard(view: LeaderboardViewModel): void {
     this.hideAll();
-    this.boardEl.classList.remove("hidden");
+    this.revealScreen(this.boardEl);
     this.showWallet();
     this.boardEl.innerHTML = `
       <div class="career-head">
-        <button class="select-back" type="button" data-menu-back></button>
-        <div>
-          <h2 class="career-title"></h2>
-          <p class="career-sub"></p>
-        </div>
+        <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
+        <button class="select-back" id="btn-board-back" type="button" data-menu-back>← ${t("nav.back")}</button>
+      </div>
+      <div class="career-title-wrap">
+        <h2 class="career-title"></h2>
+        <p class="career-sub"></p>
       </div>
       <div class="career-list board-list"></div>
       <div class="board-pinned hidden"></div>`;
-    const back = this.boardEl.querySelector<HTMLButtonElement>(".select-back")!;
-    back.textContent = `← ${t("nav.back")}`;
-    back.onclick = () => view.onBack();
+    const back = this.boardEl.querySelector<HTMLButtonElement>("#btn-board-back")!;
+    back.onclick = () => {
+      this.collapseScreen(this.boardEl, back, () => view.onBack());
+    };
     this.boardEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent = t("board.title");
     this.boardEl.querySelector<HTMLParagraphElement>(".career-sub")!.textContent = view.message
       ? view.message
@@ -1658,8 +2098,6 @@ export class UI {
     };
     for (const row of view.rows) list.appendChild(rowEl(row));
 
-    // A leaderboard that cannot show you yourself is a poster. If the caller
-    // is below the visible top, their row is pinned to the bottom of it.
     const pinned = this.boardEl.querySelector<HTMLDivElement>(".board-pinned")!;
     if (view.me && !view.rows.some((r) => r.isMe)) {
       pinned.classList.remove("hidden");
@@ -1667,17 +2105,10 @@ export class UI {
     }
   }
 
-  /**
-   * The recovery code, shown once.
-   *
-   * There is no back button and no way past it except the acknowledgement,
-   * because the server kept only a salted digest and genuinely cannot show
-   * this again. A screen that can be dismissed by accident is a screen that
-   * loses somebody their account six months from now.
-   */
+  /** The recovery code, shown once. */
   showRecoveryCode(view: RecoveryView): void {
     this.hideAll();
-    this.recoveryEl.classList.remove("hidden");
+    this.revealScreen(this.recoveryEl);
     this.recoveryEl.innerHTML = `
       <div class="account-card recovery-card">
         <h2 class="career-title"></h2>
@@ -1698,8 +2129,6 @@ export class UI {
     const copy = card.querySelector<HTMLButtonElement>("#btn-recovery-copy")!;
     copy.textContent = t("recovery.copy");
     copy.onclick = () => {
-      // Best effort: a webview without clipboard permission simply leaves the
-      // code on screen to be copied by hand, which is what it is there for.
       void navigator.clipboard?.writeText(view.code).then(
         () => (copy.textContent = t("recovery.copied")),
         () => undefined
@@ -1707,20 +2136,16 @@ export class UI {
     };
     const done = card.querySelector<HTMLButtonElement>("#btn-recovery-done")!;
     done.textContent = t("recovery.saved");
-    done.onclick = () => view.onDone();
+    done.onclick = () => {
+      this.setOriginFromElement(done);
+      view.onDone();
+    };
   }
 
-  /**
-   * What a finished season was worth.
-   *
-   * Shown once, on the first boot of a new month, and it leads with the tier
-   * rather than the halving. Both facts are on the card, but a player who was
-   * PRO II in August is being congratulated, not fined — and the number they
-   * carry into September is the second line for that reason.
-   */
+  /** What a finished season was worth. */
   showSeason(view: SeasonView): void {
     this.hideAll();
-    this.seasonEl.classList.remove("hidden");
+    this.revealScreen(this.seasonEl);
     this.showWallet();
     this.seasonEl.innerHTML = `
       <div class="account-card season-card">
@@ -1751,17 +2176,23 @@ export class UI {
 
     const done = card.querySelector<HTMLButtonElement>("#btn-season-done")!;
     done.textContent = t("season.start");
-    done.onclick = () => view.onDone();
+    done.onclick = () => {
+      this.setOriginFromElement(done);
+      view.onDone();
+    };
   }
 
   /** Entering a code to take an account over onto this device. */
   showRestore(view: RestoreView): void {
     this.hideAll();
-    this.restoreEl.classList.remove("hidden");
+    this.revealScreen(this.restoreEl);
     this.restoreEl.innerHTML = `
       <div class="career-head">
-        <button class="select-back" type="button" data-menu-back></button>
-        <div><h2 class="career-title"></h2></div>
+        <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
+        <button class="select-back" id="btn-restore-back" type="button" data-menu-back>← ${t("nav.back")}</button>
+      </div>
+      <div class="career-title-wrap">
+        <h2 class="career-title"></h2>
       </div>
       <div class="career-list">
         <div class="account-card">
@@ -1772,9 +2203,10 @@ export class UI {
           <button class="big-btn" id="btn-restore" type="button" data-menu-primary="true"></button>
         </div>
       </div>`;
-    const back = this.restoreEl.querySelector<HTMLButtonElement>(".select-back")!;
-    back.textContent = `← ${t("nav.back")}`;
-    back.onclick = () => view.onBack();
+    const back = this.restoreEl.querySelector<HTMLButtonElement>("#btn-restore-back")!;
+    back.onclick = () => {
+      this.collapseScreen(this.restoreEl, back, () => view.onBack());
+    };
     this.restoreEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
       t("recovery.restoreTitle");
     this.restoreEl.querySelector<HTMLParagraphElement>(".account-why")!.textContent =
@@ -1790,32 +2222,29 @@ export class UI {
     const go = this.restoreEl.querySelector<HTMLButtonElement>("#btn-restore")!;
     go.textContent = view.busy ? t("profile.creating") : t("recovery.go");
     go.disabled = view.busy;
-    const submit = () => view.onRestore(idEl.value, codeEl.value);
+    const submit = () => {
+      this.setOriginFromElement(go);
+      view.onRestore(idEl.value, codeEl.value);
+    };
     go.onclick = submit;
     codeEl.onkeydown = (e) => {
       if (e.key === "Enter") submit();
     };
   }
 
-  /**
-   * The friends list.
-   *
-   * Ordered by the server so that whoever can be played right now is at the
-   * top, because "who is around" is the question this screen exists to answer.
-   * The player's own code sits under the heading, since the most common reason
-   * to open this screen is to read it out to somebody.
-   */
+  /** The friends list. */
   showFriends(view: FriendsView): void {
     this.hideAll();
-    this.friendsEl.classList.remove("hidden");
+    this.revealScreen(this.friendsEl);
     this.showWallet();
     this.friendsEl.innerHTML = `
       <div class="career-head">
-        <button class="select-back" type="button" data-menu-back></button>
-        <div>
-          <h2 class="career-title"></h2>
-          <p class="career-sub"></p>
-        </div>
+        <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
+        <button class="select-back" id="btn-friends-back" type="button" data-menu-back>← ${t("nav.back")}</button>
+      </div>
+      <div class="career-title-wrap">
+        <h2 class="career-title"></h2>
+        <p class="career-sub"></p>
       </div>
       <div class="friend-add">
         <input id="friend-code" type="text" maxlength="8" autocomplete="off" spellcheck="false" autocapitalize="characters">
@@ -1823,9 +2252,10 @@ export class UI {
       </div>
       <p class="account-message hidden"></p>
       <div class="career-list friend-list"></div>`;
-    const back = this.friendsEl.querySelector<HTMLButtonElement>(".select-back")!;
-    back.textContent = `← ${t("nav.back")}`;
-    back.onclick = () => view.onBack();
+    const back = this.friendsEl.querySelector<HTMLButtonElement>("#btn-friends-back")!;
+    back.onclick = () => {
+      this.collapseScreen(this.friendsEl, back, () => view.onBack());
+    };
     this.friendsEl.querySelector<HTMLHeadingElement>(".career-title")!.textContent =
       t("friends.title");
     this.friendsEl.querySelector<HTMLParagraphElement>(".career-sub")!.textContent = tf(
@@ -1892,21 +2322,23 @@ export class UI {
    */
   showClub(view: ClubView): void {
     this.hideAll();
-    this.clubEl.classList.remove("hidden");
+    this.revealScreen(this.clubEl);
     this.showWallet();
     this.clubEl.innerHTML = `
       <div class="career-head">
-        <button class="select-back" type="button" data-menu-back></button>
-        <div>
-          <h2 class="career-title"></h2>
-          <p class="career-sub"></p>
-        </div>
+        <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
+        <button class="select-back" id="btn-club-back" type="button" data-menu-back>← ${t("nav.back")}</button>
+      </div>
+      <div class="career-title-wrap">
+        <h2 class="career-title"></h2>
+        <p class="career-sub"></p>
       </div>
       <p class="account-message hidden"></p>
       <div class="career-list club-body"></div>`;
-    const back = this.clubEl.querySelector<HTMLButtonElement>(".select-back")!;
-    back.textContent = `← ${t("nav.back")}`;
-    back.onclick = () => view.onBack();
+    const back = this.clubEl.querySelector<HTMLButtonElement>("#btn-club-back")!;
+    back.onclick = () => {
+      this.collapseScreen(this.clubEl, back, () => view.onBack());
+    };
 
     const message = this.clubEl.querySelector<HTMLParagraphElement>(".account-message")!;
     message.textContent = view.message ?? "";
@@ -2068,9 +2500,13 @@ export class UI {
 
   showSelect(opts: SelectOptions): void {
     this.hideAll();
-    this.selectEl.classList.remove("hidden");
-    this.selectEl.querySelector<HTMLDivElement>(".select-title")!.textContent =
+    this.revealScreen(this.selectEl);
+    this.selectEl.querySelector<HTMLHeadingElement>(".select-title")!.textContent =
       opts.title ?? t("select.title");
+    const modeLabelEl = this.selectEl.querySelector<HTMLSpanElement>("#select-mode-label");
+    if (modeLabelEl) {
+      modeLabelEl.textContent = opts.modeLabel ?? opts.subtitle ?? "";
+    }
     const tabLabels: Record<string, string> = {
       character: t("select.player"),
       ball: t("select.ball"),
@@ -2097,7 +2533,11 @@ export class UI {
 
     const back = this.selectEl.querySelector<HTMLButtonElement>("#btn-select-back")!;
     back.hidden = !opts.onBack;
-    back.onclick = opts.onBack ? () => opts.onBack?.() : null;
+    back.onclick = opts.onBack
+      ? () => {
+          this.collapseScreen(this.selectEl, back, () => opts.onBack?.());
+        }
+      : null;
     this.selTab = "character";
     // Start the venue tab on the venue actually built behind this screen. Left
     // at zero it would point at the first entry in the list — which is the
@@ -2165,9 +2605,10 @@ export class UI {
       ];
       for (const [labelText, valueText] of traits) {
         const trait = document.createElement("span");
-        const label = document.createElement("b");
-        label.textContent = labelText;
-        trait.append(label, document.createTextNode(` · ${valueText}`));
+        trait.textContent = `${labelText} · `;
+        const val = document.createElement("b");
+        val.textContent = valueText;
+        trait.appendChild(val);
         profileTraitsEl.appendChild(trait);
       }
     };
@@ -2248,6 +2689,7 @@ export class UI {
     });
     startBtn.onclick = async () => {
       if (startBtn.disabled) return;
+      this.setOriginFromElement(startBtn);
       const venue = opts.venues?.[this.selIdx.venue];
       if (venue) {
         // Commits the venue, and pays for it first when it needs paying for.
@@ -2298,9 +2740,16 @@ export class UI {
     }
 
     this.practiceEl.innerHTML = `
-      <div class="practice-title">${state.title}</div>
+      <div class="practice-header">
+        <div class="practice-title">${state.title}</div>
+        ${state.onSkip ? `<button class="practice-skip-btn" id="btn-practice-skip" type="button">${state.skip ?? "SKIP"}</button>` : ""}
+      </div>
       <div class="practice-goal">${state.goal}</div>
       ${state.control ? `<div class="practice-control">${state.control}</div>` : ""}`;
+    if (state.onSkip) {
+      const skipBtn = this.practiceEl.querySelector<HTMLButtonElement>("#btn-practice-skip");
+      if (skipBtn) skipBtn.onclick = () => state.onSkip?.();
+    }
     this.practiceEl.classList.remove("hidden");
   }
 

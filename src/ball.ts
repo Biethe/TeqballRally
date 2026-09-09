@@ -41,6 +41,8 @@ export interface BallState {
  */
 export const MAX_SPEED = 24;
 const TABLE_RESTITUTION = 0.82;
+/** Tangential damping applied to a table bounce, alongside TABLE_RESTITUTION. */
+export const TABLE_BOUNCE_TANGENTIAL = 0.97;
 const GROUND_RESTITUTION = 0.55;
 const NET_RESTITUTION = 0.35;
 
@@ -49,6 +51,29 @@ const NET_RESTITUTION = 0.35;
  * the net plane, the table sides and the ground. Pure function over `s` so the
  * AI can run it on a scratch state for trajectory prediction.
  */
+/** How fast a ball settled on the floor sheds its pace (m/s per second). */
+const ROLL_DECEL = 2.4;
+
+/**
+ * A ball that has stopped bouncing and is running along the floor.
+ *
+ * Reached from two directions — dropping too slowly to bounce again, and
+ * already flat — which is why it is a function rather than the same nine lines
+ * written out twice.
+ */
+function roll(s: BallState, h: number): void {
+  s.vel.y = 0;
+  const speed = Math.hypot(s.vel.x, s.vel.z);
+  if (speed <= 0.01) {
+    s.vel.x = 0;
+    s.vel.z = 0;
+    return;
+  }
+  const slowed = Math.max(0, speed - ROLL_DECEL * h) / speed;
+  s.vel.x *= slowed;
+  s.vel.z *= slowed;
+}
+
 export function stepBall(
   s: BallState,
   dt: number,
@@ -117,8 +142,8 @@ export function stepBall(
         const vn = Vector3.Dot(s.vel, n);
         if (vn < 0) {
           s.vel.subtractInPlace(n.scale((1 + TABLE_RESTITUTION) * vn));
-          s.vel.x *= 0.97;
-          s.vel.z *= 0.97;
+          s.vel.x *= TABLE_BOUNCE_TANGENTIAL;
+          s.vel.z *= TABLE_BOUNCE_TANGENTIAL;
           s.pos.y = surf + BALL_RADIUS + 0.001;
           onEvent?.({ type: "table", side: s.pos.x < 0 ? "player" : "ai", pos: s.pos.clone() });
         }
@@ -133,15 +158,86 @@ export function stepBall(
       }
     }
 
-    // Ground.
+    // Court surround boards (|x| <= 8.0, |z| <= 5.2, height <= 0.95m).
+    const boardTop = GROUND_Y + 0.95;
+    if (s.pos.y - BALL_RADIUS <= boardTop) {
+      if (Math.abs(s.pos.z) <= 5.25) {
+        if (s.pos.x > 0 && s.vel.x > 0 && s.pos.x + BALL_RADIUS >= 8.0) {
+          s.pos.x = 8.0 - BALL_RADIUS;
+          s.vel.x = -s.vel.x * 0.65;
+          s.vel.y *= 0.85;
+          s.vel.z *= 0.85;
+          onEvent?.({ type: "side", pos: s.pos.clone() });
+        } else if (s.pos.x < 0 && s.vel.x < 0 && s.pos.x - BALL_RADIUS <= -8.0) {
+          s.pos.x = -8.0 + BALL_RADIUS;
+          s.vel.x = -s.vel.x * 0.65;
+          s.vel.y *= 0.85;
+          s.vel.z *= 0.85;
+          onEvent?.({ type: "side", pos: s.pos.clone() });
+        }
+      }
+      if (Math.abs(s.pos.x) <= 8.05) {
+        if (s.pos.z > 0 && s.vel.z > 0 && s.pos.z + BALL_RADIUS >= 5.2) {
+          s.pos.z = 5.2 - BALL_RADIUS;
+          s.vel.z = -s.vel.z * 0.65;
+          s.vel.y *= 0.85;
+          s.vel.x *= 0.85;
+          onEvent?.({ type: "side", pos: s.pos.clone() });
+        } else if (s.pos.z < 0 && s.vel.z < 0 && s.pos.z - BALL_RADIUS <= -5.2) {
+          s.pos.z = -5.2 + BALL_RADIUS;
+          s.vel.z = -s.vel.z * 0.65;
+          s.vel.y *= 0.85;
+          s.vel.x *= 0.85;
+          onEvent?.({ type: "side", pos: s.pos.clone() });
+        }
+      }
+    }
+
+    // Arena site perimeter fence (|x| <= 14.3, |z| <= 10.05, height <= 4.5m).
+    const fenceTop = GROUND_Y + 4.5;
+    if (s.pos.y - BALL_RADIUS <= fenceTop) {
+      if (s.pos.x > 0 && s.vel.x > 0 && s.pos.x + BALL_RADIUS >= 14.3) {
+        s.pos.x = 14.3 - BALL_RADIUS;
+        s.vel.x = -s.vel.x * 0.55;
+        s.vel.y *= 0.8;
+        s.vel.z *= 0.8;
+        onEvent?.({ type: "side", pos: s.pos.clone() });
+      } else if (s.pos.x < 0 && s.vel.x < 0 && s.pos.x - BALL_RADIUS <= -14.3) {
+        s.pos.x = -14.3 + BALL_RADIUS;
+        s.vel.x = -s.vel.x * 0.55;
+        s.vel.y *= 0.8;
+        s.vel.z *= 0.8;
+        onEvent?.({ type: "side", pos: s.pos.clone() });
+      }
+      if (s.pos.z > 0 && s.vel.z > 0 && s.pos.z + BALL_RADIUS >= 10.05) {
+        s.pos.z = 10.05 - BALL_RADIUS;
+        s.vel.z = -s.vel.z * 0.55;
+        s.vel.y *= 0.8;
+        s.vel.x *= 0.8;
+        onEvent?.({ type: "side", pos: s.pos.clone() });
+      } else if (s.pos.z < 0 && s.vel.z < 0 && s.pos.z - BALL_RADIUS <= -10.05) {
+        s.pos.z = -10.05 + BALL_RADIUS;
+        s.vel.z = -s.vel.z * 0.55;
+        s.vel.y *= 0.8;
+        s.vel.x *= 0.8;
+        onEvent?.({ type: "side", pos: s.pos.clone() });
+      }
+    }
+
+    // Ground and Continuous Rolling.
     if (s.pos.y - BALL_RADIUS <= GROUND_Y) {
       s.pos.y = GROUND_Y + BALL_RADIUS;
       if (s.vel.y < 0) {
-        s.vel.y = -s.vel.y * GROUND_RESTITUTION;
-        s.vel.x *= 0.8;
-        s.vel.z *= 0.8;
-        if (Math.abs(s.vel.y) > 0.4) onEvent?.({ type: "ground", pos: s.pos.clone() });
-        else s.vel.setAll(0);
+        if (Math.abs(s.vel.y) > 0.35) {
+          s.vel.y = -s.vel.y * GROUND_RESTITUTION;
+          s.vel.x *= 0.85;
+          s.vel.z *= 0.85;
+          onEvent?.({ type: "ground", pos: s.pos.clone() });
+        } else {
+          roll(s, h);
+        }
+      } else if (Math.abs(s.vel.y) <= 0.05) {
+        roll(s, h);
       }
     }
   }

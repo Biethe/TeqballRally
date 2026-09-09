@@ -29,8 +29,8 @@ android {
         // Starting at 10000 leaves room to slot a hotfix under a build that has
         // already been uploaded, which is exactly when you cannot afford to be
         // renumbering things.
-        versionCode 10001
-        versionName "0.1.0"
+        versionCode 10004
+        versionName "0.1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -51,7 +51,8 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             if (keystorePropertiesFile.exists()) {
                 signingConfig signingConfigs.release

@@ -20,8 +20,7 @@ import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent";
 import { importBall, brightenKit, fixMetallicMaterials } from "./scene";
 import { applyKit, BLANK_KIT, type Kit } from "./kit";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
-import { trimIdleTail } from "./character";
-import { CHARACTER_SCALE, CHARACTERS } from "./config";
+import { CHARACTER_SCALE, CHARACTERS, kitForCharacter } from "./config";
 import { protectedSource } from "./protected";
 
 export type ViewerKind = "character" | "ball";
@@ -31,9 +30,12 @@ interface Entry {
   root: TransformNode;
   /** Looping clip shown in the menu (a randomly chosen MenuPose, or Idle). */
   anim: AnimationGroup | null;
+  poses?: AnimationGroup[];
+  poseIndex?: number;
 }
 
-const MENU_POSE_RE = /^MenuPose\d*$/;
+const MENU_POSE_RE = /^(Menu_?Pose\d*|MenuPose_Backflip|Stunt_?\d*)$/i;
+const DROPPED_VIEWPORT_ANIM_RE = /^Stunt_?1$/i;
 
 const BALL_VIEW_DIAMETER = 0.7;
 const BALL_VIEW_Y = 0.9;
@@ -41,10 +43,10 @@ const BALL_VIEW_Y = 0.9;
 // Keep the studio in a calm blue-grey family rather than a near-black void.
 // The ice-blue accent is deliberately narrow and cool: it gives the plinth a
 // contemporary technical finish without competing with a player's kit.
-const STUDIO_SLATE = new Color3(0.1, 0.13, 0.185);
-const STUDIO_FLOOR = new Color3(0.062, 0.086, 0.128);
-const STUDIO_ICE = new Color3(0.055, 0.13, 0.23);
-const STUDIO_ICE_GLOW = new Color3(0.001, 0.006, 0.02);
+const STUDIO_SLATE = new Color3(0.04, 0.06, 0.12);
+const STUDIO_FLOOR = new Color3(0.025, 0.04, 0.075);
+const STUDIO_ICE = new Color3(0.06, 0.14, 0.28);
+const STUDIO_ICE_GLOW = new Color3(0.002, 0.008, 0.025);
 
 function studioMaterial(
   scene: Scene,
@@ -99,14 +101,14 @@ export class ModelViewer {
     this.scene.imageProcessingConfiguration.contrast = 1.07;
     this.scene.imageProcessingConfiguration.exposure = 1.1;
 
-    this.camera = new ArcRotateCamera("viewer-cam", Math.PI / 2, 1.25, 3.2, new Vector3(0, 0.95, 0), this.scene);
+    this.camera = new ArcRotateCamera("viewer-cam", Math.PI / 2, 1.25, 3.1, new Vector3(0, 0.92, 0), this.scene);
     this.camera.lowerRadiusLimit = ZOOM_LIMIT.character.min;
     this.camera.upperRadiusLimit = ZOOM_LIMIT.character.max;
     this.camera.lowerBetaLimit = 0.3;
     this.camera.upperBetaLimit = Math.PI / 2 + 0.2;
     this.camera.wheelDeltaPercentage = 0.01;
     this.camera.panningSensibility = 0; // orbit only
-    this.camera.fov = 0.82;
+    this.camera.fov = 0.80;
 
     const hemi = new HemisphericLight("viewer-hemi", new Vector3(0.1, 1, -0.2), this.scene);
     hemi.intensity = 0.78;
@@ -242,8 +244,10 @@ export class ModelViewer {
     this.ballDisplay.setEnabled(entry?.kind === "ball");
     if (entry) {
       entry.root.setEnabled(true);
-      if (entry.anim && !entry.anim.isPlaying) entry.anim.start(true, 1.0);
-      else entry.anim?.restart();
+      if (entry.anim) {
+        entry.anim.reset();
+        entry.anim.start(false, 1.0);
+      }
     }
   }
 
@@ -254,13 +258,13 @@ export class ModelViewer {
     this.camera.lowerRadiusLimit = ZOOM_LIMIT[kind].min;
     this.camera.upperRadiusLimit = ZOOM_LIMIT[kind].max;
     if (kind === "character") {
-      this.camera.setTarget(new Vector3(0, 0.95, 0));
-      this.camera.radius = 3.2;
+      this.camera.setTarget(new Vector3(0, 0.92, 0));
+      this.camera.radius = 3.1;
       this.camera.beta = 1.25;
     } else {
       this.camera.setTarget(new Vector3(0, BALL_VIEW_Y, 0));
-      this.camera.radius = 1.7;
-      this.camera.beta = 1.35;
+      this.camera.radius = 1.6;
+      this.camera.beta = 1.30;
     }
     this.camera.radius = Math.max(ZOOM_LIMIT[kind].min, this.camera.radius);
     this.camera.alpha = Math.PI / 2; // face the model front
@@ -315,8 +319,12 @@ export class ModelViewer {
     // Painted here as well as in the match: the picker is where somebody
     // decides whether they like their own shirt, and a blank one there makes
     // the whole feature look broken.
+    const characterDef = CHARACTERS.find((c) => c.id === id);
+    const characterKit = characterDef
+      ? kitForCharacter(characterDef, this.kit)
+      : { ...this.kit, colour: "white" as const };
     try {
-      await applyKit(res.meshes, this.kit, (url, invertY) => {
+      await applyKit(res.meshes, characterKit, (url, invertY) => {
         const painted = new Texture(url, this.scene, undefined, invertY);
         painted.name = "shirt (kit)";
         return painted;
@@ -325,29 +333,64 @@ export class ModelViewer {
       console.warn("[viewer] could not paint the shirt:", error);
     }
 
-    // Menu display clip: one of the MenuPose* clips picked at random each
-    // launch (models load once per session), falling back to Idle.
+    // Menu display clip: each player has their distinct showcase MenuPose animation
+    // defined in their character definition, with Brazil randomly alternating between
+    // its signature backflip and stunt2 showcase, falling back to Idle.
     let idle: AnimationGroup | null = null;
     const poses: AnimationGroup[] = [];
+    const targetPose = id === "BrazilianPlayer"
+      ? (Math.random() < 0.5 ? "MenuPose_Backflip" : "Stunt2")
+      : characterDef?.menuPose;
+    let preferredAnim: AnimationGroup | null = null;
+
     for (const g of res.animationGroups) {
       g.stop();
       const name = g.name.trim();
-      if (MENU_POSE_RE.test(name)) poses.push(g);
-      else if (name === "Idle") {
+      if (DROPPED_VIEWPORT_ANIM_RE.test(name)) continue;
+      if (name === "MenuPose_Backflip" && id !== "BrazilianPlayer") continue;
+
+      if (targetPose && name.toLowerCase() === targetPose.toLowerCase()) {
+        preferredAnim = g;
+      }
+      if (MENU_POSE_RE.test(name)) {
+        poses.push(g);
+      } else if (name === "Idle") {
         idle = g;
-        trimIdleTail(g);
       }
     }
-    const anim = poses.length > 0 ? poses[Math.floor(Math.random() * poses.length)] : idle;
+
+    if (preferredAnim) {
+      const idx = poses.indexOf(preferredAnim);
+      if (idx > -1) poses.splice(idx, 1);
+      poses.unshift(preferredAnim);
+    }
+
+    const poseList = poses.length > 0 ? poses : idle ? [idle] : [];
+    const anim = preferredAnim ?? (poseList.length > 0 ? poseList[0] : null);
+    const poseIdx = 0;
 
     const { min, max } = root.getHierarchyBoundingVectors(true);
     const height = (CHARACTERS.find((c) => c.id === id)?.height ?? 1.8) * CHARACTER_SCALE;
     const rawH = max.y - min.y;
     const s = rawH > 0.01 ? height / rawH : 1;
     root.scaling.setAll(s);
+    root.position.x = -((min.x + max.x) * 0.5) * s;
     root.position.y = -min.y * s;
+    root.position.z = -((min.z + max.z) * 0.5) * s;
     this.addShadowCasters(root);
-    return { kind, root, anim };
+    return { kind, root, anim, poses: poseList, poseIndex: poseIdx };
+  }
+
+  /** Cycle to the next showcase animation/pose on the standing character. */
+  playNextPose(): void {
+    if (!this.current || this.current.kind !== "character" || !this.current.poses || this.current.poses.length <= 1) return;
+    this.current.anim?.stop();
+    const nextIdx = ((this.current.poseIndex ?? 0) + 1) % this.current.poses.length;
+    this.current.poseIndex = nextIdx;
+    const nextAnim = this.current.poses[nextIdx];
+    this.current.anim = nextAnim;
+    nextAnim.reset();
+    nextAnim.start(false, 1.0);
   }
 
   /** Build a calm studio floor that gives the model room to stand out. */

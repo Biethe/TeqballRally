@@ -2,7 +2,6 @@ import type { AIDifficulty } from "./ai";
 import type { InputState } from "./input";
 import type { MatchController, MatchEvent } from "./match";
 import type { PracticePanelState, TrainingPauseState } from "./ui";
-import { canSmashFrom } from "./aim";
 import { t, type StringKey } from "./i18n";
 
 /**
@@ -64,12 +63,8 @@ interface PracticeUI {
  */
 const STEPS = [
   "serve",
-  "watch",
-  "chase",
-  "craft",
-  "stepIn",
-  "strike",
-  "early",
+  "defend",
+  "attack",
   "free",
 ] as const;
 export type DrillStep = (typeof STEPS)[number];
@@ -77,12 +72,8 @@ export type DrillStep = (typeof STEPS)[number];
 /** Which chapter a step belongs to, for the heading above it. */
 const CHAPTER: Record<DrillStep, "defend" | "attack" | null> = {
   serve: null,
-  watch: "defend",
-  chase: "defend",
-  craft: "defend",
-  stepIn: "attack",
-  strike: "attack",
-  early: "attack",
+  defend: "defend",
+  attack: "attack",
   free: null,
 };
 
@@ -93,10 +84,7 @@ export class PracticeCoach {
   private step: DrillStep = "serve";
   private paused = false;
   private resumeGuardFrames = 0;
-  private moveTime = 0;
   private struckFromClose = false;
-  /** The player held a direction during the aim-your-touch step. */
-  private craftArmed = false;
   /**
    * Steps whose card has already been shown.
    *
@@ -116,7 +104,8 @@ export class PracticeCoach {
     private hasGamepad: () => boolean,
     private isTouch: () => boolean,
     /** Portrait play is gestures, not buttons, so its prompts differ again. */
-    private isPortrait: () => boolean = () => false
+    private isPortrait: () => boolean = () => false,
+    private onSkipCallback?: () => void
   ) {
     this.unsubscribe = this.match.subscribe((event) => this.onMatchEvent(event));
   }
@@ -130,6 +119,12 @@ export class PracticeCoach {
     return this.step === "free";
   }
 
+  skip(): void {
+    this.step = "free";
+    this.resume();
+    this.onSkipCallback?.();
+  }
+
   start(): void {
     this.refreshPanel();
   }
@@ -139,9 +134,7 @@ export class PracticeCoach {
     this.paused = false;
     this.resumeGuardFrames = 0;
     this.step = "serve";
-    this.moveTime = 0;
     this.struckFromClose = false;
-    this.craftArmed = false;
     this.introduced.clear();
     this.ui.hideTrainingPause();
     this.refreshPanel();
@@ -164,33 +157,6 @@ export class PracticeCoach {
     if (input.confirmPressed || input.strikePressed || input.popPressed) this.resume();
   }
 
-  update(dt: number, input: InputState): void {
-    if (this.paused) return;
-
-    // Aiming the first touch: holding a direction arms the lesson, and the
-    // pop that lands while armed is the proof it was aimed. Checked before
-    // the chase completion, so the frame that advances into this step does
-    // not arm it with the run that finished the previous one.
-    if (this.step === "craft" && this.match.state === "rally") {
-      if (Math.hypot(input.moveX, input.moveZ) > 0.25) this.craftArmed = true;
-    }
-
-    // Defending: once they have actually covered some ground, the lesson has
-    // been done rather than merely described.
-    if (this.step === "chase" && this.match.state === "rally") {
-      if (Math.hypot(input.moveX, input.moveZ) > 0.25) this.moveTime += dt;
-      if (this.moveTime >= 0.35) this.advance();
-    }
-
-    // Attacking: stepping into smash range is the lesson, so it completes the
-    // moment they are standing there rather than when they hit something.
-    if (this.step === "stepIn" && canSmashFrom(this.match.chars.player.position.x)) {
-      this.advance();
-    }
-
-    this.refreshPanel();
-  }
-
   private onMatchEvent(event: MatchEvent): void {
     switch (event.type) {
       case "serve-ready":
@@ -203,35 +169,21 @@ export class PracticeCoach {
 
       case "possession-start":
         if (event.side !== "player") break;
-        this.moveTime = 0;
-        // Every coached step announces itself the moment the ball becomes
+            // Every coached step announces itself the moment the ball becomes
         // this player's problem, which is when the advice is worth having.
         if (this.step !== "free" && this.step !== "serve") this.pause();
         break;
 
       case "touch-committed": {
         if (event.side !== "player") break;
-        // Reading the ball is done the moment they play one. Any touch counts,
-        // including a pop: a step about anticipation must not also quietly
-        // demand a clean strike, and this one had no way out at all until it
-        // did — the lesson sat on DEFENDING 2/6 forever.
-        if (this.step === "watch") {
+        if (this.step === "defend") {
           this.advance();
           break;
         }
-        if (this.step === "craft" && event.action === "pop") {
-          // Portrait has no stick to hold: the tap that plays the ball is
-          // itself the aim, so any pop there is an aimed one.
-          if (this.craftArmed || this.isPortrait()) this.advance();
-          break;
-        }
-        if (event.action !== "strike") break;
-        const close = canSmashFrom(this.match.chars.player.position.x);
-        if (this.step === "strike" && close) {
+        if (this.step === "attack") {
           this.struckFromClose = true;
           this.advance();
-        } else if (this.step === "early") {
-          this.advance();
+          break;
         }
         break;
       }
@@ -243,8 +195,6 @@ export class PracticeCoach {
   private advance(): void {
     const at = STEPS.indexOf(this.step);
     this.step = STEPS[Math.min(STEPS.length - 1, at + 1)];
-    this.moveTime = 0;
-    this.craftArmed = false;
   }
 
   private pause(): void {
@@ -281,33 +231,29 @@ export class PracticeCoach {
       action: t(`practice.${step}.action` as StringKey),
       control: this.controlFor(step),
       resume: this.continueLabel(),
+      skip: t("practice.skip"),
+      onSkip: () => this.skip(),
     };
   }
 
   /**
    * The one input this step needs, in the words of the device in their hands.
-   *
-   * Practice gives no assistance — the automatic first reception is off for
-   * the whole lesson — so these are the real controls, not a simplified set
-   * that stops working the moment the tutorial ends.
    */
   private controlFor(step: DrillStep): string {
     switch (step) {
       case "serve":
         return this.control("WASD + SPACE", "LEFT STICK + A", "JOYSTICK + STRIKE", "SWIPE TO SERVE");
-      case "watch":
-      case "chase":
-      case "stepIn":
-        return this.control("WASD", "LEFT STICK", "JOYSTICK", "TAP THE COURT");
-      case "craft":
+      case "defend":
         return this.control(
-          "K + WASD",
-          "B + LEFT STICK",
-          "RECEPTION + JOYSTICK",
-          "TAP WHERE YOU WANT THE BALL"
+          "WASD / K",
+          "LEFT STICK / B",
+          "JOYSTICK / RECEPTION",
+          "TAP NEAR BOUNCE"
         );
+      case "attack":
+        return this.control("WASD + SPACE", "LEFT STICK + A", "JOYSTICK + STRIKE", "SWIPE TO SMASH");
       default:
-        return this.control("HOLD SPACE", "HOLD A", "HOLD STRIKE", "SWIPE FAST");
+        return this.control("SPACE", "A", "STRIKE", "TAP / SWIPE");
     }
   }
 
@@ -331,7 +277,10 @@ export class PracticeCoach {
     }
     const step = this.step;
     if (step === "free") {
-      this.ui.practicePanel({ title: t("practice.free.title"), goal: t("practice.free.action") });
+      this.ui.practicePanel({
+        title: t("practice.free.title"),
+        goal: t("practice.free.action"),
+      });
       return;
     }
     const chapter = CHAPTER[step];
@@ -341,9 +290,9 @@ export class PracticeCoach {
         ? `${t(`practice.chapter.${chapter}` as StringKey)} · ${done} / ${COACHED.length}`
         : `${t("practice.title")} · ${done} / ${COACHED.length}`,
       goal: t(`practice.${step}.action` as StringKey),
-      // The card only shows once, so the input it named has to survive here —
-      // the panel is now the only place a stuck player can re-read it.
       control: this.controlFor(step),
+      skip: t("practice.skip"),
+      onSkip: () => this.skip(),
     });
   }
 

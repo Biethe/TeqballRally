@@ -57,31 +57,63 @@ interesting decision; what to do with it is (`AUTO_RECEPTION_REACH` in
 
 ## Staying with the ball
 
-Around the point where a player's next contact is due there is a circle they
-move freely inside — about two paces, and the whole of it is theirs. Which side
-of the ball to stand, how square to be, how long to let it drop: every decision
-worth making about a touch is made inside that circle, and nothing interferes
-with any of it (`RECEPTION_ZONE` in `src/config.ts`).
+Two different things can own a player's feet, at two different moments, and
+keeping them apart is what makes the assist an assist rather than a takeover.
 
-Outside it, only the half of the push that is *leaving* is damped, fading out
-across a soft band rather than stopping at a line, and a slow walk back builds
-up in whatever room the player is not using — at full stick it is not there at
-all. Sideways movement is never touched, because circling the contact point is
-the adjustment this exists to protect, not the one it exists to stop.
+**A ball coming at you is yours to go and get.** Nothing runs for you. The
+stick steers, and what the game adds is shaping: a bend onto the contact point
+when you are already pushing roughly at it (`REACH_ASSIST`), and — once you are
+outside the free circle — damping on the half of the push that is *leaving*,
+plus a leash drawing you back into the room you are not using (`RECEPTION_ZONE`
+in `src/config.ts`). The leash fades out as you push away and is gone entirely
+at a full push, so leaving is always a decision you can make. It fades on
+pushing *away* rather than on pushing at all, because on this stick a held
+direction is also how the coming touch is aimed, and a leash that faded on a
+sideways hold would quietly cancel the help needed to reach the ball and play
+it.
 
-So a player who means to leave still leaves. What they can no longer do is
-drift out of a reception they had already started, which is the failure it was
-built for: the ball dropping two paces from a player who wandered off during
-their own animation, and a touch that was there to be made quietly becoming
-impossible. The free radius is deliberately smaller than reach plus lunge
-(`tests/reception.test.ts` holds that), so moving freely inside it can never
-cost a reception that was on.
+How much of that help you get is a question about time, not distance:
 
-One spot does three jobs — the reach assist bends a run onto it, the zone is
-drawn around it, and the auto-run after a set-up heads for it — and it is read
-off the ball's live flight rather than from what a touch intended. A set-up
-that came off the body badly therefore moves it, which is exactly the recovery
-a poor first touch should demand.
+```
+slack = time until the ball arrives  -  distance / your top speed
+```
+
+Negative and you get nothing — the ball is going to beat you however hard you
+run, and a fast or well-placed shot has to be able to win the point. Positive
+and it fades in across `REACH_ASSIST.slackFull`. A ball three metres away with
+a second of hang is worth helping with; the same ball driven flat is not. A
+lateral band used to answer this instead, which said no to a lofted ball two
+paces to the side and yes to a drive that was already past.
+
+Around the contact point is a circle you move freely inside — which side of the
+ball to stand, how square to be, how long to let it drop, all untouched. Its
+radius is *derived*, not chosen: the anchor stands `ANCHOR_STEP_BACK` behind the
+drop so the ball comes down in front of you, which puts the ball that much
+further away than the anchor is. Any wider and there would be a band where the
+game says your feet are your own and then the ball is out of reach from where
+you stood — which is exactly how an idle player was left watching a reception
+that was theirs to make. `tests/reception.test.ts` holds that.
+
+**A ball you put up yourself is not.** Once your own set-up is in the air it is
+going nowhere else, there is nothing left to decide, and the run under it cannot
+be refused or pushed out of (`AUTO_RUN`). This is the one place the game takes
+the feet, and it is the fix for the failure it was built for: an oriented
+reception played out to the side used to switch its own run off the moment the
+ball cleared a lateral band, stranding the player two paces from a ball they had
+just placed, with the next touch gone through no fault of their thumb. The run
+releases at the drop, where choosing a side of the ball becomes the decision
+worth making, and picks back up if the anchor moves further than the arrival
+covers — the recovery a set-up that came off the body badly should demand.
+
+In the last stretch before a first touch the stick stops being a run and becomes
+the shape of the touch: a player holding a direction as the ball lands on them
+is crafting a set-up, not asking to walk away from one, so there the feet go to
+the assist and the push is read as aim alone (`receptionSettling`).
+
+One spot does all of it — the bend, the circle, the leash and the run all aim at
+the same anchor — and it is read off the ball's live flight rather than from what
+a touch intended, together with when the ball gets there. A set-up that came off
+the body badly therefore moves it.
 
 ## Touches, and what they are worth
 
@@ -470,6 +502,33 @@ is sized against them — the daily challenge goals, the server's bounds on a
 posted result — and `tests/progress.test.ts` holds every goal to being
 reachable in a session, so shortening a set again cannot quietly turn a daily
 challenge into a weekly one.
+
+## A competition you can put down
+
+A cup is three matches back to back and a league is three rounds, which is a
+long sitting on a phone — long enough that it will routinely be interrupted by
+a bus stop, a phone call, or the battery. Both used to live entirely in closure
+variables in `src/main.ts` and die with the page.
+
+They are written to `localStorage` between rounds now (`src/competition.ts`),
+and the competition menu offers the run back before anything else on it. Not on
+the title screen: PLAY is the only thing that screen says, and a competition the
+player may have forgotten about is not worth breaking that for.
+
+Between rounds, never during one. A round is the unit the competition already
+thinks in, and the alternative — snapshotting a live match — means serialising
+the ball, the characters and the rally state and keeping all three in step with
+every future change to them. Quitting mid-match therefore costs that match and
+nothing else.
+
+Only ids are stored, never whole `CharacterDef`s: those carry career level and
+traits that are recomputed on load, and a saved copy would go stale the moment
+the player levelled up. The draw *is* stored, because it is shuffled once when
+the run starts — re-rolling it on resume would hand the player a different
+tournament from the one they were halfway through. Anything that does not parse
+into a complete, self-consistent run is treated as no run at all, which
+`tests/competition.test.ts` pins: a tournament with the wrong opponents or the
+wrong score is worse than being told the saved one is gone.
 
 ## The career
 
