@@ -285,6 +285,25 @@ The floor ramps from exactly where the flattest kick already is (`loftFloor`
 starts at `loftFor(1)`), so crossing the line costs nothing and the cost grows
 smoothly from there — a player can feel where it is without being told.
 
+The aim is a **standing instruction**, not something re-set every time the ball
+comes back. It used to snap to the middle of the opponent's half on every
+possession, on the reasoning that a corner should never be inherited silently —
+except the marker is on screen for the whole possession, so it never was
+silent, and the reset was precisely why the aim was *always* in the middle of
+the table. Moving it costs a held press, and a press held long enough to reach
+a corner is a lob rather than a drive (`KICK_INPUT.hold` is 0.2 s, and the
+marker crosses half the court in about that) — so a target that had to be
+re-earned at that price every possession was a target most rallies never left,
+and the width of the court went unused. Aim wide once and it stays wide.
+
+The run back under your own set-up hands the stick to the marker as well. The
+game owns the feet there, so the stick is doing nothing whatsoever for the
+length of a hang, and spending it on the aim costs nothing and asks for
+nothing. It is the one moment in a rally with a free control and a decision
+worth making with it — and it is only ever a set-up already played, so it never
+collides with the reception aim, which is what the stick means during the
+settle before a *first* touch.
+
 ## The opponent
 
 The CPU's fallibility is three honest, human mistakes, and nothing else: it

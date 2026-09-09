@@ -11,6 +11,7 @@ import {
   PLAYER_REACH,
   SIM_DT,
   SPAWN,
+  TABLE,
   tableSurfaceY,
   type BodyPart,
 } from "../src/config";
@@ -341,6 +342,101 @@ describe("staying with the ball", () => {
       r.match.update(SIM_DT, { ...idle, moveZ: -1 }, () => {});
     }
     expect(r.player.position.z).toBeLessThan(zBefore - 0.25);
+  });
+});
+
+describe("aiming the shot that follows a set-up", () => {
+  /** The aim marker's spot, read off the controller. */
+  const readAim = (r: Rig): Vector3 =>
+    (r.match as unknown as { aimSpot: Record<string, Vector3> }).aimSpot.player;
+
+  /** Put a ball on its way to the player's half, as a return from the far side. */
+  const feedPlayer = (r: Rig): void => {
+    r.step(0.5);
+    r.match.state = "rally";
+    r.match.lastHitter = "ai";
+    r.match.strikeableSide = null;
+    r.match.touchCount = 0;
+    r.player.position.set(-SPAWN.x, GROUND_Y, 0);
+    r.player.played.length = 0;
+    const from = new Vector3(2.4, GROUND_Y + 1.6, 0.3);
+    const target = new Vector3(-1.1, tableSurfaceY(-1.1) + 0.02, 0.2);
+    r.match.ball.state.pos.copyFrom(from);
+    r.match.ball.launch(solveLaunchClearingNet(from, target, 1.35));
+  };
+
+  /** Step until the automatic reception has popped the ball. */
+  const afterSetUp = (r: Rig): boolean => {
+    for (let i = 0; i < 60 * 4 && r.match.state === "rally"; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+      if (r.match.touchCount > 0) return true;
+    }
+    return false;
+  };
+
+  it("keeps a wide aim instead of snapping it back to the middle", () => {
+    // The failure this exists for. The marker was reset to the centre of the
+    // opponent's half on every possession, and the only way to move it was to
+    // hold the kick button — a press held long enough to reach a corner being
+    // a lob rather than a drive (`KICK_INPUT.hold`). A target that had to be
+    // re-earned, at that price, every time the ball came back is a target most
+    // rallies never left: the aim was always in the middle of the table.
+    const r = rig();
+    feedPlayer(r);
+
+    // Nothing is aimable until the ball has bounced and become theirs.
+    for (let i = 0; i < 60 * 3 && r.match.strikeableSide !== "player"; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+    }
+    expect(r.match.strikeableSide).toBe("player");
+
+    // Aim wide, the way a player does: stick over, kick button down.
+    for (let i = 0; i < 60 * 0.3 && r.match.state === "rally"; i++) {
+      r.match.update(SIM_DT, { ...idle, moveZ: 1, strikeHeld: true }, () => {});
+    }
+    const aimed = readAim(r).z;
+    expect(aimed).toBeGreaterThan(TABLE.halfWid * 0.5);
+
+    // Hand the ball over and take it back: a real table bounce on the
+    // player's half, which is the event that used to reset the aim.
+    r.match.strikeableSide = null;
+    r.match.lastHitter = "ai";
+    r.match.touchCount = 0;
+    const from = new Vector3(2.4, GROUND_Y + 1.6, 0.3);
+    r.match.ball.state.pos.copyFrom(from);
+    r.match.ball.launch(
+      solveLaunchClearingNet(from, new Vector3(-1.1, tableSurfaceY(-1.1) + 0.02, 0.2), 1.35)
+    );
+    for (let i = 0; i < 60 * 3 && r.match.strikeableSide !== "player"; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+    }
+    expect(r.match.strikeableSide).toBe("player");
+
+    expect(readAim(r).z).toBe(aimed);
+  });
+
+  it("does not move the aim before a set-up has been played", () => {
+    // Before the first touch the stick is the shape of that reception, not the
+    // aim of a shot two touches away. The two windows must not overlap.
+    const r = rig();
+    feedPlayer(r);
+    const from = readAim(r).clone();
+    for (let i = 0; i < 60 * 0.5 && r.match.touchCount === 0; i++) {
+      r.match.update(SIM_DT, { ...idle, moveZ: 1 }, () => {});
+    }
+
+    expect(readAim(r).z).toBeCloseTo(from.z, 6);
+  });
+
+  it("keeps the aim inside the court however long the stick is held", () => {
+    const r = rig();
+    feedPlayer(r);
+    expect(afterSetUp(r)).toBe(true);
+    for (let i = 0; i < 60 * 3 && r.match.state === "rally"; i++) {
+      r.match.update(SIM_DT, { ...idle, moveZ: 1 }, () => {});
+    }
+
+    expect(Math.abs(readAim(r).z)).toBeLessThanOrEqual(TABLE.halfWid + 0.4);
   });
 });
 

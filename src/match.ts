@@ -2188,18 +2188,33 @@ export class MatchController {
   }
 
   /**
-   * Advance a held kick: the stick moves this side's aim marker instead of the
-   * player. Returns true while that is happening, so the caller can keep the
-   * striker still.
+   * Move this side's aim marker with the stick. Returns true while a held press
+   * is being lined up, so the caller can keep the striker still.
    *
-   * Only while a press is physically down, which is what keeps the tap scheme
-   * playable: a sequence waiting out its window leaves the player free to run,
-   * rather than rooting them for the length of a window they never chose.
+   * Two windows, and the second one is why a wide shot is possible at all.
+   *
+   * A press being physically down is the obvious one. On its own it was also
+   * the only one, and it made aiming and charging the same gesture: the marker
+   * starts each possession in the middle of the opponent's half, the stick
+   * only moves it while the button is down, and a press past `KICK_INPUT.hold`
+   * is a lob rather than a drive. Reaching a corner therefore cost the flat
+   * shot the player was reaching for — so in practice the marker stayed in the
+   * middle of the table and the whole width of the court went unused.
+   *
+   * The second is the run back under your own set-up. The game owns the feet
+   * there (`runLocked`), so the stick is doing nothing whatsoever for the
+   * length of a hang — the one moment in a rally with a free control and a
+   * decision worth making with it. Aiming during it costs nothing and asks for
+   * nothing, and the shot is still committed by the press that follows.
+   *
+   * The two never overlap: this window is a set-up already played
+   * (`touchCount > 0`), and the settle before a *first* touch reads the stick
+   * as the shape of that reception instead (`receptionSettling`).
    *
    * Portrait never charges — its swipe already said how hard — and a side that
    * cannot strike right now cannot line one up either.
    */
-  private updateAiming(side: Side, input: InputState, dt: number): boolean {
+  private updateAiming(side: Side, input: InputState, dt: number, setupRun: boolean): boolean {
     const aimable =
       this.state === "rally" &&
       this.strikeableSide === side &&
@@ -2211,12 +2226,20 @@ export class MatchController {
     this.kickAim[side] = aimable
       ? { taps: input.strikeTapsSoFar ?? 0, held: input.strikeHoldSoFar ?? 0 }
       : { taps: 0, held: 0 };
-    if (!input.strikeHeld || !aimable) return false;
+    if (!aimable) return false;
+    const lining = input.strikeHeld;
+    // The free window: the run is carrying them, so nothing else wants the
+    // stick. `setupRun` is `runLocked`, which is only ever true for a set-up
+    // this side played — passed in rather than asked for again, because it
+    // carries the arrival latch and is not a question to ask twice a frame.
+    if (!lining && !setupRun) return false;
     const spot = this.aimSpot[side];
     spot.x += input.moveX * AIM_SPEED * dt;
     spot.z += input.moveZ * AIM_SPEED * dt;
     this.aimSpot[side] = clampToPlay(spot);
-    return true;
+    // Only a held press roots the striker. Aiming mid-run must not, or it
+    // would stop the run it is borrowing the stick from.
+    return lining;
   }
 
   /**
@@ -2630,9 +2653,18 @@ export class MatchController {
           this.autoSetupRun[e.side] = false;
           this.autoRunArrived[e.side] = false;
       this.leashSlack[e.side] = Infinity;
-          // A fresh possession starts aimed at the middle of the other half,
-          // so an aim left in a corner never carries silently into it.
-          this.aimSpot[e.side] = new Vector3(sign(other(e.side)) * TABLE.halfLen * 0.6, 0, 0);
+          // The aim carries. It used to snap back to the middle of the other
+          // half here, on the reasoning that a corner should never be inherited
+          // silently — but the marker is on screen for the whole of a
+          // possession, so it was never silent, and the reset was the reason
+          // the aim was *always* in the middle of the table. Moving it costs a
+          // held press, and a press held long enough to reach a corner is a
+          // lob rather than a drive (`KICK_INPUT.hold`), so a target that had
+          // to be re-earned every possession was one most rallies never left.
+          //
+          // Now it is a standing instruction: aim wide once and the next shot
+          // still goes there, which is what makes the width of the court worth
+          // anything.
           this.kickAim[e.side] = { taps: 0, held: 0 };
           this.receptionAim = null;
           this.emit({ type: "possession-start", side: e.side });
@@ -3036,24 +3068,19 @@ export class MatchController {
           this.anchor.ai = this.versus ? this.computeAnchor("ai") : null;
           this.landingSpot = this.ball.held ? null : this.computeLandingSpot();
         }
-        // Holding the kick control hands the stick to the aim marker and
-        // charges the shot; the player stands still while they line it up —
-        // unless the auto-run still owns the feet, in which case the run to
-        // the ball is not interrupted and the shot is lined up on the move.
-        const aiming = this.updateAiming("player", input, dt);
-        // Semi-assisted: while the ball is still far off the feet are the
-        // player's own. Once they are in its vicinity the run takes over to
-        // where it will come down and the stick is not listened to until the
-        // arrival: overriding the run there is exactly how the player walked
-        // past the ball, and the decisions the stick is for — which side of
-        // the ball to take it on — begin where the run ends, not during it.
         // Two different things own the feet, at two different moments. The
-        // settle is the last stretch of an approach the player made; the lock
+        // settle is the last stretch of an approach the player made; the run
         // is a ball they put up themselves. Neither is the old takeover that
         // played the whole approach for them.
         const settling = this.receptionSettling("player");
-        const locked = settling || this.runLocked("player");
+        const setupRun = this.runLocked("player");
+        const locked = settling || setupRun;
         this.lockedState.player = locked;
+        // Holding the kick control hands the stick to the aim marker and
+        // charges the shot; the player stands still while they line it up. The
+        // run to their own set-up hands it over too, and that one costs
+        // nothing — see `updateAiming`.
+        const aiming = this.updateAiming("player", input, dt, setupRun);
         // The run owns the feet while it lasts, so anywhere the player had
         // asked to stand is spent, not stored: left queued, it would take over
         // the moment the run finished and walk them away from the ball.
@@ -3222,9 +3249,10 @@ export class MatchController {
     const c = this.chars.ai;
     // Same locked run to the drop spot as player 1: the stick is not listened
     // to until the arrival, on the incoming ball and on P2's own set-up pop.
-    const locked = this.receptionSettling("ai") || this.runLocked("ai");
+    const setupRun = this.runLocked("ai");
+    const locked = this.receptionSettling("ai") || setupRun;
     this.lockedState.ai = locked;
-    const aiming = this.updateAiming("ai", v, dt);
+    const aiming = this.updateAiming("ai", v, dt, setupRun);
     if (c.busy) c.velocity.setAll(0);
     else if (aiming && !locked) c.velocity.setAll(0);
     else if (locked) c.moveToward(this.anchor.ai!.pos, c.def.speed, dt);
