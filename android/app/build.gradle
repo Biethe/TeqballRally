@@ -29,7 +29,7 @@ android {
         // Starting at 10000 leaves room to slot a hotfix under a build that has
         // already been uploaded, which is exactly when you cannot afford to be
         // renumbering things.
-        versionCode 10005
+        versionCode 10006
         versionName "0.1.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
