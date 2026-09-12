@@ -87,6 +87,21 @@ export const ASSET_PRODUCTS: Record<
  */
 const API_KEY = import.meta.env.VITE_REVENUECAT_KEY ?? "test_rZiGyRrwNBacPnBmcSMZaaOkcyh";
 
+/**
+ * Whether the key compiled into this build is a Test Store one.
+ *
+ * `test_` is RevenueCat's own prefix for it. Fine in a browser, where there is
+ * no store to talk to anyway and fake purchases are the point — and wrong the
+ * moment the app is on a phone, where it means every purchase is pretend and
+ * the SDK says so in a message a tester reads as the app being broken.
+ *
+ * It shipped that way because the real key lived in a gitignored `.env` and
+ * nothing in the build asked for it, so the fallback won silently every time
+ * the app was built anywhere but the machine it was written on. The build now
+ * refuses it; this is the second line, for a build made some other way.
+ */
+const TEST_STORE_KEY = API_KEY.startsWith("test_");
+
 export interface ArenaStatus {
   /**
    * Whether RevenueCat has answered yet.
@@ -198,6 +213,17 @@ export function initPurchases(): Promise<boolean> {
     if (!purchasesAvailable()) {
       // Off-device the answer is known and final, so report ready rather than
       // leaving every gate waiting for something that will never arrive.
+      publish({ ...UNKNOWN, ready: true });
+      return false;
+    }
+    if (TEST_STORE_KEY) {
+      // Configuring anyway would leave every purchase failing for a reason
+      // nobody could see from the outside. Saying so once, here, is the only
+      // way this is ever noticed before a tester finds it.
+      console.error(
+        "[purchases] built with a RevenueCat Test Store key — no real purchase can complete. " +
+          "Set VITE_REVENUECAT_KEY to the goog_ Android key for a Play build."
+      );
       publish({ ...UNKNOWN, ready: true });
       return false;
     }

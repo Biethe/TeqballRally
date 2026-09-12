@@ -119,6 +119,13 @@ jobs:
           # than falling back to a passphrase written in the repository, which
           # is what every build before this one shipped with.
           VITE_ASSET_KEY: ${{ secrets.VITE_ASSET_KEY }}
+          # The RevenueCat key is per store and per project, and the one
+          # compiled in when this is unset is a Test Store key — fake purchases,
+          # right for developing and wrong for anything that reaches a phone.
+          # It lived only in a local .env, which is gitignored, so every build
+          # made here silently shipped the test key and a tester who got as far
+          # as paying was told the app was still in test mode.
+          VITE_REVENUECAT_KEY: ${{ secrets.VITE_REVENUECAT_KEY }}
         run: |
           if [ -z "$VITE_RELAY_URL" ]; then
             echo "::warning::No relay configured — online play will show as unavailable."
@@ -129,6 +136,19 @@ jobs:
             echo "::error::VITE_ASSET_KEY is not set — refusing to build an APK with unprotected assets."
             exit 1
           fi
+          case "$VITE_REVENUECAT_KEY" in
+            "")
+              echo "::error::VITE_REVENUECAT_KEY is not set — that build would ship the Test Store key and no real purchase could complete. Add it under Settings -> Secrets and variables -> Actions."
+              exit 1
+              ;;
+            test_*)
+              echo "::error::VITE_REVENUECAT_KEY is a Test Store key. A Play build needs the goog_ Android key from the RevenueCat dashboard."
+              exit 1
+              ;;
+            *)
+              echo "RevenueCat: ${VITE_REVENUECAT_KEY%%_*}_… key"
+              ;;
+          esac
           npm run android:sync
 
       - name: Assemble debug APK

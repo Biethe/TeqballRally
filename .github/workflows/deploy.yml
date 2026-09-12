@@ -174,5 +174,9 @@ jobs:
     needs: deploy
     if: ${{ inputs.build_apk }}
     uses: ./.github/workflows/android.yml
+    # Without this a called workflow gets no secrets at all, and the build it
+    # makes would fall back to the Test Store key and unprotected assets — the
+    # two things the guards in there exist to stop.
+    secrets: inherit
     with:
       relay_url: ${{ needs.deploy.outputs.wss }}
