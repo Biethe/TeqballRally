@@ -281,14 +281,27 @@ async function storeProduct(productId: string): Promise<PurchasesStoreProduct | 
  */
 async function purchaseById(productId: string): Promise<PurchaseOutcome | PurchasesStoreProduct> {
   const product = await storeProduct(productId);
-  if (!product) {
-    return {
-      ok: false,
-      cancelled: false,
-      message: `The store is not offering ${productId} right now.`,
-    };
-  }
-  return product;
+  if (product) return product;
+
+  // Nothing came back, and the two reasons for that need completely different
+  // things doing about them — so say which one it is rather than blaming the
+  // product for both.
+  //
+  // Play matches the package name and signing certificate against the app it
+  // has published. A sideloaded build is signed with the debug key and is not
+  // that app, so Billing answers with no products at all, however correctly
+  // they are configured in the console. Told it is the product's fault, the
+  // next thing anybody does is go and re-check a console that was right.
+  const reachable = await Purchases.canMakePayments()
+    .then((r) => r.canMakePayments)
+    .catch(() => false);
+  return {
+    ok: false,
+    cancelled: false,
+    message: reachable
+      ? `The store is not offering ${productId} right now. It may not be live on this track yet.`
+      : "Purchases need a copy installed from Google Play. A sideloaded build cannot see the store's products.",
+  };
 }
 
 async function purchasePackage(pkg: PurchasesPackage): Promise<PurchaseOutcome> {
