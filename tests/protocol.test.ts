@@ -12,6 +12,9 @@ import {
   decode,
   isValidFx,
   isValidInput,
+  isPlayerCode,
+  isValidInvite,
+  isValidInvited,
   isValidSetup,
   isValidSnapshot,
   readKit,
@@ -373,5 +376,44 @@ describe("a peer's own kit", () => {
     expect(
       isValidSetup({ t: "setup", character: "a", ball: "b", kit: { name: "ANA" } })
     ).toBe(true);
+  });
+});
+
+/**
+ * Asking a friend for a game.
+ *
+ * The relay checks these before it looks anybody up, so a malformed frame
+ * costs a regex rather than a store read — and the shapes are what stop an
+ * invite naming a room that is not one.
+ */
+describe("invites", () => {
+  const good = { t: "invite", to: "2D6FR6WG", room: "ABC12" };
+
+  it("takes a player code and a room code, and nothing looser", () => {
+    expect(isValidInvite(good)).toBe(true);
+    expect(isValidInvite({ ...good, to: "2D6FR6W" })).toBe(false);
+    expect(isValidInvite({ ...good, to: "2D6FR6WGX" })).toBe(false);
+    expect(isValidInvite({ ...good, room: "ABC1" })).toBe(false);
+    expect(isValidInvite({ ...good, room: 12345 })).toBe(false);
+    expect(isValidInvite({ t: "invite" })).toBe(false);
+    expect(isValidInvite(null)).toBe(false);
+  });
+
+  it("refuses the characters a code can never contain", () => {
+    // I, L, O and U are not in the alphabet, so a code holding one is wrong
+    // rather than mistyped — folding it would hide that.
+    expect(isPlayerCode("2D6FR6WG")).toBe(true);
+    expect(isPlayerCode("2D6FR6WI")).toBe(false);
+    expect(isPlayerCode("2D6FR6WU")).toBe(false);
+    expect(isPlayerCode("  2d6fr6wg  ")).toBe(true);
+  });
+
+  it("accepts an invite that names who is asking and where", () => {
+    const from = { id: "2D6FR6WG", name: "Bie", trophies: 12, tier: "BEGINNER" };
+    expect(isValidInvited({ t: "invited", from, room: "ABC12" })).toBe(true);
+    // A name the relay did not verify is the one thing an invite must not
+    // carry, so a frame without one is not an invite.
+    expect(isValidInvited({ t: "invited", room: "ABC12" })).toBe(false);
+    expect(isValidInvited({ t: "invited", from, room: "nope" })).toBe(false);
   });
 });

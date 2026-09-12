@@ -340,6 +340,36 @@ own — through every serve phase, because outside a rally the stick does not
 drive the characters and a walk that stops halfway reads as the player moving
 on its own.
 
+## Asking a friend for a game
+
+A room code works between two people who are already talking to each other. It
+is no use at all to two people who are not, which is most of the time — so a
+friend on the list can now simply be asked.
+
+The obstacle was never the invite, it was being reachable. A player held a
+connection to the relay only while they were in the online lobby or a match,
+which is precisely the moment they least need asking, and it is why the green
+dot on the friends list meant so little: presence is counted from identified
+sockets, so a friend read as online only while they were already looking for a
+game. `PresenceLink` in `src/net/presence.ts` is the fix — a connection held
+for as long as the app is open that joins nothing, owns nothing and says one
+thing when it opens (`hello`, which identifies without asking for a seat).
+
+The invite itself carries almost nothing, because the asker has already minted
+a private room and taken the host seat in it. Accepting is then an ordinary
+join by code down the path that already works, and an invite nobody answers
+costs one empty room that the relay sweeps like any other. The relay checks two
+things before forwarding: that the asker is who the token says, never what the
+frame claims, and that the two are actually friends — an invite from a stranger
+is a stranger reaching somebody who never gave them anything.
+
+Everything it carries is an offer to play *now*, which is why nothing is
+queued. An invite that arrives at a socket which has just died is dropped and
+the asker is told the friend is not there, because that is true; one that waited
+for a socket to come back would be an offer to play at some unspecified past
+moment. The link retries quietly for as long as the app is open and never
+reports a failure, since there is nothing in it for a player to act on.
+
 ## The tour
 
 `src/practice.ts` teaches the sport. This teaches the app, and they are not the
@@ -379,9 +409,10 @@ the tour to get stuck, and asking is one.
 
 A step the player has already satisfied is skipped rather than demanded.
 Somebody who made a profile before opening this has learnt what that step
-teaches. It runs once, straight on from the first lesson while they are still
-in the mood to be shown things, and lives in settings afterwards as something
-to replay.
+teaches. It is what the first launch opens with, in place of the stack of cards it used
+to show. Cards are read and dismissed, and what survives the dismissing is
+nothing; this leaves a profile, a name on a shirt, and the memory of having
+made them. It lives in settings afterwards as something to replay.
 
 ## Practice
 

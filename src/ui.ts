@@ -343,6 +343,8 @@ export interface FriendsView {
   busy: boolean;
   onAdd: (code: string) => void;
   onRemove: (id: string) => void;
+  /** Ask this friend for a game. Absent when there is nobody to ask with. */
+  onInvite?: (id: string, name: string) => void;
   onBack: () => void;
 }
 
@@ -1721,116 +1723,6 @@ export class UI {
     this.revealScreen(this.titleEl);
   }
 
-  /**
-   * Guided UI tour shown on first launch to orient the player around the dashboard.
-   */
-  showUiTutorial(onDone: () => void): void {
-    // Same test the loading tips use, for the same reason: a card telling a
-    // desktop player how to hold their phone is a card that wastes the one
-    // moment they are actually reading.
-    const touch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
-    const steps = [
-      {
-        badge: "🏓",
-        title: t("tutorial.step1.title"),
-        text: t("tutorial.step1.text"),
-        highlight: null,
-      },
-      // Second, because it decides how they hold the thing before they press
-      // anything. Both schemes are complete and the game swaps between them
-      // live, and until now nothing on any screen said so.
-      ...(touch
-        ? [
-            {
-              badge: "📱",
-              title: t("tutorial.orientation.title"),
-              text: t("tutorial.orientation.text"),
-              highlight: null,
-            },
-          ]
-        : []),
-      {
-        badge: "⚡",
-        title: t("tutorial.step2.title"),
-        text: t("tutorial.step2.text"),
-        highlight: "#btn-play",
-      },
-      {
-        badge: "👕",
-        title: t("tutorial.step3.title"),
-        text: t("tutorial.step3.text"),
-        highlight: "#btn-title-champions, #btn-title-supplies",
-      },
-      {
-        badge: "🏆",
-        title: t("tutorial.step4.title"),
-        text: t("tutorial.step4.text"),
-        highlight: "#btn-title-challenges, #btn-title-settings",
-      },
-    ];
-
-    let currentStep = 0;
-
-    // Built from the steps rather than written out in the markup: the tour is
-    // four cards on a desktop and five on a phone, and a fixed row of dots
-    // would quietly lie about how much is left.
-    const dotRow = this.uiTutorialEl.querySelector<HTMLDivElement>(".tutorial-progress-dots")!;
-    dotRow.innerHTML = steps.map((_, i) => `<span class="dot${i === 0 ? " active" : ""}"></span>`).join("");
-
-    const clearHighlights = () => {
-      document.querySelectorAll(".ui-tutorial-spotlight").forEach((el) => {
-        el.classList.remove("ui-tutorial-spotlight");
-      });
-    };
-
-    const updateStep = (index: number) => {
-      clearHighlights();
-      currentStep = index;
-      const step = steps[currentStep];
-
-      const dots = this.uiTutorialEl.querySelectorAll<HTMLSpanElement>(".tutorial-progress-dots .dot");
-      dots.forEach((dot, i) => dot.classList.toggle("active", i === currentStep));
-
-      this.uiTutorialEl.querySelector<HTMLDivElement>("#tutorial-badge")!.textContent = step.badge;
-      this.uiTutorialEl.querySelector<HTMLHeadingElement>("#tutorial-title")!.textContent = step.title;
-      this.uiTutorialEl.querySelector<HTMLParagraphElement>("#tutorial-text")!.textContent = step.text;
-
-      const isLast = currentStep === steps.length - 1;
-      const nextBtn = this.uiTutorialEl.querySelector<HTMLButtonElement>("#btn-tutorial-next")!;
-      const btnText = nextBtn.querySelector<HTMLSpanElement>(".btn-text") ?? nextBtn;
-      btnText.textContent = isLast ? t("tutorial.done") : t("tutorial.next");
-
-      const skipBtn = this.uiTutorialEl.querySelector<HTMLButtonElement>("#btn-tutorial-skip")!;
-      skipBtn.textContent = t("tutorial.skip");
-
-      if (step.highlight) {
-        document.querySelectorAll(step.highlight).forEach((el) => {
-          el.classList.add("ui-tutorial-spotlight");
-        });
-      }
-    };
-
-    const closeTutorial = () => {
-      clearHighlights();
-      this.uiTutorialEl.classList.add("hidden");
-      onDone();
-    };
-
-    const skipBtn = this.uiTutorialEl.querySelector<HTMLButtonElement>("#btn-tutorial-skip")!;
-    skipBtn.onclick = () => closeTutorial();
-
-    const nextBtn = this.uiTutorialEl.querySelector<HTMLButtonElement>("#btn-tutorial-next")!;
-    nextBtn.onclick = () => {
-      if (currentStep < steps.length - 1) {
-        updateStep(currentStep + 1);
-      } else {
-        closeTutorial();
-      }
-    };
-
-    updateStep(0);
-    this.uiTutorialEl.classList.remove("hidden");
-  }
 
   private attractModeTimer: ReturnType<typeof setTimeout> | null = null;
   private attractModeActive = false;
@@ -2688,12 +2580,23 @@ export class UI {
           <span class="friend-seen"></span>
         </div>
         <b class="friend-trophies"></b>
+        <button class="friend-invite" type="button" hidden></button>
         <button class="friend-remove" type="button" aria-label=""></button>`;
       card.querySelector<HTMLSpanElement>(".friend-name")!.textContent = row.name;
       card.querySelector<HTMLSpanElement>(".friend-seen")!.textContent = row.online
         ? t("friends.online")
         : row.seen;
       card.querySelector<HTMLElement>(".friend-trophies")!.textContent = String(row.trophies);
+      // Offered only to somebody who is there. An invite to play now, sent to
+      // a phone that is not on, is a button that does nothing and says it did.
+      const invite = card.querySelector<HTMLButtonElement>(".friend-invite")!;
+      if (row.online && view.onInvite) {
+        invite.hidden = false;
+        invite.textContent = t("friends.invite");
+        invite.setAttribute("aria-label", `${t("friends.invite")} ${row.name}`);
+        invite.disabled = view.busy;
+        invite.onclick = () => view.onInvite?.(row.id, row.name);
+      }
       const remove = card.querySelector<HTMLButtonElement>(".friend-remove")!;
       remove.textContent = "×";
       remove.setAttribute("aria-label", `${t("friends.remove")} ${row.name}`);

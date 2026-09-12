@@ -27,6 +27,7 @@ import {
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
 import { CRESTS, applyKit, type Kit, type PersonalKit } from "./kit";
 import { Tour } from "./tour";
+import { PresenceLink } from "./net/presence";
 import {
   SUPPLIES,
   buy as buySupply,
@@ -854,6 +855,7 @@ async function boot(): Promise<void> {
       if (err instanceof ApiError && err.status === 401) {
         // The account is gone from the server's side; stop pretending it is not.
         identity = null;
+        syncPresence();
         profile = null;
         storeIdentity(null);
       }
@@ -1145,6 +1147,63 @@ async function boot(): Promise<void> {
    * whole point of the screen, and a cached list is a list that says somebody
    * is online after they have gone.
    */
+  /**
+   * The connection held while the app is open, so a friend can reach this
+   * player at all. Null without an account, because an invite needs somebody
+   * to be addressed to.
+   */
+  let presence: PresenceLink | null = null;
+  /** The friend this player has just asked, while they are being asked. */
+  let asking: { id: string; name: string } | null = null;
+
+  /**
+   * Ask a friend for a game.
+   *
+   * A room is minted and this player takes the host seat in it *before* the
+   * invite goes anywhere, so accepting is an ordinary join by code down the
+   * path that already works. The cost of an invite nobody answers is one empty
+   * room, which the relay sweeps like any other.
+   */
+  const inviteFriend = (id: string, name: string) => {
+    if (!presence?.connected) return;
+    asking = { id, name };
+    const code = makeRoomCode();
+    presence.invite(id, code);
+    // Waiting in the room, which is also what makes accepting instant: by the
+    // time they answer, this side is already seated.
+    hostInviteRoom(code, name);
+  };
+
+  /**
+   * Open the link, or close it, to match whether there is an account.
+   *
+   * An invite is addressed to a player, so without one there is nobody to
+   * address and nothing to listen for. Called again after a sign-in or a
+   * recovery, because both hand over a different token.
+   */
+  const syncPresence = () => {
+    presence?.close();
+    presence = null;
+    if (!identity || !onlineAvailable) return;
+    presence = new PresenceLink(identity.token, {
+      onInvited: (from, room) => {
+        // Never on top of a match. Being pulled out of a rally by a dialog is
+        // worse than missing the invite, and the asker is told either way.
+        if (match) return;
+        ui.showOnlinePause(tf("invite.from.title", { name: from.name }), "", [
+          [tr("invite.accept"), () => { ui.hideOnlinePause(); acceptInvite(room, from.name); }],
+          [tr("invite.decline"), () => { ui.hideOnlinePause(); presence?.decline(from.id); }],
+        ]);
+      },
+      onReply: (answer, who) => {
+        const name = who ?? asking?.name ?? "";
+        asking = null;
+        ui.banner(tr(answer === "declined" ? "invite.declined" : "invite.gone").replace("{name}", name));
+      },
+    });
+    presence.start();
+  };
+
   const showFriends = (message: string | null = null, busy = false, rows?: Profile[]) => {
     if (!identity) return showProfile();
     viewer.deactivate();
@@ -1184,6 +1243,10 @@ async function boot(): Promise<void> {
             (err: unknown) => showFriends(errorMessage(err), false, friends)
           );
         },
+        // Only offered when there is something to send it down. The button is
+        // already hidden for a friend who is not online; this hides it for a
+        // player who is not connected themselves.
+        onInvite: presence?.connected ? (id, name) => inviteFriend(id, name) : undefined,
         onBack: () => showProfile(),
       });
 
@@ -1201,6 +1264,9 @@ async function boot(): Promise<void> {
    */
   const adopt = (issued: Issued, note: string | null) => {
     identity = issued.identity;
+    // A different token, so a different connection. Signing in is also the
+    // moment a player first becomes reachable at all.
+    syncPresence();
     profile = issued.profile;
     adoptServerCareer(issued.career);
     ui.showRecoveryCode({ code: issued.recoveryCode, note, onDone: () => showProfile() });
@@ -2240,6 +2306,91 @@ async function boot(): Promise<void> {
       });
   };
 
+  /**
+   * Sit in a room waiting for the friend who has just been asked.
+   *
+   * `hostPrivateGame` with the code decided by the caller and the screen
+   * saying who is coming rather than which code to read out. There is nobody
+   * to read a code to here: the invite carried it.
+   */
+  const hostInviteRoom = (code: string, friendName: string) => {
+    if (!onlineAvailable) return;
+    const conn = new NetConnection(
+      relayUrl(),
+      {
+        onPeer: (present, who, id) => {
+          opponent = present ? (who ?? null) : null;
+          if (!present) return;
+          onlineMatchId = id ?? null;
+          asking = null;
+          ui.setLobbyDetail(`${who?.name ?? friendName} joined — starting…`);
+        },
+      },
+      identity?.token
+    );
+    netConn = conn;
+    ui.showLobbyStatus(
+      tf("invite.asking.title", { name: friendName }),
+      tr("invite.asking.body"),
+      null,
+      abandonLobby
+    );
+    conn
+      .join(code)
+      .then(({ ready }) => {
+        if (ready) return { role: "host" as PeerRole };
+        return new Promise<{ role: PeerRole }>((resolve) => {
+          conn.setHandlers({
+            onPeer: (present, who, id) => {
+              if (!present) return;
+              opponent = who ?? null;
+              onlineMatchId = id ?? null;
+              resolve({ role: "host" });
+            },
+          });
+        });
+      })
+      .then((seat) => seat && startOnlineMatch(conn, seat.role, true))
+      .catch((e: unknown) => {
+        if (netConn !== conn) return;
+        ui.showLobbyStatus(
+          tr("net.reconnecting"),
+          e instanceof Error ? e.message : "",
+          null,
+          abandonLobby
+        );
+      });
+  };
+
+  /** Accept one: join the room the invite named, as the guest. */
+  const acceptInvite = (room: string, friendName: string) => {
+    if (!onlineAvailable) return;
+    const conn = new NetConnection(
+      relayUrl(),
+      {
+        onPeer: (present, who, id) => {
+          opponent = present ? (who ?? null) : null;
+          if (present) onlineMatchId = id ?? null;
+        },
+      },
+      identity?.token
+    );
+    netConn = conn;
+    ui.showLobbyStatus(tf("invite.from.title", { name: friendName }), "", null, abandonLobby);
+    conn
+      .join(room)
+      .then(({ role }) => startOnlineMatch(conn, role, true))
+      .catch((e: unknown) => {
+        if (netConn !== conn) return;
+        ui.showLobbyStatus(
+          tr("net.reconnecting"),
+          e instanceof Error ? e.message : "",
+          null,
+          showOnline
+        );
+      });
+  };
+
   const hostPrivateGame = () => {
     if (!onlineAvailable) return;
     const code = makeRoomCode();
@@ -3272,16 +3423,11 @@ async function boot(): Promise<void> {
           () => input.isTouch,
           () => input.isTouch && input.isPortrait,
           () => {
-            const firstTime = !prefs.coached;
-            if (firstTime) {
+            if (!prefs.coached) {
               prefs.coached = true;
               storePreferences(prefs);
             }
             leaveMatch();
-            // Straight on from the lesson the first time. They have just been
-            // taught the sport and are still in the mood to be shown things;
-            // coming back to it cold a week later is how a tour goes unread.
-            if (firstTime && !prefs.toured) startTour();
           }
         )
       : null;
@@ -3312,18 +3458,24 @@ async function boot(): Promise<void> {
 
   ui.hideLoading();
 
-  // On first launch, open the title dashboard and show a simple, skippable UI tour.
-  if (!prefs.coached) {
+  // On first launch, walk them through the app rather than describing it.
+  //
+  // This used to be a stack of cards read and dismissed, which teaches nothing
+  // that survives the dismissing. The tour points at one thing at a time and
+  // each step ends when the player has actually done it, so what they are left
+  // with is a profile, their name on a shirt, and the memory of having made
+  // them. `prefs.toured` is its own flag: `coached` means the lesson on the
+  // court has been played, which is a different thing to have learnt.
+  if (!prefs.toured) {
     showTitle();
-    ui.showUiTutorial(() => {
-      prefs.coached = true;
-      storePreferences(prefs);
-    });
+    startTour();
   } else if (endedSeason) {
     showSeasonEnd(endedSeason, showTitle);
   } else {
     showTitle();
   }
+  // Reachable from here on, if there is an account to be reached at.
+  syncPresence();
   // Catch up with the server behind the title screen. It never blocks the
   // first screen, and if it fails nothing about the game changes.
   void refreshProfile().then(() => {

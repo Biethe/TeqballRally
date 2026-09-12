@@ -55,8 +55,65 @@ const rooms = new Map();
 /** @type {import("ws").WebSocket[]} */
 const queue = [];
 
+/**
+ * Every identified socket, by the account behind it.
+ *
+ * A set per player rather than one socket, because the same person can
+ * legitimately hold two for a moment — a phone that reconnects before the old
+ * socket's close has been noticed — and an invite should reach whichever of
+ * them is still listening rather than the one that is on its way out.
+ *
+ * `presence.mjs` already counts these; this is the same fact kept in a form
+ * that can be *addressed*, which is what an invite needs and a count cannot
+ * give.
+ *
+ * @type {Map<string, Set<import("ws").WebSocket>>}
+ */
+const byPlayer = new Map();
+
+function remember(socket) {
+  if (!socket.presenceId) return;
+  let held = byPlayer.get(socket.presenceId);
+  if (!held) {
+    held = new Set();
+    byPlayer.set(socket.presenceId, held);
+  }
+  held.add(socket);
+}
+
+function forget(socket) {
+  const held = socket.presenceId && byPlayer.get(socket.presenceId);
+  if (!held) return;
+  held.delete(socket);
+  if (held.size === 0) byPlayer.delete(socket.presenceId);
+}
+
+/** Open sockets for a player, newest first, skipping any already closing. */
+function socketsFor(id) {
+  return [...(byPlayer.get(id) ?? [])].filter((s) => s.readyState === s.OPEN).reverse();
+}
+
 /** Crockford base32, matching the client's alphabet (no I, L, O or U). */
 const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/**
+ * An invite worth looking anybody up for.
+ *
+ * Written here rather than imported, for the same reason the alphabet above
+ * is: the relay is plain ESM and the client's copy is TypeScript. Checked
+ * before the store is touched, so a malformed frame costs a regex instead of
+ * a read.
+ */
+const PLAYER_CODE = /^[0-9A-HJKMNP-TV-Z]{8}$/;
+function isValidInvite(msg) {
+  return (
+    msg &&
+    typeof msg.to === "string" &&
+    PLAYER_CODE.test(msg.to.trim().toUpperCase()) &&
+    typeof msg.room === "string" &&
+    /^[0-9A-Z]{4,8}$/.test(msg.room.toUpperCase())
+  );
+}
 
 function mintRoomCode() {
   // Retry rather than trusting randomness: a collision would drop a waiting
@@ -122,6 +179,7 @@ async function identify(socket, msg) {
   if (socket.readyState === socket.OPEN) {
     socket.presenceId = player.id;
     arrived(player.id);
+    remember(socket);
   }
 }
 
@@ -206,6 +264,49 @@ function handleNewMatch(socket) {
   send(peer, { t: "newmatch", match: peer.matchId });
 }
 
+/**
+ * Pass an invite to a friend, if they are listening.
+ *
+ * The relay checks two things and forwards. That the asker is who they say
+ * they are — the identity comes from the token, never from the frame, so an
+ * invite cannot be sent in somebody else's name. And that the two are actually
+ * friends, because an invite from a stranger is a stranger reaching a player
+ * who never gave them anything.
+ *
+ * It does not mint the room, hold the invite, or wait for an answer. The asker
+ * already made the room and is sitting in it; accepting is an ordinary join by
+ * code. An invite nobody answers costs an empty room, which the sweep collects
+ * like any other.
+ */
+async function handleInvite(store, socket, msg) {
+  if (!socket.presenceId) return send(socket, { t: "error", reason: "sign in first" });
+  const to = String(msg.to).trim().toUpperCase();
+  const me = await store.get(socket.presenceId);
+  if (!me || !(me.friends ?? []).includes(to)) {
+    return send(socket, { t: "invite-reply", answer: "gone" });
+  }
+  const theirs = socketsFor(to);
+  if (theirs.length === 0) {
+    // Not connected. The asker cannot know that and the relay can, so say so
+    // rather than leaving them watching a lobby nobody is coming to.
+    return send(socket, { t: "invite-reply", answer: "gone", who: (await store.get(to))?.name });
+  }
+  const from = socket.identity ?? { id: me.id, name: me.name, trophies: 0, tier: "" };
+  // Every socket they hold: the one that answers first is the one they are on.
+  for (const peer of theirs) send(peer, { t: "invited", from, room: msg.room });
+}
+
+/** Carry a declined answer back to whoever asked. */
+async function handleInviteReply(store, socket, msg) {
+  if (!socket.presenceId) return;
+  const to = typeof msg.to === "string" ? msg.to.trim().toUpperCase() : "";
+  if (!to) return;
+  const me = await store.get(socket.presenceId);
+  for (const peer of socketsFor(to)) {
+    send(peer, { t: "invite-reply", answer: "declined", who: me?.name });
+  }
+}
+
 function releaseSeat(socket) {
   // Before the presence release, so the match still knows who this was.
   if (socket.matchId) {
@@ -213,6 +314,7 @@ function releaseSeat(socket) {
     socket.matchId = null;
   }
   if (socket.presenceId) {
+    forget(socket);
     left(socket.presenceId);
     socket.presenceId = null;
   }
@@ -316,6 +418,36 @@ wss.on("connection", (socket) => {
 
     if (type === "newmatch") {
       handleNewMatch(socket);
+      return;
+    }
+
+    // Says who is here and asks for nothing. A socket that never joins a room
+    // is how a player stays reachable by a friend, and how the green dot on a
+    // friends list comes to mean anything outside a lobby.
+    if (type === "hello") {
+      let msg;
+      try {
+        msg = JSON.parse(text);
+      } catch {
+        return;
+      }
+      if (msg.v !== PROTOCOL_VERSION) {
+        return send(socket, { t: "error", reason: "version mismatch — update the app" });
+      }
+      void identify(socket, msg).catch((err) => console.error("[relay] hello failed", err));
+      return;
+    }
+
+    if (type === "invite" || type === "invite-reply") {
+      let msg;
+      try {
+        msg = JSON.parse(text);
+      } catch {
+        return;
+      }
+      if (type === "invite" && !isValidInvite(msg)) return;
+      const work = type === "invite" ? handleInvite(store, socket, msg) : handleInviteReply(store, socket, msg);
+      void work.catch((err) => console.error("[relay] invite failed", err));
       return;
     }
 

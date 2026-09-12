@@ -22,6 +22,14 @@ export const LANGUAGES: { id: Language; label: string }[] = [
 ];
 
 const EN = {
+  "friends.invite": "ASK",
+  "invite.asking.title": "ASKING {name}",
+  "invite.asking.body": "Waiting for them to answer.",
+  "invite.from.title": "{name} WANTS A GAME",
+  "invite.accept": "PLAY",
+  "invite.decline": "NOT NOW",
+  "invite.declined": "{name} said not now.",
+  "invite.gone": "{name} is not online.",
   "tour.replay": "SHOW ME AROUND",
   "tour.replay.sub": "The guided tour, again",
   "tour.progress": "Step {n} of {of}",
@@ -409,6 +417,14 @@ export type StringKey = keyof typeof EN;
 type Catalogue = Partial<Record<StringKey, string>>;
 
 const FR: Catalogue = {
+  "friends.invite": "INVITER",
+  "invite.asking.title": "INVITATION À {name}",
+  "invite.asking.body": "En attente de sa réponse.",
+  "invite.from.title": "{name} VEUT JOUER",
+  "invite.accept": "JOUER",
+  "invite.decline": "PAS MAINTENANT",
+  "invite.declined": "{name} a répondu pas maintenant.",
+  "invite.gone": "{name} n’est pas connecté.",
   "tour.replay": "REFAIRE LA VISITE",
   "tour.replay.sub": "La visite guidée, à nouveau",
   "tour.progress": "Étape {n} sur {of}",
@@ -781,6 +797,14 @@ const FR: Catalogue = {
 };
 
 const ES: Catalogue = {
+  "friends.invite": "INVITAR",
+  "invite.asking.title": "INVITANDO A {name}",
+  "invite.asking.body": "Esperando su respuesta.",
+  "invite.from.title": "{name} QUIERE JUGAR",
+  "invite.accept": "JUGAR",
+  "invite.decline": "AHORA NO",
+  "invite.declined": "{name} ha dicho ahora no.",
+  "invite.gone": "{name} no está conectado.",
   "tour.replay": "ENSÉÑAMELO",
   "tour.replay.sub": "La visita guiada, otra vez",
   "tour.progress": "Paso {n} de {of}",
@@ -1153,6 +1177,14 @@ const ES: Catalogue = {
 };
 
 const PT: Catalogue = {
+  "friends.invite": "CONVIDAR",
+  "invite.asking.title": "A CONVIDAR {name}",
+  "invite.asking.body": "À espera da resposta.",
+  "invite.from.title": "{name} QUER JOGAR",
+  "invite.accept": "JOGAR",
+  "invite.decline": "AGORA NÃO",
+  "invite.declined": "{name} disse agora não.",
+  "invite.gone": "{name} não está online.",
   "tour.replay": "MOSTRA-ME",
   "tour.replay.sub": "A visita guiada, outra vez",
   "tour.progress": "Passo {n} de {of}",
@@ -1528,6 +1560,14 @@ const PT: Catalogue = {
 // starter string is translated below — every other key falls back to English
 // until the catalogues are filled in. See the note on `Catalogue` above.
 const JA: Catalogue = {
+  "friends.invite": "さそう",
+  "invite.asking.title": "{name} をさそっています",
+  "invite.asking.body": "返事を待っています。",
+  "invite.from.title": "{name} が対戦をもとめています",
+  "invite.accept": "プレー",
+  "invite.decline": "またあとで",
+  "invite.declined": "{name} はまたあとで、とのことです。",
+  "invite.gone": "{name} はオンラインではありません。",
   "tour.replay": "もう一度案内する",
   "tour.replay.sub": "ガイドツアーをもう一度",
   "tour.progress": "ステップ {n} / {of}",
@@ -1764,6 +1804,14 @@ const JA: Catalogue = {
 };
 
 const ZH: Catalogue = {
+  "friends.invite": "邀请",
+  "invite.asking.title": "正在邀请 {name}",
+  "invite.asking.body": "等待对方回应。",
+  "invite.from.title": "{name} 想来一局",
+  "invite.accept": "开始",
+  "invite.decline": "待会儿",
+  "invite.declined": "{name} 说待会儿。",
+  "invite.gone": "{name} 不在线。",
   "tour.replay": "再看一次导览",
   "tour.replay.sub": "重新播放引导教程",
   "tour.progress": "第 {n} 步，共 {of} 步",
@@ -2000,6 +2048,14 @@ const ZH: Catalogue = {
 };
 
 const HI: Catalogue = {
+  "friends.invite": "बुलाएँ",
+  "invite.asking.title": "{name} को बुलाया जा रहा है",
+  "invite.asking.body": "उनके जवाब का इंतज़ार है।",
+  "invite.from.title": "{name} खेलना चाहते हैं",
+  "invite.accept": "खेलें",
+  "invite.decline": "अभी नहीं",
+  "invite.declined": "{name} ने कहा अभी नहीं।",
+  "invite.gone": "{name} ऑनलाइन नहीं हैं।",
   "tour.replay": "फिर से दिखाएँ",
   "tour.replay.sub": "निर्देशित परिचय, दोबारा",
   "tour.progress": "चरण {n} / {of}",

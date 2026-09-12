@@ -494,6 +494,60 @@ export interface NewMatchMessage {
   match?: string;
 }
 
+/**
+ * Say who is here, without asking for a seat.
+ *
+ * Joining a room is how a socket used to become an identified one, which meant
+ * a player counted as present only while they were already looking for a game
+ * — and a friend could only be reached at the one moment they least needed
+ * reaching. This is the same identification with none of the seating.
+ */
+export interface HelloMessage {
+  t: "hello";
+  v: number;
+  token: string;
+}
+
+/**
+ * Ask a friend to play, now.
+ *
+ * The inviter has already minted a private room and taken the host seat in it,
+ * so this carries nothing but who to ask and where to come. That keeps the
+ * invite out of the business of making matches: accepting is an ordinary join
+ * by code, down the path that already works, and a declined invite costs
+ * nothing but a room nobody used.
+ */
+export interface InviteMessage {
+  t: "invite";
+  /** Player code of the friend being asked. */
+  to: string;
+  /** The room they should join to accept. */
+  room: string;
+}
+
+/** Relay -> the friend being asked. `from` is verified, never announced. */
+export interface InvitedMessage {
+  t: "invited";
+  from: PeerIdentity;
+  room: string;
+}
+
+/**
+ * An answer, and what became of it.
+ *
+ * "declined" travels back so the asker is told rather than left watching a
+ * lobby; "gone" is the relay's own answer when the friend is not connected,
+ * which it knows and the asker cannot.
+ */
+export interface InviteReplyMessage {
+  t: "invite-reply";
+  /** Who answered, on the way back; who to tell, on the way out. */
+  to?: string;
+  answer: "declined" | "gone";
+  /** Their name, so the asker is told who, not which id. */
+  who?: string;
+}
+
 export type SignalMessage =
   | JoinMessage
   | JoinedMessage
@@ -502,7 +556,11 @@ export type SignalMessage =
   | QueueMessage
   | QueuedMessage
   | CancelMessage
-  | NewMatchMessage;
+  | NewMatchMessage
+  | HelloMessage
+  | InviteMessage
+  | InvitedMessage
+  | InviteReplyMessage;
 export type NetMessage = GameMessage | SignalMessage;
 
 // ------------------------------------------------------------------- helpers
@@ -654,6 +712,43 @@ export function isValidStrike(msg: unknown): msg is StrikeMessage {
     isFiniteVec(m.vel) &&
     typeof m.clip === "string" &&
     Number.isFinite(m.spin)
+  );
+}
+
+/** A player code as the relay writes them: eight Crockford characters. */
+export function isPlayerCode(v: unknown): v is string {
+  return typeof v === "string" && /^[0-9A-HJKMNP-TV-Z]{8}$/.test(v.trim().toUpperCase());
+}
+
+/**
+ * An invite worth forwarding: a friend to send it to, and a room to send them
+ * to. Checked before the relay looks anybody up, so a malformed frame costs a
+ * regex rather than a store read.
+ */
+export function isValidInvite(msg: unknown): msg is InviteMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<InviteMessage>;
+  // `typeof` first: stringifying whatever arrived would let the number 12345
+  // through as a room code, which is five characters of the alphabet and not
+  // a code anybody typed.
+  return (
+    m.t === "invite" &&
+    isPlayerCode(m.to) &&
+    typeof m.room === "string" &&
+    isValidRoomCode(m.room.toUpperCase())
+  );
+}
+
+/** An invite as it reaches the friend. Their answer decides what happens. */
+export function isValidInvited(msg: unknown): msg is InvitedMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<InvitedMessage>;
+  return (
+    m.t === "invited" &&
+    typeof m.from?.id === "string" &&
+    typeof m.from?.name === "string" &&
+    typeof m.room === "string" &&
+    isValidRoomCode(m.room.toUpperCase())
   );
 }
 

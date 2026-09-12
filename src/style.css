@@ -5898,3 +5898,26 @@ button.pad-focus {
   /* The one thing on this layer that is meant to be pressed. */
   pointer-events: auto;
 }
+
+/*
+ * "Ask" on a friend who is online.
+ *
+ * Quiet next to the name and the trophy count, because it is an offer rather
+ * than the point of the row — and only drawn at all for somebody who is there
+ * to answer it, so its presence is itself the signal.
+ */
+.friend-invite {
+  padding: 0.3rem 0.72rem;
+  margin-right: 0.4rem;
+  border-radius: 999px;
+  border: 1px solid rgba(90, 220, 140, 0.55);
+  background: rgba(90, 220, 140, 0.12);
+  color: #8ff0b6;
+  font-size: 0.68rem;
+  letter-spacing: 0.09em;
+  white-space: nowrap;
+}
+
+.friend-invite:disabled {
+  opacity: 0.45;
+}
