@@ -140,6 +140,85 @@ function trimAnimation(anim, framesToCut = 10) {
   }
 }
 
+function getMirroredBoneName(name) {
+  if (name.startsWith("Left")) return name.replace(/^Left/, "Right");
+  if (name.startsWith("Right")) return name.replace(/^Right/, "Left");
+  if (name.includes("Left")) return name.replace("Left", "Right");
+  if (name.includes("Right")) return name.replace("Right", "Left");
+  return name;
+}
+
+function mirrorAnimation(doc, srcAnimName, newAnimName, restHipsX = 0) {
+  const root = doc.getRoot();
+  const srcAnim = root.listAnimations().find((a) => a.getName().trim() === srcAnimName);
+  if (!srcAnim) return null;
+
+  const nodeMap = new Map();
+  root.listNodes().forEach((n) => nodeMap.set(n.getName().trim(), n));
+
+  const buffer = root.listBuffers()[0] || doc.createBuffer();
+  const newAnim = doc.createAnimation(newAnimName);
+
+  for (const srcChannel of srcAnim.listChannels()) {
+    const srcTargetNode = srcChannel.getTargetNode();
+    if (!srcTargetNode) continue;
+    const cleanNodeName = srcTargetNode.getName().trim().replace(/^mixamorig\d*:/, "");
+    const mirrorName = getMirroredBoneName(cleanNodeName);
+    const tgtNode = nodeMap.get(mirrorName) || nodeMap.get(cleanNodeName);
+    if (!tgtNode) continue;
+
+    const path = srcChannel.getTargetPath();
+    const srcSampler = srcChannel.getSampler();
+    const inArr = srcSampler.getInput().getArray();
+    const outArr = srcSampler.getOutput().getArray();
+
+    const newInArr = new Float32Array(inArr.buffer.slice(inArr.byteOffset, inArr.byteOffset + inArr.byteLength));
+    const newOutArr = new Float32Array(outArr.buffer.slice(outArr.byteOffset, outArr.byteOffset + outArr.byteLength));
+
+    if (path === "translation") {
+      if (cleanNodeName === "Hips") {
+        for (let i = 0; i < newOutArr.length / 3; i++) {
+          newOutArr[i * 3] = 2 * restHipsX - newOutArr[i * 3];
+        }
+      } else {
+        for (let i = 0; i < newOutArr.length / 3; i++) {
+          newOutArr[i * 3] = -newOutArr[i * 3];
+        }
+      }
+    } else if (path === "rotation") {
+      for (let i = 0; i < newOutArr.length / 4; i++) {
+        newOutArr[i * 4 + 1] = -newOutArr[i * 4 + 1];
+        newOutArr[i * 4 + 2] = -newOutArr[i * 4 + 2];
+      }
+    }
+
+    const newInput = doc
+      .createAccessor()
+      .setArray(newInArr)
+      .setType(srcSampler.getInput().getType())
+      .setBuffer(buffer);
+    const newOutput = doc
+      .createAccessor()
+      .setArray(newOutArr)
+      .setType(srcSampler.getOutput().getType())
+      .setBuffer(buffer);
+    const newSampler = doc
+      .createAnimationSampler()
+      .setInput(newInput)
+      .setOutput(newOutput)
+      .setInterpolation(srcSampler.getInterpolation());
+    const newChannel = doc
+      .createAnimationChannel()
+      .setTargetNode(tgtNode)
+      .setTargetPath(path)
+      .setSampler(newSampler);
+
+    newAnim.addSampler(newSampler);
+    newAnim.addChannel(newChannel);
+  }
+  return newAnim;
+}
+
 async function main() {
   const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
 
@@ -354,6 +433,15 @@ async function main() {
       }
     }
 
+    // Generate JogStrafeRightInPlace from JogStrafeLeftInPlace if missing
+    const hasRightStrafe = doc.getRoot().listAnimations().some((a) => a.getName().trim() === "JogStrafeRightInPlace");
+    if (!hasRightStrafe) {
+      const hipsNode = doc.getRoot().listNodes().find((n) => n.getName().trim() === "Hips");
+      const restHipsX = hipsNode ? hipsNode.getTranslation()[0] : 0;
+      console.log(`  Generating mirrored JogStrafeRightInPlace from JogStrafeLeftInPlace for ${char.name} (restHipsX=${restHipsX.toFixed(4)})...`);
+      mirrorAnimation(doc, "JogStrafeLeftInPlace", "JogStrafeRightInPlace", restHipsX);
+    }
+
     // Ensure PointWinning is stripped from any model
     for (const anim of doc.getRoot().listAnimations()) {
       if (anim.getName().trim() === "PointWinning") {
@@ -384,6 +472,13 @@ async function main() {
         trimAnimation(anim, 10);
         console.log(`  Trimmed first 10 frames from ${anim.getName()} in animations.glb`);
       }
+    }
+    const hasRightStrafe = animsDoc.getRoot().listAnimations().some((a) => a.getName().trim() === "JogStrafeRightInPlace");
+    if (!hasRightStrafe) {
+      const hipsNode = animsDoc.getRoot().listNodes().find((n) => n.getName().trim() === "Hips");
+      const restHipsX = hipsNode ? hipsNode.getTranslation()[0] : 0;
+      console.log(`  Generating mirrored JogStrafeRightInPlace in animations.glb (restHipsX=${restHipsX.toFixed(4)})...`);
+      mirrorAnimation(animsDoc, "JogStrafeLeftInPlace", "JogStrafeRightInPlace", restHipsX);
     }
     const tempAnims = `/tmp/animations_cleaned.glb`;
     await io.write(tempAnims, animsDoc);

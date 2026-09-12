@@ -153,7 +153,7 @@ export async function handleApi(store, req, res, now = new Date()) {
 
     if (path === "/api/players/recover" && isPost) {
       const body = await readBody(req);
-      const { player, token, recoveryCode } = await recover(store, body.id, body.code);
+      const { player, token, recoveryCode } = await recover(store, body.code, body.id);
       sendJson(res, 200, { ...(await privateProfile(store, player)), token, recoveryCode });
       return true;
     }

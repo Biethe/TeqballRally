@@ -49,6 +49,31 @@ export const ARENA_ENTITLEMENT = "Teqie Pro";
 export const ARENA_PRODUCT = "lifetime";
 
 /**
+ * Direct real-dollar ($) in-app purchases catalog for quick unlocks.
+ *
+ * Maps internal asset identifiers (character ids, ball ids, venue ids)
+ * to RevenueCat product identifiers and their default dollar prices.
+ */
+export const ASSET_PRODUCTS: Record<
+  string,
+  { productId: string; defaultPrice: string; label: string }
+> = {
+  // Venues
+  basketball: { productId: "venue_the_cage", defaultPrice: "$2.99", label: "The Cage" },
+  gym: { productId: ARENA_PRODUCT, defaultPrice: "$4.99", label: "The Coliseum" },
+  // Characters
+  EnglishPlayer: { productId: "char_england", defaultPrice: "$0.99", label: "England" },
+  FrenchPlayer: { productId: "char_france", defaultPrice: "$1.99", label: "France" },
+  SpanishPlayer: { productId: "char_spain", defaultPrice: "$2.99", label: "Spain" },
+  bundle_champions: { productId: "bundle_champions", defaultPrice: "$4.99", label: "All Champions Pack" },
+  // Balls
+  BlueBall: { productId: "ball_surgeon", defaultPrice: "$0.99", label: "The Surgeon" },
+  BlueAndRoseBall: { productId: "ball_feather", defaultPrice: "$0.99", label: "The Feather" },
+  OrangeAndBlackBall: { productId: "ball_hammer", defaultPrice: "$0.99", label: "The Hammer" },
+  bundle_balls: { productId: "bundle_balls", defaultPrice: "$1.99", label: "Pro Balls Pack" },
+};
+
+/**
  * The public SDK key.
  *
  * Public keys are meant to ship inside the app, so this is not a secret being
@@ -115,6 +140,30 @@ export function ownsArena(): boolean {
 }
 
 /**
+ * Bind the player profile identity to RevenueCat so purchases belong to
+ * this user ID and can be restored or synced across devices.
+ */
+export async function bindUserToPurchases(userId: string, userName?: string): Promise<void> {
+  if (!purchasesAvailable()) return;
+  try {
+    await Purchases.logIn({ appUserID: userId });
+    if (userName) {
+      await Purchases.setDisplayName({ displayName: userName });
+    }
+    await refreshArena();
+  } catch (err) {
+    console.warn("[purchases] could not bind user ID:", err);
+  }
+}
+
+/**
+ * Return formatted price for an asset, falling back to default USD price.
+ */
+export function formattedPriceFor(assetId: string): string {
+  return ASSET_PRODUCTS[assetId]?.defaultPrice ?? "$0.99";
+}
+
+/**
  * Watch the entitlement.
  *
  * Fires immediately with the current value, so a caller never has to handle
@@ -127,9 +176,9 @@ export function subscribeToArena(listener: (s: ArenaStatus) => void): () => void
   return () => listeners.delete(listener);
 }
 
-/** Whether a store exists at all. False in a browser, during closed testing with test keys, and on every harness. */
+/** Whether a store exists at all. False in a browser, true on native Capacitor with an API key. */
 export function purchasesAvailable(): boolean {
-  return Capacitor.isNativePlatform() && API_KEY.startsWith("goog_");
+  return Capacitor.isNativePlatform() && Boolean(API_KEY && API_KEY.trim().length > 0);
 }
 
 let configured: Promise<boolean> | null = null;
@@ -227,6 +276,56 @@ export async function restorePurchases(): Promise<PurchaseOutcome> {
 }
 
 /**
+ * Purchase an individual character, ball, or venue directly via RevenueCat.
+ */
+export async function purchaseAsset(assetId: string): Promise<PurchaseOutcome> {
+  if (assetId === "gym") {
+    const success = await offerArena();
+    return success ? { ok: true, owned: true } : { ok: false, cancelled: true };
+  }
+  if (!purchasesAvailable()) {
+    if (import.meta.env.DEV) {
+      console.log(`[purchases] (DEV) simulated purchase of ${assetId}`);
+      return { ok: true, owned: true };
+    }
+    return { ok: false, cancelled: false, message: "Purchases are only available in the app." };
+  }
+  const productMeta = ASSET_PRODUCTS[assetId];
+  if (!productMeta) {
+    return { ok: false, cancelled: false, message: `Unknown asset: ${assetId}` };
+  }
+  try {
+    const offerings = (await Purchases.getOfferings()) as {
+      current?: PurchasesOffering | null;
+      all?: Record<string, PurchasesOffering | undefined>;
+    };
+    let matchingPkg: PurchasesPackage | undefined;
+    for (const offering of Object.values(offerings.all ?? {})) {
+      if (!offering) continue;
+      const found = offering.availablePackages?.find(
+        (p) => p.product?.identifier === productMeta.productId
+      );
+      if (found) {
+        matchingPkg = found;
+        break;
+      }
+    }
+    if (matchingPkg) {
+      return purchasePackage(matchingPkg);
+    }
+    // Fall back to purchasing the store product directly
+    const { customerInfo } = await Purchases.purchaseStoreProduct({
+      product: { identifier: productMeta.productId } as unknown as PurchasesPackage["product"],
+    });
+    publish(readArenaStatus(customerInfo));
+    return { ok: true, owned: true };
+  } catch (error) {
+    if (wasCancelled(error)) return { ok: false, cancelled: true };
+    return { ok: false, cancelled: false, message: describe(error) };
+  }
+}
+
+/**
  * Offer the arena to somebody who does not own it.
  *
  * A single call that does nothing for a player who already bought it, so no
@@ -291,6 +390,22 @@ export const COIN_PACKS: Record<string, number> = {
   coins_bag: 9000,
 };
 
+export const COIN_PACK_METADATA: Record<
+  string,
+  { coins: number; defaultPrice: string; label: string }
+> = {
+  coins_handful: { coins: 1200, defaultPrice: "$0.99", label: "Handful of Coins" },
+  coins_pocket: { coins: 3500, defaultPrice: "$2.49", label: "Pocket of Coins" },
+  coins_bag: { coins: 9000, defaultPrice: "$4.99", label: "Bag of Coins" },
+};
+
+export interface CoinPackInfo {
+  productId: string;
+  coins: number;
+  priceString: string;
+  pkg?: PurchasesPackage;
+}
+
 /** How many coins a bought package is worth, or 0 if it is not a coin pack. */
 export function coinsForProduct(productId: string): number {
   return COIN_PACKS[productId] ?? 0;
@@ -299,38 +414,97 @@ export function coinsForProduct(productId: string): number {
 /**
  * The coin packs on sale, cheapest first.
  *
- * Empty off-device and empty when the dashboard has no `coins` offering, which
- * the caller shows as "not available" rather than an error: a shop with
- * nothing in it is a fact about the account, not a fault.
+ * Returns live store packages if RevenueCat offerings answer, or standard
+ * fallback metadata with default USD prices off-device or when offerings are not configured.
  */
-export async function coinPackages(): Promise<PurchasesPackage[]> {
-  if (!purchasesAvailable()) return [];
+export async function coinPackages(): Promise<CoinPackInfo[]> {
+  const defaults: CoinPackInfo[] = Object.entries(COIN_PACK_METADATA).map(([productId, meta]) => ({
+    productId,
+    coins: meta.coins,
+    priceString: meta.defaultPrice,
+  }));
+
+  if (!purchasesAvailable()) return defaults;
+
   try {
     const offerings = (await Purchases.getOfferings()) as {
+      current?: PurchasesOffering | null;
       all?: Record<string, PurchasesOffering | undefined>;
     };
-    const coins = offerings.all?.coins;
-    return [...(coins?.availablePackages ?? [])].sort(
-      (a, b) => (a.product.price ?? 0) - (b.product.price ?? 0)
-    );
+
+    const foundPackages: PurchasesPackage[] = [];
+    if (offerings.all?.coins?.availablePackages) {
+      foundPackages.push(...offerings.all.coins.availablePackages);
+    }
+    for (const offering of Object.values(offerings.all ?? {})) {
+      if (!offering || offering === offerings.all?.coins) continue;
+      for (const p of offering.availablePackages ?? []) {
+        if (p.product?.identifier in COIN_PACKS || p.product?.identifier?.startsWith("coins_")) {
+          if (!foundPackages.some((f) => f.product?.identifier === p.product?.identifier)) {
+            foundPackages.push(p);
+          }
+        }
+      }
+    }
+
+    return defaults.map((def) => {
+      const match = foundPackages.find((p) => p.product?.identifier === def.productId);
+      if (match) {
+        return {
+          productId: def.productId,
+          coins: def.coins,
+          priceString: match.product.priceString || def.priceString,
+          pkg: match,
+        };
+      }
+      return def;
+    });
   } catch (error) {
-    console.warn("[purchases] no coin offering:", describe(error));
-    return [];
+    console.warn("[purchases] could not read coin offerings:", describe(error));
+    return defaults;
   }
 }
 
 /**
  * Buy a coin pack, and say how many coins it is worth.
  *
- * The count comes from `COIN_PACKS` rather than from anything the store says,
- * so a product that is mispriced or renamed in the dashboard credits nothing
- * instead of guessing — being wrong in the player's favour is still being
- * wrong, and being wrong the other way takes their money.
+ * Supports purchasing via an active RevenueCat package or fallback direct
+ * store product purchase.
  */
 export async function purchaseCoins(
-  pkg: PurchasesPackage
+  pack: CoinPackInfo | PurchasesPackage | string
 ): Promise<PurchaseOutcome & { coins?: number }> {
-  const outcome = await purchasePackage(pkg);
-  if (!outcome.ok) return outcome;
-  return { ...outcome, coins: coinsForProduct(pkg.product.identifier) };
+  const productId =
+    typeof pack === "string"
+      ? pack
+      : "productId" in pack
+        ? pack.productId
+        : pack.product.identifier;
+  const pkg =
+    typeof pack === "object" && pack !== null && "pkg" in pack
+      ? pack.pkg
+      : typeof pack === "object" && pack !== null && "product" in pack
+        ? pack
+        : undefined;
+
+  if (pkg) {
+    const outcome = await purchasePackage(pkg);
+    if (!outcome.ok) return outcome;
+    return { ...outcome, coins: coinsForProduct(productId) };
+  }
+
+  // Direct purchase fallback via store product
+  if (!purchasesAvailable()) {
+    return { ok: false, cancelled: false, message: "Purchases are only available in the app." };
+  }
+  try {
+    const { customerInfo } = await Purchases.purchaseStoreProduct({
+      product: { identifier: productId } as unknown as PurchasesPackage["product"],
+    });
+    publish(readArenaStatus(customerInfo));
+    return { ok: true, owned: true, coins: coinsForProduct(productId) };
+  } catch (error) {
+    if (wasCancelled(error)) return { ok: false, cancelled: true };
+    return { ok: false, cancelled: false, message: describe(error) };
+  }
 }

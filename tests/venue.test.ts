@@ -18,15 +18,16 @@ import {
  * thing being sold. None of it is visible from a passing playtest.
  */
 describe("which venues are for sale", () => {
-  it("sells the indoor arena", () => {
+  it("sells the indoor arena and the cage", () => {
     expect(isPremiumVenue("gym")).toBe(true);
+    expect(isPremiumVenue("basketball")).toBe(true);
   });
 
-  it("gives away every outdoor court", () => {
-    // The free game has to be a game, not a demo: three venues, not none.
+  it("gives away football and tennis courts", () => {
+    // The free game has to be a game, not a demo: two venues, not none.
     const free = VENUE_IDS.filter((id) => !isPremiumVenue(id));
 
-    expect(free).toEqual(["basketball", "football", "tennis"]);
+    expect(free).toEqual(["football", "tennis"]);
   });
 
   it("answers the question for every venue that exists", () => {
@@ -40,10 +41,16 @@ describe("the venue a player is permitted", () => {
   it("keeps a free venue whether or not they pay", () => {
     expect(permittedVenue("tennis", false)).toBe("tennis");
     expect(permittedVenue("tennis", true)).toBe("tennis");
+    expect(permittedVenue("football", false)).toBe("football");
   });
 
   it("gives a member the venue they paid for", () => {
     expect(permittedVenue("gym", true)).toBe("gym");
+    expect(permittedVenue("basketball", true)).toBe("basketball");
+  });
+
+  it("permits venue if unlocked in career", () => {
+    expect(permittedVenue("basketball", false, { unlockedAssets: ["basketball"] })).toBe("basketball");
   });
 
   it("falls back when the entitlement is gone", () => {

@@ -14,7 +14,7 @@ export type SelectTab = ViewerKind | "venue";
 import { t, tf } from "./i18n";
 import { randomTip } from "./tips";
 import { RATING_KEYS, rating, totalPower, type RatingKey } from "./ratings";
-import { MAX_CLUB_MEMBERS } from "./account";
+import { MAX_CLUB_MEMBERS, tidyCode } from "./account";
 import { assetUrl } from "./protected";
 
 /** The opening cinematic, and the blurred still that sits behind its bars. */
@@ -60,6 +60,8 @@ export interface SelectOptions {
    * difference between an empty menu and a reason to keep playing.
    */
   locked?: Record<string, string>;
+  /** Formatted real store prices for items ($0.99, $2.99, etc.). */
+  prices?: Record<string, string>;
   /**
    * The chosen player with and without the browsed ball.
    *
@@ -67,6 +69,10 @@ export interface SelectOptions {
    * of numbers: "+6 POWER" is a reason to own a ball, and "104 POWER" is not.
    */
   withBall?: (characterId: string, ballId: string) => { base: CharacterDef; withBall: CharacterDef };
+  /** True if this character has favorite ball synergy. */
+  hasBallAffinity?: (characterId: string, ballId: string) => boolean;
+  /** True if this character has home court synergy. */
+  hasVenueAffinity?: (characterId: string, venueId: string) => boolean;
   /**
    * Called when a different venue is picked; the scene swaps behind the picker.
    *
@@ -75,6 +81,8 @@ export interface SelectOptions {
    * strip waits for that answer rather than lighting the chip up first.
    */
   onVenue?: (id: string) => boolean | Promise<boolean>;
+  /** Called when the player wants to unlock a character, ball, or venue directly with $. */
+  onUnlockAsset?: (id: string, kind: SelectTab) => Promise<boolean>;
   /** Heading shown above the tabs (defaults to "CHOOSE YOUR SETUP"). */
   title?: string;
   /** Subtitle / mode indicator shown in the top bar (e.g. "FRIENDLY · NORMAL"). */
@@ -266,10 +274,53 @@ export interface RecoveryView {
 }
 
 /** Taking an account over onto this device. */
+/**
+ * Rewrite a recovery-code field as it is typed: upper case, look-alikes
+ * folded, hyphens appearing as each group of four fills.
+ *
+ * The code is written down in one shape and should be typed back in that
+ * shape. Leaving the player to reproduce the punctuation from memory, and
+ * telling them afterwards that they got it wrong, is a bad way to greet
+ * somebody who has just lost their phone.
+ *
+ * The caret is put back after the same number of code characters it was after
+ * before, hyphens not counted — otherwise correcting a character in the middle
+ * throws it to the end.
+ */
+export function formatCodeField(el: HTMLInputElement): void {
+  const caret = el.selectionStart ?? el.value.length;
+  const typedBefore = tidyCode(el.value.slice(0, caret)).replace(/-/g, "").length;
+  const tidied = tidyCode(el.value);
+  if (tidied === el.value && caret === el.selectionEnd) return;
+  el.value = tidied;
+  let seen = 0;
+  let at = 0;
+  while (at < tidied.length && seen < typedBefore) {
+    if (tidied[at] !== "-") seen++;
+    at++;
+  }
+  // Sitting just before a hyphen means the next character typed would land on
+  // the wrong side of it; step over.
+  if (tidied[at] === "-") at++;
+  el.setSelectionRange(at, at);
+}
+
+/** One step of the guided tour, as something to draw. */
+export interface TourCueView {
+  /** CSS selector for the thing being pointed at; empty for a step with none. */
+  target: string;
+  /** The one sentence saying what to do. */
+  says: string;
+  step: number;
+  of: number;
+  onSkip: () => void;
+}
+
 export interface RestoreView {
   message: string | null;
   busy: boolean;
-  onRestore: (id: string, code: string) => void;
+  /** The recovery code alone; it is unique to one account. */
+  onRestore: (code: string) => void;
   onBack: () => void;
 }
 
@@ -387,6 +438,9 @@ function confettiLayer(): HTMLDivElement {
 
 export class UI {
   private root: HTMLElement;
+  /** The guided tour's overlay, built on first use and removed when it ends. */
+  private tourEl: HTMLDivElement | null = null;
+  private tourFrame: number | null = null;
   private loadingEl: HTMLDivElement;
   private loadingText: HTMLDivElement;
   private loadingTip: HTMLDivElement;
@@ -407,6 +461,7 @@ export class UI {
   private endEl: HTMLDivElement;
   private endTitle: HTMLDivElement;
   private pauseEl: HTMLDivElement;
+  private dialogEl: HTMLDivElement;
   private menuEl: HTMLDivElement;
   private settingsEl: HTMLDivElement;
   private standingsEl: HTMLDivElement;
@@ -432,12 +487,14 @@ export class UI {
   private trainingPauseEl: HTMLDivElement;
   private uiTutorialEl: HTMLDivElement;
   private cameraBtn: HTMLButtonElement;
-  /** Score-line names, set per match ("YOU"/"CPU", "P1"/"P2", country labels…). */
-  private labels: [string, string] = ["YOU", "CPU"];
+  /** Score-line names, set per match ("YOU"/"OPPONENT", "P1"/"P2", country labels…). */
+  private labels: [string, string] = ["YOU", "OPPONENT"];
   /** Set by the app; called when the HUD pause button is tapped. */
   onPauseRequest: (() => void) | null = null;
   /** Set by the app; called when the HUD camera button is tapped. */
   onCameraRequest: (() => void) | null = null;
+  /** Set by the app; called when the coin counter in the top bar or header is clicked. */
+  onCoinsClicked: (() => void) | null = null;
 
   private lastOrigin: { x: number; y: number } = { x: 50, y: 68 };
   private menuWaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -636,6 +693,7 @@ export class UI {
           <img class="venue-card hidden" id="venue-card" alt="" />
         </div>
         <aside class="player-profile hidden" id="player-profile" aria-live="polite">
+          <div class="profile-synergies" id="profile-synergies"></div>
           <div class="profile-stats"></div>
           <div class="profile-traits"></div>
         </aside>
@@ -646,6 +704,7 @@ export class UI {
               <div id="item-name">…</div>
               <div id="item-status" class="hidden">Loading…</div>
               <div id="item-lock" class="hidden"></div>
+              <button class="unlock-btn hidden" id="btn-unlock-item" type="button"></button>
             </div>
             <button class="arrow-btn" id="btn-next" type="button">›</button>
           </div>
@@ -690,8 +749,8 @@ export class UI {
     this.staminaEl = document.createElement("div");
     this.staminaEl.id = "stamina";
     this.staminaEl.innerHTML = `
-      <div class="stamina-row"><span>YOU</span><i><b id="stamina-you"></b><u id="stamina-you-spent"></u></i></div>
-      <div class="stamina-row"><span>CPU</span><i><b id="stamina-cpu"></b><u id="stamina-cpu-spent"></u></i></div>`;
+      <div class="stamina-row" id="stamina-row-you"><span>YOU</span><i><b id="stamina-you"></b><u id="stamina-you-spent"></u></i></div>
+      <div class="stamina-row" id="stamina-row-cpu"><span>OPPONENT</span><i><b id="stamina-cpu"></b><u id="stamina-cpu-spent"></u></i></div>`;
 
     this.meterEl = document.createElement("div");
     this.meterEl.id = "meter";
@@ -730,6 +789,18 @@ export class UI {
           <button class="pause-action" id="btn-change-player"><strong>EXIT TO MODES</strong></button>
         </div>
       </section>`;
+
+    this.dialogEl = this.screen("dialog-screen");
+    this.dialogEl.classList.add("hidden");
+
+    const titleCoins = this.titleEl.querySelector<HTMLDivElement>("#stat-coins");
+    if (titleCoins) {
+      titleCoins.style.cursor = "pointer";
+      titleCoins.onclick = (e) => {
+        e.stopPropagation();
+        this.onCoinsClicked?.();
+      };
+    }
 
     // This is intentionally separate from the ordinary pause menu: guided
     // drills freeze at a teachable moment, then return straight to the rally.
@@ -979,17 +1050,32 @@ export class UI {
     rows: string[],
     buttonLabel: string,
     onContinue: () => void,
-    won = false
+    won = false,
+    onBack?: () => void
   ): void {
     this.hideAll();
+    this.revealScreen(this.standingsEl);
     this.standingsEl.innerHTML = `
-      <div class="logo small">${title}</div>
-      <div class="standings-rows">${rows.map((r) => `<div class="standings-row">${r}</div>`).join("")}</div>
-      <button class="big-btn" id="btn-standings-continue">${buttonLabel}</button>`;
+      <main class="menu-shell standings-shell">
+        <header class="menu-header">
+          <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
+          ${onBack ? `<button class="menu-back" id="btn-standings-back" type="button" data-menu-back>← ${t("nav.back")}</button>` : ""}
+        </header>
+        <section class="menu-heading">
+          <h1>${title}</h1>
+        </section>
+        <div class="standings-rows">${rows.map((r) => `<div class="standings-row">${r}</div>`).join("")}</div>
+        <button class="big-btn" id="btn-standings-continue">${buttonLabel}</button>
+      </main>`;
     this.standingsEl.querySelector<HTMLButtonElement>("#btn-standings-continue")!.onclick = () => onContinue();
+    const back = this.standingsEl.querySelector<HTMLButtonElement>("#btn-standings-back");
+    if (back && onBack) {
+      back.onclick = () => {
+        this.collapseScreen(this.standingsEl, back, () => onBack());
+      };
+    }
     this.standingsEl.classList.toggle("celebrating", won);
     if (won) this.standingsEl.prepend(confettiLayer());
-    this.standingsEl.classList.remove("hidden");
   }
 
   /**
@@ -1012,19 +1098,18 @@ export class UI {
   }
 
   /**
-   * Online pause overlay. Serves the whole negotiation — asking, being asked,
-   * and paused — because they differ only in what they say and which buttons
-   * make sense. `actions` is a list of [label, handler] pairs.
+   * Online pause overlay & modal dialogs. Serves the whole negotiation — asking, being asked,
+   * paused, notice, and prompts — rendered into this.dialogEl so the match pause screen is never disturbed.
    */
   showOnlinePause(title: string, detail: string, actions: [string, () => void][]): void {
-    this.pauseEl.innerHTML = `
+    this.dialogEl.innerHTML = `
       <div class="pause-card">
         <div class="logo small">${title}</div>
         <div class="standings-rows"><div class="standings-row" id="net-pause-detail"></div></div>
         <div class="pause-actions"></div>
       </div>`;
-    this.pauseEl.querySelector<HTMLDivElement>("#net-pause-detail")!.textContent = detail;
-    const box = this.pauseEl.querySelector<HTMLDivElement>(".pause-actions")!;
+    this.dialogEl.querySelector<HTMLDivElement>("#net-pause-detail")!.textContent = detail;
+    const box = this.dialogEl.querySelector<HTMLDivElement>(".pause-actions")!;
     actions.forEach(([label, fn], i) => {
       const b = document.createElement("button");
       b.className = `big-btn${i > 0 ? " alt" : ""}`;
@@ -1032,11 +1117,95 @@ export class UI {
       b.onclick = () => fn();
       box.appendChild(b);
     });
-    this.pauseEl.classList.remove("hidden");
+    this.dialogEl.classList.remove("hidden");
   }
 
   hideOnlinePause(): void {
-    this.pauseEl.classList.add("hidden");
+    this.dialogEl.classList.add("hidden");
+  }
+
+  /**
+   * Prompt the player to enter a name to create their profile before purchasing.
+   */
+  promptProfile(opts: {
+    title?: string;
+    detail?: string;
+    placeholder?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    onConfirm: (name: string) => Promise<boolean> | boolean;
+    onRestore?: () => void;
+    onCancel: () => void;
+  }): void {
+    const title = opts.title ?? "CREATE PLAYER PROFILE";
+    const detail =
+      opts.detail ??
+      "Create your Player Profile to protect and sync your purchases across devices.";
+    const confirmLabel = opts.confirmLabel ?? "CONTINUE TO STORE";
+    const cancelLabel = opts.cancelLabel ?? "CANCEL";
+
+    this.dialogEl.innerHTML = `
+      <div class="pause-card profile-prompt-card">
+        <div class="logo small">${title}</div>
+        <div class="standings-rows"><div class="standings-row" id="profile-prompt-detail"></div></div>
+        <div class="profile-input-wrap">
+          <input type="text" id="profile-prompt-input" class="profile-input" maxlength="16" placeholder="${opts.placeholder ?? "Player Name"}" />
+          <div id="profile-prompt-error" class="profile-prompt-error hidden"></div>
+        </div>
+        <div class="pause-actions">
+          <button class="big-btn" id="btn-profile-prompt-confirm" type="button">${confirmLabel}</button>
+          ${opts.onRestore ? `<button class="big-btn alt" id="btn-profile-prompt-restore" type="button">${t("recovery.restore")}</button>` : ""}
+          <button class="big-btn alt" id="btn-profile-prompt-cancel" type="button">${cancelLabel}</button>
+        </div>
+      </div>`;
+
+    this.dialogEl.querySelector<HTMLDivElement>("#profile-prompt-detail")!.textContent = detail;
+    const inputEl = this.dialogEl.querySelector<HTMLInputElement>("#profile-prompt-input")!;
+    const errEl = this.dialogEl.querySelector<HTMLDivElement>("#profile-prompt-error")!;
+    const confirmBtn = this.dialogEl.querySelector<HTMLButtonElement>("#btn-profile-prompt-confirm")!;
+    const cancelBtn = this.dialogEl.querySelector<HTMLButtonElement>("#btn-profile-prompt-cancel")!;
+    const restoreBtn = this.dialogEl.querySelector<HTMLButtonElement>("#btn-profile-prompt-restore");
+
+    if (restoreBtn && opts.onRestore) {
+      restoreBtn.onclick = () => {
+        this.hideOnlinePause();
+        opts.onRestore?.();
+      };
+    }
+
+    cancelBtn.onclick = () => {
+      this.hideOnlinePause();
+      opts.onCancel();
+    };
+
+    const submit = async () => {
+      const name = inputEl.value.trim();
+      if (!name) {
+        errEl.textContent = "Please enter a name.";
+        errEl.classList.remove("hidden");
+        return;
+      }
+      confirmBtn.disabled = true;
+      try {
+        const ok = await opts.onConfirm(name);
+        if (ok) {
+          this.hideOnlinePause();
+        } else {
+          confirmBtn.disabled = false;
+        }
+      } catch (e) {
+        confirmBtn.disabled = false;
+        errEl.textContent = e instanceof Error ? e.message : String(e);
+        errEl.classList.remove("hidden");
+      }
+    };
+
+    confirmBtn.onclick = () => void submit();
+    inputEl.onkeydown = (e) => {
+      if (e.key === "Enter") void submit();
+    };
+    this.dialogEl.classList.remove("hidden");
+    inputEl.focus();
   }
 
   /** Update the waiting room's status line without rebuilding the screen. */
@@ -1131,9 +1300,13 @@ export class UI {
   }
 
 
-  /** Names shown in the score line and end screen ("YOU"/"CPU", "P1"/"P2", …). */
+  /** Names shown in the score line and end screen ("YOU"/"OPPONENT", "P1"/"P2", …). */
   setLabels(left: string, right: string): void {
     this.labels = [left, right];
+    const you = this.staminaEl?.querySelector<HTMLElement>("#stamina-row-you span");
+    if (you) you.textContent = left;
+    const cpu = this.staminaEl?.querySelector<HTMLElement>("#stamina-row-cpu span");
+    if (cpu) cpu.textContent = right;
   }
 
   /**
@@ -1302,13 +1475,35 @@ export class UI {
     ]);
   }
 
+  private ensurePauseDom(): void {
+    if (!this.pauseEl.querySelector("#pause-title") || !this.pauseEl.querySelector("#btn-resume")) {
+      this.pauseEl.innerHTML = `
+        <section class="pause-card" role="dialog" aria-modal="true" aria-labelledby="pause-title">
+          <h1 id="pause-title"></h1>
+          <div class="pause-actions">
+            <button class="pause-action pause-resume" id="btn-resume" data-menu-primary="true">
+              <strong id="pause-resume-label"></strong><kbd>ESC / START</kbd>
+            </button>
+            <button class="pause-action" id="btn-restart"><strong>RESTART MATCH</strong></button>
+            <button class="pause-action" id="btn-change-player"><strong>EXIT TO MODES</strong></button>
+          </div>
+        </section>`;
+    }
+  }
+
   /** Pause overlay on top of the HUD (which stays visible behind it). */
   showPause(onResume: () => void, onRestart: () => void, onChangePlayer: () => void): void {
-    this.pauseEl.querySelector<HTMLHeadingElement>("#pause-title")!.textContent = t("pause.title");
-    this.pauseEl.querySelector<HTMLElement>("#pause-resume-label")!.textContent = t("pause.resume");
-    this.pauseEl.querySelector<HTMLButtonElement>("#btn-resume")!.onclick = () => onResume();
-    this.pauseEl.querySelector<HTMLButtonElement>("#btn-restart")!.onclick = () => onRestart();
-    this.pauseEl.querySelector<HTMLButtonElement>("#btn-change-player")!.onclick = () => onChangePlayer();
+    this.ensurePauseDom();
+    const title = this.pauseEl.querySelector<HTMLHeadingElement>("#pause-title");
+    if (title) title.textContent = t("pause.title");
+    const resumeLabel = this.pauseEl.querySelector<HTMLElement>("#pause-resume-label");
+    if (resumeLabel) resumeLabel.textContent = t("pause.resume");
+    const resumeBtn = this.pauseEl.querySelector<HTMLButtonElement>("#btn-resume");
+    if (resumeBtn) resumeBtn.onclick = () => onResume();
+    const restartBtn = this.pauseEl.querySelector<HTMLButtonElement>("#btn-restart");
+    if (restartBtn) restartBtn.onclick = () => onRestart();
+    const changeBtn = this.pauseEl.querySelector<HTMLButtonElement>("#btn-change-player");
+    if (changeBtn) changeBtn.onclick = () => onChangePlayer();
     this.pauseEl.classList.remove("hidden");
   }
 
@@ -1697,9 +1892,16 @@ export class UI {
 
     // Also update the wallet element for other screens
     this.walletEl.innerHTML = `
-      <div class="stat-pill"><svg class="coin-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6.5" fill="#f5c518" stroke="#c8a000" stroke-width="0.5"/><text x="7" y="10.5" text-anchor="middle" font-size="7" font-weight="bold" fill="#7a5000">$</text></svg><b>${coins.toLocaleString()}</b></div>
+      <div class="stat-pill" id="header-wallet-coins" style="cursor: pointer"><svg class="coin-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6.5" fill="#f5c518" stroke="#c8a000" stroke-width="0.5"/><text x="7" y="10.5" text-anchor="middle" font-size="7" font-weight="bold" fill="#7a5000">$</text></svg><b>${coins.toLocaleString()}</b></div>
       <div class="stat-pill"><svg class="trophy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f5c518" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2z"/></svg><b>${trophies.toLocaleString()}</b></div>
       <div class="stat-pill rank"><b>${tier}</b></div>`;
+    const walletCoins = this.walletEl.querySelector<HTMLDivElement>("#header-wallet-coins");
+    if (walletCoins) {
+      walletCoins.onclick = (e) => {
+        e.stopPropagation();
+        this.onCoinsClicked?.();
+      };
+    }
     this.walletEl.setAttribute(
       "aria-label",
       `${t("career.coins")} ${coins}, ${t("career.trophies")} ${trophies}, ${t("career.rank")} ${tier}`
@@ -1879,7 +2081,11 @@ export class UI {
     for (const row of view.rows) {
       const done = row.progress >= row.goal;
       const card = document.createElement("div");
-      card.className = done ? "challenge-card done" : "challenge-card";
+      card.className = done
+        ? row.claimed
+          ? "challenge-card done claimed"
+          : "challenge-card done"
+        : "challenge-card";
       card.dataset.challenge = row.id;
       card.innerHTML = `
         <div class="challenge-top">
@@ -2085,6 +2291,7 @@ export class UI {
       <button class="big-btn alt" id="btn-profile-friends" type="button"></button>
       <button class="big-btn alt" id="btn-profile-club" type="button"></button>
       <button class="ghost-btn" id="btn-profile-newcode" type="button"></button>
+      <button class="ghost-btn" id="btn-profile-restore" type="button"></button>
       <button class="big-btn" id="btn-profile-board" type="button" data-menu-primary="true"></button>`;
     card.querySelector<HTMLSpanElement>(".account-code-label")!.textContent = t("profile.code");
     card.querySelector<HTMLElement>(".account-code-value")!.textContent = p.id;
@@ -2122,6 +2329,13 @@ export class UI {
     newCode.onclick = () => {
       this.setOriginFromElement(newCode);
       view.onNewCode();
+    };
+    const restoreBtn = card.querySelector<HTMLButtonElement>("#btn-profile-restore")!;
+    restoreBtn.textContent = t("recovery.restore");
+    restoreBtn.disabled = view.busy;
+    restoreBtn.onclick = () => {
+      this.setOriginFromElement(restoreBtn);
+      view.onRestore();
     };
     const board = card.querySelector<HTMLButtonElement>("#btn-profile-board")!;
     board.textContent = t("profile.leaderboard");
@@ -2281,6 +2495,82 @@ export class UI {
   }
 
   /** Entering a code to take an account over onto this device. */
+  /**
+   * Point at one thing on screen and say what to do with it.
+   *
+   * The guided tour's whole visual vocabulary: a ring around the thing, a
+   * sentence under it, and a way out. Nothing is a dialog, because a dialog is
+   * something to dismiss and every step here is finished by *using* the screen
+   * behind it — so the overlay never takes the pointer except on its own skip
+   * button.
+   *
+   * The ring is re-measured every frame rather than placed once. Screens here
+   * are rebuilt from their markup whenever they are shown, so the element a
+   * step points at is routinely replaced underneath it, and the phone can be
+   * turned mid-step. Following the rectangle is cheaper than knowing when any
+   * of that happened.
+   *
+   * A step whose target is not on screen shows the sentence alone. That is the
+   * honest thing to draw: there is nothing to point at yet.
+   */
+  showTourCue(view: TourCueView): void {
+    if (!this.tourEl) {
+      this.tourEl = document.createElement("div");
+      this.tourEl.className = "tour-layer";
+      this.tourEl.innerHTML = `
+        <div class="tour-ring" hidden></div>
+        <div class="tour-card">
+          <p class="tour-step"></p>
+          <p class="tour-says"></p>
+          <button class="tour-skip" type="button"></button>
+        </div>`;
+      this.root.appendChild(this.tourEl);
+    }
+    const ring = this.tourEl.querySelector<HTMLDivElement>(".tour-ring")!;
+    const card = this.tourEl.querySelector<HTMLDivElement>(".tour-card")!;
+    this.tourEl.querySelector<HTMLParagraphElement>(".tour-says")!.textContent = view.says;
+    this.tourEl.querySelector<HTMLParagraphElement>(".tour-step")!.textContent =
+      tf("tour.progress", { n: view.step, of: view.of });
+    const skip = this.tourEl.querySelector<HTMLButtonElement>(".tour-skip")!;
+    skip.textContent = t("tour.skip");
+    skip.onclick = () => view.onSkip();
+
+    if (this.tourFrame !== null) cancelAnimationFrame(this.tourFrame);
+    const place = () => {
+      const target = view.target ? document.querySelector(view.target) : null;
+      const box = target?.getBoundingClientRect();
+      if (box && box.width > 0 && box.height > 0) {
+        const pad = 8;
+        ring.hidden = false;
+        ring.style.left = `${box.left - pad}px`;
+        ring.style.top = `${box.top - pad}px`;
+        ring.style.width = `${box.width + pad * 2}px`;
+        ring.style.height = `${box.height + pad * 2}px`;
+        // Below the ring, unless the ring is low enough that below is off the
+        // screen — in which case above it, where there is room.
+        const below = box.bottom + 16;
+        card.classList.toggle("tour-card-above", below > window.innerHeight * 0.68);
+        card.style.top = card.classList.contains("tour-card-above")
+          ? `${Math.max(12, box.top - 16)}px`
+          : `${below}px`;
+      } else {
+        ring.hidden = true;
+        card.classList.remove("tour-card-above");
+        card.style.top = "";
+      }
+      this.tourFrame = requestAnimationFrame(place);
+    };
+    place();
+  }
+
+  /** Take the tour's overlay away. */
+  hideTourCue(): void {
+    if (this.tourFrame !== null) cancelAnimationFrame(this.tourFrame);
+    this.tourFrame = null;
+    this.tourEl?.remove();
+    this.tourEl = null;
+  }
+
   showRestore(view: RestoreView): void {
     this.hideAll();
     this.revealScreen(this.restoreEl);
@@ -2295,8 +2585,7 @@ export class UI {
       <div class="career-list">
         <div class="account-card">
           <p class="account-why"></p>
-          <label class="account-field"><span></span><input id="restore-id" type="text" maxlength="8" autocomplete="off" spellcheck="false" autocapitalize="characters"></label>
-          <label class="account-field"><span></span><input id="restore-code" type="text" maxlength="19" autocomplete="off" spellcheck="false" autocapitalize="characters"></label>
+          <label class="account-field"><span></span><input id="restore-code" type="text" inputmode="latin" maxlength="19" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" autocapitalize="characters"></label>
           <p class="account-message hidden"></p>
           <button class="big-btn" id="btn-restore" type="button" data-menu-primary="true"></button>
         </div>
@@ -2310,9 +2599,7 @@ export class UI {
     this.restoreEl.querySelector<HTMLParagraphElement>(".account-why")!.textContent =
       t("recovery.restoreWhy");
     const labels = this.restoreEl.querySelectorAll(".account-field span");
-    labels[0].textContent = t("recovery.playerCode");
-    labels[1].textContent = t("recovery.code");
-    const idEl = this.restoreEl.querySelector<HTMLInputElement>("#restore-id")!;
+    labels[0].textContent = t("recovery.code");
     const codeEl = this.restoreEl.querySelector<HTMLInputElement>("#restore-code")!;
     const message = this.restoreEl.querySelector<HTMLParagraphElement>(".account-message")!;
     message.textContent = view.message ?? "";
@@ -2322,9 +2609,15 @@ export class UI {
     go.disabled = view.busy;
     const submit = () => {
       this.setOriginFromElement(go);
-      view.onRestore(idEl.value, codeEl.value);
+      view.onRestore(codeEl.value);
     };
     go.onclick = submit;
+    // Upper-cased and hyphenated as it is typed. The code is written down in
+    // one shape and should be typed back in that shape, rather than the player
+    // having to reproduce punctuation from memory and be told they got it
+    // wrong — `tidyCode` is the same normalisation the server applies, so what
+    // the field shows is exactly what will be sent.
+    codeEl.oninput = () => formatCodeField(codeEl);
     codeEl.onkeydown = (e) => {
       if (e.key === "Enter") submit();
     };
@@ -2621,6 +2914,7 @@ export class UI {
     const statusEl = this.selectEl.querySelector<HTMLDivElement>("#item-status")!;
     const tabs = this.selectEl.querySelectorAll<HTMLButtonElement>(".tab-btn");
     const profileEl = this.selectEl.querySelector<HTMLElement>("#player-profile")!;
+    const profileSynergiesEl = profileEl.querySelector<HTMLDivElement>("#profile-synergies")!;
     const profileStatsEl = profileEl.querySelector<HTMLDivElement>(".profile-stats")!;
     const profileTraitsEl = profileEl.querySelector<HTMLDivElement>(".profile-traits")!;
     // The chip strip is gone: venues have their own tab now, previewed at full
@@ -2660,6 +2954,25 @@ export class UI {
         return;
       }
       profileEl.classList.remove("hidden");
+      profileSynergiesEl.replaceChildren();
+
+      const charId = opts.characters[this.selIdx.character]?.id;
+      const ballId = opts.balls[this.selIdx.ball]?.id;
+      const venueId = opts.venues?.[this.selIdx.venue]?.id ?? opts.venue ?? "football";
+
+      if (charId && ballId && opts.hasBallAffinity?.(charId, ballId)) {
+        const tag = document.createElement("span");
+        tag.className = "synergy-tag ball";
+        tag.textContent = "★ FAVORITE BALL (+20% Synergy)";
+        profileSynergiesEl.appendChild(tag);
+      }
+      if (charId && venueId && opts.hasVenueAffinity?.(charId, venueId)) {
+        const tag = document.createElement("span");
+        tag.className = "synergy-tag venue";
+        tag.textContent = "🏟 HOME COURT (+20% Synergy)";
+        profileSynergiesEl.appendChild(tag);
+      }
+
       profileStatsEl.replaceChildren();
       const stats = RATING_KEYS.map((key) => {
         const score = rating(player, key);
@@ -2714,6 +3027,7 @@ export class UI {
 
     const venueCard = this.selectEl.querySelector<HTMLImageElement>("#venue-card")!;
     const lockEl = this.selectEl.querySelector<HTMLDivElement>("#item-lock")!;
+    const unlockItemBtn = this.selectEl.querySelector<HTMLButtonElement>("#btn-unlock-item")!;
     const startBtn = this.selectEl.querySelector<HTMLButtonElement>("#btn-start")!;
     const lockNote = (id: string): string | undefined => opts.locked?.[id];
 
@@ -2752,6 +3066,28 @@ export class UI {
       lockEl.textContent = browsedLock ?? "";
       lockEl.classList.toggle("hidden", browsedLock === undefined);
       this.selectEl.classList.toggle("browsing-locked", browsedLock !== undefined);
+
+      if (browsedLock !== undefined) {
+        const priceStr =
+          opts.prices?.[item.id] ?? (item.id === "gym" ? "$4.99" : item.id === "basketball" ? "$2.99" : "$0.99");
+        unlockItemBtn.textContent = `UNLOCK · ${priceStr}`;
+        unlockItemBtn.classList.remove("hidden");
+        unlockItemBtn.onclick = async () => {
+          unlockItemBtn.disabled = true;
+          try {
+            const ok = await opts.onUnlockAsset?.(item.id, this.selTab);
+            if (ok) {
+              delete opts.locked?.[item.id];
+              browse();
+            }
+          } finally {
+            unlockItemBtn.disabled = false;
+          }
+        };
+      } else {
+        unlockItemBtn.classList.add("hidden");
+      }
+
       // A locked *venue* is different from a locked player or ball: it is the
       // thing that is for sale, and it is being previewed at full size right
       // now. So PLAY turns into the offer rather than going grey — the screen

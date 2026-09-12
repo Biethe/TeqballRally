@@ -26,6 +26,10 @@ import { NameTakenError, nameKey } from "./store.mjs";
 const PLAYERS = "players";
 const NAMES = "names";
 const TOKENS = "tokens";
+/** Recovery lookup digest → player id, so a code alone finds its account. */
+const RECOVERIES = "recoveries";
+/** How many players the legacy recovery scan will read. See findLegacyRecovery. */
+const LEGACY_SCAN_LIMIT = 2000;
 const CLUBS = "clubs";
 const CLUB_NAMES = "clubNames";
 const CLUB_INVITES = "clubInvites";
@@ -61,6 +65,34 @@ export class FirestoreStore {
     return this.get(index.data().id);
   }
 
+  async byRecovery(digest) {
+    const index = await this.db.collection(RECOVERIES).doc(digest).get();
+    if (!index.exists) return null;
+    return this.get(index.data().id);
+  }
+
+  /**
+   * Find an account issued before the lookup index existed.
+   *
+   * A full read of the players, which is exactly what this store exists to
+   * avoid — so it is bounded, and it runs only when the index has already said
+   * no. Firestore cannot ask for documents that are *missing* a field, so
+   * there is no narrower query to make.
+   *
+   * A migration shim with a natural end: recovering mints a fresh code, which
+   * is written with a lookup, so every account leaves this set the first time
+   * it is used. Delete this once none are left.
+   */
+  async findLegacyRecovery(match) {
+    const page = await this.db.collection(PLAYERS).limit(LEGACY_SCAN_LIMIT).get();
+    for (const doc of page.docs) {
+      const player = doc.data();
+      if (player.recoveryLookup) continue;
+      if (match(player)) return player;
+    }
+    return null;
+  }
+
   async nameOwner(key) {
     const doc = await this.db.collection(NAMES).doc(key).get();
     return doc.exists ? doc.data().id : null;
@@ -74,6 +106,9 @@ export class FirestoreStore {
       if (held.exists && held.data().id !== player.id) throw new NameTakenError();
       tx.set(nameRef, { id: player.id });
       tx.set(this.db.collection(TOKENS).doc(player.tokenHash), { id: player.id });
+      if (player.recoveryLookup) {
+        tx.set(this.db.collection(RECOVERIES).doc(player.recoveryLookup), { id: player.id });
+      }
       tx.set(this.db.collection(PLAYERS).doc(player.id), player);
     });
   }
@@ -99,12 +134,23 @@ export class FirestoreStore {
     // one is left to be swept. Leaving it would let a lost phone keep playing
     // the account it was just recovered away from, so it is deleted here.
     batch.set(this.db.collection(TOKENS).doc(player.tokenHash), { id: player.id });
+    // Same for the recovery code, which is spent and replaced every time one
+    // is used: the new digest is written and the old one deleted below, so a
+    // slip of paper somebody photographed stops finding the account.
+    if (player.recoveryLookup) {
+      batch.set(this.db.collection(RECOVERIES).doc(player.recoveryLookup), { id: player.id });
+    }
     await batch.commit();
   }
 
   /** Point an old token digest at nothing, after a recovery replaced it. */
   async revokeToken(digest) {
     await this.db.collection(TOKENS).doc(digest).delete();
+  }
+
+  /** The same, for the recovery code the replaced one was found by. */
+  async revokeRecovery(digest) {
+    await this.db.collection(RECOVERIES).doc(digest).delete();
   }
 
   // ---- clubs ----

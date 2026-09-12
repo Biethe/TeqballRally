@@ -34,8 +34,6 @@ const LOCO_CLIPS = [
   "Idle",
   "JogForward",
   "jogBackward",
-  "WalkStrafeLeftInPlace",
-  "WalkStrafeRightInPlace",
   "JogStrafeLeftInPlace",
   "JogStrafeRightInPlace",
 ] as const;
@@ -48,23 +46,8 @@ const LOCO_SPEED = 4.5 * CHARACTER_SCALE;
  * A strafe is a shuffle: the feet cross less distance per cycle than a run
  * does. Driving both off the same reference speed therefore under-cranks the
  * strafe clips — the body slides out from under feet that are still shuffling.
- * The walk is slower again, which is the whole reason it exists as its own
- * clip. Both are calibrated by eye against a real browser: lower them if
- * sideways movement still skates, raise them if the feet run on the spot.
  */
 const STRAFE_STRIDE_RATIO = 0.62;
-const WALK_STRIDE_RATIO = 0.3;
-
-/**
- * The speed band the sideways movement changes gait over.
- *
- * Below the first it is a walking adjustment — the half-step you take for a
- * ball that is nearly on you. Above the second it is a proper sideways run for
- * one that is not. In between both clips carry weight, so the change of gait
- * is something the legs do rather than something that snaps.
- */
-const STRAFE_WALK_SPEED = 1.1;
-const STRAFE_JOG_SPEED = 2.6;
 
 /** Below this the character is standing; above JOG_SPEED the jog carries full weight. */
 const IDLE_SPEED = 0.4;
@@ -106,8 +89,6 @@ export function locoBlend(fwd: number, lat: number, speed: number): LocoWeights 
     Idle: 0,
     JogForward: 0,
     jogBackward: 0,
-    WalkStrafeLeftInPlace: 0,
-    WalkStrafeRightInPlace: 0,
     JogStrafeLeftInPlace: 0,
     JogStrafeRightInPlace: 0,
   };
@@ -130,20 +111,11 @@ export function locoBlend(fwd: number, lat: number, speed: number): LocoWeights 
   const s = (az / sum) * moving;
   if (fwd >= 0) w.JogForward = f;
   else w.jogBackward = f;
-  // Sideways splits again by gait. A ball nearly on you is a walking half-step
-  // sideways; one you have to cover ground for is a run. Speed is what tells
-  // them apart, and blending across the band means the legs change gait rather
-  // than the clip switching under them.
-  const jogShare = Math.min(
-    1,
-    Math.max(0, (speed - STRAFE_WALK_SPEED) / (STRAFE_JOG_SPEED - STRAFE_WALK_SPEED))
-  );
+
   if (lat >= 0) {
-    w.JogStrafeRightInPlace = s * jogShare;
-    w.WalkStrafeRightInPlace = s * (1 - jogShare);
+    w.JogStrafeRightInPlace = s;
   } else {
-    w.JogStrafeLeftInPlace = s * jogShare;
-    w.WalkStrafeLeftInPlace = s * (1 - jogShare);
+    w.JogStrafeLeftInPlace = s;
   }
   return w;
 }
@@ -156,16 +128,11 @@ export function locoBlend(fwd: number, lat: number, speed: number): LocoWeights 
  * a full running stride.
  */
 export function locoStride(weights: LocoWeights, speed: number): number {
-  // Each gait covers a different amount of ground per cycle. Averaging their
-  // authored speeds by the weights actually in play gives the speed this blend
-  // was drawn for, and the rate is how far off it the body really is.
   const run = weights.JogForward + weights.jogBackward;
-  const jogSide = weights.JogStrafeLeftInPlace + weights.JogStrafeRightInPlace;
-  const walkSide = weights.WalkStrafeLeftInPlace + weights.WalkStrafeRightInPlace;
-  const total = run + jogSide + walkSide;
+  const strafe = weights.JogStrafeLeftInPlace + weights.JogStrafeRightInPlace;
+  const total = run + strafe;
   if (total <= 1e-6) return 1;
-  const reference =
-    (LOCO_SPEED * (run + jogSide * STRAFE_STRIDE_RATIO + walkSide * WALK_STRIDE_RATIO)) / total;
+  const reference = (LOCO_SPEED * (run + strafe * STRAFE_STRIDE_RATIO)) / total;
   return Math.min(STRIDE_MAX, Math.max(STRIDE_MIN, speed / reference));
 }
 
@@ -378,6 +345,12 @@ export class Character {
   private actionYawOffset = 0;
   velocity = new Vector3();
   private animationsFrozen = false;
+  /**
+   * Minimum distance from the net (|x| coordinate boundary).
+   * Defaults to COURT.minX (0), but can be set to SERVE_X during serve preparation
+   * to prevent receiving players from crossing the service line forward.
+   */
+  minCourtX: number = COURT.minX;
 
   /**
    * Interaction volumes measured from each clip's contact pose, keyed by clip.
@@ -498,6 +471,51 @@ export class Character {
    */
   get currentActionClip(): string | null {
     return this.actionClip;
+  }
+
+  /**
+   * How far through the playing action clip the animation actually is, from 0
+   * to 1, or null when nothing is playing.
+   *
+   * Read off the animatable rather than counted in simulation steps, because
+   * those are two different clocks. Babylon advances an animation group on the
+   * render loop's own delta; the fixed step caps its delta at `MAX_FRAME_DT`
+   * and drops whatever is left over. So on a device that is dropping frames
+   * the animation runs ahead of the simulation, and a clip window predicted
+   * from the step count stops describing where the clip is.
+   *
+   * An online guest reads that window, and a window that has stopped
+   * describing its clip is a clip the guest silently skips or holds back until
+   * its own clock drifts into range — which is what a joined player saw as
+   * touches that played no animation, followed by one appearing from nowhere
+   * at the next serve.
+   */
+  /**
+   * Put the playing action clip at this fraction of itself.
+   *
+   * For an online guest, whose animation is presentation rather than
+   * simulation. The host says where the clip is on every frame, and the clip
+   * belongs to that clock, not to this device's render loop — left to
+   * free-run it drifts away exactly as the host's does, and a drifted clip is
+   * a kick that swings while the ball is still on its way. Pinning it each
+   * step makes the pose a function of the playback tick, the same way the
+   * ball already is.
+   */
+  seekAction(frac: number): void {
+    const g = this.action;
+    if (!g) return;
+    const f = Math.min(1, Math.max(0, frac));
+    g.goToFrame(g.from + f * (g.to - g.from));
+  }
+
+  get actionFraction(): number | null {
+    const g = this.action;
+    if (!g) return null;
+    const anim = g.animatables[0];
+    if (!anim) return null;
+    const span = g.to - g.from;
+    if (!(span > 0)) return null;
+    return Math.min(1, Math.max(0, (anim.masterFrame - g.from) / span));
   }
 
   private nodeCache = new Map<string, TransformNode | null>();
@@ -684,7 +702,8 @@ export class Character {
   private clampToCourt(): void {
     const p = this.position;
     const sideSign = this.faceDir === -1 ? -1 : 1;
-    p.x = sideSign * Math.min(COURT.maxX, Math.max(COURT.minX, sideSign * p.x));
+    const minX = Math.max(COURT.minX, this.minCourtX ?? COURT.minX);
+    p.x = sideSign * Math.min(COURT.maxX, Math.max(minX, sideSign * p.x));
     p.z = Math.max(-COURT.maxZ, Math.min(COURT.maxZ, p.z));
     // The half is open all the way to the middle line; the table is a hole in
     // it rather than a wall across it.
@@ -764,10 +783,12 @@ export class Character {
     if (this.action) {
       this.action.stop();
       this.action = null;
-      this.actionClip = null;
       this.actionCallbacks = [];
       this.actionOnEnd = null;
     }
+    // Outside the guard: a clip that already ended on its own has no group
+    // left to stop, and the name still has to go.
+    this.actionClip = null;
     this.lungeState = null;
     this.restoreActionYaw();
   }
@@ -780,16 +801,26 @@ export class Character {
    * flushes pending callbacks, which is the last thing an abandoned one should
    * do: a debug tool pausing a strike mid-wind-up must not launch the ball on
    * close. This is the quiet exit: stop, un-turn, restore weights, resume
-   * walking. Used by tooling that takes the action layer over temporarily.
+   * walking.
+   *
+   * The restoring is the point, and it is what `stopAction` leaves out.
+   * `playAction` zeroes every locomotion weight on the way in, so a clip that
+   * is stopped rather than finished leaves the skeleton with nothing driving
+   * it and the character frozen on whatever frame it was cut at. Offline that
+   * is rare, because clips almost always run to their own end. On an online
+   * guest it is the *only* way a clip ever ends — the host's window says when,
+   * and the clip is pinned to that clock rather than allowed to finish — which
+   * is why a joined player kept being walked back to the service line still
+   * holding the pose of a kick.
    */
   cancelActionToLoco(): void {
     if (this.action) {
       this.action.stop();
       this.action = null;
-      this.actionClip = null;
       this.actionCallbacks = [];
       this.actionOnEnd = null;
     }
+    this.actionClip = null;
     this.lungeState = null;
     this.restoreActionYaw();
     this.setLocoWeight(this.currentLoco, 1);
@@ -812,6 +843,16 @@ export class Character {
     const onEnd = this.actionOnEnd;
     this.action?.stop();
     this.action = null;
+    // Cleared here too, and not only where a clip is cut short.
+    //
+    // This is the exit a clip takes when it simply ends, which is almost every
+    // clip — and leaving the name behind meant `currentActionClip` went on
+    // naming a finished animation until something else started one. An online
+    // host publishes that name in every snapshot, so its guest was told a
+    // character was mid-touch long after it had stopped: a clip it could not
+    // play and could not let go of, and a body it would not predict for
+    // because the name said it was busy.
+    this.actionClip = null;
     this.actionOnEnd = null;
     this.lungeState = null;
     this.restoreActionYaw();
@@ -835,7 +876,16 @@ export class Character {
         l.t = Math.min(l.dur, l.t + dt);
         const p = l.t / l.dur;
         const e = p * p * (3 - 2 * p); // smoothstep ease
+        const was = this.position.clone();
         this.position.copyFrom(Vector3.Lerp(l.from, l.to, e));
+        // Report the dart as motion, because it is. The match zeroes a busy
+        // character's velocity and the lunge then moved the body without
+        // saying so, which left an online guest carrying that character on a
+        // velocity of nothing between frames — the one moment it most needs
+        // carrying, since this is the half-metre that puts the limb on the
+        // ball. Written after the zeroing rather than instead of it: outside
+        // a lunge a busy character really is still.
+        if (dt > 0) this.velocity.copyFrom(this.position.subtract(was).scale(1 / dt));
         if (l.t >= l.dur) this.lungeState = null;
       }
       // Fire frame-fraction callbacks (serve toss / ball contact).
@@ -1255,6 +1305,8 @@ export function chooseStrike(
     if (headable) candidates.push(header);
     if (rel > 0.45) candidates.push({ clip: `${side}KneeReception`, part: "knee" });
     candidates.push({ clip: `Inner${side}FootReception`, part: "foot" });
+    candidates.push({ clip: `${side}KneeReception`, part: "knee" });
+    candidates.push({ clip: "ChestKick", part: "chest" });
     return resolve(candidates, opts.avoid);
   }
 

@@ -69,6 +69,15 @@ export interface Kit {
   shortsCrestColor?: KitColourId;
 }
 
+/**
+ * The part of a kit that belongs to the player rather than to the character.
+ *
+ * `kitForCharacter` takes exactly these three and supplies the colours from the
+ * roster, so this is also the whole of what has to cross the wire for an
+ * opponent's shirt — and the whole of what a peer is trusted with.
+ */
+export type PersonalKit = Pick<Kit, "name" | "number" | "crest">;
+
 export const BLANK_KIT: Kit = { name: "", number: "", crest: "none", colour: "white" };
 
 /** Whether this kit would draw anything at all. */

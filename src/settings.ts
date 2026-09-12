@@ -33,6 +33,15 @@ export interface Preferences {
    * lesson is a menu item like any other, replayable whenever they want it.
    */
   coached: boolean;
+  /**
+   * Whether the guided tour of the app has been run through once.
+   *
+   * Separate from `coached`, because the two teach different things: that one
+   * is the sport, this one is the parts of the app nobody finds by accident —
+   * the shirt, the profile, the settings, and that the game plays differently
+   * depending on which way up the phone is held.
+   */
+  toured: boolean;
   /** Name, number and crest painted onto the player's shirt. */
   kit: Kit;
 }
@@ -45,6 +54,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   autoReception: true,
   gameSpeed: 1.25,
   coached: false,
+  toured: false,
   kit: { ...BLANK_KIT },
 };
 
@@ -69,6 +79,7 @@ export function readPreferences(): Preferences {
           : DEFAULT_PREFERENCES.autoReception,
       gameSpeed: stored.gameSpeed === 1.45 ? 1.45 : 1.25,
       coached: stored.coached === true,
+      toured: stored.toured === true,
       kit: readKit(stored.kit),
     };
   } catch {

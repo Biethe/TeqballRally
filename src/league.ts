@@ -72,10 +72,10 @@ export type Difficulty = "easy" | "normal" | "hard" | "online";
 
 /** Trophies staked on a match, before the result decides the sign. */
 const STAKE: Record<Difficulty, { win: number; loss: number }> = {
-  easy: { win: 12, loss: 10 },
-  normal: { win: 20, loss: 12 },
-  hard: { win: 30, loss: 14 },
-  online: { win: 34, loss: 18 },
+  easy: { win: 8, loss: 6 },
+  normal: { win: 14, loss: 10 },
+  hard: { win: 20, loss: 14 },
+  online: { win: 24, loss: 16 },
 };
 
 /**
@@ -100,10 +100,10 @@ export function trophyDelta(won: boolean, difficulty: Difficulty, trophies: numb
 
 /** Coins a result pays, before the tier bonus. */
 const PURSE: Record<Difficulty, { win: number; loss: number }> = {
-  easy: { win: 40, loss: 12 },
-  normal: { win: 70, loss: 20 },
-  hard: { win: 110, loss: 30 },
-  online: { win: 130, loss: 40 },
+  easy: { win: 20, loss: 8 },
+  normal: { win: 35, loss: 10 },
+  hard: { win: 60, loss: 16 },
+  online: { win: 75, loss: 20 },
 };
 
 /**
@@ -129,13 +129,13 @@ export type CompetitionKind = "cup" | "league";
 const TROPHY_PRIZE: Record<CompetitionKind, number[]> = {
   // By finishing place, best first. Fourth pays nothing extra — the matches
   // themselves already paid, and a prize for coming last is not a prize.
-  cup: [45, 22, 10, 0],
-  league: [70, 34, 15, 0],
+  cup: [25, 12, 6, 0],
+  league: [40, 20, 10, 0],
 };
 
 const COIN_PRIZE: Record<CompetitionKind, number[]> = {
-  cup: [220, 110, 45, 0],
-  league: [340, 165, 70, 0],
+  cup: [120, 60, 25, 0],
+  league: [180, 90, 40, 0],
 };
 
 /**

@@ -219,9 +219,9 @@ var SIM_HZ = 60;
 var SIM_DT = 1 / SIM_HZ;
 var SERVE_X = 3.64 * TABLE_SCALE;
 var MAX_TOUCHES = 3;
-var PLAYER_REACH = 1.2 * TABLE_SCALE;
-var AI_REACH = 1.2 * TABLE_SCALE;
-var LUNGE_MAX = 1 * TABLE_SCALE;
+var PLAYER_REACH = 1.15 * TABLE_SCALE;
+var AI_REACH = 1.15 * TABLE_SCALE;
+var LUNGE_MAX = 0.55 * TABLE_SCALE;
 var AUTO_RECEPTION_REACH = 1.36 * TABLE_SCALE;
 var WIN_SCORE = 3;
 var SETS_TO_WIN = 2;
@@ -406,10 +406,10 @@ function tierProgress(trophies) {
   return Math.min(1, Math.max(0, (trophies - here.floor) / (next.floor - here.floor)));
 }
 var STAKE = {
-  easy: { win: 12, loss: 10 },
-  normal: { win: 20, loss: 12 },
-  hard: { win: 30, loss: 14 },
-  online: { win: 34, loss: 18 }
+  easy: { win: 8, loss: 6 },
+  normal: { win: 14, loss: 10 },
+  hard: { win: 20, loss: 14 },
+  online: { win: 24, loss: 16 }
 };
 function trophyDelta(won, difficulty, trophies) {
   const stake = STAKE[difficulty];
@@ -418,10 +418,10 @@ function trophyDelta(won, difficulty, trophies) {
   return -Math.min(stake.loss, trophies);
 }
 var PURSE = {
-  easy: { win: 40, loss: 12 },
-  normal: { win: 70, loss: 20 },
-  hard: { win: 110, loss: 30 },
-  online: { win: 130, loss: 40 }
+  easy: { win: 20, loss: 8 },
+  normal: { win: 35, loss: 10 },
+  hard: { win: 60, loss: 16 },
+  online: { win: 75, loss: 20 }
 };
 function coinsFor(won, difficulty, trophies) {
   const purse = PURSE[difficulty];
@@ -475,6 +475,7 @@ function freshCareer(day, season = day.slice(0, 7)) {
     best: 0,
     // Everyone starts with one player. The rest are the reason to keep playing.
     champions: { [STARTING_CHAMPION]: { level: 1, xp: 0 } },
+    unlockedAssets: [],
     day,
     progress: {},
     claimed: [],
@@ -488,36 +489,37 @@ function freshCareer(day, season = day.slice(0, 7)) {
 }
 var UNLOCK_AT = {
   [CHARACTERS[0].id]: 0,
-  [CHARACTERS[1].id]: 60,
-  [CHARACTERS[2].id]: 160,
-  [CHARACTERS[3].id]: 300
+  [CHARACTERS[1].id]: 120,
+  [CHARACTERS[2].id]: 300,
+  [CHARACTERS[3].id]: 550
 };
-var XP_PER_LEVEL = 5;
+var XP_PER_LEVEL = 10;
 function upgradeCost(level) {
-  return 120 + (level - 1) * (120 + (level - 1) * 40);
+  return 150 + (level - 1) * (150 + (level - 1) * 25);
 }
-var MAX_LEVEL = 12;
+var MAX_LEVEL = 25;
 function withCareer(def, level) {
   const steps = Math.max(0, Math.min(MAX_LEVEL, level) - 1);
   const grow = (value, rate, key) => Math.min(SPAN[key].max, value * (1 + rate * steps));
   return {
     ...def,
-    precision: grow(def.precision, 0.11, "control"),
-    volley: grow(def.volley, 0.105, "volley"),
-    stamina: grow(def.stamina, 0.11, "stamina"),
-    power: grow(def.power, 0.095, "power"),
-    serve: grow(def.serve, 0.085, "serve"),
+    precision: grow(def.precision, 0.05, "control"),
+    volley: grow(def.volley, 0.048, "volley"),
+    stamina: grow(def.stamina, 0.051, "stamina"),
+    power: grow(def.power, 0.043, "power"),
+    serve: grow(def.serve, 0.038, "serve"),
     // The widest gap in the roster: ENGLAND starts at 0.80 where the starter
     // is at 0.95, so the rate that gets the *starter* there leaves ENGLAND
     // short of its own ceiling for good.
-    agility: grow(def.agility, 0.115, "agility"),
-    speed: grow(def.speed, 0.045, "reactivity")
+    agility: grow(def.agility, 0.053, "agility"),
+    speed: grow(def.speed, 0.02, "reactivity")
   };
 }
 function levelOf(career, id) {
   return career.champions[id]?.level ?? 1;
 }
 function isUnlocked(career, id) {
+  if (career.unlockedAssets?.includes(id)) return true;
   if (career.champions[id]) return true;
   return career.best >= (UNLOCK_AT[id] ?? Infinity);
 }

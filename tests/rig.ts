@@ -114,10 +114,6 @@ export class FakeCharacter {
     return null;
   }
   setAnimationsFrozen(): void {}
-  actionFraction(): number | null {
-    if (!this.action) return null;
-    return 1 - this.action.left / this.action.total;
-  }
 
   clipContactPoint(clip: string): Vector3 | null {
     const part = bodyPartOf(clip);
@@ -155,9 +151,32 @@ export class FakeCharacter {
     return true;
   }
 
+  /** Mirrors `Character.actionFraction`: progress through the whole clip. */
+  get actionFraction(): number | null {
+    const a = this.action;
+    if (!a) return null;
+    const start = this.startFracs[this.startFracs.length - 1] ?? 0;
+    const through = (a.total - a.left) / Math.max(1e-6, a.total);
+    return Math.min(1, Math.max(0, start + through * (1 - start)));
+  }
+
+  /** Mirrors `Character.seekAction`: pin the clip to a fraction of itself. */
+  seekAction(frac: number): void {
+    const a = this.action;
+    if (!a) return;
+    const start = this.startFracs[this.startFracs.length - 1] ?? 0;
+    const through = Math.min(1, Math.max(0, (frac - start) / Math.max(1e-6, 1 - start)));
+    a.left = a.total * (1 - through);
+  }
+
   stopAction(): void {
     this.action = null;
     this.lunge = null;
+  }
+
+  /** Mirrors `Character.cancelActionToLoco`: stop, and land back on the feet. */
+  cancelActionToLoco(): void {
+    this.stopAction();
   }
 
   lungeTo(target: Vector3, duration: number): void {

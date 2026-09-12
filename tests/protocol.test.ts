@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { SIM_DT, GROUND_Y, TABLE } from "../src/config";
+import { KIT_NAME_MAX, KIT_NUMBER_MAX, SIM_DT, GROUND_Y, TABLE } from "../src/config";
 import { solveLaunchClearingNet, stepBall, type BallState } from "../src/ball";
 import {
   MAX_CATCHUP_TICKS,
@@ -12,7 +12,9 @@ import {
   decode,
   isValidFx,
   isValidInput,
+  isValidSetup,
   isValidSnapshot,
+  readKit,
   readLoft,
   readTaps,
   encode,
@@ -338,3 +340,38 @@ describe("the shape a kick was given", () => {
   });
 });
 
+describe("a peer's own kit", () => {
+  it("carries the three marks a player chose, and nothing else", () => {
+    expect(readKit({ name: "ANA", number: "7", crest: "star" })).toEqual({
+      name: "ANA",
+      number: "7",
+      crest: "star",
+    });
+  });
+
+  it("caps what a peer can write on a shirt", () => {
+    // The other end is not a text field, so the limits the settings screen
+    // enforces are applied again here.
+    const wild = readKit({ name: "X".repeat(80), number: "1234", crest: "star" })!;
+    expect(wild.name).toHaveLength(KIT_NAME_MAX);
+    expect(wild.number).toHaveLength(KIT_NUMBER_MAX);
+  });
+
+  it("falls back to no crest for one that is not in the set", () => {
+    expect(readKit({ name: "", number: "", crest: "swastika" })?.crest).toBe("none");
+    expect(readKit({ name: "", number: "", crest: 7 })?.crest).toBe("none");
+  });
+
+  it("is absent when a peer sends none", () => {
+    expect(readKit(undefined)).toBeUndefined();
+    expect(readKit(null)).toBeUndefined();
+    expect(readKit("kit")).toBeUndefined();
+  });
+
+  it("rides the setup message without being required", () => {
+    expect(isValidSetup({ t: "setup", character: "a", ball: "b" })).toBe(true);
+    expect(
+      isValidSetup({ t: "setup", character: "a", ball: "b", kit: { name: "ANA" } })
+    ).toBe(true);
+  });
+});

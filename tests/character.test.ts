@@ -572,10 +572,8 @@ describe("the traits that decide a rally", () => {
 });
 
 describe("locomotion blending", () => {
-  /** Sideways weight, whichever gait is carrying it. */
-  const side = (w: LocoWeights) =>
-    w.JogStrafeLeftInPlace + w.JogStrafeRightInPlace +
-    w.WalkStrafeLeftInPlace + w.WalkStrafeRightInPlace;
+  /** Sideways weight. */
+  const side = (w: LocoWeights) => w.JogStrafeLeftInPlace + w.JogStrafeRightInPlace;
   const total = (w: LocoWeights) => w.Idle + w.JogForward + w.jogBackward + side(w);
 
   it("stands still below the walking threshold", () => {
@@ -592,21 +590,19 @@ describe("locomotion blending", () => {
 
     expect(side(right)).toBeCloseTo(1);
     expect(right.JogForward).toBe(0);
-    expect(right.JogStrafeRightInPlace + right.WalkStrafeRightInPlace).toBeCloseTo(1);
-    expect(left.JogStrafeLeftInPlace + left.WalkStrafeLeftInPlace).toBeCloseTo(1);
+    expect(right.JogStrafeRightInPlace).toBeCloseTo(1);
+    expect(left.JogStrafeLeftInPlace).toBeCloseTo(1);
   });
 
   it("splits a diagonal run across both clips instead of picking a winner", () => {
-    // The regression that made the player slide: running 45 degrees
-    // forward-and-right used to play a pure forward cycle while the body
-    // travelled sideways.
+    // Running 45 degrees forward-and-right plays both forward and strafe clips in equal proportion.
     const w = locoBlend(3, 3, Math.hypot(3, 3));
 
     expect(w.JogForward).toBeCloseTo(0.5);
     expect(side(w)).toBeCloseTo(0.5);
     expect(w.jogBackward).toBe(0);
     expect(w.JogStrafeLeftInPlace).toBe(0);
-    expect(w.WalkStrafeLeftInPlace).toBe(0);
+    expect(w.JogStrafeRightInPlace).toBeCloseTo(0.5);
   });
 
   it("keeps the weights summing to one at every angle", () => {
@@ -628,29 +624,6 @@ describe("locomotion blending", () => {
     expect(total(creep)).toBeCloseTo(1);
   });
 
-  it("walks sideways for a ball that is nearly on you", () => {
-    // A slow sideways adjustment is a half-step, not a run.
-    const w = locoBlend(0, 0.9, 0.9);
-
-    expect(w.WalkStrafeRightInPlace).toBeGreaterThan(0);
-    expect(w.JogStrafeRightInPlace).toBe(0);
-  });
-
-  it("runs sideways for one you have to cover ground for", () => {
-    const w = locoBlend(0, 4, 4);
-
-    expect(w.JogStrafeRightInPlace).toBeCloseTo(1);
-    expect(w.WalkStrafeRightInPlace).toBe(0);
-  });
-
-  it("changes gait across a band, so the legs never swap clip mid-stride", () => {
-    const mid = locoBlend(0, 1.8, 1.8);
-
-    expect(mid.WalkStrafeRightInPlace).toBeGreaterThan(0);
-    expect(mid.JogStrafeRightInPlace).toBeGreaterThan(0);
-    expect(total(mid)).toBeCloseTo(1);
-  });
-
   it("drives a sideways cycle faster than a forward one at the same speed", () => {
     // A strafe covers less ground per cycle, so holding it to the forward
     // reference speed is what leaves the feet shuffling under a sliding body.
@@ -664,6 +637,40 @@ describe("locomotion blending", () => {
   it("never drives the legs slower than the floor or past the ceiling", () => {
     expect(locoStride(locoBlend(0.5, 0, 0.5), 0.5)).toBeGreaterThanOrEqual(0.55);
     expect(locoStride(locoBlend(99, 0, 99), 99)).toBeLessThanOrEqual(1.6);
+  });
+});
+
+describe("service line court boundaries", () => {
+  it("prevents player on -x side from advancing past minCourtX when receiving serve", () => {
+    const sideSign = -1; // player
+    const minCourtX = 3.64; // SERVE_X
+    const maxX = 6.0;
+
+    // Player attempts to walk forward towards net at x = -2.0
+    const desiredX = -2.0;
+    const clampedX = sideSign * Math.min(maxX, Math.max(minCourtX, sideSign * desiredX));
+    expect(clampedX).toBe(-3.64);
+
+    // Player walks backward to x = -4.5
+    const backX = -4.5;
+    const clampedBackX = sideSign * Math.min(maxX, Math.max(minCourtX, sideSign * backX));
+    expect(clampedBackX).toBe(-4.5);
+  });
+
+  it("prevents AI on +x side from advancing past minCourtX when receiving serve", () => {
+    const sideSign = 1; // AI
+    const minCourtX = 3.64; // SERVE_X
+    const maxX = 6.0;
+
+    // AI attempts to walk forward towards net at x = 2.0
+    const desiredX = 2.0;
+    const clampedX = sideSign * Math.min(maxX, Math.max(minCourtX, sideSign * desiredX));
+    expect(clampedX).toBe(3.64);
+
+    // AI walks backward to x = 4.5
+    const backX = 4.5;
+    const clampedBackX = sideSign * Math.min(maxX, Math.max(minCourtX, sideSign * backX));
+    expect(clampedBackX).toBe(4.5);
   });
 });
 

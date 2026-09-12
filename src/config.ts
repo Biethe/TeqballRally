@@ -7,7 +7,7 @@
 // Scale the ball and the characters with it — the three only look right in
 // proportion to each other.
 export const TABLE_SCALE = 1.25;
-import { type Kit, type KitColourId } from "./kit";
+import { type Kit, type KitColourId, type PersonalKit } from "./kit";
 
 export type CrestId = "none" | "shield" | "disc" | "star";
 
@@ -547,10 +547,10 @@ export const SIM_DT = 1 / SIM_HZ;
 export const SERVE_X = 3.64 * TABLE_SCALE; // service line, set back from the table end
 export const MAX_TOUCHES = 3; // touches allowed per possession (reception, prep, kick)
 // Reach scales with the players, who scale with the table.
-export const PLAYER_REACH = 1.2 * TABLE_SCALE;
-export const AI_REACH = 1.2 * TABLE_SCALE;
+export const PLAYER_REACH = 1.15 * TABLE_SCALE;
+export const AI_REACH = 1.15 * TABLE_SCALE;
 /** Furthest a character may glide during a wind-up to reach the ball (m). */
-export const LUNGE_MAX = 1.0 * TABLE_SCALE;
+export const LUNGE_MAX = 0.55 * TABLE_SCALE;
 /**
  * How near an incoming ball a player has to be for the automatic first
  * reception. Wider than PLAYER_REACH — being close should be enough — but only
@@ -783,6 +783,9 @@ export function tossFraction(name: string): number {
   return c.toss / c.frames;
 }
 
+/** Minimum frames of windup animation guaranteed before contact so swings are always visually readable. */
+export const MIN_WINDUP_FRAMES = 8;
+
 /**
  * Start fraction so the clip's contact frame lands `leadSec` seconds after the
  * clip starts when played at `speed` (clips run at 60 fps). This makes the
@@ -793,7 +796,9 @@ export function windupStartFraction(name: string, speed: number, leadSec: number
   const c = CLIPS[name];
   if (!c || c.contact < 0) return 0;
   const leadFrames = leadSec * 60 * speed;
-  return Math.max(0, (c.contact - leadFrames) / c.frames);
+  const maxStartFrame = Math.max(0, c.contact - MIN_WINDUP_FRAMES);
+  const targetStartFrame = Math.max(0, c.contact - leadFrames);
+  return Math.min(maxStartFrame, targetStartFrame) / c.frames;
 }
 
 /** Seconds from a clip start fraction to its contact frame at `speed`. */
@@ -1021,10 +1026,17 @@ export const CHARACTERS: CharacterDef[] = [
  * colours. The selector and a live match share this so they cannot disagree
  * about which shirt or shorts a character wears.
  */
-export function kitForCharacter(
-  character: CharacterDef,
-  personal: Pick<Kit, "name" | "number" | "crest">
-): Kit {
+/**
+ * Longest a player's own kit marks may be.
+ *
+ * The settings screen has always capped the two fields; naming the caps here
+ * means the online path can apply the same ones to a peer's kit, which is a
+ * text field on somebody else's phone and therefore not a text field at all.
+ */
+export const KIT_NAME_MAX = 12;
+export const KIT_NUMBER_MAX = 2;
+
+export function kitForCharacter(character: CharacterDef, personal: PersonalKit): Kit {
   return {
     name: personal.name,
     number: personal.number || character.officialKitNumber || "",
@@ -1071,7 +1083,11 @@ export interface BallDef {
    * decoration, which is the failure mode of every "equipment" system that
    * stops being interesting the day you own the best item.
    */
-  mods: Partial<Record<"power" | "precision" | "speed" | "serve" | "volley", number>>;
+  mods: Partial<Record<"power" | "precision" | "speed" | "serve" | "volley" | "agility", number>>;
+  /** Multiplier on ball rebound height off the table and court. */
+  bounceFactor?: number;
+  /** Multiplier on spin curve and grip. */
+  spinFactor?: number;
   /** Best-ever trophies needed to play with it. 0 is owned from the start. */
   unlockAt: number;
 }
@@ -1079,31 +1095,74 @@ export interface BallDef {
 export const BALLS: BallDef[] = [
   // The honest one: no help and no trade. Owned from the start, and the
   // reference every other ball is read against.
-  { id: "RedBall", label: "THE CLASSIC", mods: {}, unlockAt: 0 },
-  // Control at the cost of pace.
-  { id: "BlueBall", label: "THE SURGEON", mods: { precision: 1.08, power: 0.96 }, unlockAt: 40 },
-  // Light and lively: takes the ball early and serves well, less settled.
+  { id: "RedBall", label: "THE CLASSIC", mods: {}, bounceFactor: 1.0, spinFactor: 1.0, unlockAt: 0 },
+  // Control and placement at the cost of top power.
+  {
+    id: "BlueBall",
+    label: "THE SURGEON",
+    mods: { precision: 1.06, volley: 1.04, power: 0.95 },
+    bounceFactor: 0.95,
+    spinFactor: 1.15,
+    unlockAt: 80,
+  },
+  // Light and lively: rapid volleys and flatter serves.
   {
     id: "BlueAndRoseBall",
     label: "THE FEATHER",
-    mods: { volley: 1.1, serve: 1.06, precision: 0.96 },
-    unlockAt: 120,
+    mods: { volley: 1.07, serve: 1.05, precision: 0.96, speed: 1.04 },
+    bounceFactor: 1.12,
+    spinFactor: 1.0,
+    unlockAt: 220,
   },
-  // The hammer. Everything a hard hitter wants and nothing a placer does.
+  // The hammer: heavy strikes and blistering serves.
   {
     id: "OrangeAndBlackBall",
     label: "THE HAMMER",
-    mods: { power: 1.1, precision: 0.94 },
-    unlockAt: 220,
+    mods: { power: 1.08, serve: 1.06, precision: 0.94, speed: 1.06, agility: 0.96 },
+    bounceFactor: 1.05,
+    spinFactor: 0.92,
+    unlockAt: 420,
   },
 ];
 
+export interface VenueModifiers {
+  power?: number;
+  precision?: number;
+  speed?: number;
+  agility?: number;
+  volley?: number;
+  serve?: number;
+  staminaDrain?: number;
+  bounce?: number;
+  spin?: number;
+}
+
+/**
+ * Environmental impact of each court surface on player stats, physics and fatigue.
+ */
+export const VENUE_MODIFIERS: Record<string, VenueModifiers> = {
+  // Indoor hardwood: climate-controlled, faster footwork, less stamina fatigue
+  gym: { agility: 1.08, volley: 1.05, speed: 1.05, staminaDrain: 0.95, bounce: 1.05 },
+  // Outdoor blacktop: hard asphalt impacts knees (high stamina drain), high bounce & power
+  basketball: { power: 1.10, bounce: 1.15, staminaDrain: 1.18 },
+  // Cut grass: cushioned turf (low stamina drain), dampened bounce, slight drag on sprints
+  football: { bounce: 0.92, speed: 0.96, staminaDrain: 0.90 },
+  // Floodlit acrylic hard court: high precision, extra spin bite
+  tennis: { precision: 1.08, spin: 1.10, staminaDrain: 1.05 },
+};
+
+/**
+ * Which venue each player considers their home court.
+ */
+export const VENUE_AFFINITY: Record<string, string[]> = {
+  BrazilianPlayer: ["tennis"],
+  EnglishPlayer: ["football", "basketball"],
+  FrenchPlayer: ["gym"],
+  SpanishPlayer: ["gym", "tennis"],
+};
+
 /**
  * Which ball each player gets more out of than anybody else does.
- *
- * The reason to own more than one: the same ball is not the best ball for
- * everybody, so a roster and a ball cupboard are worth more together than
- * either is alone.
  */
 export const BALL_AFFINITY: Record<string, string> = {
   BrazilianPlayer: "BlueAndRoseBall",
@@ -1112,8 +1171,18 @@ export const BALL_AFFINITY: Record<string, string> = {
   SpanishPlayer: "BlueBall",
 };
 
-/** How much more a player gets from a ball that suits them. */
-export const AFFINITY_BONUS = 1.5;
+/** How much more a player gets from a ball or court that suits them (+20% bonus). */
+export const AFFINITY_BONUS = 1.2;
+
+/** True if this character has a favorite ball synergy. */
+export function hasBallAffinity(characterId: string, ballId: string): boolean {
+  return BALL_AFFINITY[characterId] === ballId;
+}
+
+/** True if this character has a home court synergy in this venue. */
+export function hasVenueAffinity(characterId: string, venueId: string): boolean {
+  return VENUE_AFFINITY[characterId]?.includes(venueId) ?? false;
+}
 
 /**
  * The player, holding this ball.
@@ -1123,10 +1192,9 @@ export const AFFINITY_BONUS = 1.5;
  * `CharacterDef` and never has to know a ball was involved.
  */
 export function withBall(def: CharacterDef, ball: BallDef): CharacterDef {
-  const suits = BALL_AFFINITY[def.id] === ball.id;
+  const suits = hasBallAffinity(def.id, ball.id);
   // Only the upside is amplified. A ball somebody suits should not also punish
-  // them harder for its trade-off — that would make affinity a mixed blessing
-  // and the whole system something to be read twice rather than felt.
+  // them harder for its trade-off.
   const scale = (m: number | undefined): number =>
     m === undefined ? 1 : m > 1 && suits ? 1 + (m - 1) * AFFINITY_BONUS : m;
   return {
@@ -1136,7 +1204,34 @@ export function withBall(def: CharacterDef, ball: BallDef): CharacterDef {
     speed: def.speed * scale(ball.mods.speed),
     serve: def.serve * scale(ball.mods.serve),
     volley: def.volley * scale(ball.mods.volley),
+    agility: def.agility * scale(ball.mods.agility),
   };
+}
+
+/**
+ * The player, playing in this venue.
+ */
+export function withVenue(def: CharacterDef, venueId: string): CharacterDef {
+  const vMods = VENUE_MODIFIERS[venueId] ?? {};
+  const suits = hasVenueAffinity(def.id, venueId);
+  const scale = (m: number | undefined): number =>
+    m === undefined ? 1 : m > 1 && suits ? 1 + (m - 1) * AFFINITY_BONUS : m;
+  return {
+    ...def,
+    power: def.power * scale(vMods.power),
+    precision: def.precision * scale(vMods.precision),
+    speed: def.speed * scale(vMods.speed),
+    serve: def.serve * scale(vMods.serve),
+    volley: def.volley * scale(vMods.volley),
+    agility: def.agility * scale(vMods.agility),
+  };
+}
+
+/**
+ * Compound player attributes with both ball and venue modifiers and affinities applied.
+ */
+export function withBallAndVenue(def: CharacterDef, ball: BallDef, venueId: string): CharacterDef {
+  return withVenue(withBall(def, ball), venueId);
 }
 
 /** The ball with this id, or the free default when the id is unknown. */

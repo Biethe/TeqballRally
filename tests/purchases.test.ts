@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { CustomerInfo } from "@revenuecat/purchases-capacitor";
-import { ARENA_ENTITLEMENT, ARENA_PRODUCT, readArenaStatus } from "../src/purchases";
+import {
+  ARENA_ENTITLEMENT,
+  ARENA_PRODUCT,
+  ASSET_PRODUCTS,
+  formattedPriceFor,
+  readArenaStatus,
+} from "../src/purchases";
 
 /**
  * A customer info payload with whatever entitlements are named active.
@@ -78,5 +84,24 @@ describe("reading the arena entitlement", () => {
 
     expect(status.owned).toBe(false);
     expect(status.ready).toBe(true);
+  });
+});
+
+describe("direct asset purchases catalog", () => {
+  it("defines prices for all paid characters, balls, and premium venues", () => {
+    expect(ASSET_PRODUCTS.EnglishPlayer.defaultPrice).toBe("$0.99");
+    expect(ASSET_PRODUCTS.FrenchPlayer.defaultPrice).toBe("$1.99");
+    expect(ASSET_PRODUCTS.SpanishPlayer.defaultPrice).toBe("$2.99");
+    expect(ASSET_PRODUCTS.basketball.defaultPrice).toBe("$2.99");
+    expect(ASSET_PRODUCTS.gym.defaultPrice).toBe("$4.99");
+    expect(ASSET_PRODUCTS.BlueBall.defaultPrice).toBe("$0.99");
+    expect(ASSET_PRODUCTS.BlueAndRoseBall.defaultPrice).toBe("$0.99");
+    expect(ASSET_PRODUCTS.OrangeAndBlackBall.defaultPrice).toBe("$0.99");
+  });
+
+  it("formats price for known and unknown assets gracefully", () => {
+    expect(formattedPriceFor("basketball")).toBe("$2.99");
+    expect(formattedPriceFor("SpanishPlayer")).toBe("$2.99");
+    expect(formattedPriceFor("unknown_asset")).toBe("$0.99");
   });
 });

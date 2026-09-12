@@ -65,6 +65,15 @@ export interface InputState {
   popPressed: boolean;
   /** True only on the frame any "confirm" control was pressed (strike, enter, tap). */
   confirmPressed: boolean;
+  /**
+   * The axes on this frame are a tap's carry vector rather than a stick.
+   *
+   * Never produced by the input layer — a local match reads a tap through
+   * `MatchController.tapAt`, which has the court in front of it. This exists
+   * for the online guest, whose taps have to cross a wire that only carries
+   * axes: `resolveFollowerInput` sets it so the host knows what it is reading.
+   */
+  tapAim?: boolean;
 }
 
 /**

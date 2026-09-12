@@ -97,7 +97,7 @@ describe("holding a ball", () => {
     const held = withBall(brazil, control);
 
     expect(held.speed).toBe(brazil.speed);
-    expect(held.volley).toBe(brazil.volley);
+    expect(held.agility).toBe(brazil.agility);
     expect(held.serve).toBe(brazil.serve);
   });
 

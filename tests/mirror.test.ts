@@ -143,6 +143,39 @@ describe("reframe", () => {
     expect(wire.guestClipTo).toBe(40);
   });
 
+  it("swaps which seat may touch the ball, and leaves the count alone", () => {
+    // Possession is a seat and reflects with the rest of them; the touch
+    // count belongs to the possession, not to whoever owns it.
+    const base: SnapshotMessage = {
+      t: "snap",
+      tick: 3,
+      ballPos: { x: 0, y: 1, z: 0 },
+      ballVel: { x: 0, y: 0, z: 0 },
+      ballHeld: false,
+      hostPos: { x: -3, y: 0.4, z: 0 },
+      guestPos: { x: 3, y: 0.4, z: 0 },
+      hostVel: { x: 0, y: 0, z: 0 },
+      guestVel: { x: 0, y: 0, z: 0 },
+      hostClip: null,
+      guestClip: null,
+      score: [0, 0],
+      sets: [0, 0],
+      serveOwner: "player",
+      phase: "rally",
+    };
+
+    const mine = reframe({ ...base, strikeable: "host", touches: 2 }, "guest");
+    expect(mine.strikeable).toBe("guest");
+    expect(mine.touches).toBe(2);
+    expect(reframe({ ...base, strikeable: "guest" }, "guest").strikeable).toBe("host");
+    expect(reframe({ ...base, strikeable: null }, "guest").strikeable).toBeNull();
+    // An older host reports neither, and an absent field must not become a
+    // reported "nobody" — that would tell the guest the ball is untouchable.
+    expect(reframe(base, "guest").strikeable).toBeUndefined();
+    // Still its own inverse.
+    expect(reframe(mine, "guest").strikeable).toBe("host");
+  });
+
   it("mirrors an fx event's place but keeps its time and kind", () => {
     // The tick is host time on both ends; only the geometry reflects.
     const fx: FxMessage = { t: "fx", tick: 42, kind: "table", pos: { x: 1.2, y: 0.9, z: 0.3 } };

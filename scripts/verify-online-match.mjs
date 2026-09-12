@@ -19,8 +19,17 @@ const browser = await chromium.launch({
 });
 
 const errors = [];
-async function client(label) {
-  const ctx = await browser.newContext({ viewport: { width: 900, height: 560 } });
+/**
+ * One client, in a window of its own shape.
+ *
+ * The two are deliberately different. Portrait and landscape are not two skins
+ * over one control scheme, they are two schemes — tap and swipe against stick
+ * and buttons — and the host has to read the seat it is given rather than the
+ * one it is playing itself. Running both clients in a landscape window is how
+ * a guest on an upright phone came to be read as a stick for a whole release.
+ */
+async function client(label, viewport = { width: 900, height: 560 }) {
+  const ctx = await browser.newContext({ viewport, hasTouch: true });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => {
     errors.push(`${label}: ${e.message}`);
@@ -40,6 +49,10 @@ async function client(label) {
   // The two clients have to be able to pick different characters, and the
   // roster is earned: a fresh profile owns only the first one.
   await withFullRoster(page);
+  // Two software-rendered contexts loading a Babylon bundle between them can
+  // take well past the default half-minute on a laptop; a timeout here reads
+  // as "online is broken" when the only thing that is slow is the renderer.
+  page.setDefaultNavigationTimeout(180_000);
   await page.goto(base, { waitUntil: "load" });
   await page.waitForTimeout(3500);
   await page.locator("#btn-play").click();
@@ -48,7 +61,8 @@ async function client(label) {
 }
 
 const a = await client("A");
-const b = await client("B");
+// The joining seat, held upright — the half of online play no run ever saw.
+const b = await client("B", { width: 412, height: 892 });
 
 await a.locator("#btn-online-quick").click();
 await a.waitForTimeout(700);
@@ -100,6 +114,10 @@ async function sample(page, ms) {
     // broken. Track the locomotion clip and any action clip separately.
     const locos = new Set();
     const clips = new Set();
+    // Which phases the match actually passed through. A run that never leaves
+    // the serve says nothing about play, and without this it looks identical
+    // to a run where everything was tried and nothing worked.
+    const phases = new Set();
     const t0 = Date.now();
     while (Date.now() - t0 < duration) {
       await new Promise((r) => setTimeout(r, 50));
@@ -110,6 +128,7 @@ async function sample(page, ms) {
           Math.hypot(now[k][0] - first[k][0], now[k][1] - first[k][1])
         );
       }
+      phases.add(m.netFollower ? m.state : m.state);
       for (const side of ["player", "ai"]) {
         const c = m.chars[side];
         if (c.currentLoco) locos.add(side + ":" + c.currentLoco);
@@ -121,13 +140,20 @@ async function sample(page, ms) {
       follower: m.netFollower === true,
       locos: [...locos],
       clips: [...clips],
+      phases: [...phases],
+      serveOwner: m.serveOwner,
     };
   }, ms);
 }
 
 // Drive both players so there is real movement to observe.
-const drive = async (page) => {
-  for (let i = 0; i < 30; i++) {
+//
+// Each seat is driven through the scheme its own window actually offers. A
+// portrait client has no stick and no buttons: its keys do nothing the wire
+// can carry, so driving it that way would report a motionless guest whatever
+// the netcode was doing.
+const driveKeys = async (page) => {
+  for (let i = 0; i < 70; i++) {
     await page.keyboard.down("KeyA");
     await page.waitForTimeout(120);
     await page.keyboard.up("KeyA");
@@ -138,17 +164,109 @@ const drive = async (page) => {
   }
 };
 
-const [guestSample, hostSample] = await Promise.all([
-  sample(guest, 8000),
-  sample(host, 8000),
+/** A press short enough to stay a placement tap. */
+const tap = async (page, x, y) => {
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.waitForTimeout(60);
+  await page.mouse.up();
+};
+
+/** A directional drag, delivered fast enough to read as a swipe. */
+const swipe = async (page, x, y, dx, dy) => {
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  for (let i = 1; i <= 4; i++) {
+    await page.mouse.move(x + (dx * i) / 4, y + (dy * i) / 4);
+    await page.waitForTimeout(16);
+  }
+  await page.mouse.up();
+};
+
+/**
+ * Gestures need room to breathe here. A frame under software rendering takes
+ * hundreds of milliseconds, so a tight loop of taps and swipes delivers a
+ * dozen gestures into one frame and the game sees almost none of them.
+ */
+const driveTouch = async (page) => {
+  const { width, height } = page.viewportSize();
+  for (let i = 0; i < 24; i++) {
+    await tap(page, width * (i % 2 ? 0.3 : 0.7), height * 0.78);
+    await page.waitForTimeout(350);
+    await swipe(page, width * 0.5, height * 0.72, 0, -160);
+    await page.waitForTimeout(450);
+  }
+};
+
+const isPortrait = (page) => page.viewportSize().height > page.viewportSize().width;
+
+/**
+ * Wait for the gesture scheme to actually be live before driving by gesture.
+ *
+ * Under software rendering the scheme has been seen to take a while to settle
+ * — `verify-portrait.mjs` waits on the same flag — and driving an upright
+ * client before it does reports a motionless guest whatever the netcode is up
+ * to, because taps and swipes have nowhere to go yet.
+ */
+const awaitScheme = async (page) => {
+  if (!isPortrait(page)) return true;
+  return page
+    .waitForFunction(() => window.__teq?.match?.tapSteering === true, null, { timeout: 120000 })
+    .then(() => true)
+    .catch(() => false);
+};
+
+const drive = (page) => (isPortrait(page) ? driveTouch(page) : driveKeys(page));
+
+/**
+ * The most touches the joining seat takes in one possession, watched on the
+ * host, which is the only peer that knows.
+ *
+ * Reported, deliberately not asserted. The bug worth watching for is real: the
+ * first touch of a possession is automatic and needs no input, so a guest
+ * whose every press was being lost still looked like it was playing — it
+ * received, and then the ball fell. Anything past one is a press that actually
+ * arrived.
+ *
+ * But two software-rendered clients flailing at the court do not reliably
+ * produce a rally at all — runs here have ended with the serve crossing and
+ * neither player near it — so a threshold would fail for reasons that have
+ * nothing to do with the netcode. The guarantee is pinned exactly instead in
+ * `tests/follower.test.ts`, which drives a whole possession over a simulated
+ * wire and fails without the fix. A zero here is worth a second run; a number
+ * above one is proof the press path is live end to end.
+ */
+async function guestTouches(page, ms) {
+  return page.evaluate(async (duration) => {
+    const m = window.__teq.match;
+    let best = 0;
+    const t0 = Date.now();
+    while (Date.now() - t0 < duration) {
+      await new Promise((r) => setTimeout(r, 30));
+      if (m.strikeableSide === "ai") best = Math.max(best, m.touchCount);
+    }
+    return best;
+  }, ms);
+}
+
+const schemeLive = await Promise.all([awaitScheme(a), awaitScheme(b)]);
+console.log("gesture scheme live:", JSON.stringify(schemeLive));
+
+const [guestSample, hostSample, , , guestPossession] = await Promise.all([
+  sample(guest, 20000),
+  sample(host, 20000),
   drive(host),
   drive(guest),
+  guestTouches(host, 20000),
 ]);
+console.log("guest touches in a possession:", guestPossession);
 
 console.log("host  spread:", JSON.stringify(hostSample.spread));
 console.log("guest spread:", JSON.stringify(guestSample.spread));
 console.log("host  locomotion:", JSON.stringify(hostSample.locos));
 console.log("guest locomotion:", JSON.stringify(guestSample.locos));
+console.log("host  phases:", JSON.stringify(hostSample.phases), "serve:", hostSample.serveOwner);
+console.log("guest phases:", JSON.stringify(guestSample.phases), "serve:", guestSample.serveOwner);
 console.log("host  action clips:", JSON.stringify(hostSample.clips));
 console.log("guest action clips:", JSON.stringify(guestSample.clips));
 
@@ -168,7 +286,10 @@ async function inputLatency(page) {
     const m = window.__teq.match;
     window.__lat = { start: m.chars.player.position.z, t0: performance.now(), moved: null };
   });
-  await page.keyboard.down("KeyA");
+  // Ask through whichever control this window actually has.
+  const { width, height } = page.viewportSize();
+  if (isPortrait(page)) await tap(page, width * 0.25, height * 0.8);
+  else await page.keyboard.down("KeyA");
   const moved = await page
     .waitForFunction(
       () => {
@@ -184,7 +305,7 @@ async function inputLatency(page) {
     )
     .then(() => page.evaluate(() => window.__lat.moved))
     .catch(() => null);
-  await page.keyboard.up("KeyA");
+  if (!isPortrait(page)) await page.keyboard.up("KeyA");
   return moved;
 }
 
@@ -216,6 +337,7 @@ const checks = [
   ["players chose different characters", picked[0] !== picked[1]],
   ["A's opponent is who B picked", rosters[0].opp === rosters[1].self],
   ["B's opponent is who A picked", rosters[1].opp === rosters[0].self],
+  ["both clients reached their own control scheme", schemeLive.every(Boolean)],
   ["no page errors", errors.length === 0],
 ];
 for (const [name, ok] of checks) console.log(`${ok ? "ok  " : "FAIL"} ${name}`);

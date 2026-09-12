@@ -22,11 +22,12 @@ export const VENUE_IDS: VenueId[] = ["gym", "basketball", "football", "tennis"];
 /**
  * Where a player without the entitlement lands.
  *
- * The three outdoor venues are free, so the game a player is given for nothing
- * is a whole game rather than a demo — the sports hall is the one that costs.
+ * The two open-air grounds (The Park and The Baseline) are free, so the game a
+ * player is given for nothing is a whole game rather than a demo.
+ * The Coliseum and The Cage are premium venues.
  * It has to be one of the free ones, or a new install opens on a locked door.
  */
-export const DEFAULT_VENUE: VenueId = "basketball";
+export const DEFAULT_VENUE: VenueId = "football";
 
 /** An RGB triple in 0..1, kept plain so this module stays free of Babylon. */
 export type Rgb = readonly [number, number, number];
@@ -363,7 +364,7 @@ export const VENUES: Record<VenueId, Venue> = {
     id: "basketball",
     label: "THE CAGE",
     sub: "Blacktop, chain-link and no excuses",
-    premium: false,
+    premium: true,
     arena: { file: "Basketball.glb", ...OUTDOOR },
     court: {
       surface: "venue",
@@ -499,7 +500,7 @@ export const VENUES: Record<VenueId, Venue> = {
 
 const STORAGE_KEY = "teqopen.venue";
 
-function isVenueId(v: unknown): v is VenueId {
+export function isVenueId(v: unknown): v is VenueId {
   return typeof v === "string" && (VENUE_IDS as string[]).includes(v);
 }
 
@@ -536,8 +537,8 @@ export function venueFor(id: VenueId): Venue {
 }
 
 /** Whether playing here needs the entitlement. */
-export function isPremiumVenue(id: VenueId): boolean {
-  return VENUES[id].premium;
+export function isPremiumVenue(id: string): boolean {
+  return isVenueId(id) ? VENUES[id].premium : false;
 }
 
 /**
@@ -551,6 +552,14 @@ export function isPremiumVenue(id: VenueId): boolean {
  * Pure, and takes `pro` as an argument rather than importing `purchases`, so
  * this module stays free of the SDK and the rule stays testable without a store.
  */
-export function permittedVenue(id: VenueId, pro: boolean): VenueId {
-  return isPremiumVenue(id) && !pro ? DEFAULT_VENUE : id;
+export function permittedVenue(
+  id: VenueId,
+  pro: boolean = false,
+  career?: { unlockedAssets?: string[]; best?: number }
+): VenueId {
+  if (!isPremiumVenue(id)) return id;
+  if (pro) return id;
+  if (career?.unlockedAssets?.includes(id)) return id;
+  if (id === "basketball" && (career?.best ?? 0) >= 450) return id;
+  return DEFAULT_VENUE;
 }

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { stepBall, type BallState } from "../src/ball";
-import { SIM_DT } from "../src/config";
+import { stepBall, type BallState, type BodyCollider } from "../src/ball";
+import { CLIPS, contactFraction, GROUND_Y, SIM_DT } from "../src/config";
+import { MAX_CATCHUP_TICKS } from "../src/net/protocol";
 import {
+  BALL_SNAP,
   clipFractionAt,
-  PLAYBACK_DELAY_TICKS,
+  clipWindowSpeed,
+  MAX_CHAR_CARRY_METRES,
+  PLAYBACK_DEFAULT_LEAD_TICKS,
   PLAYBACK_MAX_EXTRAPOLATE_TICKS,
   PLAYBACK_STALE_STEPS,
   PlaybackBuffer,
@@ -12,9 +16,10 @@ import {
 } from "../src/net/playback";
 
 /**
- * The guest shows everything from one clock, a fixed interval behind the
- * newest frame. These pin that contract down: same-instant rendering, the
- * shared physics between frames, starvation behaviour, and recovery.
+ * The guest shows everything from one clock, led forward to the instant the
+ * host is playing. These pin that contract down: same-instant rendering, the
+ * shared physics carrying the ball across the lead, eased corrections when a
+ * frame contradicts the screen, starvation behaviour, and recovery.
  */
 
 const WALK = 1.5; // m/s, a character's constant pace along x
@@ -59,19 +64,28 @@ describe("the guest playback timeline", () => {
     expect(buf.advance()).toBeNull();
   });
 
-  it("shows the render point a fixed delay behind the newest frame", () => {
+  it("shows the render point ahead of the newest frame, by the lead", () => {
     const buf = new PlaybackBuffer();
     feedEngaged(buf, 100, 6); // newest tick 110, clock 3 steps past the arrival
     const v = buf.advance();
     expect(v).not.toBeNull();
-    expect(v!.renderTick).toBe(110 - PLAYBACK_DELAY_TICKS + 3);
+    expect(v!.renderTick).toBe(110 + PLAYBACK_DEFAULT_LEAD_TICKS + 2);
     expect(v!.mode).toBe("buffered");
   });
 
-  it("interpolates characters linearly between reported frames", () => {
+  it("reads further ahead as the measured round trip grows", () => {
+    const buf = new PlaybackBuffer();
+    buf.setLead(9);
+    feedEngaged(buf, 100, 6);
+    expect(buf.advance()!.renderTick).toBe(110 + 9 + 2);
+  });
+
+  // The render point leads the newest frame, so a character is always drawn
+  // ahead of the last one that reported them. At a constant walk the carry
+  // lands exactly where the walk would have.
+  it("carries characters to the instant it is reading", () => {
     const buf = new PlaybackBuffer();
     feedEngaged(buf, 100, 6);
-    // Advance until the render point sits exactly between two samples.
     let v = buf.advance()!;
     while (v.renderTick % 2 !== 1) v = buf.advance()!;
     const t = v.renderTick;
@@ -80,13 +94,50 @@ describe("the guest playback timeline", () => {
     expect(v.opponent.x).toBeCloseTo(-(t * WALK * SIM_DT), 10);
   });
 
-  it("derives character velocity from the position delta, not the wire", () => {
+  it("carries characters on the reported velocity, not a difference of positions", () => {
     const buf = new PlaybackBuffer();
     feedEngaged(buf, 100, 6);
     const v = buf.advance()!;
     expect(v.self.vx).toBeCloseTo(WALK, 6);
     expect(v.self.vz).toBeCloseTo(0, 6);
     expect(v.opponent.vx).toBeCloseTo(-WALK, 6);
+  });
+
+  /**
+   * The bug this replaced. A run to a drop spot ends with `moveToward` zeroing
+   * the velocity in one step; a backward difference of two 30 Hz positions
+   * still reads the old pace for two more ticks, and the lead multiplies it.
+   * The joined player sailed past every reception and was yanked back.
+   */
+  it("stops a character dead when the host says their velocity is zero", () => {
+    const buf = new PlaybackBuffer();
+    buf.setLead(8);
+    const STOP_X = 2;
+    // Walking, then arrived: the positions still differ across the last pair,
+    // but the reported velocity is already zero.
+    for (let i = 0; i < 4; i++) {
+      const s = sample(100 + i * 2);
+      s.self = { x: i < 3 ? STOP_X - (3 - i) * WALK * 2 * SIM_DT : STOP_X, z: 0.5 };
+      s.selfVel = i < 3 ? { x: WALK, z: 0 } : { x: 0, z: 0 };
+      buf.push(s);
+      buf.advance();
+      buf.advance();
+    }
+    const v = buf.advance()!;
+    expect(v.self.vx).toBe(0);
+    expect(v.self.x).toBeCloseTo(STOP_X, 10);
+  });
+
+  it("caps how far a character is carried past the frame that reported them", () => {
+    const buf = new PlaybackBuffer();
+    buf.setLead(MAX_CATCHUP_TICKS);
+    const s = sample(100);
+    s.self = { x: 0, z: 0 };
+    s.selfVel = { x: 20, z: 0 }; // 20 m/s over half a second is 10 m of guess
+    buf.push(s);
+    buf.push({ ...sample(102), self: { x: 0, z: 0 }, selfVel: { x: 20, z: 0 } });
+    const v = buf.advance()!;
+    expect(v.self.x).toBeLessThanOrEqual(MAX_CHAR_CARRY_METRES + 1e-9);
   });
 
   it("carries a free ball along the shared physics between frames", () => {
@@ -110,6 +161,160 @@ describe("the guest playback timeline", () => {
     expect(v.ball.x).toBeCloseTo(truth.pos.x, 6);
     expect(v.ball.y).toBeCloseTo(truth.pos.y, 6);
     expect(v.ballVel.x).toBeCloseTo(truth.vel.x, 6);
+  });
+
+  /**
+   * The lead is pure physics, which is exact until somebody touches the ball.
+   * The touch is the one thing in that window the guest cannot compute — but
+   * the clip window says when it lands, so the ball waits at the foot instead
+   * of sailing through the player and being dragged backwards when the truth
+   * arrives.
+   */
+  it("stops the ball at a contact it can see coming", () => {
+    const buf = new PlaybackBuffer();
+    buf.setLead(10);
+    // A ChestKick whose contact frame falls on tick 112, played at the rate
+    // the host uses for a strike.
+    const span = CLIPS.ChestKick.frames / 1.3;
+    const from = 112 - contactFraction("ChestKick") * span;
+    const win = { clip: "ChestKick", from, to: from + span };
+    for (const t of [100, 102]) {
+      buf.push({ ...sample(t), opponentClip: win });
+      buf.advance();
+      buf.advance();
+    }
+    buf.push({ ...sample(104), opponentClip: win });
+    // Render points 114, 115, 116 — all past the contact at 112.
+    const at114 = buf.advance()!;
+    expect(at114.renderTick).toBeGreaterThan(112);
+    const held = { ...at114.ball };
+    for (let i = 0; i < 3; i++) {
+      const v = buf.advance()!;
+      expect(v.renderTick).toBeGreaterThan(at114.renderTick);
+      expect(v.ball.x).toBeCloseTo(held.x, 10);
+      expect(v.ball.y).toBeCloseTo(held.y, 10);
+    }
+    // And it is the ball as it was at the contact, not wherever the clock is.
+    const truth = truthBall(112 - 104);
+    expect(held.x).toBeCloseTo(truth.pos.x, 6);
+    expect(held.y).toBeCloseTo(truth.pos.y, 6);
+  });
+
+  it("flies on normally when the clip playing has no contact frame", () => {
+    const buf = new PlaybackBuffer();
+    buf.setLead(10);
+    // Celebration1 has contact -1: nothing to wait for.
+    const win = { clip: "Celebration1", from: 100, to: 200 };
+    for (const t of [100, 102, 104]) {
+      buf.push({ ...sample(t), opponentClip: win });
+      buf.advance();
+      buf.advance();
+    }
+    const a = buf.advance()!;
+    const b = buf.advance()!;
+    expect(b.ball.x).not.toBeCloseTo(a.ball.x, 6);
+  });
+
+  /**
+   * The host deflects a ball that meets a character standing in its way. An
+   * extrapolation run without those bodies carried it straight on — through
+   * the player, and then back again when the truth arrived.
+   */
+  it("bounces the ball off a body the host would have deflected it off", () => {
+    const flat = (tick: number): PlaybackSample => ({
+      ...sample(tick),
+      ball: { x: 0, y: 1, z: 0 },
+      ballVel: { x: 6, y: 0, z: 0 },
+    });
+    const run = (colliders?: BodyCollider[]) => {
+      const buf = new PlaybackBuffer();
+      buf.setLead(12);
+      for (const t of [100, 102]) {
+        buf.push(flat(t));
+        buf.advance(colliders);
+        buf.advance(colliders);
+      }
+      buf.push(flat(104));
+      return buf.advance(colliders)!.ball.x;
+    };
+
+    // Standing in the ball's path, a metre down the court.
+    const body: BodyCollider = {
+      side: "ai",
+      base: new Vector3(1, GROUND_Y, 0),
+      height: 1.8,
+      radius: 0.27,
+    };
+    expect(run()).toBeGreaterThan(0.9);
+    expect(run([body])).toBeLessThan(run());
+  });
+
+  it("eases a frame that contradicts the flight already on screen", () => {
+    // Reading at the host's instant means a kick is news the guest does not
+    // have until the frame carrying it lands. Taking that whole is the pop
+    // this replaces; the ball turns onto the new flight at once and the
+    // leftover distance melts away.
+    const buf = new PlaybackBuffer();
+    for (let i = 0; i < 4; i++) {
+      buf.push(sample(100 + i * 2));
+      buf.advance();
+      buf.advance();
+    }
+    const before = buf.advance()!;
+    // The host struck it: same place, opposite direction.
+    const struck = sample(108);
+    struck.ballVel = { x: -6, y: 4, z: 0 };
+    buf.push(struck);
+    const after = buf.advance()!;
+
+    const jump = Math.hypot(after.ball.x - before.ball.x, after.ball.y - before.ball.y);
+    expect(jump).toBeLessThan(0.2);
+    // The velocity is the truth immediately, so a landing marker predicts the
+    // real flight even while the position is still catching up.
+    expect(after.ballVel.x).toBeLessThan(0);
+
+    // And it converges: within a third of a second the offset is spent.
+    let v = after;
+    for (let i = 0; i < 20; i++) v = buf.advance()!;
+    const truth: BallState = {
+      pos: new Vector3(struck.ball.x, struck.ball.y, struck.ball.z),
+      vel: new Vector3(struck.ballVel.x, struck.ballVel.y, struck.ballVel.z),
+    };
+    for (let i = 0; i < v.renderTick - struck.tick; i++) stepBall(truth, SIM_DT);
+    expect(Math.hypot(v.ball.x - truth.pos.x, v.ball.y - truth.pos.y)).toBeLessThan(0.02);
+  });
+
+  it("takes a frame too far away to be a correction outright", () => {
+    const buf = new PlaybackBuffer();
+    for (let i = 0; i < 4; i++) {
+      buf.push(sample(100 + i * 2));
+      buf.advance();
+      buf.advance();
+    }
+    buf.advance();
+    // A new point, a serve, a reconnect: not a path that was ever going to
+    // reach this one, and easing across it draws a curve nobody played.
+    const elsewhere = sample(108);
+    elsewhere.ball = { x: -2 + BALL_SNAP * 2, y: 1.2, z: 0 };
+    buf.push(elsewhere);
+    const v = buf.advance()!;
+    const truth: BallState = {
+      pos: new Vector3(elsewhere.ball.x, elsewhere.ball.y, elsewhere.ball.z),
+      vel: new Vector3(elsewhere.ballVel.x, elsewhere.ballVel.y, elsewhere.ballVel.z),
+    };
+    for (let i = 0; i < v.renderTick - elsewhere.tick; i++) stepBall(truth, SIM_DT);
+    expect(v.ball.x).toBeCloseTo(truth.pos.x, 6);
+    expect(v.ball.y).toBeCloseTo(truth.pos.y, 6);
+  });
+
+  it("never leads further than the protocol's catch-up cap", () => {
+    const buf = new PlaybackBuffer();
+    buf.setLead(10_000);
+    feedEngaged(buf, 100, 6);
+    expect(buf.advance()!.renderTick).toBeLessThanOrEqual(110 + MAX_CATCHUP_TICKS + 2);
+    // Nonsense is ignored rather than taken.
+    buf.setLead(Number.NaN);
+    expect(Number.isFinite(buf.advance()!.renderTick)).toBe(true);
   });
 
   it("rides a held ball along the hand with no physics", () => {
@@ -225,5 +430,63 @@ describe("clip windows", () => {
   it("survives a degenerate window", () => {
     expect(clipFractionAt(100, 100, 99)).toBe(0);
     expect(clipFractionAt(100, 100, 100)).toBe(1);
+  });
+
+  /**
+   * The host raises the rate on a touch and encodes it by shortening the
+   * window. A guest that played the clip at 1.0 regardless reached the contact
+   * frame an eighth of a second after the ball had already left, and then had
+   * the clip cut off three quarters of the way through.
+   */
+  it("reads back the rate the host played a clip at", () => {
+    const frames = CLIPS.ChestKick.frames;
+    expect(clipWindowSpeed("ChestKick", 0, frames / 1.3)).toBeCloseTo(1.3, 10);
+    expect(clipWindowSpeed("ChestKick", 40, 40 + frames)).toBeCloseTo(1, 10);
+  });
+
+  it("falls back to the authored rate for an unknown clip or an open window", () => {
+    expect(clipWindowSpeed("NotAClip", 0, 50)).toBe(1);
+    expect(clipWindowSpeed("ChestKick", Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY)).toBe(1);
+    expect(clipWindowSpeed("ChestKick", 100, 100)).toBe(1);
+  });
+
+  /**
+   * A window stays open until the clip would have finished, but the host stops
+   * a clip the moment the touch is over. Searching the buffer for any window
+   * containing the render point let an older frame's open window beat the
+   * newest frame's "nothing at all" — a guest still playing a touch the host
+   * had finished with, and a rally clip arriving at the next serve.
+   */
+  it("stops reporting a clip the moment the host does, window still open or not", () => {
+    const buf = new PlaybackBuffer();
+    const win = { clip: "ChestKick", from: 100, to: 400, seq: 3 };
+    for (const t of [100, 102]) {
+      buf.push({ ...sample(t), selfClip: win });
+      buf.advance();
+      buf.advance();
+    }
+    expect(buf.advance()!.selfClip?.clip).toBe("ChestKick");
+    // The touch is over. The window would not have closed for another five
+    // seconds, and the older frames still carry it.
+    buf.push({ ...sample(104), selfClip: null });
+    expect(buf.advance()!.selfClip).toBeNull();
+  });
+
+  it("carries clip windows on the playback buffer timeline", () => {
+    const buf = new PlaybackBuffer();
+    const s1 = sample(100);
+    s1.selfClip = { clip: "RightFootKick", from: 98, to: 108 };
+    s1.opponentClip = { clip: "LeftHeadKick", from: 100, to: 110 };
+    const s2 = sample(102);
+    s2.selfClip = { clip: "RightFootKick", from: 98, to: 108 };
+    s2.opponentClip = { clip: "LeftHeadKick", from: 100, to: 110 };
+
+    buf.push(s1);
+    buf.push(s2);
+    buf.advance();
+    const view = buf.advance();
+    expect(view).not.toBeNull();
+    expect(view!.selfClip?.clip).toBe("RightFootKick");
+    expect(view!.opponentClip?.clip).toBe("LeftHeadKick");
   });
 });

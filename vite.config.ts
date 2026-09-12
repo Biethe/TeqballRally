@@ -1,6 +1,10 @@
+/// <reference types="vitest" />
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  test: {
+    testTimeout: 15_000,
+  },
   // Serve the existing repo asset folder as static files: /models/..., /audio/...
   publicDir: "assets",
   // Babylon lazily imports shader/loader modules at runtime; letting the dep

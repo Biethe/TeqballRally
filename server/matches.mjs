@@ -24,7 +24,8 @@ const MATCH_TTL_MS = 10 * 60_000;
  *   id: string, players: [string|null, string|null], startedAt: number,
  *   left: string|null, leftAt: number,
  *   reports: Map<string, { won: boolean, points: number, sets: number, rallies: number,
- *                          championId: string, setsPlayed: number, settled: boolean }>,
+ *                          championId: string, setsPlayed: number, settled: boolean,
+ *                          outcome?: object }>,
  * }>}
  */
 const live = new Map();

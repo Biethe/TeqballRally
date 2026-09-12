@@ -51,12 +51,25 @@ function fakeMatch() {
   const applySnapshot = vi.fn();
   const drainNet = vi.fn(() => [] as { kind: "kick" | "table" | "net" | "ground" | "side" | "body"; pos?: { x: number; y: number; z: number } }[]);
   const queueFx = vi.fn();
+  const setPlaybackLead = vi.fn();
+  const recordBallAt = vi.fn();
   const match = {
     versus: false,
     netFollower: false,
     netPublish: false,
+    versusPortrait: false,
+    versusViewTick: null as number | null,
+    tapSteering: false,
+    renderTick: null as number | null,
+    anchorState: { player: null, ai: null } as Record<
+      "player" | "ai",
+      { pos: Vector3; eta: number } | null
+    >,
+    strikeableSide: null as "player" | "ai" | null,
+    touchCount: 0,
     score: { player: 0, ai: 0 },
     sets: { player: 0, ai: 0 },
+    tally: { points: { player: 0, ai: 0 }, longRallies: 0 },
     serveOwner: "player",
     state: "rally",
     versusInput: { moveX: 0, moveZ: 0, strikePressed: false, strikeHeld: false, strikePower: 0, popPressed: false, confirmPressed: false },
@@ -74,8 +87,18 @@ function fakeMatch() {
     applySnapshot,
     drainNet,
     queueFx,
+    setPlaybackLead,
+    recordBallAt,
   };
-  return { match: match as unknown as MatchController, applySnapshot, drainNet, queueFx, fake: match };
+  return {
+    match: match as unknown as MatchController,
+    applySnapshot,
+    drainNet,
+    queueFx,
+    setPlaybackLead,
+    recordBallAt,
+    fake: match,
+  };
 }
 
 function session(handlers: SessionHandlers = {}, role: "host" | "guest" = "host") {
@@ -327,6 +350,61 @@ describe("host and guest exchange", () => {
     h.deliver({ t: "input", tick: 1, moveX: 0.5, moveZ: -1, strike: true, pop: false, confirm: false });
 
     expect(h.match.versusInput).toMatchObject({ moveX: 0.5, moveZ: -1, strikePressed: true });
+  });
+
+  it("tells the host which scheme the guest is playing with", () => {
+    // The two schemes do not mean the same thing by the same axes: a portrait
+    // swipe is a carry and a pace, a landscape stick is an offset onto the
+    // table. Read as a stick, a guest's swipe aimed every kick somewhere
+    // nobody asked for, and its serve went looking for a tap count that
+    // scheme never sends.
+    const h = session({}, "host");
+    h.deliver({
+      t: "input", tick: 1, moveX: 0, moveZ: 0, strike: false, pop: false, confirm: false,
+      portrait: true,
+    });
+    expect(h.match.versusPortrait).toBe(true);
+
+    // An older peer sends nothing, and is landscape as it always was.
+    h.deliver({ t: "input", tick: 2, moveX: 0, moveZ: 0, strike: false, pop: false, confirm: false });
+    expect(h.match.versusPortrait).toBe(false);
+  });
+
+  it("sends its own scheme with every frame, from how the phone is held now", () => {
+    const g = session({}, "guest");
+    g.fake.tapSteering = true;
+    run(g.s, SIM_DT);
+    const frame = g.sent.find((m) => m.t === "input") as { portrait?: boolean };
+    expect(frame.portrait).toBe(true);
+  });
+
+  it("marks a frame whose axes are a tapped placement, not a stick", () => {
+    const h = session({}, "host");
+    h.deliver({
+      t: "input", tick: 1, moveX: 0.4, moveZ: 0.2, strike: false, pop: true, confirm: false,
+      portrait: true, tapAim: true,
+    });
+    expect(h.match.versusInput).toMatchObject({ popPressed: true, tapAim: true });
+  });
+
+  it("publishes possession, which is the only way a guest's tap can mean a touch", () => {
+    // A follower runs no rules. Without these two facts its tap can only ever
+    // be a walk, which is why a joined player could take the automatic first
+    // touch and then nothing at all.
+    const h = session({}, "host");
+    h.fake.strikeableSide = "ai";
+    h.fake.touchCount = 2;
+    run(h.s, 0.1);
+    const snap = h.sent.find((m) => m.t === "snap") as SnapshotMessage;
+
+    expect(snap.strikeable).toBe("guest");
+    expect(snap.touches).toBe(2);
+  });
+
+  it("hands the guest possession in its own seat names", () => {
+    const g = session({}, "guest");
+    g.deliver(snapshot({ strikeable: "guest", touches: 1 }));
+    expect(g.applySnapshot.mock.calls[0][0]).toMatchObject({ strikeable: "host", touches: 1 });
   });
 
   it("ignores controls arriving at a guest, and snapshots arriving at a host", () => {
@@ -838,19 +916,22 @@ describe("showing everything at the same moment", () => {
    * worse. The frame's age has to travel with it so everything can be drawn at
    * one instant.
    */
-  it("tells the match how old each frame is, off the frame's own tick", () => {
-    // The first frame calibrates the route and shows no age at all — there
-    // is nothing earlier to measure against, and extrapolating by a guess
-    // would be worse than not extrapolating.
+  it("leads by the route's own delay, which only the round trip can measure", () => {
+    // The estimator reports age *above the best route it has seen*, so on a
+    // steady link it reads near zero however far away the host is. The half
+    // round trip has to be the base, or a distant guest reads a moment its
+    // frames left long ago and times every touch against it.
     const net = fakeConn();
     const match = fakeMatch();
     const session = new OnlineSession(net.conn, match.match, "guest");
+    net.setLatency(5);
 
     for (let i = 0; i < 10; i++) session.step(SIM_DT);
-    net.deliver(snapshot({ tick: 6 })); // four ticks in flight
+    net.deliver(snapshot({ tick: 6 }));
 
     expect(match.applySnapshot).toHaveBeenCalledTimes(1);
-    expect(match.applySnapshot.mock.calls[0][1]).toBe(0);
+    // Half the trip, plus the snapshot grid the newest frame sits on.
+    expect(match.applySnapshot.mock.calls[0][1]).toBe(6);
     // The frame's own tick reaches the match; the playback buffer is keyed by it.
     expect(match.applySnapshot.mock.calls[0][0]).toMatchObject({ tick: 6 });
   });
@@ -862,14 +943,47 @@ describe("showing everything at the same moment", () => {
 
     for (let i = 0; i < 10; i++) session.step(SIM_DT);
     net.deliver(snapshot({ tick: 6 })); // baseline: four ticks in flight
-    for (let i = 0; i < 5; i++) session.step(SIM_DT);
-    net.deliver(snapshot({ tick: 6 })); // nine ticks in flight
+    for (let i = 0; i < 2; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 6 })); // six ticks in flight
 
-    // The extra five ticks of delay are reported, less the sliver of floor
-    // the estimator releases per sample to absorb clock drift.
+    // The two extra ticks of wobble are led by, on top of the one-tick
+    // snapshot grid, less the sliver of floor the estimator releases per
+    // sample to absorb clock drift.
     const lead = match.applySnapshot.mock.calls[1][1] as number;
-    expect(lead).toBeGreaterThan(4.9);
-    expect(lead).toBeLessThanOrEqual(5);
+    expect(lead).toBeGreaterThan(2.9);
+    expect(lead).toBeLessThanOrEqual(3);
+  });
+
+  it("leads by only so much wobble, however jittery the link", () => {
+    // Leading past the frames is a stall on screen; a wandering link is
+    // answered by the correction, not by reading ever further ahead.
+    const net = fakeConn();
+    const match = fakeMatch();
+    const session = new OnlineSession(net.conn, match.match, "guest");
+
+    for (let i = 0; i < 10; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 6 }));
+    for (let i = 0; i < 40; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 6 }));
+
+    expect(match.applySnapshot.mock.calls[1][1]).toBeLessThanOrEqual(4);
+  });
+
+  it("hands the timeline the same lead the reconcile target is carried by", () => {
+    // One measure for both, so the character being corrected and the ball
+    // beside it describe one instant.
+    const net = fakeConn();
+    const match = fakeMatch();
+    const session = new OnlineSession(net.conn, match.match, "guest");
+    net.setLatency(7);
+
+    for (let i = 0; i < 10; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 6 }));
+    session.step(SIM_DT);
+
+    const toTimeline = match.setPlaybackLead.mock.calls.at(-1)![0] as number;
+    expect(toTimeline).toBe(match.applySnapshot.mock.calls[0][1]);
+    expect(toTimeline).toBe(8);
   });
 
   it("absorbs an opponent whose tick clock started anywhere", () => {

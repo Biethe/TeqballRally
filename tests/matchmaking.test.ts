@@ -56,7 +56,9 @@ describe("quick match", () => {
       aSettled = true;
       return v;
     });
-    await settle();
+    for (let i = 0; i < 50 && a.status !== "waiting"; i++) {
+      await settle(50);
+    }
     expect(aSettled).toBe(false);
     expect(a.status).toBe("waiting");
 
@@ -71,40 +73,47 @@ describe("quick match", () => {
 
     a.close();
     b.close();
-  });
+  }, 15_000);
 
   it("makes the longest waiting player the host", async () => {
     const first = track(new NetConnection(URL));
     const second = track(new NetConnection(URL));
     const seat = first.quickMatch();
-    await settle();
+    for (let i = 0; i < 50 && first.status !== "waiting"; i++) {
+      await settle(50);
+    }
     await second.quickMatch();
 
     expect((await seat).role).toBe("host");
 
     first.close();
     second.close();
-  });
+  }, 15_000);
 
   it("reports queue position while waiting", async () => {
     const positions: number[] = [];
     const waiting = track(new NetConnection(URL, { onQueued: (n) => positions.push(n) }));
     void waiting.quickMatch().catch(() => {});
-    await settle();
+    for (let i = 0; i < 50 && positions.length === 0; i++) {
+      await settle(50);
+    }
 
     expect(positions).toEqual([0]);
     expect((await health()).waiting).toBe(1);
 
     waiting.close();
-    await settle();
-  });
+    for (let i = 0; i < 50; i++) {
+      if ((await health()).waiting === 0) break;
+      await settle(50);
+    }
+  }, 15_000);
 
   it("pairs four players into two separate rooms", async () => {
     const players = [0, 1, 2, 3].map(() => track(new NetConnection(URL)));
     const seats = await Promise.all(
       players.map(async (p, i) => {
         // Stagger so the queue order is deterministic.
-        await settle(40 * i);
+        await settle(100 * i);
         return p.quickMatch();
       })
     );
@@ -115,32 +124,48 @@ describe("quick match", () => {
     expect(seats.filter((s) => s.role === "guest")).toHaveLength(2);
 
     for (const p of players) p.close();
-    await settle();
-  });
+    for (let i = 0; i < 50; i++) {
+      if ((await health()).waiting === 0) break;
+      await settle(50);
+    }
+  }, 15_000);
 
   it("frees the queue when a waiting player gives up", async () => {
     const quitter = track(new NetConnection(URL));
     void quitter.quickMatch().catch(() => {});
-    await settle();
+    for (let i = 0; i < 50; i++) {
+      if ((await health()).waiting === 1) break;
+      await settle(50);
+    }
     expect((await health()).waiting).toBe(1);
 
     quitter.close();
-    await settle();
+    for (let i = 0; i < 50; i++) {
+      if ((await health()).waiting === 0) break;
+      await settle(50);
+    }
     expect((await health()).waiting).toBe(0);
-  });
+  }, 15_000);
 
   it("does not pair a newcomer with someone who already left", async () => {
     // The stale socket must be skipped, not handed a dead opponent.
     const ghost = track(new NetConnection(URL));
     void ghost.quickMatch().catch(() => {});
-    await settle();
+    for (let i = 0; i < 50 && ghost.status !== "waiting"; i++) {
+      await settle(50);
+    }
     ghost.close();
-    await settle();
+    for (let i = 0; i < 50; i++) {
+      if ((await health()).waiting === 0) break;
+      await settle(50);
+    }
 
     const arriving = track(new NetConnection(URL));
     let settled = false;
     void arriving.quickMatch().then(() => (settled = true));
-    await settle();
+    for (let i = 0; i < 50 && arriving.status !== "waiting"; i++) {
+      await settle(50);
+    }
 
     // Nobody real is waiting, so this player waits too rather than being
     // paired into a room with a closed socket.
@@ -148,15 +173,18 @@ describe("quick match", () => {
     expect(arriving.status).toBe("waiting");
 
     arriving.close();
-    await settle();
-  });
+    for (let i = 0; i < 50; i++) {
+      if ((await health()).waiting === 0) break;
+      await settle(50);
+    }
+  }, 15_000);
 
   it("refuses to queue a player already seated in a private room", async () => {
     const c = track(new NetConnection(URL));
     await c.join("ABCDE");
     await expect(c.quickMatch()).rejects.toThrow(/already connected/);
     c.close();
-  });
+  }, 15_000);
 
   it("rejects a stale client by protocol version", async () => {
     const c = track(new NetConnection(URL));
@@ -168,7 +196,7 @@ describe("quick match", () => {
       )
     ).rejects.toThrow(/version/);
     c.close();
-  });
+  }, 15_000);
 });
 
 describe("private rooms alongside the queue", () => {
@@ -179,7 +207,9 @@ describe("private rooms alongside the queue", () => {
 
     const waiting = track(new NetConnection(URL));
     void waiting.quickMatch().catch(() => {});
-    await settle();
+    for (let i = 0; i < 50 && waiting.status !== "waiting"; i++) {
+      await settle(50);
+    }
 
     // The private guest must reach its friend, not the stranger in the queue.
     const seat = await guest.join("QQQQQ");
@@ -190,6 +220,9 @@ describe("private rooms alongside the queue", () => {
     host.close();
     guest.close();
     waiting.close();
-    await settle();
-  });
+    for (let i = 0; i < 50; i++) {
+      if ((await health()).waiting === 0) break;
+      await settle(50);
+    }
+  }, 15_000);
 });

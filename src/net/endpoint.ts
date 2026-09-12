@@ -47,9 +47,12 @@ export function looksReachable(url: string, isNativeApp: boolean): boolean {
   return !/^wss?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(url);
 }
 
+/** Default production relay address on Google Cloud Run. */
+export const PRODUCTION_RELAY_URL = "wss://teqrallly-rpvbgjr3wa-od.a.run.app";
+
 /** The relay URL for the running build. */
 export function relayUrl(): string {
-  return resolveRelayUrl(import.meta.env.VITE_RELAY_URL, window.location);
+  return resolveRelayUrl(import.meta.env.VITE_RELAY_URL || PRODUCTION_RELAY_URL, window.location);
 }
 
 /**

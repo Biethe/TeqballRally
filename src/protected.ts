@@ -64,7 +64,7 @@ import type { ISceneLoaderAsyncResult } from "@babylonjs/core/Loading/sceneLoade
 const PASSPHRASE = import.meta.env.VITE_ASSET_KEY ?? "";
 
 /** Whether this build's assets were encrypted. Set by the build script. */
-export const PROTECTED = import.meta.env.VITE_PROTECTED_ASSETS === "1";
+export const PROTECTED = import.meta.env.VITE_PROTECTED_ASSETS === "1" && Boolean(PASSPHRASE);
 
 /** The extension an encrypted asset wears. Deliberately not `.glb`. */
 export const PROTECTED_EXT = ".teq";

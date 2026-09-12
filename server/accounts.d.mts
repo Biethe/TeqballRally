@@ -57,7 +57,17 @@ export declare function rename(
   player: PlayerRecord,
   name: unknown
 ): Promise<PlayerRecord>;
-export declare function recover(store: PlayerStore, id: unknown, code: unknown): Promise<Issued>;
+/**
+ * Take an account over with its recovery code.
+ *
+ * The code alone identifies the account. `id` is a migration path for accounts
+ * issued before the lookup index existed and can go once none are left.
+ */
+export declare function recover(
+  store: PlayerStore,
+  code: unknown,
+  id?: unknown
+): Promise<Issued>;
 export declare function regenerateRecovery(
   store: PlayerStore,
   player: PlayerRecord

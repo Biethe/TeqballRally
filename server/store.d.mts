@@ -16,6 +16,11 @@ export interface PlayerRecord {
   /** Salt and digest of the recovery code, which is likewise never stored. */
   recoverySalt: string;
   recoveryHash: string;
+  /**
+   * Unsalted digest of the same code, and the key it is found by. Absent on
+   * accounts issued before the lookup existed; they heal on first recovery.
+   */
+  recoveryLookup?: string;
   created: number;
   lastSeen: number;
   lastMatchAt: number;
@@ -43,6 +48,13 @@ export interface PlayerStore {
   load(): Promise<PlayerStore>;
   get(id: string): Promise<PlayerRecord | null>;
   byToken(digest: string): Promise<PlayerRecord | null>;
+  /** The account a recovery code belongs to, by its lookup digest. */
+  byRecovery(digest: string): Promise<PlayerRecord | null>;
+  /**
+   * An account issued before the lookup index existed, matched by offering the
+   * code to each salted digest. A migration shim; see the implementations.
+   */
+  findLegacyRecovery?(match: (player: PlayerRecord) => boolean): Promise<PlayerRecord | null>;
   nameOwner(key: string): Promise<string | null>;
   /** Add a player, or throw NameTakenError if the name went to someone else. */
   create(player: PlayerRecord): Promise<void>;
@@ -52,6 +64,8 @@ export interface PlayerStore {
   save(player: PlayerRecord): Promise<void>;
   /** Stop an old token digest working, after a recovery replaced it. */
   revokeToken?(digest: string): Promise<void>;
+  /** The same for a recovery code that has been spent. */
+  revokeRecovery?(digest: string): Promise<void>;
   getClub(id: string): Promise<ClubRecord | null>;
   clubByInvite(code: string): Promise<ClubRecord | null>;
   /** Add a club, or throw NameTakenError if the name went to someone else. */
@@ -76,9 +90,13 @@ export declare class NameTakenError extends Error {
 export declare class JsonStore implements PlayerStore {
   constructor(file: string);
   readonly file: string;
+  /** Recovery lookup digest → player id. Exposed so tests can unindex one. */
+  readonly recoveries: Map<string, string>;
   load(): Promise<this>;
   get(id: string): Promise<PlayerRecord | null>;
   byToken(digest: string): Promise<PlayerRecord | null>;
+  byRecovery(digest: string): Promise<PlayerRecord | null>;
+  findLegacyRecovery(match: (player: PlayerRecord) => boolean): Promise<PlayerRecord | null>;
   nameOwner(key: string): Promise<string | null>;
   create(player: PlayerRecord): Promise<void>;
   rename(player: PlayerRecord, name: string): Promise<void>;

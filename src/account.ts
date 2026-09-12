@@ -158,11 +158,16 @@ export async function signUp(name: string): Promise<Issued> {
 /**
  * Take an account over onto this device with its recovery code.
  *
+ * The code alone, because the code alone is unique to one account — and the
+ * person typing it has already lost the phone that knew anything else. Asking
+ * for a player id beside it meant somebody holding the slip they were told to
+ * write down still could not get back in.
+ *
  * The previous device stops working the moment this succeeds, which is the
  * point: this is what somebody does when a phone is gone.
  */
-export async function restore(id: string, code: string): Promise<Issued> {
-  return claimAccount("/api/players/recover", { id: id.trim().toUpperCase(), code });
+export async function restore(code: string): Promise<Issued> {
+  return claimAccount("/api/players/recover", { code });
 }
 
 async function claimAccount(path: string, body: Record<string, string>): Promise<Issued> {

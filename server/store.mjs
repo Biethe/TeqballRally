@@ -49,6 +49,8 @@ export class JsonStore {
     this.names = new Map();
     /** @type {Map<string, string>} token digest → id */
     this.tokens = new Map();
+    /** @type {Map<string, string>} recovery lookup digest → id */
+    this.recoveries = new Map();
     /** @type {Map<string, any>} id → club record */
     this.clubs = new Map();
     /** @type {Map<string, string>} lowercased club name → club id */
@@ -83,6 +85,7 @@ export class JsonStore {
     this.players.set(player.id, player);
     this.names.set(nameKey(player.name), player.id);
     this.tokens.set(player.tokenHash, player.id);
+    if (player.recoveryLookup) this.recoveries.set(player.recoveryLookup, player.id);
   }
 
   indexClub(club) {
@@ -98,6 +101,31 @@ export class JsonStore {
   async byToken(digest) {
     const id = this.tokens.get(digest);
     return id ? (this.players.get(id) ?? null) : null;
+  }
+
+  async byRecovery(digest) {
+    const id = this.recoveries.get(digest);
+    return id ? (this.players.get(id) ?? null) : null;
+  }
+
+  /**
+   * Find an account issued before the lookup index existed.
+   *
+   * Those accounts cannot be indexed after the fact: the lookup is a digest of
+   * the code, and the server never kept the code. So the only way to match one
+   * is to offer the code to each salted digest in turn, which is what `match`
+   * does — the predicate, not the code, so the secret never reaches the store.
+   *
+   * A migration shim with a natural end. Recovering mints a fresh code, which
+   * is written with a lookup, so every account leaves this set the first time
+   * it is used and the scan shrinks to nothing.
+   */
+  async findLegacyRecovery(match) {
+    for (const player of this.players.values()) {
+      if (player.recoveryLookup) continue;
+      if (match(player)) return player;
+    }
+    return null;
   }
 
   async nameOwner(key) {
@@ -130,6 +158,13 @@ export class JsonStore {
       if (id === player.id && digest !== player.tokenHash) this.tokens.delete(digest);
     }
     this.tokens.set(player.tokenHash, player.id);
+    // The recovery code is replaced every time one is used, so its index is
+    // rebuilt the same way. A spent code must stop finding the account it just
+    // moved off a lost phone.
+    for (const [digest, id] of this.recoveries) {
+      if (id === player.id && digest !== player.recoveryLookup) this.recoveries.delete(digest);
+    }
+    if (player.recoveryLookup) this.recoveries.set(player.recoveryLookup, player.id);
     this.players.set(player.id, player);
     this.touch();
   }

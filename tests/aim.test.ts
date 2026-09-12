@@ -5,6 +5,7 @@ import {
   canSmashFrom,
   clampToCourt,
   clampToPlay,
+  clampToTargetHalf,
   landingDeviation,
   loftFloor,
   loftFor,
@@ -556,5 +557,37 @@ describe("where a swiped kick is aimed", () => {
     const other = new Vector3(3 * TABLE_SCALE, 0, 0);
 
     expect(swipeTarget(other, -1, 0, shot).x).toBeLessThan(other.x);
+  });
+});
+
+describe("holding an aim to the half it is hit at", () => {
+  it("never lets an aim sit behind the net, however hard it is pushed back", () => {
+    // `clampToPlay` bounds the whole court, which is right for a landing and
+    // wrong for an aim: half that box is the player's own end. The marker is
+    // drawn on the floor when the aim is off the table, so an aim walked back
+    // through the net read as a ring under the table by the player's feet.
+    for (const side of [1, -1]) {
+      for (const x of [-9, -1, 0, 1, 9]) {
+        const out = clampToTargetHalf(new Vector3(x, 0, 0), side);
+        expect(Math.sign(out.x), `${side} ${x}`).toBe(side);
+        expect(Math.abs(out.x), `${side} ${x}`).toBeLessThanOrEqual(PLAY_BOX.halfLen);
+      }
+    }
+  });
+
+  it("still lets a kick be aimed wide of the table on purpose", () => {
+    // Missing has to stay possible, and aiming outside the sidelines is how a
+    // player does it. Only the depth axis is held to the half.
+    const wide = clampToTargetHalf(new Vector3(1, 0, 99), 1);
+
+    expect(wide.z).toBeGreaterThan(TABLE.halfWid);
+    expect(wide.z).toBeLessThanOrEqual(PLAY_BOX.halfWid);
+  });
+
+  it("leaves an aim already on the right half where it was", () => {
+    const good = new Vector3(1.2, 0, 0.4);
+
+    expect(clampToTargetHalf(good, 1).x).toBeCloseTo(1.2, 6);
+    expect(clampToTargetHalf(good, 1).z).toBeCloseTo(0.4, 6);
   });
 });

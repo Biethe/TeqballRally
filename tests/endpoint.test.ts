@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RELAY_PORT, apiBase, looksReachable, resolveRelayUrl } from "../src/net/endpoint";
+import {
+  DEFAULT_RELAY_PORT,
+  PRODUCTION_RELAY_URL,
+  apiBase,
+  looksReachable,
+  resolveRelayUrl,
+} from "../src/net/endpoint";
 
 const page = (protocol: string, hostname: string) => ({ protocol, hostname });
 
@@ -51,6 +57,7 @@ describe("looksReachable", () => {
   });
 
   it("accepts a properly configured packaged app", () => {
+    expect(looksReachable(PRODUCTION_RELAY_URL, true)).toBe(true);
     expect(looksReachable("wss://teqopen-relay-abc.run.app", true)).toBe(true);
     expect(looksReachable("ws://192.168.1.5:8787", true)).toBe(true);
   });

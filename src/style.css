@@ -84,6 +84,7 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  overflow-x: hidden;
   background: var(--ink);
   font-family: "Exo 2", "Segoe UI", system-ui, -apple-system, sans-serif;
   -webkit-user-select: none;
@@ -103,12 +104,20 @@ body {
 #ui-root {
   position: fixed;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overflow-x: hidden;
   pointer-events: none;
 }
 
 .screen {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -163,6 +172,16 @@ body {
 }
 
 /* Arena environment elements - rendered as pseudo-elements on .title-screen */
+.arena-environment {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
 .title-screen::before,
 .title-screen::after,
 .title-screen .arena-light,
@@ -807,7 +826,12 @@ button.pad-focus {
 /* ------- TeqRallly welcome screen ------- */
 /* Figma-inspired title screen layout with arena environment */
 .title-screen {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
+  overflow-x: hidden;
 }
 
 .title-content {
@@ -818,7 +842,9 @@ button.pad-focus {
   align-items: center;
   text-align: center;
   width: 100%;
+  max-width: 100vw;
   height: 100%;
+  overflow-x: hidden;
   padding: env(safe-area-inset-top, 16px) 20px env(safe-area-inset-bottom, 24px);
   box-sizing: border-box;
 }
@@ -1351,6 +1377,127 @@ button.pad-focus {
   display: none;
 }
 
+/* Synergy Badges in Player Profile */
+.profile-synergies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.profile-synergies:empty {
+  display: none;
+}
+
+.synergy-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  animation: pop-in 240ms cubic-bezier(0.17, 0.89, 0.32, 1.28) both;
+}
+
+.synergy-tag.ball {
+  background: rgba(255, 175, 55, 0.18);
+  border: 1px solid rgba(255, 195, 80, 0.55);
+  color: #ffc24a;
+  box-shadow: 0 0 10px rgba(255, 175, 55, 0.25);
+}
+
+.synergy-tag.venue {
+  background: rgba(80, 180, 255, 0.18);
+  border: 1px solid rgba(120, 205, 255, 0.55);
+  color: #70ccff;
+  box-shadow: 0 0 10px rgba(80, 180, 255, 0.25);
+}
+
+/* Quick Unlock Button on Selector */
+.unlock-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ff9436 0%, #e05012 100%);
+  border: 1px solid rgba(255, 215, 130, 0.6);
+  font-family: "Exo 2", sans-serif;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  color: #ffffff;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(230, 90, 20, 0.45);
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.unlock-btn:hover {
+  filter: brightness(1.1);
+  transform: scale(1.04);
+}
+
+.unlock-btn:active {
+  transform: scale(0.96);
+}
+
+.unlock-btn.hidden {
+  display: none;
+}
+
+/* Profile Prompt Modal */
+.profile-prompt-card {
+  max-width: 360px;
+}
+
+.profile-input-wrap {
+  width: 100%;
+  margin: 12px 0 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.profile-input {
+  width: 100%;
+  height: 46px;
+  padding: 0 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #fff;
+  font-family: "Exo 2", sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  outline: none;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+.profile-input:focus {
+  border-color: var(--orange, #f08232);
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0 12px rgba(240, 130, 50, 0.35);
+}
+
+.profile-prompt-error {
+  color: #ff6b6b;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.profile-prompt-error.hidden {
+  display: none;
+}
+
 .viewer-select.browsing-locked #item-name {
   color: var(--muted);
   opacity: 0.75;
@@ -1648,38 +1795,45 @@ button.pad-focus {
   gap: 14px;
 }
 
-/* ------- HUD ------- */
+/* ------- HUD Scoreboard ------- */
 #score {
   position: absolute;
-  top: max(10px, env(safe-area-inset-top));
+  top: max(8px, env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
-  font-size: clamp(16px, 3vw, 24px);
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  background: linear-gradient(180deg, rgba(31, 79, 143, 0.97) 0%, rgba(8, 28, 56, 0.97) 100%);
-  border: 3px solid rgba(255, 255, 255, 0.85);
-  padding: 7px 22px;
-  border-radius: 30px;
+  font-size: clamp(13px, 2.2vw, 17px);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  background: linear-gradient(180deg, rgba(14, 30, 58, 0.68) 0%, rgba(6, 18, 36, 0.78) 100%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 4px 16px;
+  border-radius: 999px;
   white-space: nowrap;
-  box-shadow: 0 4px 0 rgba(3, 14, 30, 0.7), 0 10px 22px rgba(0, 0, 0, 0.45);
-  text-shadow: 0 2px 0 rgba(3, 18, 40, 0.6);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  z-index: 10;
 }
 
 #score b {
   color: var(--gold);
-  font-size: 1.25em;
+  font-size: 1.15em;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
 }
 
 #score .serve {
   color: var(--teq);
   display: inline-block;
-  width: 12px;
+  width: 10px;
+  text-shadow: 0 0 8px var(--teq-glow);
 }
 
 #score .sets {
   color: var(--muted);
-  font-size: 0.8em;
+  font-size: 0.82em;
+  font-weight: 500;
 }
 
 /* A phone-width HUD. Centred, the board runs under the camera and pause
@@ -1687,12 +1841,10 @@ button.pad-focus {
    keeps both readable without shrinking the score itself into illegibility. */
 @media (max-width: 520px) {
   #score {
-    left: max(10px, env(safe-area-inset-left));
+    left: max(8px, env(safe-area-inset-left));
     transform: none;
-    padding: 5px 13px;
-    border-width: 2px;
-    font-size: 13px;
-    letter-spacing: 0.04em;
+    padding: 3px 11px;
+    font-size: 12px;
   }
 }
 
@@ -1874,6 +2026,33 @@ button.pad-focus {
 }
 
 /* ------- competition standings ------- */
+.standings-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.standings-shell .standings-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(580px, 100%);
+  margin: 0 auto 20px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.standings-shell #btn-standings-continue {
+  margin-top: auto;
+  align-self: center;
+  width: min(380px, 100%);
+  flex-shrink: 0;
+}
+
 .standings-rows {
   display: flex;
   flex-direction: column;
@@ -2096,9 +2275,10 @@ button.pad-focus {
   backdrop-filter: blur(8px);
 }
 
-/* ------- match pause ------- */
-#pause-screen {
-  z-index: 15;
+/* ------- match pause & modal dialogs ------- */
+#pause-screen,
+#dialog-screen {
+  z-index: 25;
   padding: max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right))
     max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
   background: rgba(4, 10, 24, 0.72);
@@ -3130,18 +3310,20 @@ button.pad-focus {
 #intro-card {
   position: absolute;
   left: 50%;
-  bottom: max(16px, env(safe-area-inset-bottom));
+  bottom: max(32px, calc(env(safe-area-inset-bottom) + 24px));
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 7px;
-  padding: 14px 30px;
-  max-width: min(92vw, 620px);
-  border: 3px solid rgba(255, 255, 255, 0.85);
-  border-radius: 22px;
-  background: linear-gradient(180deg, rgba(31, 79, 143, 0.95) 0%, rgba(7, 24, 50, 0.95) 100%);
-  box-shadow: 0 5px 0 rgba(3, 14, 30, 0.7), 0 16px 34px rgba(0, 0, 0, 0.5);
+  gap: 4px;
+  padding: 8px 16px;
+  max-width: min(88vw, 420px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(14, 29, 54, 0.65) 0%, rgba(6, 18, 36, 0.78) 100%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
   text-align: center;
   pointer-events: none;
   animation: intro-rise 0.45s ease-out;
@@ -3153,7 +3335,7 @@ button.pad-focus {
 @keyframes intro-rise {
   from {
     opacity: 0.35;
-    transform: translate(-50%, 24px);
+    transform: translate(-50%, 20px);
   }
   to {
     opacity: 1;
@@ -3163,55 +3345,58 @@ button.pad-focus {
 
 .intro-venue {
   color: var(--gold);
-  font-size: clamp(12px, 1.9vw, 15px);
-  font-weight: 900;
-  letter-spacing: 0.3em;
-  text-shadow: 0 2px 0 rgba(3, 18, 40, 0.65);
+  font-size: clamp(10px, 1.4vw, 12px);
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
 }
 
 .intro-vs {
   display: flex;
   align-items: center;
-  gap: clamp(10px, 2.4vw, 22px);
-  font-size: clamp(17px, 3.4vw, 30px);
-  font-weight: 950;
-  letter-spacing: 0.04em;
-  text-shadow: 0 3px 0 rgba(3, 18, 40, 0.7);
+  gap: clamp(8px, 1.8vw, 14px);
+  font-size: clamp(14px, 2.4vw, 20px);
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.7);
 }
 
 .intro-vs span {
-  max-width: 40vw;
+  max-width: 36vw;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .intro-vs em {
-  padding: 2px 11px;
+  padding: 1px 7px;
   border-radius: 999px;
-  background: linear-gradient(180deg, #ffbc42 0%, #ef6a08 100%);
+  background: linear-gradient(135deg, var(--gold) 0%, var(--teq) 100%);
   color: #fff;
-  font-size: 0.62em;
+  font-size: 0.55em;
   font-style: normal;
-  letter-spacing: 0.1em;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
 .intro-skip {
   color: var(--muted);
-  font-size: clamp(9px, 1.4vw, 11px);
-  font-weight: 800;
-  letter-spacing: 0.26em;
-  opacity: 0.75;
+  font-size: clamp(8px, 1.1vw, 10px);
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  opacity: 0.65;
+  margin-top: 2px;
 }
 
 /* Landscape phones have roughly 360px of height: the card drops to a single
    compact line rather than scaling down, same rule as the menus. */
 @media (max-height: 500px) {
   #intro-card {
-    gap: 3px;
-    padding: 9px 22px;
-    border-radius: 16px;
-    bottom: max(10px, env(safe-area-inset-bottom));
+    gap: 2px;
+    padding: 6px 14px;
+    border-radius: 12px;
+    bottom: max(8px, env(safe-area-inset-bottom));
   }
 
   .intro-skip {
@@ -3546,17 +3731,36 @@ button.pad-focus {
 }
 
 /* A reward waiting is the one thing allowed to compete with PLAY, and only
-   as a dot. */
+   as an eye-catching pulsing dot badge. */
+.nav-pill.has-dot,
+.ghost-btn.has-dot {
+  position: relative;
+}
+
+.nav-pill.has-dot::after,
 .ghost-btn.has-dot::after {
   content: "";
   position: absolute;
-  top: 7px;
-  right: 9px;
-  width: 8px;
-  height: 8px;
+  top: -3px;
+  right: -3px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--teq);
-  box-shadow: 0 0 0 2px rgba(8, 26, 52, 0.9);
+  background: #ff5232;
+  box-shadow: 0 0 10px #ff5232, 0 0 0 2px rgba(8, 26, 52, 0.95);
+  animation: rewardBadgePulse 1.8s ease-in-out infinite;
+  z-index: 2;
+}
+
+@keyframes rewardBadgePulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 6px #ff5232, 0 0 0 2px rgba(8, 26, 52, 0.95);
+  }
+  50% {
+    transform: scale(1.3);
+    box-shadow: 0 0 14px #ff7a5c, 0 0 0 2.5px rgba(8, 26, 52, 0.95);
+  }
 }
 
 #champions-screen,
@@ -3977,6 +4181,27 @@ button.pad-focus {
   border-color: rgba(109, 212, 154, 0.25);
 }
 
+.challenge-card.done:not(.claimed) {
+  background: rgba(245, 197, 24, 0.08);
+  border-color: rgba(245, 197, 24, 0.50);
+  box-shadow: 0 0 24px rgba(245, 197, 24, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.challenge-card.done:not(.claimed) .challenge-claim {
+  animation: rewardClaimPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes rewardClaimPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 4px 16px rgba(224, 100, 20, 0.45);
+  }
+  50% {
+    transform: scale(1.05);
+    box-shadow: 0 6px 24px rgba(245, 197, 24, 0.85);
+  }
+}
+
 .challenge-card.done .bar i {
   background: linear-gradient(90deg, #3fa870 0%, #6dd49a 100%);
   box-shadow: 0 0 6px rgba(109, 212, 154, 0.40);
@@ -4214,9 +4439,9 @@ button.pad-focus {
    own side, so the card is read the way the court is laid out. */
 .intro-compare {
   display: grid;
-  gap: 5px;
-  width: min(340px, 78vw);
-  margin-top: 4px;
+  gap: 3px;
+  width: min(290px, 74vw);
+  margin-top: 2px;
 }
 
 .intro-compare.hidden {
@@ -4225,26 +4450,28 @@ button.pad-focus {
 
 .compare-row {
   display: grid;
-  grid-template-columns: 2.4em 12px 1fr 12px 2.4em;
+  grid-template-columns: 2.2em 10px 1fr 10px 2.2em;
   align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 9px;
-  background: rgba(6, 22, 46, 0.5);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--muted);
+  gap: 4px;
+  padding: 2.5px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--muted-strong);
 }
 
 .compare-row span {
   text-align: center;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .compare-row b {
-  font-size: 15px;
-  font-weight: 900;
-  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.95);
   font-variant-numeric: tabular-nums;
 }
 
@@ -4259,14 +4486,15 @@ button.pad-focus {
 }
 
 .compare-row.total {
-  grid-template-columns: 2.8em 1fr 2.8em;
-  background: rgba(255, 194, 51, 0.12);
-  border: 1px solid rgba(255, 194, 51, 0.34);
+  grid-template-columns: 2.5em 1fr 2.5em;
+  background: rgba(245, 197, 24, 0.10);
+  border: 1px solid rgba(245, 197, 24, 0.28);
 }
 
 .compare-row.total b {
   color: var(--gold);
-  font-size: 17px;
+  font-size: 13px;
+  font-weight: 900;
 }
 
 /* The lead marker: a triangle pointing at whoever is ahead on that trait,
@@ -4275,34 +4503,35 @@ button.pad-focus {
 .compare-lead {
   width: 0;
   height: 0;
-  border-block: 5px solid transparent;
+  border-block: 4px solid transparent;
   opacity: 0;
 }
 
 .compare-lead.left {
-  border-right: 7px solid var(--teq);
+  border-right: 5px solid var(--teq);
 }
 
 .compare-lead.right {
-  border-left: 7px solid var(--teq);
+  border-left: 5px solid var(--teq);
 }
 
 .compare-lead.on {
   opacity: 1;
+  filter: drop-shadow(0 0 4px var(--teq-glow));
 }
 
 @media (max-height: 500px) {
   .intro-compare {
-    gap: 3px;
+    gap: 2px;
   }
 
   .compare-row {
-    padding-block: 2px;
-    font-size: 10px;
+    padding-block: 1.5px;
+    font-size: 9px;
   }
 
   .compare-row b {
-    font-size: 13px;
+    font-size: 11px;
   }
 }
 
@@ -5112,56 +5341,74 @@ button.pad-focus {
   display: none;
 }
 
-/* Stamina: sleek modernized HUD card in the lower-right corner. */
+/* Stamina: separated player (lower-left) and opponent (lower-right) HUD bars in portrait mode. */
 #stamina {
   position: absolute;
-  bottom: max(16px, env(safe-area-inset-bottom));
-  right: max(16px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: 0;
+  right: 0;
   top: auto;
-  left: auto;
+  width: 100%;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px;
-  background: rgba(6, 18, 36, 0.75);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 14px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   pointer-events: none;
   z-index: 10;
+  box-sizing: border-box;
 }
 
 .stamina-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
+  padding: 3px 8px;
+  background: rgba(6, 18, 36, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
 }
 
 .stamina-row span {
-  width: 28px;
-  color: rgba(255, 255, 255, 0.75);
+  width: auto;
+  color: rgba(255, 255, 255, 0.65);
   font-family: "Exo 2", sans-serif;
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 0.14em;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
-.stamina-row:first-child span {
-  color: #00f0ff;
-  text-shadow: 0 0 8px rgba(0, 240, 255, 0.5);
+.stamina-row:first-child span,
+#stamina-row-you span {
+  color: rgba(0, 240, 255, 0.85);
+  text-shadow: 0 0 6px rgba(0, 240, 255, 0.35);
+}
+
+#stamina-row-cpu span {
+  color: rgba(255, 157, 66, 0.85);
+  text-shadow: 0 0 6px rgba(255, 157, 66, 0.35);
 }
 
 .stamina-row i {
   position: relative;
   display: block;
-  width: 90px;
-  height: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  width: 60px;
+  height: 4.5px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  background: rgba(4, 10, 22, 0.85);
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6);
+  background: rgba(4, 10, 22, 0.45);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
   overflow: hidden;
 }
 
@@ -5174,8 +5421,8 @@ button.pad-focus {
   width: 0;
   background: repeating-linear-gradient(
     -45deg,
-    rgba(255, 255, 255, 0.18) 0 2px,
-    rgba(0, 0, 0, 0.35) 2px 4px
+    rgba(255, 255, 255, 0.10) 0 2px,
+    rgba(0, 0, 0, 0.20) 2px 4px
   );
   transition: width 0.3s linear;
 }
@@ -5186,13 +5433,15 @@ button.pad-focus {
   width: 100%;
   border-radius: 999px;
   background: linear-gradient(90deg, #00f5a0, #00d2ff);
-  box-shadow: 0 0 8px rgba(0, 245, 160, 0.4);
+  opacity: 0.85;
+  box-shadow: 0 0 5px rgba(0, 245, 160, 0.3);
   transition: width 0.12s linear;
 }
 
 .stamina-row b[data-low="true"] {
   background: linear-gradient(90deg, #ff8f3c, #ff4a4a);
-  box-shadow: 0 0 10px rgba(255, 74, 74, 0.6);
+  opacity: 0.9;
+  box-shadow: 0 0 6px rgba(255, 74, 74, 0.5);
   animation: stamina-warn 1s infinite alternate ease-in-out;
 }
 
@@ -5283,16 +5532,6 @@ button.pad-focus {
    fill. The rule throughout is the same one: readable, and never a place the
    ball can hide. */
 
-/* Stamina is glass in both orientations. Portrait keeps it bottom-right, out
-   of the way of a thumb that steers by tapping the court. */
-#stamina {
-  background: var(--hud-glass);
-  backdrop-filter: var(--hud-blur);
-  -webkit-backdrop-filter: var(--hud-blur);
-  border-color: var(--hud-glass-line);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.32);
-}
-
 @media (max-height: 500px) {
   /* The board: same theme, a third less of it, and see-through. Centred it ran
      under the corner buttons, so it stays anchored left of them. */
@@ -5372,24 +5611,40 @@ button.pad-focus {
     left: max(10px, env(safe-area-inset-left));
     right: auto;
     bottom: auto;
-    gap: 3px;
-    padding: 5px 8px;
-    border-radius: 10px;
+    width: auto;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: stretch;
+    gap: 2px;
+    padding: 3px 6px;
+    background: rgba(6, 18, 36, 0.35);
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.22);
   }
 
   .stamina-row {
-    gap: 5px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    gap: 4px;
   }
 
   .stamina-row span {
-    width: 20px;
-    font-size: 7px;
-    letter-spacing: 0.1em;
+    width: auto;
+    font-size: 6.5px;
+    letter-spacing: 0.08em;
   }
 
   .stamina-row i {
-    width: 58px;
-    height: 5px;
+    width: 48px;
+    height: 3.5px;
   }
 
   /* The stick is a guide for a thumb already resting on it, not a thing to
@@ -5559,4 +5814,87 @@ button.pad-focus {
   .confetti {
     display: none;
   }
+}
+
+/*
+ * The guided tour's overlay.
+ *
+ * A ring around the thing being pointed at and a sentence under it. The ring
+ * carries the dimming itself, in a box-shadow spread wider than any screen —
+ * which is how the rest of the display goes dark without a mask and without a
+ * second element covering it.
+ *
+ * Nothing here takes the pointer except the skip button. Every step of the
+ * tour is finished by using the screen underneath, so an overlay that
+ * swallowed taps would be an overlay that made its own instructions
+ * impossible to follow.
+ */
+.tour-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+
+.tour-ring {
+  position: fixed;
+  border: 2px solid #ffc233;
+  border-radius: 14px;
+  box-shadow: 0 0 0 9999px rgba(4, 7, 12, 0.72);
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  animation: tour-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tour-pulse {
+  0%, 100% { border-color: #ffc233; }
+  50% { border-color: rgba(255, 194, 51, 0.45); }
+}
+
+.tour-card {
+  position: fixed;
+  left: 50%;
+  bottom: 6vh;
+  transform: translateX(-50%);
+  width: min(30rem, calc(100vw - 2.5rem));
+  padding: 0.9rem 1.1rem 1rem;
+  border-radius: 14px;
+  background: rgba(10, 14, 22, 0.94);
+  border: 1px solid rgba(255, 194, 51, 0.35);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Anchored above a target low on the screen, where there is room to read it. */
+.tour-card.tour-card-above {
+  bottom: auto;
+  transform: translate(-50%, -100%);
+}
+
+.tour-step {
+  margin: 0 0 0.3rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 194, 51, 0.85);
+}
+
+.tour-says {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.35;
+  color: #f2f5f9;
+}
+
+.tour-skip {
+  margin-top: 0.7rem;
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid rgba(242, 245, 249, 0.25);
+  background: transparent;
+  color: rgba(242, 245, 249, 0.7);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  /* The one thing on this layer that is meant to be pressed. */
+  pointer-events: auto;
 }

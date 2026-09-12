@@ -27,6 +27,7 @@ import {
   buyUpgrade,
   claimChallenge,
   freshCareer,
+  grantAssetUnlock,
   isUnlocked,
   levelOf,
   rollOver,
@@ -339,6 +340,20 @@ describe("a career", () => {
     expect(isUnlocked({ ...career, best: UNLOCK_AT[gated] }, gated)).toBe(true);
     // Earned at the peak, kept after a slump.
     expect(isUnlocked({ ...career, best: UNLOCK_AT[gated], trophies: 0 }, gated)).toBe(true);
+  });
+
+  it("unlocks characters and venues immediately when purchased via IAP", () => {
+    let career = freshCareer(DAY);
+    const spanishPlayer = "SpanishPlayer";
+    expect(isUnlocked(career, spanishPlayer)).toBe(false);
+
+    career = grantAssetUnlock(career, spanishPlayer);
+    expect(career.unlockedAssets).toContain(spanishPlayer);
+    expect(isUnlocked(career, spanishPlayer)).toBe(true);
+
+    // Granting again is idempotent
+    career = grantAssetUnlock(career, spanishPlayer);
+    expect((career.unlockedAssets ?? []).filter((id) => id === spanishPlayer).length).toBe(1);
   });
 
   it("moves every unfinished challenge a match touches", () => {

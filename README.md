@@ -340,6 +340,49 @@ own — through every serve phase, because outside a rally the stick does not
 drive the characters and a walk that stops halfway reads as the player moving
 on its own.
 
+## The tour
+
+`src/practice.ts` teaches the sport. This teaches the app, and they are not the
+same problem: a rally can show you where to stand, and nothing in a rally can
+tell you that the shirt is yours to write on, that a profile is what carries
+your trophies to the next phone, or that the game plays differently depending
+on which way up you hold it. Those are the things nobody finds by accident, and
+the things people ask about first.
+
+Two rules shape it (`src/tour.ts`).
+
+**Every step is finished by doing the thing, never by pressing Next.** A tour
+that advances on acknowledgement teaches somebody to tap Next four times. The
+kit step ends when there is a name on the shirt; the profile step ends when
+there is an account; the tilt step ends when the phone has actually been
+turned — whichever way it started, because insisting on landscape is a step
+somebody already holding it that way cannot finish. What the player is left
+with is a shirt with their name on it and the memory of having done it, rather
+than a screen they read.
+
+**It points at one thing at a time.** A ring around the element and one
+sentence under it. The ring carries the dimming itself in a box-shadow spread
+wider than the screen, so there is no mask and no second element, and nothing
+on the layer takes the pointer except the button that leaves — an overlay that
+swallowed taps would make its own instructions impossible to follow. It is
+re-measured every frame rather than placed once, because these screens are
+rebuilt from their markup whenever they are shown and the phone can be turned
+mid-step.
+
+Nothing in the tour advances the tour. `main.ts` reports what is true — is
+there a profile, is there a name on the shirt, has a setting been touched,
+which way up is the phone — and `Tour` decides from that whether the current
+step is done, so there is no path by which a step completes without the player
+having done it. Those four facts change in four different places, which is why
+they are polled rather than watched: four subscriptions would be four ways for
+the tour to get stuck, and asking is one.
+
+A step the player has already satisfied is skipped rather than demanded.
+Somebody who made a profile before opening this has learnt what that step
+teaches. It runs once, straight on from the first lesson while they are still
+in the mood to be shown things, and lives in settings afterwards as something
+to replay.
+
 ## Practice
 
 Not a match with the scoring switched off. There is no score, no set, no serve
@@ -862,16 +905,29 @@ phone it was recovered away from has not been recovered. The code is spent when
 it is used and a fresh one issued, so a slip of paper somebody photographed
 stops working.
 
+**The code alone is enough.** It is unique to one profile, and the person
+typing it has just lost the phone that knew anything else about the account —
+so asking for a player id beside it meant somebody holding the slip they were
+told to write down still could not get back in. An unsalted lookup digest
+beside the salted one is what lets a code find its own account, the same way a
+token finds its own. Accounts issued before that index existed still accept an
+id as a way in, and heal the first time they are recovered, because recovering
+mints a fresh code.
+
 Neither secret is stored as it was issued (`server/secrets.mjs`). The token is
 kept as a plain SHA-256 because it is also the lookup key and has 192 bits
-behind it; the recovery code is salted, because it is short enough for a person
-to type and therefore short enough to attack in a leaked table. A database
+behind it; the recovery code keeps its salt for the digest that *proves* it,
+because it is short enough for a person to type. The lookup digest beside it is
+unsalted, which lets a leaked table be attacked once rather than once per row —
+and at sixteen Crockford characters it is eighty bits either way. A database
 snapshot that leaks should not hand anybody every account in the game.
 
 The typed code is forgiving about case, hyphens and spaces, and folds the three
 letters Crockford's own decoder folds — O to zero, I and L to one. Not Q: an
 earlier version folded Q to zero too, and `tests/accounts.test.ts` caught that
 every minted code containing a Q could never be typed back in.
+
+The restore field does that folding **as it is typed**: upper-cased, and the hyphens appearing as each group of four fills (`formatCodeField`). A code is written down in one shape and should be typed back in that shape, rather than the player reproducing the punctuation from memory and being told afterwards that they got it wrong.
 
 **The server scores matches; the client reports them.** A leaderboard built
 from totals the client posts is a ranking of whoever edited their save file
@@ -1482,7 +1538,7 @@ Music must be MP3: a 30-second 24-bit stereo WAV is 7.9 MB against 0.5 MB at
 
 The netcode is **host-authoritative with client-side prediction**. One peer
 runs the whole match — both characters, the ball, the rules — and sends a full
-snapshot at 20 Hz; the other sends its controls every step and applies what
+snapshot at 30 Hz; the other sends its controls every step and applies what
 comes back. The guest predicts its own character locally so its stick still
 feels immediate, and `reconcile` in `src/net/reconcile.ts` eases that
 prediction back onto each snapshot, snapping only when the error is large
@@ -1500,20 +1556,181 @@ The guest's world is mirrored so both players see themselves on the near side;
 `reframe` in `src/net/protocol.ts` rotates every message 180° about the
 vertical axis on the way in and out, and swaps the two seats with it.
 
-**Everything in a snapshot is fast-forwarded by half the measured round trip
-before it is shown**, and that is what makes a guest's screen agree with
-itself. Without it a guest ran two clocks: its own character simulated at 60 Hz
-from its own controls, live, and the ball snapped twenty times a second to
-where it had been half a trip ago. The player moved smoothly and the ball
-stuttered against them — worse on a *better* phone with a worse connection,
-which is exactly why it looked like a graphics fault and could not be fixed by
-turning the graphics down. The ball is projected through the same pure
-`stepBall` both peers run, so the catch-up reproduces the host's physics rather
-than guessing; the characters are carried along their reported velocities. The
-residual positional error is then eased away rather than snapped
-(`BALL_CORRECT`), except when it is too large to be anything but a correction
-(`BALL_SNAP`) or the ball is being held, where easing would drag it out of a
-hand.
+**A guest reads everything off one clock, and that clock is led forward to the
+instant the host is playing.** Arriving frames join `PlaybackBuffer` in
+`src/net/playback.ts` keyed by the host's tick, and the ball and both
+characters are read out together — one instant on screen, rather than a ball
+from one moment beside a player from another.
+
+The lead is not decoration. A guest's own character is predicted live, so a
+screen that showed the ball a fixed interval in the past was showing the two
+things a touch is timed between at two different moments: every press after the
+automatic first touch reached the host after the instant it was aimed at, and
+the joined player could receive the ball and do nothing else with it for a
+whole match. The lead comes from `conn.latencyTicks`, half the measured round
+trip, plus the snapshot grid and a capped jitter margin — `latencyTicks` and
+not the `TickAge` estimator, which reports age *above the best route it has
+seen* and so reads near zero on a steady link however far away the host is.
+
+Between frames the ball is carried by the same pure `stepBall` both peers run,
+so the lead reproduces the host's physics rather than guessing at it. That is
+exact right up until somebody touches the ball, and a touch is the one thing in
+the lead a guest cannot compute — but it can see it coming. A clip window spans
+fraction 0 to fraction 1, and every striking clip has its contact frame written
+down, so the instant a limb meets the ball is arithmetic on numbers already on
+the wire. The flight stops there and waits rather than sailing through the
+foot, which is what used to send the ball past the player and then drag it
+backwards when the truth landed.
+
+What is left over is still eased. The difference is carried into an offset
+which decays a fixed fraction per step (`BALL_CORRECT_SECONDS`), so the ball
+turns onto the true flight at once and the leftover distance melts away; an
+offset decays on its own rather than filtering the position, because a filter
+chasing a moving target settles at a permanent lag proportional to the ball's
+speed, which is the delay the lead exists to remove. Past `BALL_SNAP` it is
+taken whole — a new point or a reconnect, not a correction — and a held ball is
+never eased, because easing would drag it out of the hand carrying it.
+
+**Characters ride the velocity the host reports for them**, not a difference of
+the positions it reports. The wire value is `Character.velocity`, already eased
+on the way up and exactly zero the step a run reaches its target; a backward
+difference of two 30 Hz positions lags that stop by two ticks and then has the
+stale speed multiplied by the lead. That is what sent a joined player sailing
+past the end of every run to a drop spot and snapped them back — on the one
+movement a reception is made of. The carry is capped at
+`MAX_CHAR_CARRY_METRES`, because extrapolating a body is a guess whose error
+grows with the square of how far it runs.
+
+**A clip plays at the rate the host played it at.** The host raises the rate on
+a touch — a strike at 1.3, a set-up at 1.25 — and encodes that by shortening
+the window, so `clipWindowSpeed` divides it back out. A guest that played every
+clip at 1.0 regardless reached the contact frame an eighth of a second after
+the ball had already gone, and then had the clip cut off three quarters of the
+way through and popped back to idle mid-follow-through. It is the single
+biggest reason the animation and the physics used to describe different
+moments.
+
+**And the window is restated every step from where the clip actually is.** It
+is stamped in simulation ticks and the clip is played by the renderer, and
+those are two different clocks: the fixed step caps its delta at
+`MAX_FRAME_DT` and drops the remainder, while an animation group advances on
+the frame's real delta. A device dropping frames runs its animations ahead of
+its own simulation, so a window predicted once at the clip's start stops
+containing the clip within a touch or two — and a window that no longer
+describes its clip is a clip the guest skips, or holds back until its own
+clock drifts into range and then plays out of its moment, usually at the next
+serve. `Character.actionFraction` reads the truth off the animatable, and
+`drainNet` re-derives the window from it. Identity moved to an instance
+number on the wire at the same time (`hostClipSeq`), because a window that
+moves can no longer be its own name.
+
+**A press is judged against the ball the player was looking at.** The guest
+stamps every input frame with the host tick its screen was showing
+(`viewTick`), the host keeps half a second of ball positions, and the two
+decisions a press turns on — whether the ball was in reach, and which limb the
+height band picks — are read at that instant instead of the one the packet
+landed on. The contact itself is planned and struck against the live ball: the
+rewind decides *whether* and *with what*, never *where*. At rally pace a few
+ticks of fall is a whole band, which is why a joined player kept meeting a knee
+ball with a foot; the second seat used to be handed a silent 15% of extra reach
+to paper over it, which widened the window without aligning it.
+
+**A clip that ends lets go of its name.** `finishAction` is the exit almost
+every clip takes, and it used to leave `actionClip` set — so
+`currentActionClip` went on naming a finished animation until something else
+started one. A host publishes that name in every snapshot, so its guest was
+told a character was mid-touch long after it had stopped: a clip it could not
+play and could not let go of, and a body it would not predict for because the
+name said it was busy. The name is now cleared wherever an action ends.
+
+**A guest's clip ends back on its feet.** `stopAction` stops the group without
+restoring the locomotion weights `playAction` zeroed on the way in, so a clip
+that is stopped rather than allowed to finish leaves nothing driving the
+skeleton and the character frozen on the frame it was cut at. Offline that is
+rare, because clips almost always run to their own end. On a guest it is the
+*only* way a clip ever ends — the host's window says when — which is why a
+joined player was walked back to the service line still holding the pose of a
+kick. Both the guest and `stopSideAction` use `cancelActionToLoco` now.
+
+**And a clip is only held to that clock while the clock is moving.** When the
+feed starves the render point freezes, and a clip pinned to a frozen clock is a
+player standing stock still in the middle of a kick until the frames come back.
+While the timeline is carrying or frozen the clip runs on its own instead. Even
+when it is live, the correction has a tolerance (`CLIP_RESYNC_FRACTION`):
+seeking every step would hand every wobble in the host's own frame rate
+straight to this screen, and a small difference riding is what keeps a swing
+smooth between corrections.
+
+**A rematch ignores the finished match's last frames.** Both peers restart the
+moment it is agreed, for responsiveness, so whichever resets first spends a
+trip receiving snapshots that still say "over". Applying them puts the old
+score back on the board and blows the final whistle a second time, which is the
+result screen reappearing over a rally that has already started. Frames are
+dropped until the host sends a phase that is not "over", bounded at two seconds
+so a rematch the other end never began still comes back to life.
+
+**The prediction runs the host's motion model, not a bare stick.** The host
+bends the guest's push onto the contact point and leashes it to the reception
+zone, both aimed at `anchor`, and roots the player entirely while a kick is
+being lined up. A prediction that skipped all three did not drift by noise
+`reconcile` could absorb — it regenerated the whole of the assist every step,
+so the correction chased a gap it could never close. The anchor and its eta
+ride on the snapshot so both ends integrate the same equation.
+
+**Both players see each other's kit, and each other's name.** The `setup`
+message carries the three marks that belong to the player rather than to the
+character — the name across the shoulders, the number, the crest — and
+`kitForCharacter` supplies the colours from the roster at each end. So there is
+nothing a peer can send that would paint somebody else's shirt a colour their
+character does not own, and `readKit` applies the same length caps the settings
+screen does, because the other end is not a text field. The scoreboard then
+shows the name off the shirt where there is one, falling back to the name the
+relay verified. A kit nobody else can see is a kit worth nothing, and online is
+the only place there is anybody else to see it.
+
+**An arrow hangs over whoever is about to serve.** Two players on two phones
+cannot see the other pick the ball up, and which end the next serve comes from
+was readable only off the scoreboard, which is the wrong place to be looking in
+the second before a ball is struck at you. It is read from `serveOwner` and the
+phase, both of which a guest already holds in its own frame, so it needs
+nothing on the wire and says the same thing on both screens.
+
+**A match pays both players, and pays whoever asked first.** A result settles
+only when both sides have reported it, and both report the instant the match
+ends — so whichever request arrives first is told to wait, and it is a coin
+toss which player that is. The server now keeps each side's outcome when it
+settles, and the waiting client comes back for it (`SETTLE_RETRIES`), which is
+the difference between a winner being paid and a winner watching their opponent
+get paid. The other half of the same bug was the guest reporting no points at
+all: it counts none itself, and a win with no points behind it is a result the
+server refuses as impossible, so neither side was paid. The tally rides the
+snapshot now.
+
+**A serve nobody plays does not stall the match.** Against another person the
+server has `SERVE_CLOCK_SECONDS` to play the ball, and the last
+`SERVE_CLOCK_COUNTDOWN` of them are counted down on screen; run it out and the
+point goes to the receiver. Only in a two-human match: the CPU serves on its
+own beat and a solo player pausing to think is not stalling anybody. The
+countdown rides the snapshot (`serveClock`) rather than being re-derived, so
+the server knows they are being hurried and the receiver can see the point was
+earned by the clock rather than conjured.
+
+**The host reads each seat through the scheme that seat is actually playing.**
+Portrait and landscape are two schemes, not two skins: upright, the axes carry
+a swipe whose length is carry and whose pace is power, and a tap on the court
+is either somewhere to stand or the next touch being asked for. The guest
+reports which it is on every input frame (`portrait`), and `portraitFor(side)`
+in `src/match.ts` is what every rule asks — reading a guest's swipe as a stick
+aimed their every kick somewhere nobody asked for, and left their serve looking
+for a tap count that scheme never sends.
+
+A tap needs an answer only the host has, so the snapshot carries the two rules
+facts it turns on: `strikeable` and `touches`. Without them a follower's
+`touchImminent` can only ever say no, and every tap becomes a walk. With them
+the tap resolves on the guest into a carry vector that travels as an ordinary
+`pop` with the aim on the axes — the same shape a second local controller
+produces — flagged `tapAim` so the host knows those axes are a placement rather
+than a direction to run.
 
 ```bash
 npm run relay        # PORT=8787, health check on /healthz

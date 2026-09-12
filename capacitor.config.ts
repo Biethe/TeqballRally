@@ -23,8 +23,18 @@ const config: CapacitorConfig = {
   server: {
     // Must be https for a packaged/production build: a packaged app's origin
     // is https://localhost, and a secure origin is required to open the secure
-    // (wss://) relay. (http was only for local LAN-relay debugging.)
-    androidScheme: "https",
+    // (wss://) relay.
+    //
+    // The exception is a build aimed at a relay running on the development
+    // machine, which speaks plain `ws://`. A page on https may not open an
+    // insecure socket at all — the WebSocket constructor throws before any
+    // connection is attempted — so that build has to be served from http, and
+    // `CAP_ANDROID_SCHEME=http npm run android:apk` is how to ask for it.
+    // `http://localhost` is still a secure context in Chromium, so nothing
+    // that needs one (`crypto.subtle` in `src/protected.ts`) stops working.
+    // It is a different origin, though, so such a build starts with empty
+    // local storage.
+    androidScheme: process.env.CAP_ANDROID_SCHEME === "http" ? "http" : "https",
     // To iterate against a dev server instead of a bundled build, run
     //   npm run dev -- --host
     // and set CAP_SERVER_URL to the printed LAN address before `npx cap sync`.

@@ -374,13 +374,7 @@ describe("aiming the shot that follows a set-up", () => {
     return false;
   };
 
-  it("keeps a wide aim instead of snapping it back to the middle", () => {
-    // The failure this exists for. The marker was reset to the centre of the
-    // opponent's half on every possession, and the only way to move it was to
-    // hold the kick button — a press held long enough to reach a corner being
-    // a lob rather than a drive (`KICK_INPUT.hold`). A target that had to be
-    // re-earned, at that price, every time the ball came back is a target most
-    // rallies never left: the aim was always in the middle of the table.
+  it("reinitializes the aim at the center of the opponent's side of the table on a new possession", () => {
     const r = rig();
     feedPlayer(r);
 
@@ -398,7 +392,7 @@ describe("aiming the shot that follows a set-up", () => {
     expect(aimed).toBeGreaterThan(TABLE.halfWid * 0.5);
 
     // Hand the ball over and take it back: a real table bounce on the
-    // player's half, which is the event that used to reset the aim.
+    // player's half, which resets the aim to the center of the opponent's side.
     r.match.strikeableSide = null;
     r.match.lastHitter = "ai";
     r.match.touchCount = 0;
@@ -412,7 +406,33 @@ describe("aiming the shot that follows a set-up", () => {
     }
     expect(r.match.strikeableSide).toBe("player");
 
-    expect(readAim(r).z).toBe(aimed);
+    // Reinitialized to the center of the opponent's side of the table:
+    expect(readAim(r).z).toBe(0);
+    expect(readAim(r).x).toBeCloseTo(TABLE.halfLen * 0.55, 3);
+  });
+
+  it("never walks the aim back across the net onto the player's own half", () => {
+    // What "the aimer is under the table" was. The marker is drawn on the
+    // table when the aim is over it and on the floor when it is not, and the
+    // stick's depth axis used to be bounded by the whole court rather than by
+    // the half being attacked — so pushing back walked the aim through the net
+    // and out the far side, leaving the ring on the ground by the player's own
+    // feet, where no kick could ever have been asking to go.
+    const r = rig();
+    feedPlayer(r);
+    for (let i = 0; i < 60 * 3 && r.match.strikeableSide !== "player"; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+    }
+    expect(r.match.strikeableSide).toBe("player");
+
+    // Haul the aim backwards as hard and as long as the stick allows.
+    for (let i = 0; i < 60 * 2 && r.match.state === "rally"; i++) {
+      r.match.update(SIM_DT, { ...idle, moveX: -1, strikeHeld: true }, () => {});
+    }
+
+    // The player defends the -x half, so every aim of theirs is on +x, and
+    // far enough over the net to be a shot rather than a bounce off the tape.
+    expect(readAim(r).x).toBeGreaterThan(0);
   });
 
   it("does not move the aim before a set-up has been played", () => {
@@ -437,6 +457,44 @@ describe("aiming the shot that follows a set-up", () => {
     }
 
     expect(Math.abs(readAim(r).z)).toBeLessThanOrEqual(TABLE.halfWid + 0.4);
+  });
+
+  it("moves the aim sensitively during a kick sequence", () => {
+    const r = rig();
+    feedPlayer(r);
+    for (let i = 0; i < 60 * 3 && r.match.strikeableSide !== "player"; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+    }
+    expect(r.match.strikeableSide).toBe("player");
+
+    // Even in a very brief tap (60ms), the aim should travel significantly across the table
+    for (let i = 0; i < 60 * 0.06; i++) {
+      r.match.update(SIM_DT, { ...idle, moveZ: 1, strikeHeld: true }, () => {});
+    }
+    expect(readAim(r).z).toBeGreaterThan(0.5);
+  });
+
+  it("positions the aim marker on top of the table surface rather than under the table", () => {
+    const r = rig();
+    const fakeMarker = {
+      position: new Vector3(),
+      scaling: new Vector3(),
+      enabled: false,
+      setEnabled(val: boolean) { this.enabled = val; },
+    };
+    r.match.aimMarker = fakeMarker as unknown as import("@babylonjs/core/Meshes/mesh").Mesh;
+    feedPlayer(r);
+    for (let i = 0; i < 60 * 3 && r.match.strikeableSide !== "player"; i++) {
+      r.match.update(SIM_DT, idle, () => {});
+    }
+    expect(r.match.strikeableSide).toBe("player");
+
+    // Update with strike held so the aim marker position updates
+    r.match.update(SIM_DT, { ...idle, strikeHeld: true }, () => {});
+    const aimX = readAim(r).x;
+    expect(fakeMarker.position.y).toBeCloseTo(tableSurfaceY(aimX) + 0.03, 3);
+    // Ensure marker Y is above table surface and well above ground plane (GROUND_Y = 0.4)
+    expect(fakeMarker.position.y).toBeGreaterThan(GROUND_Y + 0.5);
   });
 });
 

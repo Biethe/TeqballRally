@@ -86,6 +86,8 @@ export interface GameScene {
   aimMarker: Mesh;
   /** Glowing X showing where the airborne ball will first come down. */
   landingMarker: Mesh;
+  /** Arrow over the player about to serve. */
+  serveMarker: Mesh;
   /** Show a ripple on the ground where a tap landed. */
   pingTap: (x: number, z: number) => void;
   /** Advance that ripple. Wall-clock seconds; presentation, not simulation. */
@@ -282,6 +284,7 @@ export async function createGameScene(
   const aimMat = new StandardMaterial("aimMat", scene);
   aimMat.emissiveColor = new Color3(1, 0.5, 0.1);
   aimMat.disableLighting = true;
+  aimMat.zOffset = -2;
   aimMarker.material = aimMat;
   aimMarker.isPickable = false;
   aimMarker.setEnabled(false);
@@ -305,6 +308,27 @@ export async function createGameScene(
   landingMarker.material = landingMat;
   landingMarker.isPickable = false;
   landingMarker.setEnabled(false);
+
+  /**
+   * The arrow that hangs over whoever is about to serve.
+   *
+   * Online, the two players are on two phones and nobody can see the other
+   * pick the ball up. Which end the serve is coming from was readable only
+   * from the scoreboard, which is the wrong place to be looking in the second
+   * before a ball is struck at you. A cone, point down, over the server's
+   * head: it says whose turn it is without a word and from any camera.
+   */
+  const serveMarker = MeshBuilder.CreateCylinder(
+    "serve-marker",
+    { diameterTop: 0.26, diameterBottom: 0, height: 0.3, tessellation: 3 },
+    scene
+  );
+  const serveMat = new StandardMaterial("serveMat", scene);
+  serveMat.emissiveColor = new Color3(1, 0.78, 0.2);
+  serveMat.disableLighting = true;
+  serveMarker.material = serveMat;
+  serveMarker.isPickable = false;
+  serveMarker.setEnabled(false);
 
   /**
    * The ring that appears where a tap landed.
@@ -399,6 +423,7 @@ export async function createGameScene(
     currentVenue: () => built,
     aimMarker,
     landingMarker,
+    serveMarker,
     pingTap,
     stepTapMarker,
     setCrowdVisible,

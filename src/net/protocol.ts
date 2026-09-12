@@ -20,15 +20,21 @@
  */
 
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { SIM_DT } from "../config";
+import { KIT_NAME_MAX, KIT_NUMBER_MAX, SIM_DT } from "../config";
+import { CRESTS, type CrestId, type PersonalKit } from "../kit";
 import { stepBall, type BallState, type Side } from "../ball";
 
 /**
- * Bumped to 2 for the playback fields (clip windows, fx stream). The relay
- * refuses to seat peers of different versions together, so a version change is
- * a clean break rather than a negotiation.
+ * Bumped to 3 for the two fields that make a guest's screen agree with the
+ * host's match: `viewTick` on an input, so a press is judged against the ball
+ * the player was looking at, and the anchors on a snapshot, so a predicted
+ * character runs the same assist the host runs. 2 added the playback fields
+ * (clip windows, fx stream).
+ *
+ * The relay refuses to seat peers of different versions together, so a version
+ * change is a clean break rather than a negotiation.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /**
  * Crockford base32: no I, L, O or U. The first three are the characters people
@@ -84,6 +90,22 @@ export interface StrikeMessage {
 export interface InputMessage {
   t: "input";
   tick: number;
+  /**
+   * The host tick the guest's screen was showing when these controls were
+   * read — its playback clock, not its own step counter.
+   *
+   * This is what makes a press mean what the player meant by it. A guest's
+   * timeline is led to the host's present, so it presses at host time V and
+   * the host hears about it at V plus a trip; judging the press against the
+   * ball at *that* moment asks a different question than the one the player
+   * answered. At rally pace a few ticks of fall is a whole height band, which
+   * is why the joined player kept meeting a ball with the wrong limb, and why
+   * the second seat used to be handed a quiet 15% of extra reach to paper
+   * over it.
+   *
+   * Optional: a peer too old to send it is judged live, exactly as before.
+   */
+  viewTick?: number;
   moveX: number;
   moveZ: number;
   strike: boolean;
@@ -97,6 +119,29 @@ export interface InputMessage {
   loft?: number;
   pop: boolean;
   confirm: boolean;
+  /**
+   * The guest is playing by gesture on an upright phone.
+   *
+   * The two schemes do not mean the same thing by the same numbers: in
+   * portrait the axes carry a swipe — its length is carry and its pace is
+   * power — while in landscape they are a stick offset onto the table. The
+   * host has no other way to know which it is being sent, and reading a swipe
+   * as a stick aimed every guest kick somewhere nobody asked for.
+   *
+   * Optional: a peer that does not send it is taken as landscape, which is
+   * what the host assumed before the flag existed.
+   */
+  portrait?: boolean;
+  /**
+   * The axes on this frame are a tap's carry vector, not a stick.
+   *
+   * Sent with `pop` for a set-up being asked for, and without it to shape a
+   * first touch the host is about to take automatically. The host cannot tell
+   * the two apart from the numbers — a tapped carry and a walk direction are
+   * both a short court-space vector — and reading a placement as a walk is how
+   * a guest ends up jogging away from the ball it just asked to play.
+   */
+  tapAim?: boolean;
 }
 
 /**
@@ -117,10 +162,14 @@ export interface SnapshotMessage {
   hostPos: Vec3Wire;
   guestPos: Vec3Wire;
   /**
-   * Court velocities. The guest's interpolation timeline derives velocity from
-   * the positions it interpolates, but the wire value is still the warm-up
-   * source before a second frame exists — and the cost of carrying it is a
-   * dozen bytes.
+   * Court velocities — and the thing that actually carries each character
+   * between frames on the guest.
+   *
+   * This is `Character.velocity`, already eased by MOVE_TAU and set to exactly
+   * zero the step a run reaches its target. The guest used to difference two
+   * 30 Hz positions instead, which lagged every stop by two ticks and then
+   * multiplied the stale speed by the lead — so a joined player overshot the
+   * end of every run to a drop spot and was snapped back. A dozen bytes.
    */
   hostVel: Vec3Wire;
   guestVel: Vec3Wire;
@@ -144,6 +193,18 @@ export interface SnapshotMessage {
   guestClipFrom?: number;
   guestClipTo?: number;
   /**
+   * Which playing of the clip this is.
+   *
+   * The window moves now — the host restates it from the clip's real progress
+   * every step, because the renderer and the fixed step are different clocks —
+   * so the guest can no longer tell one playing from the next by the window's
+   * start. A number that only changes when a clip actually starts says it
+   * outright. Optional: without one the guest falls back to the start, which
+   * is what it used to key on.
+   */
+  hostClipSeq?: number;
+  guestClipSeq?: number;
+  /**
    * Whether each seat's feet are owned by the semi-assisted run to the drop
    * spot (`runLocked` in the match). The guest needs to know about its own
    * seat: while locked, its stick is not driving the character on the host,
@@ -153,8 +214,69 @@ export interface SnapshotMessage {
    */
   hostLocked?: boolean;
   guestLocked?: boolean;
+  /**
+   * Where each seat's next touch is due — `anchor` in the match — or absent
+   * when no touch of theirs is coming.
+   *
+   * The guest predicts its own character to keep its stick immediate, but the
+   * host moves that same character with a reach assist and a leash aimed at
+   * this spot. Predicting with a bare stick instead is not a small error that
+   * settles: it is the whole assist, regenerated every step, and `reconcile`
+   * chases it without ever arriving while the player is moving. Sending the
+   * one point both are aiming at lets the two run the same equation.
+   *
+   * Optional, like the locks: an older host sends none and its guest predicts
+   * the way it used to.
+   */
+  hostAnchor?: Vec3Wire | null;
+  guestAnchor?: Vec3Wire | null;
+  /**
+   * Seconds until the ball gets to each anchor. The assist is a question about
+   * time, not distance — how much slack there is between the ball's arrival
+   * and the run needed to meet it — so the point alone is not enough to run
+   * the same equation the host runs. A scalar: nothing to mirror.
+   */
+  hostAnchorEta?: number;
+  guestAnchorEta?: number;
+  /**
+   * Which seat may touch the ball, and how many touches that seat has spent,
+   * in the host's frame.
+   *
+   * The guest runs no rules, so it knows neither on its own — and a portrait
+   * guest needs both, because there a tap means "play the ball" when the ball
+   * is due and "walk there" when it is not, and that question cannot be
+   * answered without them. Two facts rather than the whole rule engine: the
+   * host still decides what the tap did.
+   *
+   * Optional, like the locks: an older host sends neither and its guest falls
+   * back to treating every tap as a walk, which is what it did before.
+   */
+  strikeable?: "host" | "guest" | null;
+  touches?: number;
+  /**
+   * Seconds left on the serve clock, or absent when it is not running.
+   *
+   * The countdown belongs to both screens: the server has to know they are
+   * being hurried, and the receiver has to be able to see that the point
+   * coming their way was earned by the clock rather than conjured. A scalar
+   * that means the same thing to both seats, so it crosses unchanged.
+   */
+  serveClock?: number;
   /** Score in the host's frame: [host, guest]. */
   score: [number, number];
+  /**
+   * Points won across the whole match by each seat, host frame, and the long
+   * rallies the match produced.
+   *
+   * A guest runs no rules, so it counts neither — and it reports both to the
+   * server at the final whistle. Reporting zero points beside a real set count
+   * is a result the server refuses as impossible, which is why a guest that
+   * won could not be paid for it, and why neither side was paid at all: one
+   * report alone settles nothing. The rallies are a property of the match
+   * rather than of a seat, so they cross unchanged.
+   */
+  tally?: [number, number];
+  rallies?: number;
   sets: [number, number];
   /** Whose serve, in the host's frame. */
   serveOwner: Side;
@@ -173,6 +295,19 @@ export interface SetupMessage {
   tick: number;
   character: string;
   ball: string;
+  /**
+   * The marks this peer has put on their own shirt: the name across the
+   * shoulders, the number under it, and the crest.
+   *
+   * Only the personal part. The colours belong to the character and both ends
+   * already have the roster, so `kitForCharacter` puts the two together —
+   * there is nothing here that a peer could use to paint somebody else's
+   * shirt in a colour the character does not own.
+   *
+   * Optional: a peer that sends none wears the character's kit as the artist
+   * made it, which is what both sides used to see of each other.
+   */
+  kit?: PersonalKit;
 }
 
 /**
@@ -399,6 +534,17 @@ export function canonicalSide(role: PeerRole): Side {
 }
 
 /**
+ * The other seat's name for a seat. Absent stays absent, so an older host that
+ * never reports possession is not turned into one that reports "nobody".
+ */
+function swapSeat(seat: "host" | "guest" | null | undefined): "host" | "guest" | null | undefined {
+  if (seat === undefined) return undefined;
+  if (seat === "host") return "guest";
+  if (seat === "guest") return "host";
+  return null;
+}
+
+/**
  * Convert a message between a peer's own frame and the canonical one. The host
  * is already canonical, so this is identity for it; the guest reflects. The
  * same function serves both directions because a reflection is its own inverse.
@@ -432,10 +578,23 @@ export function reframe<T extends GameMessage>(msg: T, role: PeerRole): T {
         hostClipTo: msg.guestClipTo,
         guestClipFrom: msg.hostClipFrom,
         guestClipTo: msg.hostClipTo,
+        hostClipSeq: msg.guestClipSeq,
+        guestClipSeq: msg.hostClipSeq,
         hostLocked: msg.guestLocked,
         guestLocked: msg.hostLocked,
+        // Anchors are points on the court, so they swap seats and reflect with
+        // every other position. Absent stays absent.
+        hostAnchor: msg.guestAnchor ? mirror(msg.guestAnchor) : msg.guestAnchor,
+        guestAnchor: msg.hostAnchor ? mirror(msg.hostAnchor) : msg.hostAnchor,
+        hostAnchorEta: msg.guestAnchorEta,
+        guestAnchorEta: msg.hostAnchorEta,
+        // Possession swaps seats with everything else: the host's "guest" is
+        // this peer's own side. The touch count belongs to the possession
+        // rather than to a seat, so it crosses unchanged.
+        strikeable: swapSeat(msg.strikeable),
         score: [msg.score[1], msg.score[0]],
         sets: [msg.sets[1], msg.sets[0]],
+        tally: msg.tally ? [msg.tally[1], msg.tally[0]] : undefined,
         serveOwner: msg.serveOwner === "player" ? "ai" : "player",
       };
     case "fx":
@@ -514,6 +673,25 @@ export function isValidRematch(msg: unknown): msg is RematchMessage {
   return m.t === "rematch" && (REMATCH_ACTIONS as readonly string[]).includes(m.action ?? "");
 }
 
+/**
+ * The personal kit off the wire, made safe rather than trusted.
+ *
+ * Both fields are painted onto a texture, so their length is the thing that
+ * matters: the limits are the ones the settings screen enforces on the player's
+ * own kit, applied again here because the other end is a peer rather than a
+ * text field. An unknown crest falls back to none.
+ */
+export function readKit(v: unknown): PersonalKit | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const k = v as Record<string, unknown>;
+  const text = (raw: unknown, max: number) =>
+    typeof raw === "string" ? raw.replace(/\s+/g, " ").trim().slice(0, max) : "";
+  const crest = (CRESTS as readonly string[]).includes(k.crest as string)
+    ? (k.crest as CrestId)
+    : "none";
+  return { name: text(k.name, KIT_NAME_MAX), number: text(k.number, KIT_NUMBER_MAX), crest };
+}
+
 export function isValidSetup(msg: unknown): msg is SetupMessage {
   if (typeof msg !== "object" || msg === null) return false;
   const m = msg as Partial<SetupMessage>;
@@ -555,7 +733,35 @@ export function readLoft(v: unknown): number | undefined {
   return Math.min(2, Math.max(0.5, v));
 }
 
-function isScorePair(v: unknown): v is [number, number] {
+/** Possession as reported, or undefined when the host does not report it. */
+export function readStrikeable(v: unknown): "host" | "guest" | null | undefined {
+  if (v === null) return null;
+  if (v === "host" || v === "guest") return v;
+  return undefined;
+}
+
+/** Touches spent in the possession, or undefined when not reported. */
+export function readTouches(v: unknown): number | undefined {
+  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+  return Math.max(0, Math.round(v));
+}
+
+/**
+ * The host tick a guest's press was aimed at, clamped into the window the host
+ * still remembers.
+ *
+ * Never further back than the protocol's own catch-up bound, and never ahead
+ * of now: a peer that asks to be judged against a moment the host has
+ * forgotten, or one that has not happened, gets the nearest one it is entitled
+ * to rather than a rewind of its own choosing.
+ */
+export function readViewTick(v: unknown, now: number): number | undefined {
+  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+  return Math.max(now - MAX_CATCHUP_TICKS, Math.min(now, Math.round(v)));
+}
+
+/** Two finite numbers, which is the shape of every per-seat pair here. */
+export function isScorePair(v: unknown): v is [number, number] {
   return Array.isArray(v) && v.length === 2 && v.every((n) => Number.isFinite(n));
 }
 

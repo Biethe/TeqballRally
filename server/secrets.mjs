@@ -15,7 +15,9 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
  *   recovery code 16 Crockford characters in four groups, shown once and
  *                 written down. Salted, because it is short enough to be typed
  *                 by a person and therefore short enough to be attacked in a
- *                 leaked table without one.
+ *                 leaked table without one. Kept with an unsalted lookup
+ *                 digest beside it, which is how the code alone finds its
+ *                 account — the salted one still does the proving.
  */
 
 /** Crockford base32: no I, L, O or U, so a code survives being read aloud. */
@@ -36,7 +38,22 @@ export function tokenHash(token) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-/** A fresh recovery code, and the salted digest to keep instead of it. */
+/**
+ * The key a recovery code is found by. Deterministic, so it can index the
+ * store, exactly as `tokenHash` does for a token.
+ *
+ * The salted digest beside it is still what *authenticates* a code; this only
+ * says which account to check it against, so that somebody typing a code back
+ * in does not also have to know the player id off a slip they no longer have.
+ * A code is sixteen Crockford characters, eighty bits: an unsalted digest lets
+ * a leaked table be attacked once rather than once per row, and eighty bits is
+ * out of reach either way.
+ */
+export function recoveryLookup(code) {
+  return createHash("sha256").update(`lookup:${code}`).digest("hex");
+}
+
+/** A fresh recovery code, and the digests to keep instead of it. */
 export function mintRecovery() {
   const bytes = randomBytes(RECOVERY_GROUPS * RECOVERY_GROUP_SIZE);
   const groups = [];
@@ -49,7 +66,7 @@ export function mintRecovery() {
   }
   const code = groups.join("-");
   const salt = randomBytes(16).toString("hex");
-  return { code, salt, hash: recoveryHash(code, salt) };
+  return { code, salt, hash: recoveryHash(code, salt), lookup: recoveryLookup(code) };
 }
 
 /**

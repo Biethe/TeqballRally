@@ -33,7 +33,7 @@ import {
   upgrade,
   validateResult,
 } from "../server/accounts.mjs";
-import { looksLikeRecovery, tidyRecovery } from "../server/secrets.mjs";
+import { looksLikeRecovery, recoveryLookup, tidyRecovery } from "../server/secrets.mjs";
 import { arrived, reset as resetPresence } from "../server/presence.mjs";
 import { begin, departed, reset as resetMatches } from "../server/matches.mjs";
 import { handleApi } from "../server/api.mjs";
@@ -152,7 +152,7 @@ describe("recovery", () => {
     const issued = await register(store, "Ana");
     await recordMatch(store, issued.player, WIN, later(new Date(0)));
 
-    const back = await recover(store, issued.player.id, issued.recoveryCode);
+    const back = await recover(store, issued.recoveryCode);
 
     expect(back.player.id).toBe(issued.player.id);
     expect(back.player.career.trophies).toBe(issued.player.career.trophies);
@@ -163,7 +163,7 @@ describe("recovery", () => {
     // Recovery is what somebody does when a phone is gone. An account that
     // keeps answering to that phone has not been recovered.
     const issued = await register(store, "Ana");
-    await recover(store, issued.player.id, issued.recoveryCode);
+    await recover(store, issued.recoveryCode);
 
     expect(await authenticate(store, issued.token)).toBeNull();
   });
@@ -171,19 +171,17 @@ describe("recovery", () => {
   it("spends the code it was given", async () => {
     // A slip of paper somebody else photographed must not keep working.
     const issued = await register(store, "Ana");
-    const first = await recover(store, issued.player.id, issued.recoveryCode);
+    const first = await recover(store, issued.recoveryCode);
 
-    await expect(recover(store, issued.player.id, issued.recoveryCode)).rejects.toThrow(
-      ValidationError
-    );
-    await expect(recover(store, issued.player.id, first.recoveryCode)).resolves.toBeTruthy();
+    await expect(recover(store, issued.recoveryCode)).rejects.toThrow(ValidationError);
+    await expect(recover(store, first.recoveryCode)).resolves.toBeTruthy();
   });
 
   it("forgives how a person types it", async () => {
     const issued = await register(store, "Ana");
     const sloppy = issued.recoveryCode.toLowerCase().replace(/-/g, " ");
 
-    await expect(recover(store, issued.player.id.toLowerCase(), sloppy)).resolves.toBeTruthy();
+    await expect(recover(store, sloppy)).resolves.toBeTruthy();
   });
 
   it("folds the three characters Crockford folds, and no others", () => {
@@ -206,15 +204,10 @@ describe("recovery", () => {
 
   it("says the same thing however it fails", async () => {
     // Otherwise this is a way to find out which player codes exist.
-    const issued = await register(store, "Ana");
+    await register(store, "Ana");
     const messages = new Set<string>();
-    for (const [id, code] of [
-      ["ZZZZZZZZ", issued.recoveryCode],
-      [issued.player.id, "AAAA-BBBB-CCCC-DDDD"],
-      [issued.player.id, "nonsense"],
-      ["", ""],
-    ]) {
-      await recover(store, id, code).catch((err: ValidationError) => {
+    for (const code of ["AAAA-BBBB-CCCC-DDDD", "nonsense", ""]) {
+      await recover(store, code).catch((err: ValidationError) => {
         messages.add(err.message);
         expect(err.status).toBe(403);
       });
@@ -222,13 +215,57 @@ describe("recovery", () => {
     expect(messages.size).toBe(1);
   });
 
+  it("finds the account from the code alone", async () => {
+    // The code is unique to one profile, and the person typing it has just
+    // lost the phone that knew anything else about it. Asking for a player id
+    // beside it meant somebody holding the slip still could not get back in.
+    await register(store, "Bea");
+    const issued = await register(store, "Ana");
+    await register(store, "Cal");
+
+    const back = await recover(store, issued.recoveryCode);
+
+    expect(back.player.id).toBe(issued.player.id);
+    expect(back.player.name).toBe("Ana");
+  });
+
+  it("stops finding the account by a code that has been spent", async () => {
+    const issued = await register(store, "Ana");
+    const first = await recover(store, issued.recoveryCode);
+    // The index has to let go of the old digest, not merely refuse the check.
+    expect(await store.byRecovery(recoveryLookup(issued.recoveryCode))).toBeNull();
+    expect((await store.byRecovery(recoveryLookup(first.recoveryCode)))?.id).toBe(
+      issued.player.id
+    );
+  });
+
+  it("still finds an account issued before the lookup index existed", async () => {
+    // Those accounts cannot be indexed after the fact: the lookup is a digest
+    // of the code, and the code was never kept. The code is offered to each
+    // salted digest instead, and recovering mints a fresh one that *is*
+    // indexed — so an account leaves the slow path the first time it is used.
+    const issued = await register(store, "Ana");
+    delete (issued.player as { recoveryLookup?: string }).recoveryLookup;
+    store.recoveries.clear();
+    await store.save(issued.player);
+
+    const back = await recover(store, issued.recoveryCode);
+
+    expect(back.player.id).toBe(issued.player.id);
+    expect(back.player.recoveryLookup).toBeTruthy();
+    // Healed: the fresh code is found by the index rather than by the scan.
+    expect((await store.byRecovery(recoveryLookup(back.recoveryCode)))?.id).toBe(
+      issued.player.id
+    );
+  });
+
   it("can be replaced from a device that is already signed in", async () => {
     const issued = await register(store, "Ana");
     const fresh = await regenerateRecovery(store, issued.player);
 
     expect(fresh).not.toBe(issued.recoveryCode);
-    await expect(recover(store, issued.player.id, issued.recoveryCode)).rejects.toThrow();
-    await expect(recover(store, issued.player.id, fresh)).resolves.toBeTruthy();
+    await expect(recover(store, issued.recoveryCode)).rejects.toThrow();
+    await expect(recover(store, fresh)).resolves.toBeTruthy();
   });
 });
 
@@ -481,14 +518,36 @@ describe("ranked online", () => {
     expect(away.career.trophies).toBe(0);
   });
 
-  it("settles a match only once", async () => {
+  it("pays a match once, however many times it is asked about", async () => {
     const { home, away, report } = await pair();
     await recordOnlineMatch(store, home, report("home"), at);
     await recordOnlineMatch(store, away, report("away"), at);
     const won = home.career.trophies;
+    const coins = home.career.coins;
 
-    await expect(recordOnlineMatch(store, home, report("home"), at)).rejects.toThrow(/settled/);
+    await recordOnlineMatch(store, home, report("home"), at);
+    await recordOnlineMatch(store, home, report("home"), at);
+
     expect(home.career.trophies).toBe(won);
+    expect(home.career.coins).toBe(coins);
+  });
+
+  it("hands the first reporter their result when they come back for it", async () => {
+    // Both sides report the instant the match ends, so one of them always
+    // arrives before the other and is told to wait. Refusing them afterwards
+    // is why a player watched their opponent get paid and got nothing.
+    const { home, away, report } = await pair();
+
+    const early = await recordOnlineMatch(store, home, report("home"), at);
+    expect(early).toEqual({ pending: true });
+
+    await recordOnlineMatch(store, away, report("away"), at);
+    const collected = await recordOnlineMatch(store, home, report("home"), at);
+
+    expect("outcome" in collected).toBe(true);
+    if (!("outcome" in collected)) return;
+    expect(collected.outcome.coins).toBeGreaterThan(0);
+    expect(collected.career.coins).toBe(home.career.coins);
   });
 
   it("gives the win away when the relay saw them leave", async () => {
@@ -689,7 +748,7 @@ describe("the store", () => {
 
   it("drops the old token from its index after a recovery", async () => {
     const issued = await register(store, "Ana");
-    await recover(store, issued.player.id, issued.recoveryCode);
+    await recover(store, issued.recoveryCode);
     await store.flush();
 
     const reopened = await new JsonStore(join(dir, "players.json")).load();

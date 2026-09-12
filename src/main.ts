@@ -25,7 +25,8 @@ import {
   venueFromSearch,
 } from "./venue";
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
-import { CRESTS, applyKit } from "./kit";
+import { CRESTS, applyKit, type Kit, type PersonalKit } from "./kit";
+import { Tour } from "./tour";
 import {
   SUPPLIES,
   buy as buySupply,
@@ -42,8 +43,10 @@ import {
   offerArena,
   subscribeToArena,
   coinPackages,
-  coinsForProduct,
   purchaseCoins,
+  bindUserToPurchases,
+  formattedPriceFor,
+  purchaseAsset,
 } from "./purchases";
 import { INTRO_SECONDS, introPose } from "./intro";
 import { Ball, type Side } from "./ball";
@@ -69,6 +72,7 @@ import {
   normalizeRoomCode,
   isValidRoomCode,
   isValidSetup,
+  readKit,
   type PeerIdentity,
   type PeerRole,
 } from "./net/protocol";
@@ -93,6 +97,7 @@ import {
   type Career,
   type MatchOutcome,
   awardCompetition,
+  grantAssetUnlock,
 } from "./progress";
 import { type CompetitionKind } from "./league";
 import {
@@ -147,6 +152,9 @@ import {
   BALLS,
   ballFor,
   withBall,
+  hasBallAffinity,
+  hasVenueAffinity,
+  withBallAndVenue,
   CHARACTERS,
   BALL_RADIUS,
   COURT,
@@ -155,6 +163,8 @@ import {
   SETS_TO_WIN,
   SIM_DT,
   kitForCharacter,
+  KIT_NAME_MAX,
+  KIT_NUMBER_MAX,
   type CameraMode,
   type CharacterDef,
 } from "./config";
@@ -185,6 +195,27 @@ const TRAIL_DELAY = 0.09;
 
 const MAX_FRAME_DT = 1 / 20;
 
+/**
+ * How long to wait before asking again for a result that is still pending, and
+ * how many times.
+ *
+ * Both players report at the same instant, so the wait is normally one round
+ * trip and the first ask is enough. The rest of the budget is for the opponent
+ * whose phone is a moment slower to get the request away — about twelve
+ * seconds of patience, after which the match really was reported by one person
+ * alone and nobody is paid for it.
+ */
+const SETTLE_RETRY_MS = 1500;
+const SETTLE_RETRIES = 8;
+
+/**
+ * How often the guided tour re-reads whether its step is done.
+ *
+ * Often enough that finishing a step feels like the tour noticed, slow enough
+ * to be free. The facts it reads are a string, a boolean and an orientation.
+ */
+const TOUR_POLL_MS = 350;
+
 /** How one match should be set up and what to do when it ends. */
 interface MatchOpts {
   opponent: CharacterDef;
@@ -192,6 +223,8 @@ interface MatchOpts {
   /** Online: the opponent is a remote human on the far end of this connection. */
   online?: { conn: NetConnection; role: PeerRole; private: boolean };
   labels: [string, string];
+  /** The opponent's own kit marks, when there is a person behind them. */
+  opponentKit?: PersonalKit;
   practice?: boolean;
   onEnd: (winner: Side, sets: [number, number]) => void;
 }
@@ -841,6 +874,9 @@ async function boot(): Promise<void> {
     viewer.deactivate();
     input.setTouchControlsEnabled(false);
     refreshWallet();
+    ui.onCoinsClicked = () => {
+      showCoinShop(showTitle);
+    };
     ui.showTitle({
       onPlay: async () => {
         // Prefetch the decorative gym only after the first screen is visible.
@@ -1177,13 +1213,12 @@ async function boot(): Promise<void> {
     ui.showRestore({
       message,
       busy,
-      onRestore: (id, code) => {
+      onRestore: (code) => {
         // Checked here so an obvious typo does not cost a round trip; the
         // server is the one that decides.
-        if (id.trim().length !== 8) return showRestore(tr("recovery.badPlayer"));
         if (!looksLikeCode(code)) return showRestore(tr("recovery.badCode"));
         showRestore(null, true);
-        void restore(id, tidyCode(code)).then(
+        void restore(tidyCode(code)).then(
           (back) => adopt(back, tr("recovery.replaced")),
           (err: unknown) => showRestore(errorMessage(err))
         );
@@ -1251,29 +1286,53 @@ async function boot(): Promise<void> {
     }
     const tally = matchTally();
     input.setTouchControlsEnabled(false);
-    void reportOnlineMatch(identity.token, {
+    const report = {
       matchId: reportedId,
       championId,
       won,
       ...tally,
       opponentSets: match?.sets.ai ?? 0,
-    }).then(
-      (result) => {
-        if ("pending" in result) {
+    };
+    /**
+     * Ask, and come back for the answer.
+     *
+     * A result settles when *both* sides have reported it, and both report the
+     * moment the match ends — so whichever request arrives first is told to
+     * wait, and it is a coin toss which player that is. Showing them a bare
+     * result screen and never asking again is why one player watched the other
+     * get paid and got nothing: the coins were credited a second later, on a
+     * request that had already been answered.
+     *
+     * The server keeps each side's outcome once it settles, so asking again is
+     * how it is collected rather than a second attempt to claim it.
+     */
+    const collect = (tries: number) => {
+      void reportOnlineMatch(identity!.token, report).then(
+        (result) => {
+          if ("pending" in result) {
+            if (tries > 0) {
+              window.setTimeout(() => collect(tries - 1), SETTLE_RETRY_MS);
+              return;
+            }
+            // The other side never reported. Nobody is paid for a match only
+            // one person can vouch for, and saying nothing about a reward is
+            // better than inventing one.
+            if (stillCurrent()) ui.showEnd(won ? "player" : "ai", again, leave);
+            return;
+          }
+          // The career is real whatever the screen does with it.
+          adoptServerCareer(result.career);
+          if (profile) profile = { ...profile, trophies: result.career.trophies, rank: result.rank };
+          if (stillCurrent()) showOutcome(won, result.outcome, leave, again);
+        },
+        // Offline at the final whistle. The match was still played, and saying
+        // so is better than a screen that pretends it was not.
+        () => {
           if (stillCurrent()) ui.showEnd(won ? "player" : "ai", again, leave);
-          return;
         }
-        // The career is real whatever the screen does with it.
-        adoptServerCareer(result.career);
-        if (profile) profile = { ...profile, trophies: result.career.trophies, rank: result.rank };
-        if (stillCurrent()) showOutcome(won, result.outcome, leave, again);
-      },
-      // Offline at the final whistle. The match was still played, and saying
-      // so is better than a screen that pretends it was not.
-      () => {
-        if (stillCurrent()) ui.showEnd(won ? "player" : "ai", again, leave);
-      }
-    );
+      );
+    };
+    collect(SETTLE_RETRIES);
   };
 
   /** What the match just played contributes to the daily challenges. */
@@ -1470,6 +1529,76 @@ async function boot(): Promise<void> {
    * restarts the game. The row says so before it is touched, and a
    * confirmation says it again before anything happens.
    */
+  /**
+   * The guided tour of the app, and what makes each step finish.
+   *
+   * Nothing here advances the tour. It only reports what is true — is there a
+   * profile, is there a name on the shirt, has a setting been touched, which
+   * way up is the phone — and `Tour` decides from that whether the step the
+   * player is on is done. Which means there is no way for a step to be marked
+   * complete except by the player having actually done the thing.
+   *
+   * Polled rather than pushed, because every one of those facts changes in a
+   * different place: a profile is created three screens away, the phone is
+   * turned by a hand. Watching four events from four modules would be four
+   * ways for the tour to get stuck; asking is one.
+   */
+  let tour: Tour | null = null;
+  let tourTimer: number | null = null;
+  /** Set when a gameplay setting is changed, which is that step's whole goal. */
+  let tourSawSetting = false;
+
+  const endTour = () => {
+    tour = null;
+    if (tourTimer !== null) window.clearInterval(tourTimer);
+    tourTimer = null;
+    ui.hideTourCue();
+    if (!prefs.toured) {
+      prefs.toured = true;
+      storePreferences(prefs);
+    }
+  };
+
+  const refreshTour = () => {
+    if (!tour) return;
+    const step = tour.current({
+      kitName: prefs.kit.name,
+      hasProfile: identity !== null,
+      changedSetting: tourSawSetting,
+      portrait: input.isPortrait,
+    });
+    if (!step) {
+      endTour();
+      ui.notice(tr("tour.done.title"), tr("tour.done.body"), tr("nav.done"));
+      return;
+    }
+    const { step: n, of } = tour.progress();
+    ui.showTourCue({
+      target: step.target,
+      says: tr(step.says),
+      step: n,
+      of,
+      onSkip: endTour,
+    });
+  };
+
+  /**
+   * Start the tour on the settings screen, where three of its four steps live.
+   *
+   * Sent there rather than left to find it: a first sentence that says "open
+   * settings, then open profile" is two instructions, and the tour's whole
+   * rule is one at a time.
+   */
+  const startTour = () => {
+    if (tour) return;
+    tourSawSetting = false;
+    tour = new Tour(input.isPortrait);
+    showSettings();
+    refreshTour();
+    if (tourTimer !== null) window.clearInterval(tourTimer);
+    tourTimer = window.setInterval(refreshTour, TOUR_POLL_MS);
+  };
+
   const showSettings = (back: () => void = showTitle) => {
     viewer.deactivate();
     input.setTouchControlsEnabled(false);
@@ -1480,16 +1609,80 @@ async function boot(): Promise<void> {
         { id: "btn-set-gameplay", label: tr("settings.gameplay"), sub: tr("settings.gameplay.sub") },
         { id: "btn-set-audio", label: tr("settings.audio"), sub: tr("settings.audio.sub") },
         { id: "btn-set-kit", label: tr("settings.kit"), sub: tr("settings.kit.sub") },
+        { id: "btn-set-profile", label: tr("profile.title"), sub: identity ? identity.name : tr("recovery.restore") },
+        // Replayable, and only offered once it has been seen: a tour is worth
+        // going back to, and worth nothing as a row above the tour itself.
+        ...(prefs.toured && !tour
+          ? [{ id: "btn-set-tour", label: tr("tour.replay"), sub: tr("tour.replay.sub") }]
+          : []),
       ],
       (id) => {
         if (id === "btn-set-display") showSettingsGroup("display", back);
         else if (id === "btn-set-gameplay") showSettingsGroup("gameplay", back);
         else if (id === "btn-set-kit") showSettingsGroup("kit", back);
+        else if (id === "btn-set-profile") showProfile();
+        else if (id === "btn-set-tour") startTour();
         else showSettingsGroup("audio", back);
       },
       undefined,
       back
     );
+  };
+
+  /**
+   * Ensure the player has created a profile before completing a purchase,
+   * binding the account user ID to RevenueCat.
+   */
+  const ensureProfileForPurchase = (): Promise<Identity | null> => {
+    if (identity) return Promise.resolve(identity);
+    return new Promise<Identity | null>((resolve) => {
+      ui.promptProfile({
+        title: "PLAYER PROFILE REQUIRED",
+        detail:
+          "Create your Player Profile to protect, bind, and sync all your purchases across devices.",
+        confirmLabel: "CREATE PROFILE & CONTINUE",
+        cancelLabel: "CANCEL",
+        onConfirm: async (rawName) => {
+          const problem = nameMessage(rawName);
+          if (problem) throw new Error(problem);
+          try {
+            const created = await signUp(tidyName(rawName));
+            adopt(created, null);
+            await bindUserToPurchases(created.identity.id, created.identity.name);
+            resolve(created.identity);
+            return true;
+          } catch (err) {
+            throw new Error(errorMessage(err));
+          }
+        },
+        onRestore: () => {
+          showRestore();
+          resolve(null);
+        },
+        onCancel: () => {
+          resolve(null);
+        },
+      });
+    });
+  };
+
+  /**
+   * Handle purchasing / unlocking any asset (character, ball, or venue).
+   */
+  const handleUnlockAsset = async (assetId: string): Promise<boolean> => {
+    const user = await ensureProfileForPurchase();
+    if (!user) return false;
+    const outcome = await purchaseAsset(assetId);
+    if (outcome.ok) {
+      career = grantAssetUnlock(career, assetId);
+      refreshWallet();
+      ui.notice(tr("pro.restored.title"), "Asset unlocked successfully!", tr("pro.ok"));
+      return true;
+    }
+    if (!outcome.cancelled) {
+      ui.notice(tr("pro.failed.title"), outcome.message, tr("pro.ok"));
+    }
+    return false;
   };
 
   /**
@@ -1504,6 +1697,8 @@ async function boot(): Promise<void> {
       ui.notice(tr("pro.unavailable.title"), tr("pro.unavailable.body"), tr("pro.ok"));
       return false;
     }
+    const user = await ensureProfileForPurchase();
+    if (!user) return false;
     return offerArena();
   };
 
@@ -1533,24 +1728,43 @@ async function boot(): Promise<void> {
   const tradeLot = (): number => Math.min(50, career.trophies);
 
   const showCoinShop = (back: () => void): void => {
-    // Trophies buy coins whether or not there is a store, so the exchange is
-    // built first and the packs are added to it if a store answers. A player
-    // in a browser, or offline, still has a way to turn a good week into
-    // something to spend.
-    const rows: [string, () => void][] = [];
-    const lot = tradeLot();
-    if (lot > 0) {
-      rows.push([
-        tf("supplies.coins.trade", { trophies: lot, coins: lot * COINS_PER_TROPHY }),
-        () => {
-          ui.hideOnlinePause();
-          saveCareer(tradeTrophies(career, lot));
-          back();
-        },
-      ]);
-    }
+    void coinPackages().then((packages) => {
+      const rows: [string, () => void][] = [];
+      const lot = tradeLot();
+      if (lot > 0) {
+        rows.push([
+          tf("supplies.coins.trade", { trophies: lot, coins: lot * COINS_PER_TROPHY }),
+          () => {
+            ui.hideOnlinePause();
+            saveCareer(tradeTrophies(career, lot));
+            refreshWallet();
+            back();
+          },
+        ]);
+      }
 
-    const present = (): void => {
+      for (const pkg of packages) {
+        rows.push([
+          `${pkg.coins.toLocaleString()} COINS · ${pkg.priceString}`,
+          async () => {
+            const user = await ensureProfileForPurchase();
+            if (!user) return;
+            ui.hideOnlinePause();
+            const outcome = await purchaseCoins(pkg);
+            if (outcome.ok && outcome.coins) {
+              career.coins += outcome.coins;
+              storeCareer(career);
+              refreshWallet();
+              ui.notice(tr("pro.restored.title"), `+${outcome.coins.toLocaleString()} coins credited!`, tr("pro.ok"), back);
+            } else if (!outcome.ok && !outcome.cancelled) {
+              ui.notice(tr("pro.failed.title"), outcome.message, tr("pro.ok"), back);
+            } else {
+              back();
+            }
+          },
+        ]);
+      }
+
       if (rows.length === 0) {
         ui.notice(tr("supplies.coins.none.title"), tr("supplies.coins.none.body"), tr("pro.ok"), back);
         return;
@@ -1559,33 +1773,6 @@ async function boot(): Promise<void> {
         ...rows,
         [tr("settings.restart.cancel"), () => { ui.hideOnlinePause(); back(); }],
       ]);
-    };
-
-    if (!purchasesAvailable()) {
-      present();
-      return;
-    }
-    void coinPackages().then((packages) => {
-      for (const pkg of packages) {
-        rows.push([
-          // The store's own localised price, never one formatted here.
-          `${coinsForProduct(pkg.product.identifier)} · ${pkg.product.priceString}`,
-          () => {
-            ui.hideOnlinePause();
-            void purchaseCoins(pkg).then((outcome) => {
-              if (outcome.ok && outcome.coins) {
-                career.coins += outcome.coins;
-                storeCareer(career);
-                ui.setWallet(career.coins, career.trophies, tierFor(career.trophies).label);
-              } else if (!outcome.ok && !outcome.cancelled) {
-                ui.notice(tr("pro.failed.title"), outcome.message, tr("pro.ok"));
-              }
-              back();
-            });
-          },
-        ]);
-      }
-      present();
     });
   };
 
@@ -1810,7 +1997,7 @@ async function boot(): Promise<void> {
               title: tr(isName ? "settings.kit.name" : "settings.kit.number"),
               placeholder: tr(isName ? "settings.kit.name.hint" : "settings.kit.number.hint"),
               value: isName ? prefs.kit.name : prefs.kit.number,
-              maxLength: isName ? 12 : 2,
+              maxLength: isName ? KIT_NAME_MAX : KIT_NUMBER_MAX,
               // A shirt name is upper case because that is how a shirt is
               // printed; a number is digits or it is not a number.
               clean: (raw) =>
@@ -1889,6 +2076,10 @@ async function boot(): Promise<void> {
             prefs.language = value;
             setLanguage(value);
           }
+          // Either of the two gameplay settings finishes that step of the
+          // tour. Which one they touched does not matter; that they found the
+          // screen and changed something on it is the whole lesson.
+          if (id === "gameSpeed" || id === "autoReception") tourSawSetting = true;
           if (id === "gameSpeed" && typeof value === "string") {
             const num = Number(value) || 1.25;
             prefs.gameSpeed = num;
@@ -1933,8 +2124,9 @@ async function boot(): Promise<void> {
    * The ball has to be one ball, so the host's choice settles it.
    */
   const startOnlineMatch = (conn: NetConnection, role: PeerRole, isPrivate: boolean) => {
-    let mine: { character: string; ball: string } | null = null;
-    let theirs: { character: string; ball: string } | null = null;
+    type Seat = { character: string; ball: string; kit?: PersonalKit };
+    let mine: Seat | null = null;
+    let theirs: Seat | null = null;
     let launched = false;
 
     const launch = () => {
@@ -1950,8 +2142,17 @@ async function boot(): Promise<void> {
         opponent: them,
         difficulty: "normal",
         online: { conn, role, private: isPrivate },
-        // The name the relay verified, not one the peer announced for itself.
-        labels: [tr("hud.you"), opponent?.name ?? "RIVAL"],
+        // Their shirt, painted on this screen too. A kit nobody else can see is
+        // a kit worth nothing, and online is the only place there is anybody
+        // else to see it.
+        opponentKit: theirs.kit,
+        // The name off the shirt where there is one, which is the name the
+        // player chose for themselves. Otherwise the one the relay verified,
+        // which is at least a name somebody owns.
+        labels: [
+          prefs.kit.name.trim() || tr("hud.you"),
+          theirs.kit?.name.trim() || opponent?.name || "RIVAL",
+        ],
         onEnd: (winner) => settleOnline(winner === "player", me.id),
       });
     };
@@ -1959,7 +2160,7 @@ async function boot(): Promise<void> {
     conn.setHandlers({
       onMessage: (msg) => {
         if (!isValidSetup(msg)) return;
-        theirs = { character: msg.character, ball: msg.ball };
+        theirs = { character: msg.character, ball: msg.ball, kit: readKit(msg.kit) };
         launch();
       },
       // A phone drops its socket for a few seconds all the time. Say what is
@@ -1973,8 +2174,13 @@ async function boot(): Promise<void> {
     showSelect(
       tr("select.title"),
       (charId, ballId) => {
-        mine = { character: charId, ball: ballId };
-        conn.send({ t: "setup", character: charId, ball: ballId });
+        const kit = {
+          name: prefs.kit.name,
+          number: prefs.kit.number,
+          crest: prefs.kit.crest,
+        };
+        mine = { character: charId, ball: ballId, kit };
+        conn.send({ t: "setup", character: charId, ball: ballId, kit });
         ui.showLobbyStatus("READY", "Waiting for your opponent to choose…", null, abandonLobby);
         launch();
       },
@@ -2353,6 +2559,13 @@ async function boot(): Promise<void> {
     // to be played. Begin it at idle priority while the selected character
     // preview is being readied.
     scheduleAssetPrefetch(`/models/Ball_and_Table/${BALLS[0].id}.glb`, 900);
+    const isVenueUnlocked = (id: string): boolean => {
+      if (!isPremiumVenue(id)) return true;
+      if (id === "gym" && (ownsArena() || career.unlockedAssets?.includes("gym"))) return true;
+      if (id === "basketball" && (career.unlockedAssets?.includes("basketball") || career.best >= 450)) return true;
+      return false;
+    };
+
     ui.showSelect({
       modeLabel,
       characters: CHARACTERS,
@@ -2363,16 +2576,30 @@ async function boot(): Promise<void> {
         ),
         // Balls unlock on the same currency as players, so one screen answers
         // "what is there to play for" for everything on it.
-        ...BALLS.filter((b) => career.best < b.unlockAt).map(
+        ...BALLS.filter((b) => !career.unlockedAssets?.includes(b.id) && career.best < b.unlockAt).map(
           (b): [string, string] => [b.id, tf("select.unlockAt", { trophies: b.unlockAt })]
         ),
-        // The premium venue is locked by the entitlement rather than by
-        // trophies, so it says something different — but it goes through the
-        // same map, which is what makes PLAY turn into the offer on its tab.
-        ...VENUE_IDS.filter((id) => isPremiumVenue(id) && !ownsArena()).map(
-          (id): [string, string] => [id, tr("select.venuePro")]
+        // Premium venues locked by entitlement or trophies/purchase
+        ...VENUE_IDS.filter((id) => !isVenueUnlocked(id)).map(
+          (id): [string, string] => [
+            id,
+            id === "basketball"
+              ? tf("select.unlockAt", { trophies: 450 })
+              : tr("select.venuePro"),
+          ]
         ),
       ]),
+      prices: Object.fromEntries(
+        [...CHARACTERS.map((c) => c.id), ...BALLS.map((b) => b.id), ...VENUE_IDS].map((id) => [
+          id,
+          formattedPriceFor(id),
+        ])
+      ),
+      onUnlockAsset: async (id) => {
+        return handleUnlockAsset(id);
+      },
+      hasBallAffinity: (charId, ballId) => hasBallAffinity(charId, ballId),
+      hasVenueAffinity: (charId, venueId) => hasVenueAffinity(charId, venueId),
       // What this ball does for *this* player, so affinity is visible at the
       // moment it matters rather than buried in a table somewhere.
       withBall: (characterId, ballId) => {
@@ -2383,7 +2610,7 @@ async function boot(): Promise<void> {
       venues: VENUE_IDS.map((id) => ({
         id,
         label: venueFor(id).label,
-        locked: isPremiumVenue(id) && !ownsArena(),
+        locked: !isVenueUnlocked(id),
       })),
       venue: venueId,
       // Called when PLAY is pressed, to commit whatever the venue tab is
@@ -2393,17 +2620,18 @@ async function boot(): Promise<void> {
         const picked = VENUE_IDS.find((v) => v === id);
         if (!picked) return false;
         // Already the chosen venue: nothing to do, and emphatically not a
-        // refusal. Answering false here would have made PLAY do nothing at all
-        // for anyone who had not changed venue since opening the screen.
+        // refusal.
         if (picked === venueId) return true;
-        if (isPremiumVenue(picked) && !ownsArena()) {
-          // Backing out of the paywall is a decision, not a failure: the screen
-          // stays where it is and says nothing about it.
-          if (!(await unlockArena())) return false;
+        if (isPremiumVenue(picked) && !isVenueUnlocked(picked)) {
+          const unlocked = await handleUnlockAsset(picked);
+          if (!unlocked) return false;
         }
         storeVenue(picked);
         venueId = picked;
-        if (match) match.indoorVenue = picked === "gym";
+        if (match) {
+          match.venueId = picked;
+          match.indoorVenue = picked === "gym";
+        }
         void gs.setVenue(venueFor(picked));
         return true;
       },
@@ -2597,44 +2825,52 @@ async function boot(): Promise<void> {
           round: 1,
           cup: { wonSemi: won, semiSets: sets, sf2Sets: sf2.sets, sf2WinA: sf2.winA },
         });
-        ui.showStandings("CUP — SEMI-FINALS", [
-          scoreline(human, sf1Opp, sets),
-          scoreline(sf2a, sf2b, sf2.sets),
-          earnedRow(),
-          `next: ${finalName} — ${human.label} vs ${finalOpp.label}`,
-        ], "PLAY FINAL", () => {
-          playCompMatch(human, finalOpp, ballId, "hard", (wonFinal, finalSets) => {
-            // The final the human didn't play, simulated between the two others:
-            // the 3rd-place match if the human reached the winner final, or the
-            // winner final if the human dropped to the 3rd-place match.
-            const pair: [CharacterDef, CharacterDef] = won ? [sf1Opp, sf2Loser] : [sf1Opp, sf2Winner];
-            const sim = simulateMatch(pair[0], pair[1]);
-            const simWinner = sim.winA ? pair[0] : pair[1];
-            const simLoser = sim.winA ? pair[1] : pair[0];
-            const standings: string[] = won
-              ? wonFinal
-                ? [`🏆 CHAMPION — ${human.label}`, `2nd — ${finalOpp.label}`,
-                   `3rd — ${simWinner.label}`, `4th — ${simLoser.label}`]
-                : [`🏆 CHAMPION — ${finalOpp.label}`, `2nd — ${human.label}`,
-                   `3rd — ${simWinner.label}`, `4th — ${simLoser.label}`]
-              : wonFinal
-                ? [`🏆 CHAMPION — ${simWinner.label}`, `2nd — ${simLoser.label}`,
-                   `3rd — ${human.label}`, `4th — ${finalOpp.label}`]
-                : [`🏆 CHAMPION — ${simWinner.label}`, `2nd — ${simLoser.label}`,
-                   `3rd — ${finalOpp.label}`, `4th — ${human.label}`];
-            // Where the player actually finished, which the standings order
-            // already encodes: champion, runner-up, third or fourth.
-            const place = won ? (wonFinal ? 1 : 2) : wonFinal ? 3 : 4;
-            const paid = finishCompetition("cup", place);
-            ui.showStandings(
-              "CUP — FINAL RESULT",
-              [`your final: ${scoreline(human, finalOpp, finalSets)}`, ...standings, "—", ...paid],
-              "BACK TO MENU",
-              () => leaveMatch(),
-              place === 1
-            );
-          });
-        });
+        ui.showStandings(
+          "CUP — SEMI-FINALS",
+          [
+            scoreline(human, sf1Opp, sets),
+            scoreline(sf2a, sf2b, sf2.sets),
+            earnedRow(),
+            `next: ${finalName} — ${human.label} vs ${finalOpp.label}`,
+          ],
+          "PLAY FINAL",
+          () => {
+            playCompMatch(human, finalOpp, ballId, "hard", (wonFinal, finalSets) => {
+              // The final the human didn't play, simulated between the two others:
+              // the 3rd-place match if the human reached the winner final, or the
+              // winner final if the human dropped to the 3rd-place match.
+              const pair: [CharacterDef, CharacterDef] = won ? [sf1Opp, sf2Loser] : [sf1Opp, sf2Winner];
+              const sim = simulateMatch(pair[0], pair[1]);
+              const simWinner = sim.winA ? pair[0] : pair[1];
+              const simLoser = sim.winA ? pair[1] : pair[0];
+              const standings: string[] = won
+                ? wonFinal
+                  ? [`🏆 CHAMPION — ${human.label}`, `2nd — ${finalOpp.label}`,
+                     `3rd — ${simWinner.label}`, `4th — ${simLoser.label}`]
+                  : [`🏆 CHAMPION — ${finalOpp.label}`, `2nd — ${human.label}`,
+                     `3rd — ${simWinner.label}`, `4th — ${simLoser.label}`]
+                : wonFinal
+                  ? [`🏆 CHAMPION — ${simWinner.label}`, `2nd — ${simLoser.label}`,
+                     `3rd — ${human.label}`, `4th — ${finalOpp.label}`]
+                  : [`🏆 CHAMPION — ${simWinner.label}`, `2nd — ${simLoser.label}`,
+                     `3rd — ${finalOpp.label}`, `4th — ${human.label}`];
+              // Where the player actually finished, which the standings order
+              // already encodes: champion, runner-up, third or fourth.
+              const place = won ? (wonFinal ? 1 : 2) : wonFinal ? 3 : 4;
+              const paid = finishCompetition("cup", place);
+              ui.showStandings(
+                "CUP — FINAL RESULT",
+                [`your final: ${scoreline(human, finalOpp, finalSets)}`, ...standings, "—", ...paid],
+                "BACK TO MENU",
+                () => leaveMatch(),
+                place === 1,
+                () => leaveMatch()
+              );
+            });
+          },
+          false,
+          () => leaveMatch()
+        );
     };
 
     // Resumed after the semi-finals: replay none of them, just go to the tie
@@ -2644,15 +2880,25 @@ async function boot(): Promise<void> {
       return;
     }
 
-    ui.showStandings("CUP — THE DRAW", [
-      `SEMI-FINAL 1 — ${human.label} vs ${sf1Opp.label}`,
-      `SEMI-FINAL 2 — ${sf2a.label} vs ${sf2b.label}`,
-      `then the losers meet for 3rd place and the winners for the trophy`,
-    ], "PLAY SEMI-FINAL", () => {
-      playCompMatch(human, sf1Opp, ballId, "normal", (won, sets) => {
-        toFinal(won, sets, simulateMatch(sf2a, sf2b));
-      });
-    });
+    ui.showStandings(
+      "CUP — THE DRAW",
+      [
+        `SEMI-FINAL 1 — ${human.label} vs ${sf1Opp.label}`,
+        `SEMI-FINAL 2 — ${sf2a.label} vs ${sf2b.label}`,
+        `then the losers meet for 3rd place and the winners for the trophy`,
+      ],
+      "PLAY SEMI-FINAL",
+      () => {
+        playCompMatch(human, sf1Opp, ballId, "normal", (won, sets) => {
+          toFinal(won, sets, simulateMatch(sf2a, sf2b));
+        });
+      },
+      false,
+      () => {
+        clearCompetition();
+        showFormats();
+      }
+    );
   };
 
   const runLeague = (
@@ -2704,7 +2950,9 @@ async function boot(): Promise<void> {
             `LEAGUE — ROUND ${round + 1}`,
             [...rows, earnedRow()],
             "PLAY NEXT ROUND",
-            () => playRound(round + 1)
+            () => playRound(round + 1),
+            false,
+            () => leaveMatch()
           );
         } else {
           // The table is already sorted, so the player's place is where they
@@ -2720,7 +2968,8 @@ async function boot(): Promise<void> {
             [...rows, "—", `🏆 ${champion}`, ...paid],
             "BACK TO MENU",
             () => leaveMatch(),
-            place === 1
+            place === 1,
+            () => leaveMatch()
           );
         }
       });
@@ -2732,11 +2981,21 @@ async function boot(): Promise<void> {
       playRound(run.round);
       return;
     }
-    ui.showStandings("LEAGUE — SCHEDULE", [
-      `round 1: ${human.label} vs ${players[1].label} · ${players[2].label} vs ${players[3].label}`,
-      `round 2: ${human.label} vs ${players[2].label} · ${players[1].label} vs ${players[3].label}`,
-      `round 3: ${human.label} vs ${players[3].label} · ${players[1].label} vs ${players[2].label}`,
-    ], "PLAY ROUND 1", () => playRound(0));
+    ui.showStandings(
+      "LEAGUE — SCHEDULE",
+      [
+        `round 1: ${human.label} vs ${players[1].label} · ${players[2].label} vs ${players[3].label}`,
+        `round 2: ${human.label} vs ${players[2].label} · ${players[1].label} vs ${players[3].label}`,
+        `round 3: ${human.label} vs ${players[3].label} · ${players[1].label} vs ${players[2].label}`,
+      ],
+      "PLAY ROUND 1",
+      () => playRound(0),
+      false,
+      () => {
+        clearCompetition();
+        showFormats();
+      }
+    );
   };
 
   // ------------------------------------------------------------ match setup
@@ -2767,7 +3026,8 @@ async function boot(): Promise<void> {
     // first, because a supply is something the player brought with them and a
     // ball is what they picked up on the way out.
     const supplied = withSupplies(player, career.taken, drank);
-    const playerDef = withBall(supplied, ballFor(ballId));
+    const playerDef = withBallAndVenue(supplied, ballFor(ballId), venueId);
+    const opponentDef = withBallAndVenue(opts.opponent, ballFor(ballId), venueId);
     ui.showLoading("Loading the court…");
     input.setTouchControlsEnabled(true);
     practiceCoach?.dispose();
@@ -2785,22 +3045,30 @@ async function boot(): Promise<void> {
     const [loadedBall, playerChar, aiChar] = await Promise.all([
       ballTask,
       Character.load(gs.scene, playerDef),
-      Character.load(gs.scene, opts.opponent),
+      Character.load(gs.scene, opponentDef),
     ]);
     // The human's shirt only. The opponent is somebody else and wears their own
     // kit — printing the player's name on both is the version of this feature
     // that reads as a bug. Awaited so the first frame already shows it, and
     // never allowed to throw: a name on a shirt must not cost anyone a match.
-    const playerKit = kitForCharacter(playerDef, prefs.kit);
-    try {
-      await applyKit(playerChar.meshes, playerKit, (url, invertY) => {
-        const painted = new Texture(url, gs.scene, undefined, invertY);
-        painted.name = "shirt (kit)";
-        return painted;
-      });
-    } catch (error) {
-      console.warn("[kit] could not paint the shirt:", error);
-    }
+    // The human's shirt, and online the other human's too. A kit nobody else
+    // can see is a kit worth nothing, and the opponent's own marks are the only
+    // thing that makes the far end of the table a person rather than a model.
+    // Never allowed to throw: a name on a shirt must not cost anyone a match.
+    const paint = async (char: Character, kit: Kit) => {
+      try {
+        await applyKit(char.meshes, kit, (url, invertY) => {
+          const painted = new Texture(url, gs.scene, undefined, invertY);
+          painted.name = "shirt (kit)";
+          return painted;
+        });
+      } catch (error) {
+        console.warn("[kit] could not paint the shirt:", error);
+      }
+    };
+    await paint(playerChar, kitForCharacter(playerDef, prefs.kit));
+    // Offline the far side is the CPU, which wears the kit the artist made.
+    if (opts.opponentKit) await paint(aiChar, kitForCharacter(opponentDef, opts.opponentKit));
     if (needsNewBall && loadedBall) {
       if (ballMesh) {
         gs.shadows?.removeShadowCaster(ballMesh, true);
@@ -2882,7 +3150,9 @@ async function boot(): Promise<void> {
     });
     controller.aimMarker = gs.aimMarker;
     controller.landingMarker = gs.landingMarker;
+    controller.serveMarker = gs.serveMarker;
     controller.practice = opts.practice === true;
+    controller.venueId = venueId;
     controller.indoorVenue = venueId === "gym";
     // Practice gives no assistance. The automatic first reception is the
     // biggest thing the game does for a player, and a lesson taught with it on
@@ -3002,11 +3272,16 @@ async function boot(): Promise<void> {
           () => input.isTouch,
           () => input.isTouch && input.isPortrait,
           () => {
-            if (!prefs.coached) {
+            const firstTime = !prefs.coached;
+            if (firstTime) {
               prefs.coached = true;
               storePreferences(prefs);
             }
             leaveMatch();
+            // Straight on from the lesson the first time. They have just been
+            // taught the sport and are still in the mood to be shown things;
+            // coming back to it cold a week later is how a tour goes unread.
+            if (firstTime && !prefs.toured) startTour();
           }
         )
       : null;

@@ -44,6 +44,8 @@ export interface Career {
   /** The highest trophy count ever reached, which relegation cannot take away. */
   best: number;
   champions: Record<string, ChampionState>;
+  /** Assets (characters, balls, venues) permanently unlocked by purchase or reward. */
+  unlockedAssets?: string[];
   /** The day the current challenges belong to (`YYYY-MM-DD`). */
   day: string;
   /** Challenge id → progress so far today. */
@@ -83,6 +85,7 @@ export function freshCareer(day: string, season: string = day.slice(0, 7)): Care
     best: 0,
     // Everyone starts with one player. The rest are the reason to keep playing.
     champions: { [STARTING_CHAMPION]: { level: 1, xp: 0 } },
+    unlockedAssets: [],
     day,
     progress: {},
     claimed: [],
@@ -100,9 +103,9 @@ const KEY = "teqopen.career";
 /** Trophies at which each character beyond the first unlocks. */
 export const UNLOCK_AT: Record<string, number> = {
   [CHARACTERS[0].id]: 0,
-  [CHARACTERS[1].id]: 60,
-  [CHARACTERS[2].id]: 160,
-  [CHARACTERS[3].id]: 300,
+  [CHARACTERS[1].id]: 120,
+  [CHARACTERS[2].id]: 300,
+  [CHARACTERS[3].id]: 550,
 };
 
 /**
@@ -114,7 +117,7 @@ export const UNLOCK_AT: Record<string, number> = {
  * something a player *wanted*. Coins are the fast route, and the first one
  * costs about two wins, which is close enough to reach for.
  */
-export const XP_PER_LEVEL = 5;
+export const XP_PER_LEVEL = 10;
 /**
  * Coins the next level costs.
  *
@@ -124,22 +127,21 @@ export const XP_PER_LEVEL = 5;
  * than an afternoon's change.
  */
 export function upgradeCost(level: number): number {
-  return 120 + (level - 1) * (120 + (level - 1) * 40);
+  return 150 + (level - 1) * (150 + (level - 1) * 25);
 }
 /**
  * A character stops improving here.
  *
- * Twelve rather than six, because the ceiling is the grind now. Every ability
- * reaches the top of its bar at this level on every character — the roster
- * ladder is no longer a permanent difference in what a player can become, it
- * is how much of a career it takes them to get there, and a better character
- * saturates several levels earlier than a starter does.
+ * Twenty-five rather than twelve, turning 99 into a true long-term career goal.
+ * Every ability reaches the top of its bar at this level on every character —
+ * the roster ladder is no longer a permanent difference in what a player can become,
+ * it is how much of a career it takes them to get there, and a better character
+ * saturates earlier than a starter does.
  *
- * A level comes free every `XP_PER_LEVEL` matches with a character, so this is
- * about fifty-five matches of playing, or a great many coins of impatience
- * (`upgradeCost` is quadratic).
+ * A level comes free every `XP_PER_LEVEL` matches with a character, or via
+ * coin upgrades (`upgradeCost` is quadratic).
  */
-export const MAX_LEVEL = 12;
+export const MAX_LEVEL = 25;
 
 /**
  * The character as this career has made it.
@@ -171,16 +173,16 @@ export function withCareer(def: CharacterDef, level: number): CharacterDef {
     Math.min(SPAN[key].max, value * (1 + rate * steps));
   return {
     ...def,
-    precision: grow(def.precision, 0.11, "control"),
-    volley: grow(def.volley, 0.105, "volley"),
-    stamina: grow(def.stamina, 0.11, "stamina"),
-    power: grow(def.power, 0.095, "power"),
-    serve: grow(def.serve, 0.085, "serve"),
+    precision: grow(def.precision, 0.05, "control"),
+    volley: grow(def.volley, 0.048, "volley"),
+    stamina: grow(def.stamina, 0.051, "stamina"),
+    power: grow(def.power, 0.043, "power"),
+    serve: grow(def.serve, 0.038, "serve"),
     // The widest gap in the roster: ENGLAND starts at 0.80 where the starter
     // is at 0.95, so the rate that gets the *starter* there leaves ENGLAND
     // short of its own ceiling for good.
-    agility: grow(def.agility, 0.115, "agility"),
-    speed: grow(def.speed, 0.045, "reactivity"),
+    agility: grow(def.agility, 0.053, "agility"),
+    speed: grow(def.speed, 0.02, "reactivity"),
   };
 }
 
@@ -191,8 +193,29 @@ export function levelOf(career: Career, id: string): number {
 
 /** True once this character is available to pick. */
 export function isUnlocked(career: Career, id: string): boolean {
+  if (career.unlockedAssets?.includes(id)) return true;
   if (career.champions[id]) return true;
   return career.best >= (UNLOCK_AT[id] ?? Infinity);
+}
+
+/**
+ * Grant a permanent asset unlock (character, ball, or venue).
+ * Persists immediately and initializes champion level if character.
+ */
+export function grantAssetUnlock(career: Career, id: string): Career {
+  const list = career.unlockedAssets ?? [];
+  if (list.includes(id)) return career;
+  const champions = { ...career.champions };
+  if (CHARACTERS.some((c) => c.id === id) && !champions[id]) {
+    champions[id] = { level: 1, xp: 0 };
+  }
+  const next: Career = {
+    ...career,
+    unlockedAssets: [...list, id],
+    champions,
+  };
+  storeCareer(next);
+  return next;
 }
 
 /** Whole, non-negative counts keyed by id, from whatever was in storage. */
@@ -277,6 +300,9 @@ function loadCareer(now: Date): Career {
       trophies: Math.max(0, Math.round(num(stored.trophies, 0))),
       best: Math.max(0, Math.round(num(stored.best, 0))),
       champions: Object.keys(champions).length ? champions : freshCareer(today).champions,
+      unlockedAssets: Array.isArray(stored.unlockedAssets)
+        ? stored.unlockedAssets.filter((a): a is string => typeof a === "string")
+        : [],
       day: typeof stored.day === "string" ? stored.day : today,
       progress: isRecord(stored.progress)
         ? Object.fromEntries(

@@ -34,6 +34,7 @@ import {
   mintRecovery,
   mintToken,
   recoveryHash,
+  recoveryLookup,
   tidyRecovery,
   tokenHash,
 } from "./secrets.mjs";
@@ -266,6 +267,7 @@ export async function register(store, rawName, now = new Date()) {
     tokenHash: tokenHash(token),
     recoverySalt: recovery.salt,
     recoveryHash: recovery.hash,
+    recoveryLookup: recovery.lookup,
     created: now.getTime(),
     lastSeen: now.getTime(),
     lastMatchAt: 0,
@@ -303,18 +305,42 @@ export async function rename(store, player, rawName) {
  * when a phone is gone, and an account that keeps answering to the phone it
  * was recovered away from has not been recovered.
  */
-export async function recover(store, rawId, rawCode) {
-  const id = typeof rawId === "string" ? rawId.trim().toUpperCase() : "";
+export async function recover(store, rawCode, rawId = "") {
   const code = tidyRecovery(rawCode);
   // One message for every kind of failure, so this cannot be used to discover
-  // which player codes exist.
-  const refuse = () => new ValidationError("that code and player do not match", 403);
+  // which codes or player ids exist.
+  const refuse = () => new ValidationError("that recovery code is not one of ours", 403);
   if (!looksLikeRecovery(code)) throw refuse();
-  const player = await store.get(id);
+
+  // The code alone says which account it belongs to. It is unique, it is the
+  // thing the player actually wrote down, and asking for a player id beside it
+  // meant somebody with the slip in their hand still could not get back in.
+  let player = await store.byRecovery?.(recoveryLookup(code));
+  if (!player) {
+    // An account issued before the lookup existed has no index entry, and it
+    // cannot be given one after the fact: the lookup is a digest of the code,
+    // and the code was never kept. So the code is offered to each salted digest
+    // in turn instead. The predicate goes to the store rather than the code, so
+    // the secret stays here.
+    //
+    // Recovering mints a fresh code, which is written with a lookup, so every
+    // account leaves that set the first time it is used.
+    player =
+      (await store.findLegacyRecovery?.(
+        (p) =>
+          Boolean(p.recoverySalt) &&
+          digestsMatch(p.recoveryHash, recoveryHash(code, p.recoverySalt))
+      )) ?? null;
+  }
+  if (!player && typeof rawId === "string" && rawId.trim()) {
+    // And the id still works, for anyone who has it. Nothing asks for it now.
+    player = await store.get(rawId.trim().toUpperCase());
+  }
   if (!player?.recoveryHash) throw refuse();
   if (!digestsMatch(player.recoveryHash, recoveryHash(code, player.recoverySalt))) throw refuse();
 
   const previous = player.tokenHash;
+  const spent = player.recoveryLookup;
   const token = mintToken();
   player.tokenHash = tokenHash(token);
   // A used recovery code is spent, and the new device is handed a fresh one.
@@ -322,17 +348,22 @@ export async function recover(store, rawId, rawCode) {
   const next = mintRecovery();
   player.recoverySalt = next.salt;
   player.recoveryHash = next.hash;
+  player.recoveryLookup = next.lookup;
   await store.save(player);
   await store.revokeToken?.(previous);
+  if (spent && spent !== next.lookup) await store.revokeRecovery?.(spent);
   return { player, token, recoveryCode: next.code };
 }
 
 /** Replace the recovery code, from a device that is already signed in. */
 export async function regenerateRecovery(store, player) {
+  const spent = player.recoveryLookup;
   const next = mintRecovery();
   player.recoverySalt = next.salt;
   player.recoveryHash = next.hash;
+  player.recoveryLookup = next.lookup;
   await store.save(player);
+  if (spent && spent !== next.lookup) await store.revokeRecovery?.(spent);
   return next.code;
 }
 
@@ -474,7 +505,14 @@ export async function recordOnlineMatch(store, player, body, now = new Date()) {
   const match = getMatch(body?.matchId);
   if (!match) throw new ValidationError("that match is not one of ours", 404);
   if (!isPlayerIn(match, player.id)) throw new ValidationError("that was not your match", 403);
-  if (match.reports.get(player.id)?.settled) throw new ValidationError("already settled", 409);
+  // Both sides post the moment the match ends, and whoever gets there first is
+  // told to wait, because one report settles nothing. This is that player
+  // coming back for the answer: the match settled while they were away, and
+  // the result is theirs to collect rather than an error to be shown. Refusing
+  // it is why the first reporter — as often as not the winner — watched the
+  // other player get paid and got nothing themselves.
+  const already = match.reports.get(player.id);
+  if (already?.settled) return { career: player.career, outcome: already.outcome };
 
   // Whether this can be a walkover is decided here, from what the relay saw,
   // before the report is validated — a forfeit is a win that did not win the
@@ -495,10 +533,14 @@ export async function recordOnlineMatch(store, player, body, now = new Date()) {
     }
     const opponent = await store.get(opponentId);
     const mine = await payOut(store, player, championId, tally, now);
-    match.reports.get(player.id).settled = true;
+    Object.assign(match.reports.get(player.id), { settled: true, outcome: mine.outcome });
     if (opponent) {
-      await payOut(store, opponent, theirs.championId, theirs, now, { skipCooldown: true });
-      match.reports.get(opponentId).settled = true;
+      // Kept, not discarded: the other player is still waiting on their own
+      // request, and this is the only moment their outcome is ever computed.
+      const paid = await payOut(store, opponent, theirs.championId, theirs, now, {
+        skipCooldown: true,
+      });
+      Object.assign(match.reports.get(opponentId), { settled: true, outcome: paid.outcome });
     }
     return mine;
   }
@@ -511,7 +553,7 @@ export async function recordOnlineMatch(store, player, body, now = new Date()) {
     }
     if (!tally.won) throw new ValidationError("a walkover is a win, not a loss", 409);
     const mine = await payOut(store, player, championId, tally, now);
-    match.reports.get(player.id).settled = true;
+    Object.assign(match.reports.get(player.id), { settled: true, outcome: mine.outcome });
     const leaver = await store.get(match.left);
     if (leaver) {
       // The cooldown is skipped for the leaver: they are not making a request,

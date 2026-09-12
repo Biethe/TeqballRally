@@ -110,7 +110,7 @@ export const SWIPE_LOFT = { flat: 0.52, neutral: 1, high: 2.0 };
  * anywhere on the court, and over-hitting is paid for in accuracy (the spread
  * grows with power) rather than in an arbitrary length.
  */
-const SWIPE_DEPTH = { base: 0.55, fromLoft: 0.22, fromPace: 0.3, min: 0.25, max: 0.95 };
+const SWIPE_DEPTH = { base: 0.52, fromLoft: 0.4, fromPace: 0.4, min: 0.05, max: 0.98 };
 
 /**
  * Read a swipe as a shot.
@@ -213,7 +213,7 @@ export function swipeTarget(
 }
 
 /** How far across the half a fully sideways swipe aims, as a fraction of it. */
-const SWIPE_LATERAL = 0.9;
+const SWIPE_LATERAL = 0.98;
 
 /**
  * How large the landing deviation is, in metres.
@@ -227,14 +227,14 @@ const SWIPE_LATERAL = 0.9;
  */
 export const SPREAD = {
   /** Radius at half power, for an unremarkable striker with an easy contact. */
-  base: 0.34,
+  base: 0.18,
   /** Share of the radius that power alone accounts for. */
   power: 0.85,
   /** Extra radius for a contact taken at full stretch rather than in front. */
-  stretch: 0.75,
-  /** Nothing is ever a certainty, and nothing is ever hopeless. */
-  min: 0.05,
-  max: 1.6,
+  stretch: 0.55,
+  /** Faithful limits ensuring the ball accurately targets the intended table point. */
+  min: 0.02,
+  max: 0.6,
 };
 
 export interface SpreadInputs {
@@ -265,14 +265,14 @@ export function spreadRadius({ power, precision, footSpray, stretch }: SpreadInp
  */
 export const DEVIATION = {
   /** Share of the radius spent along the shot line. */
-  along: 0.6,
+  along: 0.5,
   /** Weight of the contact's timing sense on the over/under-carry. */
-  senseWeight: 0.6,
+  senseWeight: 0.3,
   /** Weight of power on the carry, centred on a middling strike. */
-  powerWeight: 0.8,
+  powerWeight: 0.3,
   powerCentre: 0.55,
   /** The stretch at which the across-squirt is fully grown. */
-  stretchFull: 0.6,
+  stretchFull: 0.8,
 };
 
 /** What the contact itself says about where the ball will actually land. */
@@ -410,6 +410,30 @@ export function clampToPlay(point: Vector3): Vector3 {
   );
 }
 
+/**
+ * Keep an aim on the half it is being hit at.
+ *
+ * `clampToPlay` bounds the whole court, which is right for a *landing* — a
+ * scattered kick can end up anywhere in it. It is wrong for an aim, because
+ * half that box is the player's own end: pushing the stick back walked the
+ * marker across the net onto the ground behind them, where it read as sitting
+ * under the table and where no kick could ever have been asking to go.
+ *
+ * Depth is held between the net and just past the far line; width still
+ * reaches outside the table, because aiming wide of it is how a player misses
+ * on purpose and that has to stay possible.
+ */
+export function clampToTargetHalf(point: Vector3, halfSign: number): Vector3 {
+  const side = Math.sign(halfSign) || 1;
+  const near = 0.2;
+  const depth = Math.min(PLAY_BOX.halfLen, Math.max(near, side * point.x));
+  return new Vector3(
+    side * depth,
+    point.y,
+    Math.max(-PLAY_BOX.halfWid, Math.min(PLAY_BOX.halfWid, point.z))
+  );
+}
+
 /** True if a landing point is on the table half belonging to `sign` (+1 or -1). */
 export function onTableHalf(point: Vector3, halfSign: number): boolean {
   return (
@@ -444,8 +468,8 @@ export function serveTarget(attackingSign: number, fwd: number, lat: number): Ve
  */
 export function tableTarget(attackingSign: number, fwd: number, lat: number): Vector3 {
   // Fractions of the half rather than metres, so the aim keeps its shape if
-  // the table is ever resized again.
-  const depth = TABLE.halfLen * Math.min(0.97, Math.max(0.2, 0.57 + fwd * 0.33));
-  const lateral = TABLE.halfWid * Math.max(-0.9, Math.min(0.9, lat * 0.83));
+  // the table is ever resized again. Continuous coverage across the full opponent table.
+  const depth = TABLE.halfLen * Math.min(0.98, Math.max(0.05, 0.515 + fwd * 0.465));
+  const lateral = TABLE.halfWid * Math.max(-0.98, Math.min(0.98, lat * 0.98));
   return new Vector3(attackingSign * depth, 0, lateral);
 }

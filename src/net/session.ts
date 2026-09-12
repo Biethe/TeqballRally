@@ -22,10 +22,14 @@ import {
   isValidFx,
   isValidInput,
   readLoft,
+  readStrikeable,
   readTaps,
+  readTouches,
+  readViewTick,
   isValidPause,
   isValidRematch,
   isValidSnapshot,
+  isScorePair,
   reframe,
   vec,
   type GameMessage,
@@ -43,6 +47,17 @@ import {
  * kinks.
  */
 const SNAPSHOT_HZ = 30;
+
+/**
+ * Jitter margin added to the measured lead, in ticks, at most.
+ *
+ * The lead wants to be the transport delay and nothing more, but a link whose
+ * delay wanders would leave the guest reading a moment the frames have not
+ * reached, which reads as a stall. A couple of ticks of headroom absorbs the
+ * ordinary wander; past that the correction handles it, because leading too
+ * far is a worse trade than a small tail.
+ */
+const LEAD_JITTER_CAP_TICKS = 3;
 
 /**
  * Silence long enough to call the opponent absent.
@@ -156,6 +171,8 @@ export class OnlineSession {
   private pendingGuest = { strike: false, pop: false, confirm: false };
   /** Guest: the age of each arriving snapshot, measured off its tick stamp. */
   private snapAge = new TickAge();
+  /** Latest jitter reading from `snapAge`: age above the best route seen. */
+  private snapJitter = 0;
   /** Guest: this frame's controls, latched until sent. */
   private localInput: InputState = {
     moveX: 0,
@@ -396,6 +413,14 @@ export class OnlineSession {
       // rather than a parallel one.
       case "input": {
         if (!this.isHost || !isValidInput(msg)) return;
+        // Which scheme the guest is playing with, so the host reads their axes
+        // as the thing they meant. Absent means an older peer, and landscape.
+        this.match.versusPortrait = msg.portrait === true;
+        // The instant their screen was showing when they pressed. The reach
+        // test and the limb choice are read there rather than here, so a
+        // press means what the player meant by it. Undefined for a peer too
+        // old to say, and the match then judges live as it used to.
+        this.match.versusViewTick = readViewTick(msg.viewTick, this.tick) ?? null;
         this.match.versusInput = {
           moveX: msg.moveX,
           moveZ: msg.moveZ,
@@ -410,6 +435,7 @@ export class OnlineSession {
           strikeLoft: readLoft(msg.loft),
           popPressed: this.pendingGuest.pop || msg.pop,
           confirmPressed: this.pendingGuest.confirm || msg.confirm,
+          tapAim: msg.tapAim === true,
         };
         this.pendingGuest.strike = this.match.versusInput.strikePressed;
         this.pendingGuest.pop = this.match.versusInput.popPressed;
@@ -421,14 +447,15 @@ export class OnlineSession {
       // reframe, so it is in this peer's own coordinates.
       case "snap": {
         if (this.isHost || !isValidSnapshot(msg)) return;
-        // How old this frame already is, measured off its own tick stamp
-        // rather than guessed from half the round trip: the estimator
-        // calibrates out the peers' unrelated clock origins and tracks the
-        // transport delay sample by sample. The match fast-forwards
-        // everything in the frame by that much, so the ball and both players
-        // are drawn at the same instant rather than the ball being shown half
-        // a trip in the past.
-        const lead = this.snapAge.observe(this.tick - msg.tick);
+        // How old this frame already is. Two measures, because neither is
+        // enough alone: the round trip gives the route's absolute delay, and
+        // the estimator — which calibrates out the peers' unrelated clock
+        // origins — gives how far this particular frame ran behind the best
+        // route it has seen. The match carries everything in the frame forward
+        // by the total, so the ball and both players are drawn at the same
+        // instant rather than the ball being shown half a trip in the past.
+        this.snapJitter = this.snapAge.observe(this.tick - msg.tick);
+        const lead = this.leadTicks();
         this.match.applySnapshot({
           ballPos: msg.ballPos,
           ballVel: msg.ballVel,
@@ -444,7 +471,18 @@ export class OnlineSession {
           selfClipTo: msg.hostClipTo,
           opponentClipFrom: msg.guestClipFrom,
           opponentClipTo: msg.guestClipTo,
+          selfClipSeq: msg.hostClipSeq,
+          opponentClipSeq: msg.guestClipSeq,
           selfLocked: msg.hostLocked === true,
+          // After reframe, hostAnchor is this peer's own.
+          selfAnchor: msg.hostAnchor ?? null,
+          selfAnchorEta: msg.hostAnchorEta,
+          // After reframe these are already in this peer's seat names.
+          strikeable: readStrikeable(msg.strikeable),
+          touches: readTouches(msg.touches),
+          serveClock: typeof msg.serveClock === "number" ? msg.serveClock : undefined,
+          tally: isScorePair(msg.tally) ? msg.tally : undefined,
+          rallies: Number.isFinite(msg.rallies) ? msg.rallies : undefined,
           tick: msg.tick,
           score: msg.score,
           sets: msg.sets,
@@ -494,6 +532,9 @@ export class OnlineSession {
     this.conn.tick = this.tick;
 
     if (this.isHost) {
+      // Where the ball is on this tick, kept so a guest's press can be judged
+      // against the moment it was made rather than the moment it landed here.
+      this.match.recordBallAt(this.tick);
       // What the sim produced this step — contact events and clip starts —
       // leaves stamped in this step's tick, beside the snapshots.
       for (const fx of this.match.drainNet(this.tick)) {
@@ -509,6 +550,9 @@ export class OnlineSession {
       // Presses handed to the match this step are spent.
       this.pendingGuest = { strike: false, pop: false, confirm: false };
     } else {
+      // Every step, because the route can change under a phone that is
+      // walking between cells.
+      this.match.setPlaybackLead(this.leadTicks());
       this.sendInput();
     }
 
@@ -531,6 +575,22 @@ export class OnlineSession {
     this.trackPresence(dt);
   }
 
+  /**
+   * How far behind the host this peer's newest frame already is, in ticks.
+   *
+   * Half the round trip, plus the snapshot grid the newest frame sits on, plus
+   * a little headroom for a link whose delay wanders. `latencyTicks` is the
+   * absolute measure and has to be the base: `snapAge` reports age *above the
+   * best route it has seen*, so on a steady link it reads near zero however
+   * far away the host is.
+   *
+   * Both the screen's lead and the reconcile target are read off this, so the
+   * character being corrected and the ball beside it describe one instant.
+   */
+  private leadTicks(): number {
+    return this.conn.latencyTicks + 1 + Math.min(LEAD_JITTER_CAP_TICKS, this.snapJitter);
+  }
+
   /** Guest: the local player's controls, every step. */
   private sendInput(): void {
     const held = this.localInput;
@@ -539,6 +599,10 @@ export class OnlineSession {
         {
           t: "input",
           tick: this.tick,
+          // The host instant this screen was showing, so the press is judged
+          // against the ball the player was looking at rather than the one a
+          // trip later. Undefined before the first frame arrives.
+          viewTick: this.match.renderTick ?? undefined,
           moveX: held.moveX,
           moveZ: held.moveZ,
           strike: held.strikePressed,
@@ -548,6 +612,12 @@ export class OnlineSession {
           loft: held.strikeLoft,
           pop: held.popPressed,
           confirm: held.confirmPressed,
+          // Read off the match rather than latched with the presses: the
+          // scheme is a property of how this phone is being held right now,
+          // and a player who turns the device mid-rally has to be understood
+          // from the next frame on.
+          portrait: this.match.tapSteering,
+          tapAim: held.tapAim,
         },
         this.role
       )
@@ -561,6 +631,7 @@ export class OnlineSession {
       strikeLoft: undefined,
       popPressed: false,
       confirmPressed: false,
+      tapAim: undefined,
     };
   }
 
@@ -580,6 +651,9 @@ export class OnlineSession {
       strikeLoft: input.strikePressed ? input.strikeLoft : this.localInput.strikeLoft,
       popPressed: this.localInput.popPressed || input.popPressed,
       confirmPressed: this.localInput.confirmPressed || input.confirmPressed,
+      // Travels with the axes it describes, not with the presses: it says what
+      // this frame's numbers mean.
+      tapAim: input.tapAim,
     };
   }
 
@@ -595,6 +669,10 @@ export class OnlineSession {
     };
     const hostWin = win("player");
     const guestWin = win("ai");
+    const anchorOf = (side: "player" | "ai") => {
+      const a = this.match.anchorState[side];
+      return a ? vec(a.pos) : null;
+    };
     this.conn.send(
       reframe(
         {
@@ -613,9 +691,31 @@ export class OnlineSession {
           hostClipTo: hostWin?.to,
           guestClipFrom: guestWin?.from,
           guestClipTo: guestWin?.to,
+          hostClipSeq: hostWin?.seq,
+          guestClipSeq: guestWin?.seq,
           hostLocked: this.match.lockedState.player,
           guestLocked: this.match.lockedState.ai,
+          // Where each seat's assist is pulling, so a predicted character can
+          // be pulled the same way instead of walking on a bare stick.
+          hostAnchor: anchorOf("player"),
+          hostAnchorEta: this.match.anchorState.player?.eta,
+          guestAnchor: anchorOf("ai"),
+          guestAnchorEta: this.match.anchorState.ai?.eta,
+          // Possession, in the host's seat names. The guest needs it to know
+          // whether a tap on the court means "play the ball" or "walk there".
+          strikeable:
+            this.match.strikeableSide === null
+              ? null
+              : this.match.strikeableSide === "player"
+                ? "host"
+                : "guest",
+          touches: this.match.touchCount,
+          serveClock: this.match.serveClockLeft ?? undefined,
           score: [this.match.score.player, this.match.score.ai],
+          // What the match is worth, which only the side running the rules can
+          // count. Without it a guest reports a win it cannot prove.
+          tally: [this.match.tally.points.player, this.match.tally.points.ai],
+          rallies: this.match.tally.longRallies,
           sets: [this.match.sets.player, this.match.sets.ai],
           serveOwner: this.match.serveOwner,
           phase: this.match.state,

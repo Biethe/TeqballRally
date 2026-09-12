@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:lan": "vite --host",
-    "build": "VITE_PROTECTED_ASSETS=1 vite build && node scripts/protect-assets.mjs",
+    "build": "if [ -n \"$VITE_ASSET_KEY\" ]; then VITE_PROTECTED_ASSETS=1 vite build && node scripts/protect-assets.mjs; else vite build; fi",
     "build:plain": "vite build",
     "assets:fetch": "node scripts/fetch-assets.mjs",
     "assets:pack": "node scripts/pack-assets.mjs",

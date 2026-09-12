@@ -92,6 +92,8 @@ export class ModelViewer {
   private blurred = false;
   /** The shirt the player has designed, painted onto whoever is on the stand. */
   private kit: Kit = BLANK_KIT;
+  private characterBaseY = 0;
+  private characterScale = 1;
 
   constructor(engine: Engine, private canvas: HTMLCanvasElement) {
     this.scene = new Scene(engine);
@@ -375,7 +377,10 @@ export class ModelViewer {
     const s = rawH > 0.01 ? height / rawH : 1;
     root.scaling.setAll(s);
     root.position.x = -((min.x + max.x) * 0.5) * s;
-    root.position.y = -min.y * s;
+    this.characterBaseY = -min.y * s;
+    this.characterScale = s;
+    const isBackflip = anim?.name === "MenuPose_Backflip";
+    root.position.y = this.characterBaseY + (isBackflip ? 0.065 : 0) * s;
     root.position.z = -((min.z + max.z) * 0.5) * s;
     this.addShadowCasters(root);
     return { kind, root, anim, poses: poseList, poseIndex: poseIdx };
@@ -389,6 +394,8 @@ export class ModelViewer {
     this.current.poseIndex = nextIdx;
     const nextAnim = this.current.poses[nextIdx];
     this.current.anim = nextAnim;
+    const isBackflip = nextAnim.name === "MenuPose_Backflip";
+    this.current.root.position.y = this.characterBaseY + (isBackflip ? 0.065 : 0) * this.characterScale;
     nextAnim.reset();
     nextAnim.start(false, 1.0);
   }
