@@ -62,6 +62,15 @@ raw/
 assets/*
 !assets/fonts/
 !assets/meshopt_decoder.js
+# ...and the brand mark, which is this app's own icon and not licensed art —
+# the same image is already committed as the Android launcher icon. It lives
+# here because `publicDir` is `assets/`, so anything the page asks for by URL
+# has to be under it. Committed rather than left to the art bundle because the
+# bundle is a snapshot: this file was added to `assets/` after the last pack,
+# so every build made anywhere but the machine it was drawn on fetched a
+# bundle without it and rendered a broken image in every screen header.
+!assets/figma/
+!assets/figma/icon.png
 art-source/
 art-bundle.teq
 *.glb
