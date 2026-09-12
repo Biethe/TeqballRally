@@ -22,10 +22,12 @@
 import { Capacitor } from "@capacitor/core";
 import {
   LOG_LEVEL,
+  PRODUCT_CATEGORY,
   Purchases,
   type CustomerInfo,
   type PurchasesOffering,
   type PurchasesPackage,
+  type PurchasesStoreProduct,
 } from "@revenuecat/purchases-capacitor";
 import { PAYWALL_RESULT, RevenueCatUI } from "@revenuecat/purchases-capacitor-ui";
 
@@ -241,6 +243,54 @@ export type PurchaseOutcome =
  * an error message after someone deliberately backed out of a purchase reads as
  * the app arguing with them.
  */
+/**
+ * The store's own product for an identifier, or null if it does not sell one.
+ *
+ * Asked for rather than made up. `purchaseStoreProduct` wants the object the
+ * SDK handed out — it carries the product's category, its price and the Play
+ * Billing details underneath — and an object with nothing in it but an
+ * identifier is refused outright:
+ *
+ *   Missing productCategory parameter in {"identifier":"coins_handful"}
+ *
+ * which is the error a player saw when they tried to buy anything. The two
+ * call sites that produced it both built `{ identifier }` by hand and cast it
+ * through `unknown` to get past the type checker, which is exactly the check
+ * that would have said so.
+ *
+ * `NON_SUBSCRIPTION`, and not by accident: everything sold here is bought once
+ * or consumed, and `getProducts` looks for subscriptions unless told
+ * otherwise — so the default would answer with nothing at all for a coin pack
+ * and the failure would look like a missing product rather than a wrong
+ * question.
+ */
+async function storeProduct(productId: string): Promise<PurchasesStoreProduct | null> {
+  const { products } = await Purchases.getProducts({
+    productIdentifiers: [productId],
+    type: PRODUCT_CATEGORY.NON_SUBSCRIPTION,
+  });
+  return products.find((p) => p.identifier === productId) ?? products[0] ?? null;
+}
+
+/**
+ * Buy a product the offerings did not have a package for.
+ *
+ * A fallback that should rarely run: a product configured in RevenueCat is
+ * normally reachable through an offering, and one that is not usually means
+ * the dashboard is missing it rather than that this path is needed.
+ */
+async function purchaseById(productId: string): Promise<PurchaseOutcome | PurchasesStoreProduct> {
+  const product = await storeProduct(productId);
+  if (!product) {
+    return {
+      ok: false,
+      cancelled: false,
+      message: `The store is not offering ${productId} right now.`,
+    };
+  }
+  return product;
+}
+
 async function purchasePackage(pkg: PurchasesPackage): Promise<PurchaseOutcome> {
   if (!purchasesAvailable()) {
     return { ok: false, cancelled: false, message: "Purchases are only available in the app." };
@@ -313,10 +363,11 @@ export async function purchaseAsset(assetId: string): Promise<PurchaseOutcome> {
     if (matchingPkg) {
       return purchasePackage(matchingPkg);
     }
-    // Fall back to purchasing the store product directly
-    const { customerInfo } = await Purchases.purchaseStoreProduct({
-      product: { identifier: productMeta.productId } as unknown as PurchasesPackage["product"],
-    });
+    // No package for it, so buy the product itself — with the product the
+    // store actually described, never one made up here.
+    const found = await purchaseById(productMeta.productId);
+    if ("ok" in found) return found;
+    const { customerInfo } = await Purchases.purchaseStoreProduct({ product: found });
     publish(readArenaStatus(customerInfo));
     return { ok: true, owned: true };
   } catch (error) {
@@ -498,9 +549,9 @@ export async function purchaseCoins(
     return { ok: false, cancelled: false, message: "Purchases are only available in the app." };
   }
   try {
-    const { customerInfo } = await Purchases.purchaseStoreProduct({
-      product: { identifier: productId } as unknown as PurchasesPackage["product"],
-    });
+    const found = await purchaseById(productId);
+    if ("ok" in found) return found;
+    const { customerInfo } = await Purchases.purchaseStoreProduct({ product: found });
     publish(readArenaStatus(customerInfo));
     return { ok: true, owned: true, coins: coinsForProduct(productId) };
   } catch (error) {
