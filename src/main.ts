@@ -41,7 +41,6 @@ import {
   arenaStatus,
   purchasesAvailable,
   restorePurchases,
-  offerArena,
   subscribeToArena,
   coinPackages,
   purchaseCoins,
@@ -1752,20 +1751,25 @@ async function boot(): Promise<void> {
   };
 
   /**
-   * Present the paywall, and answer whether the player came out of it a member.
+   * Buy the Coliseum, which is an unlock like any other.
    *
-   * The one route to a purchase in the game, so the "there is no store here"
-   * case is handled once: in a browser this says so plainly instead of a
-   * button doing nothing, which is the version that gets reported as a bug.
+   * It used to be the one thing sold through a RevenueCat paywall — a screen
+   * designed in their dashboard rather than in the app. That bought
+   * editable copy at the price of a second purchase system to keep alive, a
+   * second look for the player to make sense of, and a failure nobody could
+   * see: with no paywall configured the button did nothing at all and said
+   * nothing about why.
+   *
+   * The "there is no store here" case still belongs here rather than in the
+   * shared handler, because a browser needs telling plainly instead of a
+   * button that appears to do nothing.
    */
   const unlockArena = async (): Promise<boolean> => {
     if (!purchasesAvailable()) {
       ui.notice(tr("pro.unavailable.title"), tr("pro.unavailable.body"), tr("pro.ok"));
       return false;
     }
-    const user = await ensureProfileForPurchase();
-    if (!user) return false;
-    return offerArena();
+    return handleUnlockAsset("gym");
   };
 
   /**

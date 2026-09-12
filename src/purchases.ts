@@ -29,7 +29,6 @@ import {
   type PurchasesPackage,
   type PurchasesStoreProduct,
 } from "@revenuecat/purchases-capacitor";
-import { PAYWALL_RESULT, RevenueCatUI } from "@revenuecat/purchases-capacitor-ui";
 
 /**
  * The entitlement the arena hangs off.
@@ -368,10 +367,6 @@ export async function restorePurchases(): Promise<PurchaseOutcome> {
  * Purchase an individual character, ball, or venue directly via RevenueCat.
  */
 export async function purchaseAsset(assetId: string): Promise<PurchaseOutcome> {
-  if (assetId === "gym") {
-    const success = await offerArena();
-    return success ? { ok: true, owned: true } : { ok: false, cancelled: true };
-  }
   if (!purchasesAvailable()) {
     if (import.meta.env.DEV) {
       console.log(`[purchases] (DEV) simulated purchase of ${assetId}`);
@@ -415,27 +410,6 @@ export async function purchaseAsset(assetId: string): Promise<PurchaseOutcome> {
   }
 }
 
-/**
- * Offer the arena to somebody who does not own it.
- *
- * A single call that does nothing for a player who already bought it, so no
- * caller needs an `ownsArena()` check of its own to avoid selling the same
- * thing twice. The screen itself is RevenueCat's, configured in the dashboard,
- * so the price and the copy can change without shipping a build.
- */
-export async function offerArena(): Promise<boolean> {
-  if (!purchasesAvailable()) return false;
-  try {
-    const { result } = await RevenueCatUI.presentPaywallIfNeeded({
-      requiredEntitlementIdentifier: ARENA_ENTITLEMENT,
-    });
-    await refreshArena();
-    return result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED;
-  } catch (error) {
-    console.warn("[purchases] paywall failed to present:", describe(error));
-    return false;
-  }
-}
 
 /**
  * Whether an error means "the player changed their mind".

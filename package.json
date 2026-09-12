@@ -31,8 +31,7 @@
     "@babylonjs/loaders": "^7.35.0",
     "@capacitor/android": "^7.6.8",
     "@capacitor/core": "^7.6.8",
-    "@revenuecat/purchases-capacitor": "^11.3.2",
-    "@revenuecat/purchases-capacitor-ui": "^11.3.2"
+    "@revenuecat/purchases-capacitor": "^11.3.2"
   },
   "devDependencies": {
     "@capacitor/cli": "^7.6.8",

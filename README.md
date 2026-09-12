@@ -1879,6 +1879,15 @@ subscriptions.** Everything else in the game — characters, balls, levels,
 supplies — is bought with coins and trophies, and both are earned by playing.
 A game that rents out its content has to keep being paid to stay the same game.
 
+**One purchase path, for everything.** The arena was briefly the exception: it
+was sold through a RevenueCat paywall, a screen designed in their dashboard
+rather than in the app. That bought copy you could edit without shipping a
+build, at the price of a second purchase system to keep alive, a second look
+for the player to make sense of, and a failure mode nobody could see — with no
+paywall configured the button did nothing at all and said nothing about why. It
+goes through `purchaseAsset` now, like every character, ball and venue, and
+`@revenuecat/purchases-capacitor-ui` came out with it.
+
 `src/purchases.ts` is the only module that imports the SDK, so there is one
 answer to "does this player own the arena" rather than one per call site. The
 entitlement identifier is still the one the dashboard was configured with, on
