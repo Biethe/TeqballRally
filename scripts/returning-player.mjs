@@ -15,7 +15,14 @@ export async function asReturningPlayer(page) {
     try {
       const raw = localStorage.getItem("teqopen.prefs");
       const prefs = raw ? JSON.parse(raw) : {};
-      localStorage.setItem("teqopen.prefs", JSON.stringify({ ...prefs, coached: true }));
+      // `toured` as well as `coached`: the guided tour of the app runs on a
+      // first launch too, and it opens by navigating to the settings screen —
+      // so without this every harness here drives a title screen that is not
+      // on top.
+      localStorage.setItem(
+        "teqopen.prefs",
+        JSON.stringify({ ...prefs, coached: true, toured: true })
+      );
     } catch {
       // Private mode: the harness will simply see the lesson, and say so.
     }

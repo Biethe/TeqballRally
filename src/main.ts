@@ -27,7 +27,7 @@ import {
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
 import { CRESTS, applyKit, type Kit, type PersonalKit } from "./kit";
 import { Tour } from "./tour";
-import { characterFor, rivalFor } from "./rivals";
+import { characterFor, rivalFor, type Rival } from "./rivals";
 import { PresenceLink } from "./net/presence";
 import {
   SUPPLIES,
@@ -226,6 +226,17 @@ const TOUR_POLL_MS = 350;
  * a spinner.
  */
 const QUEUE_WAIT_MS = 9000;
+/**
+ * How long a rival appears to spend choosing their player, and answering a
+ * rematch, in milliseconds: a range, picked from at random.
+ *
+ * A range rather than a number because the giveaway is not the length of the
+ * pause, it is its *precision*. Anything that takes exactly the same time
+ * twice was not done by a person, and a player who notices that once cannot
+ * unnotice it.
+ */
+const RIVAL_CHOOSE_MS: [number, number] = [1400, 3600];
+const RIVAL_REMATCH_MS: [number, number] = [1600, 4200];
 
 /**
  * How long the app waits for a purchase to reach the server, and how often.
@@ -550,6 +561,7 @@ async function boot(): Promise<void> {
   const leaveMatch = () => {
     session?.dispose();
     session = null;
+    rivalGame = null;
     netConn?.close();
     netConn = null;
     practiceCoach?.dispose();
@@ -603,6 +615,14 @@ async function boot(): Promise<void> {
     if (session) {
       if (session.pauseAllowed) session.requestPause();
       else ui.banner("PAUSE UNAVAILABLE", "Only in games with a friend");
+      return;
+    }
+    // A rival match has no session to ask, and must refuse for the same reason
+    // and in the same words. A quick match that could be paused when nobody
+    // was found, and could not when somebody was, tells the player which one
+    // they got before the first serve.
+    if (rivalGame) {
+      ui.banner("PAUSE UNAVAILABLE", "Only in games with a friend");
       return;
     }
     if (!practiceCoach?.isPaused) setPaused(!paused);
@@ -2358,6 +2378,18 @@ async function boot(): Promise<void> {
   let opponent: PeerIdentity | null = null;
   /** The relay's name for the match, which both sides report against. */
   let onlineMatchId: string | null = null;
+  /**
+   * The rival being played, when a quick match found nobody and fell back.
+   *
+   * Read by everything that has to behave like an online match without there
+   * being a session to ask — the pause, above all. It is cleared in
+   * `leaveMatch`, which every route out of a match goes through.
+   */
+  let rivalGame: Rival | null = null;
+
+  /** A human-looking delay inside a range, so no two are the same length. */
+  const thinkingFor = ([lo, hi]: [number, number]): number =>
+    lo + Math.floor(Math.random() * (hi - lo));
 
   /**
    * Whether this device has a network at all.
@@ -2380,9 +2412,13 @@ async function boot(): Promise<void> {
     const conn = new NetConnection(
       relayUrl(),
       {
+        // Searching, not waiting. The player did not join a queue and sit
+        // down; they asked the game to go and find somebody, and the line
+        // that describes it decides whether they give it another five
+        // seconds.
         onQueued: (ahead) =>
           ui.setLobbyDetail(
-            ahead === 0 ? "Waiting for an opponent…" : `Waiting — ${ahead} ahead of you`
+            ahead === 0 ? tr("net.searching") : tf("net.searching.ahead", { n: ahead })
           ),
         onPeer: (present, who, id) => {
           if (!present) return;
@@ -2393,7 +2429,9 @@ async function boot(): Promise<void> {
       identity?.token
     );
     netConn = conn;
-    ui.showLobbyStatus("QUICK MATCH", tr("net.searching"), null, abandonLobby);
+    ui.showLobbyStatus(tr("net.searching.title"), tr("net.searching"), null, abandonLobby, {
+      searching: true,
+    });
 
     /**
      * How long a real opponent is waited for before a rival is offered.
@@ -2437,6 +2475,19 @@ async function boot(): Promise<void> {
    * session and no socket — dressed as the online one the player asked for:
    * their name on the scoreboard, their shirt on the far player, and a
    * character from the roster they always play.
+   *
+   * The disguise has to hold all the way to the end, and for a while it did
+   * not. The match finished, the camera settled on the winner, and nothing
+   * else happened — no result card, no rematch, and a pause menu that a real
+   * online match would never have offered. Every one of those is a tell, and
+   * between them they announced the trick at exactly the moment the player was
+   * most likely to be paying attention.
+   *
+   * So the whole shape of an online match is reproduced: the beat where the
+   * opponent is choosing their player, a result card that offers a rematch,
+   * the rematch being *asked for* rather than taken, and no pause. What makes
+   * it honest rather than a lie is that none of it changes what the player
+   * gets — the same coins, the same trophies, the same ladder.
    */
   const startRivalMatch = () => {
     const rival = rivalFor(career.trophies);
@@ -2449,19 +2500,59 @@ async function boot(): Promise<void> {
       (charId, ballId) => {
         const base = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
         const me = withCareer(base, levelOf(career, base.id));
-        void startMatch(me, ballId, {
-          opponent: withCareer(them, levelOf(career, them.id)),
-          // Their own way of playing, not a difficulty setting. See `rivals.ts`
-          // for why a consistent opponent is what reads as a person.
-          difficulty: rival.style,
-          opponentKit: rival.kit,
-          labels: [prefs.kit.name.trim() || tr("hud.you"), rival.name],
-          onEnd: (winner) => settleCareer(winner === "player", me.id, "normal"),
+        const go = () => {
+          rivalGame = rival;
+          void startMatch(me, ballId, {
+            opponent: withCareer(them, levelOf(career, them.id)),
+            // Their own way of playing, not a difficulty setting. See
+            // `rivals.ts` for why a consistent opponent reads as a person.
+            difficulty: rival.style,
+            opponentKit: rival.kit,
+            labels: [prefs.kit.name.trim() || tr("hud.you"), rival.name],
+            onEnd: (winner) => settleRival(winner === "player", me.id),
+          });
+        };
+        // The beat where the other side is choosing. An online match always has
+        // one, because a person is reading the same carousel; a match that
+        // began the instant this player pressed PLAY would be the first thing
+        // that felt wrong about it.
+        ui.showLobbyStatus("READY", "Waiting for your opponent to choose…", null, abandonLobby, {
+          searching: true,
         });
+        window.setTimeout(go, thinkingFor(RIVAL_CHOOSE_MS));
       },
       showOnline,
       "ONLINE"
     );
+  };
+
+  /**
+   * End a rival match the way an online one ends.
+   *
+   * The card, then a rematch that is asked for and answered. Settled through
+   * `settleCareer` rather than the online path because there is no second
+   * peer to agree with — the server scores this as the ordinary match it is,
+   * and the player sees the same numbers either way.
+   */
+  const settleRival = (won: boolean, championId: string) => {
+    const leave = () => leaveMatch();
+    const { outcome } = settleCareer(won, championId, "normal");
+    showOutcome(won, outcome, leave, () => {
+      // Asked, not taken. Online the other player has to agree, and a rematch
+      // that began the instant it was pressed would say plainly that nobody
+      // had been asked.
+      ui.showOnlinePause("REMATCH?", "Asking your opponent…", [["LEAVE MATCH", leave]]);
+      window.setTimeout(() => {
+        // Reset rather than rebuild, which is what the online rematch does and
+        // is not only a matter of taste: `startMatch` takes the armed drink out
+        // of the bag, so a rematch that went back through it would charge the
+        // player a supply per game.
+        ui.hideOnlinePause();
+        input.setTouchControlsEnabled(true);
+        ui.showHUD();
+        match?.reset();
+      }, thinkingFor(RIVAL_REMATCH_MS));
+    });
   };
 
   /**

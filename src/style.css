@@ -3016,6 +3016,131 @@ button.pad-focus {
 
 /* The room code a player reads out to a friend: wide tracking and a
    fixed-width face so 0/O and 1/I cannot be confused when spoken or typed. */
+/*
+   The searching sweep.
+
+   Shown while a quick match is looking for somebody, and nowhere else. The
+   problem it solves is not decoration: a status line that says "looking for an
+   opponent" over a completely static screen reads as a hang, and a player who
+   thinks the app has hung cancels a search that was about to succeed. There is
+   nothing truthful to put on a progress bar — the relay cannot know how close
+   a match is — so the honest signal is motion that says "still going" without
+   claiming to say how far.
+
+   Three rings, a sweep arm, and a pip that surfaces on the far side each pass.
+   Sized in `em` off its own font size so the short-viewport override is a
+   single declaration.
+*/
+.lobby-radar {
+  position: relative;
+  width: 6.5em;
+  height: 6.5em;
+  margin: 14px 0 6px;
+  flex-shrink: 0;
+}
+
+.radar-ring {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  opacity: 0.5;
+}
+
+/* Each inner ring is smaller and lit a little more, so the eye is led inward
+   to the pip rather than around the outside. */
+.radar-ring:nth-child(2) {
+  inset: 18%;
+  opacity: 0.7;
+}
+
+.radar-ring:nth-child(3) {
+  inset: 36%;
+  border-color: var(--teq);
+  opacity: 0.45;
+}
+
+/*
+   The arm. A conic gradient rather than a rotating line, because a hard line
+   at this size aliases into a flickering stair on a phone, while a gradient
+   tail reads as a sweep at any resolution.
+*/
+.radar-sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    rgba(105, 170, 255, 0.42) 0deg,
+    rgba(105, 170, 255, 0.12) 40deg,
+    transparent 110deg,
+    transparent 360deg
+  );
+  animation: radar-sweep 2.4s linear infinite;
+}
+
+/* A contact, found and lost again once per revolution. It is not a real
+   opponent and never claims to be: it appears where the arm has just passed,
+   which is what a sweep does whether or not anybody is out there. */
+.radar-pip {
+  position: absolute;
+  top: 26%;
+  left: 68%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--teq);
+  box-shadow: 0 0 10px var(--teq);
+  animation: radar-pip 2.4s ease-out infinite;
+}
+
+@keyframes radar-sweep {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes radar-pip {
+  0%,
+  18% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  26% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+@keyframes radar-pip-still {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Somebody who has asked for less motion still needs to know the search is
+   alive, so the sweep stops and the pip breathes instead. */
+@media (prefers-reduced-motion: reduce) {
+  .radar-sweep {
+    animation: none;
+    opacity: 0.5;
+  }
+
+  .radar-pip {
+    animation: radar-pip-still 2.4s ease-in-out infinite;
+  }
+}
+
 .lobby-code {
   font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   font-size: clamp(34px, 9vw, 64px);
@@ -3188,6 +3313,12 @@ button.pad-focus {
     font-size: 13px;
   }
 
+  .lobby-radar {
+    /* Sized in em, so one declaration shrinks the whole thing. */
+    font-size: 0.62rem;
+    margin: 6px 0 2px;
+  }
+
   .lobby-code {
     font-size: clamp(26px, 11vh, 44px);
     padding: 7px 18px 7px calc(18px + 0.22em);
@@ -3203,9 +3334,37 @@ button.pad-focus {
     gap: 8px;
   }
 
-  /* Model viewer: the PLAY button was falling below the fold. */
+  /*
+     Model viewer: the PLAY button was falling below the fold.
+
+     It was still falling below it. This rule was written when the screen's
+     padding lived on `.viewer-select`, and it has since moved to the shell
+     inside — so for a while this was trimming a box whose padding was already
+     zero, and the button hung 22px off the bottom of a 360px-tall phone with
+     the canvas drawn over what was left. The shell is what has to give.
+
+     Sixty pixels of vertical padding is right for a phone held upright and is
+     most of the overflow when it is turned. The stage gives up its floor as
+     well: a character is still legible at 96px on a screen this short, and an
+     unreachable PLAY button is not a trade worth making for either of them.
+  */
   .viewer-select {
-    padding: max(8px, env(safe-area-inset-top)) 12px max(10px, env(safe-area-inset-bottom));
+    padding: 0;
+  }
+
+  .select-shell {
+    padding: max(6px, env(safe-area-inset-top)) 14px max(6px, env(safe-area-inset-bottom));
+  }
+
+  .select-stage {
+    min-height: 96px;
+  }
+
+  /* Short enough to fit, tall enough to stay comfortably tappable. */
+  .viewer-select .big-btn,
+  #btn-start {
+    height: 44px;
+    font-size: 0.9rem;
   }
 
   .select-top,
@@ -3256,8 +3415,8 @@ button.pad-focus {
     letter-spacing: 0.02em;
   }
 
+  /* Flex, not grid — see the note on the same selector further down. */
   .profile-stat {
-    grid-template-columns: 42px minmax(0, 1fr) auto;
     gap: 5px;
   }
 
@@ -5506,9 +5665,23 @@ button.pad-focus {
     background: rgba(6, 18, 38, 0.72);
   }
 
+  /*
+     The stats are two columns inside a card about 161px wide, which leaves
+     roughly 73px a stat — and the label alone was claiming 52px of it, so the
+     values in the right-hand column were clipped off the edge of the card.
+
+     Note what this does NOT say. `.profile-stat` is a flex row, so the
+     `grid-template-columns` that used to be here was inert: it looked like the
+     rule holding this layout together and had never applied. The width of the
+     label and the gap are the two things that actually decide whether a row
+     fits.
+  */
   .profile-stat {
-    grid-template-columns: 46px minmax(46px, 1fr) auto 20px;
-    gap: 5px;
+    gap: 4px;
+  }
+
+  .profile-stat-label {
+    width: 38px;
   }
 
   .select-bottom {

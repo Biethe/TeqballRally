@@ -1086,10 +1086,32 @@ export class UI {
    * holding a private room open, and connecting — because they differ only in
    * what they say.
    */
-  showLobbyStatus(title: string, detail: string, code: string | null, onCancel: () => void): void {
+  showLobbyStatus(
+    title: string,
+    detail: string,
+    code: string | null,
+    onCancel: () => void,
+    opts: { searching?: boolean } = {}
+  ): void {
     this.hideAll();
+    // A sweep, only while something is actually being looked for. A screen
+    // that says "looking for an opponent" and then holds perfectly still is
+    // read as a screen that has hung, and the player cancels a search that was
+    // working. The animation is the difference between waiting and searching,
+    // and it is the only honest signal available: the relay cannot say how
+    // close a match is, because it does not know.
+    const radar = opts.searching
+      ? `<div class="lobby-radar" aria-hidden="true">
+           <span class="radar-ring"></span>
+           <span class="radar-ring"></span>
+           <span class="radar-ring"></span>
+           <span class="radar-sweep"></span>
+           <span class="radar-pip"></span>
+         </div>`
+      : "";
     this.standingsEl.innerHTML = `
       <div class="logo small">${title}</div>
+      ${radar}
       ${code ? `<div class="lobby-code" aria-label="Room code">${code}</div>` : ""}
       <div class="standings-rows"><div class="standings-row" id="lobby-detail"></div></div>
       <button class="big-btn" id="btn-lobby-cancel" data-menu-back>CANCEL</button>`;
