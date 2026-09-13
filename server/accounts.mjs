@@ -46,6 +46,8 @@ import {
   buyUpgrade,
   claimChallenge,
   dayKey,
+  assetsFor,
+  coinsForPurchase,
   freshCareer,
   grantAssetUnlock,
   rollOver,
@@ -460,31 +462,77 @@ export async function claim(store, player, challengeId, now = new Date()) {
 }
 
 /**
- * Record that a player owns something they paid for.
+ * Events RevenueCat sends that mean somebody now owns something.
  *
- * The career is the server's copy and it is what every launch reads back, so
- * an unlock the client alone knew about disappeared the next time the app was
- * opened — while Play, which does remember, then refused to sell it again.
- * That is the pair of symptoms this exists to end.
- *
- * It takes the client's word that the purchase happened, which is the same
- * trust `recordMatch` already extends to a result. That is a hole, and the
- * shape of the fix is known: RevenueCat can call this server itself when a
- * purchase completes, and then the grant comes from the party that watched
- * the money move rather than from the party that benefits. Until then the
- * cost of the hole is unlocks given away, not accounts compromised.
+ * Deliberately a list rather than "anything that is not a cancellation". A
+ * webhook vocabulary grows, and a new event type arriving should grant nothing
+ * until somebody has decided what it means.
  */
-export async function unlockAsset(store, player, assetId, now = new Date()) {
-  if (typeof assetId !== "string" || !/^[a-zA-Z0-9_]{1,40}$/.test(assetId)) {
-    throw new ValidationError("unknown asset");
+const GRANTING_EVENTS = new Set([
+  "NON_RENEWING_PURCHASE",
+  "INITIAL_PURCHASE",
+  "RENEWAL",
+  "UNCANCELLATION",
+  "PRODUCT_CHANGE",
+]);
+
+/**
+ * How many past events a player's record remembers, for idempotency.
+ *
+ * RevenueCat retries a webhook it did not get an answer to, so the same
+ * purchase can arrive several times, and coins credited twice are coins
+ * somebody did not pay for. Enough to cover a retry storm; the ids are short
+ * and nobody buys thousands of things.
+ */
+const APPLIED_EVENT_MEMORY = 200;
+
+/**
+ * Apply a purchase RevenueCat has told us about.
+ *
+ * This is the only thing in the server that grants coins or unlocks an asset,
+ * and it runs on RevenueCat's word rather than the player's. The device used
+ * to say "I bought this, credit me", which is not a purchase record but a
+ * request, and one anybody could make. The chain is now: Play takes the money,
+ * RevenueCat verifies it against Play, RevenueCat calls this, and the server
+ * reads what the product grants out of a table the client cannot edit.
+ *
+ * Idempotent by event id, because a webhook that goes unanswered is retried.
+ * The same purchase arriving twice must credit once.
+ */
+export async function applyPurchaseEvent(store, event) {
+  if (!event || typeof event !== "object") throw new ValidationError("no event");
+  const { type, app_user_id: appUserId, product_id: productId, id } = event;
+  if (!GRANTING_EVENTS.has(type)) return { applied: false, reason: "not a purchase" };
+  if (typeof appUserId !== "string" || typeof productId !== "string") {
+    throw new ValidationError("event is missing a player or a product");
   }
-  await freshen(store, player, now);
-  const before = player.career;
-  player.career = grantAssetUnlock(player.career, assetId);
-  // Already owned is not an error: a client retrying after a dropped response
-  // must be able to arrive at the same answer rather than at a failure.
-  if (player.career !== before) await store.save(player);
-  return player.career;
+  const player = await store.get(appUserId.trim().toUpperCase());
+  // An anonymous RevenueCat id, or somebody who has since been deleted. Not an
+  // error: answering 200 stops RevenueCat retrying something that can never
+  // succeed.
+  if (!player) return { applied: false, reason: "no such player" };
+
+  const seen = player.appliedEvents ?? [];
+  if (typeof id === "string" && seen.includes(id)) {
+    return { applied: false, reason: "already applied" };
+  }
+
+  const coins = coinsForPurchase(productId);
+  const assets = assetsFor(productId);
+  if (coins === 0 && assets.length === 0) {
+    // A product the game does not sell. Worth saying out loud rather than
+    // silently succeeding: it means the catalogue and the store disagree.
+    throw new ValidationError(`nothing is known about ${productId}`);
+  }
+
+  let career = player.career;
+  if (coins > 0) career = { ...career, coins: career.coins + coins };
+  for (const asset of assets) career = grantAssetUnlock(career, asset);
+  player.career = career;
+  player.appliedEvents = [...seen, typeof id === "string" ? id : `${productId}:${Date.now()}`]
+    .slice(-APPLIED_EVENT_MEMORY);
+  await store.save(player);
+  return { applied: true, coins, assets };
 }
 
 export async function upgrade(store, player, championId, now = new Date()) {

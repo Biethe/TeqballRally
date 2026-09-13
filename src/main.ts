@@ -98,7 +98,6 @@ import {
   type Career,
   type MatchOutcome,
   awardCompetition,
-  grantAssetUnlock,
 } from "./progress";
 import { type CompetitionKind } from "./league";
 import {
@@ -137,7 +136,6 @@ import {
   reportMatch,
   reportOnlineMatch,
   claimOnServer,
-  unlockOnServer,
   restore,
   signUp,
   storeIdentity,
@@ -227,6 +225,16 @@ const TOUR_POLL_MS = 350;
  * a spinner.
  */
 const QUEUE_WAIT_MS = 9000;
+
+/**
+ * How long the app waits for a purchase to reach the server, and how often.
+ *
+ * RevenueCat gets there a beat after the store answers this device, so the
+ * first ask usually has it. The rest is headroom; giving up costs nothing
+ * worse than coins that appear on the next launch.
+ */
+const PURCHASE_POLL_MS = 1200;
+const PURCHASE_POLL_TRIES = 6;
 
 /** How one match should be set up and what to do when it ends. */
 interface MatchOpts {
@@ -1220,6 +1228,37 @@ async function boot(): Promise<void> {
     presence.start();
   };
 
+  /**
+   * Wait for the server to hear about a purchase, then take its career.
+   *
+   * Nothing is credited here any more. The device used to add the coins and
+   * the unlock itself and tell the server afterwards, which is not a purchase
+   * record but a request — and one anybody could make without buying
+   * anything. RevenueCat tells the server instead, having watched Play take
+   * the money, and this waits for that to land.
+   *
+   * Polled because a webhook is a second conversation: the purchase returns to
+   * this device the moment the store is happy, and RevenueCat reaches the
+   * server a beat later. A few seconds of asking covers the ordinary case, and
+   * the career is re-read on every launch anyway, so the worst outcome of
+   * giving up is coins that appear when the app is next opened.
+   */
+  const collectPurchase = async (): Promise<void> => {
+    if (!identity) return;
+    const before = JSON.stringify(career);
+    for (let attempt = 0; attempt < PURCHASE_POLL_TRIES; attempt++) {
+      await new Promise((r) => setTimeout(r, PURCHASE_POLL_MS));
+      try {
+        const me = await fetchMe(identity.token);
+        adoptServerCareer(me.career);
+        if (JSON.stringify(me.career) !== before) return;
+      } catch {
+        // Offline, or a server having a bad minute. The next launch reads it.
+        return;
+      }
+    }
+  };
+
   const showFriends = (message: string | null = null, busy = false, rows?: Profile[]) => {
     if (!identity) return showProfile();
     viewer.deactivate();
@@ -1777,18 +1816,8 @@ async function boot(): Promise<void> {
     if (!user) return false;
     const outcome = await purchaseAsset(assetId);
     if (outcome.ok) {
-      // Locally first, so the thing they just paid for is theirs immediately.
-      // This line used to assign the variable without saving it, so the unlock
-      // did not even survive a reload, let alone a relaunch.
-      saveCareer(grantAssetUnlock(career, assetId));
       ui.notice(tr("pro.restored.title"), "Asset unlocked successfully!", tr("pro.ok"));
-      // Then on the server, which is the copy every launch reads back. Without
-      // this the unlock vanished on the next start while the store, which does
-      // remember, refused to sell it again — the player left owning nothing and
-      // unable to buy it.
-      if (identity) {
-        void unlockOnServer(identity.token, assetId).then(adoptServerCareer, () => undefined);
-      }
+      await collectPurchase();
       return true;
     }
     if (!outcome.cancelled) {
@@ -1869,10 +1898,8 @@ async function boot(): Promise<void> {
             ui.hideOnlinePause();
             const outcome = await purchaseCoins(pkg);
             if (outcome.ok && outcome.coins) {
-              career.coins += outcome.coins;
-              storeCareer(career);
-              refreshWallet();
               ui.notice(tr("pro.restored.title"), `+${outcome.coins.toLocaleString()} coins credited!`, tr("pro.ok"), back);
+              await collectPurchase();
             } else if (!outcome.ok && !outcome.cancelled) {
               ui.notice(tr("pro.failed.title"), outcome.message, tr("pro.ok"), back);
             } else {

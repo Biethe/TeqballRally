@@ -12,6 +12,14 @@
  */
 
 export {
+  BUNDLES,
+  CATALOGUE,
+  assetsFor,
+  coinsForPurchase,
+  type Grant,
+} from "./catalogue";
+
+export {
   MAX_TOUCHES,
   SETS_TO_WIN,
   WIN_SCORE,

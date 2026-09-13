@@ -94,16 +94,14 @@ export declare function claim(
   now?: Date
 ): Promise<Career>;
 /**
- * Record that a player owns something they paid for. Idempotent: a repeated
- * unlock settles rather than failing, so a retry after a dropped response
- * arrives at the same answer.
+ * Apply a purchase RevenueCat has told us about. The only route by which coins
+ * or an unlock are granted, and idempotent by event id because an unanswered
+ * webhook is retried.
  */
-export declare function unlockAsset(
+export declare function applyPurchaseEvent(
   store: PlayerStore,
-  player: PlayerRecord,
-  assetId: unknown,
-  now?: Date
-): Promise<Career>;
+  event: unknown
+): Promise<{ applied: boolean; reason?: string; coins?: number; assets?: string[] }>;
 
 export declare function upgrade(
   store: PlayerStore,

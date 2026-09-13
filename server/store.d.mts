@@ -21,6 +21,13 @@ export interface PlayerRecord {
    * accounts issued before the lookup existed; they heal on first recovery.
    */
   recoveryLookup?: string;
+  /**
+   * RevenueCat event ids already applied, newest last and bounded.
+   *
+   * An unanswered webhook is retried, so the same purchase arrives more than
+   * once; coins credited twice are coins nobody paid for.
+   */
+  appliedEvents?: string[];
   created: number;
   lastSeen: number;
   lastMatchAt: number;

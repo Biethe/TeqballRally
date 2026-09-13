@@ -1911,6 +1911,28 @@ subscriptions.** Everything else in the game — characters, balls, levels,
 supplies — is bought with coins and trophies, and both are earned by playing.
 A game that rents out its content has to keep being paid to stay the same game.
 
+**Nothing is granted on the client's word.** A device used to add the coins
+and the unlock itself and tell the server afterwards, which is not a purchase
+record but a request, and one anybody could make without buying anything. The
+chain runs the other way now: Play takes the money, RevenueCat verifies it
+against Play, RevenueCat calls `/api/revenuecat`, and the server reads what the
+product grants out of `src/catalogue.ts` — a table shared with the client
+through `src/rules.ts` so both agree, and which the client cannot edit.
+
+The webhook proves itself with a shared secret in its Authorization header
+(`REVENUECAT_WEBHOOK_SECRET`, set beside the webhook in the dashboard and
+passed by `server/deploy.sh`, which refuses to deploy without it). Applying is
+idempotent by event id, because RevenueCat retries anything it did not get an
+answer to and coins credited twice are coins nobody paid for. Anything that
+cannot succeed but is not our fault — an unknown player, an event type that
+grants nothing — answers 200, since retrying the impossible forever helps
+nobody.
+
+The buying device then polls its own career until the grant shows up. That is
+the cost of moving the decision off the device: the store answers the phone
+immediately and the webhook reaches the server a beat later, so there is a
+short wait where there used to be an instant lie.
+
 **One purchase path, for everything.** The arena was briefly the exception: it
 was sold through a RevenueCat paywall, a screen designed in their dashboard
 rather than in the app. That bought copy you could edit without shipping a

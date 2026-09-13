@@ -23,6 +23,17 @@ SERVICE="${SERVICE:-teqrallly}"
 # a throwaway deploy that only has to answer /healthz does not need to be paid
 # for around the clock. The default stays 1 for the reason given below.
 MIN_INSTANCES="${MIN_INSTANCES:-1}"
+# The shared secret RevenueCat sends in the Authorization header of its
+# webhook. It is the only thing standing between "RevenueCat says this player
+# bought coins" and "anyone on the internet says so", so the deploy stops
+# rather than shipping a server that would refuse every purchase silently.
+REVENUECAT_WEBHOOK_SECRET="${REVENUECAT_WEBHOOK_SECRET:-}"
+if [ -z "$REVENUECAT_WEBHOOK_SECRET" ]; then
+  echo "REVENUECAT_WEBHOOK_SECRET is not set." >&2
+  echo "Generate one, paste it into the RevenueCat webhook's Authorization" >&2
+  echo "header, and export it here before deploying." >&2
+  exit 1
+fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "→ project $PROJECT, region $REGION, service $SERVICE"
@@ -38,7 +49,7 @@ gcloud run deploy "$SERVICE" \
   --region "$REGION" \
   --source "$HERE" \
   --allow-unauthenticated \
-  --set-env-vars "FIRESTORE_PROJECT=$PROJECT" \
+  --set-env-vars "FIRESTORE_PROJECT=$PROJECT,REVENUECAT_WEBHOOK_SECRET=$REVENUECAT_WEBHOOK_SECRET" \
   --min-instances "$MIN_INSTANCES" \
   --max-instances 4 \
   --cpu 1 \

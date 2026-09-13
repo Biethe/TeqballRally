@@ -29,7 +29,7 @@ import {
   regenerateRecovery,
   register,
   removeFriend,
-  unlockAsset,
+  applyPurchaseEvent,
   rename,
   upgrade,
   validateResult,
@@ -989,41 +989,84 @@ describe("the HTTP API", () => {
  * player was left owning nothing and unable to buy it.
  */
 describe("what a player keeps", () => {
+  /** A webhook as RevenueCat sends one. */
+  const event = (playerId: string, productId: string, id = `evt-${productId}`) => ({
+    id,
+    type: "NON_RENEWING_PURCHASE",
+    app_user_id: playerId,
+    product_id: productId,
+  });
+
+  it("grants what a product is worth, on RevenueCat's word and not the player's", async () => {
+    const issued = await register(store, "Ana");
+
+    await applyPurchaseEvent(store, event(issued.player.id, "coins_bag"));
+
+    const saved = await store.get(issued.player.id);
+    expect(saved?.career.coins).toBe(9000);
+  });
+
   it("records an unlock against the account, not just the device", async () => {
     const issued = await register(store, "Ana");
 
-    const career = await unlockAsset(store, issued.player, "char_england");
+    await applyPurchaseEvent(store, event(issued.player.id, "char_england"));
 
-    expect(career.unlockedAssets).toContain("char_england");
-    // And it is on the record the next launch will read, not only in the
-    // answer handed back to the caller.
-    expect((await store.get(issued.player.id))?.career.unlockedAssets).toContain("char_england");
+    const saved = await store.get(issued.player.id);
+    expect(saved?.career.unlockedAssets).toContain("EnglishPlayer");
+    // And a character gets a champion record, or the roster has an entry
+    // nothing can level up.
+    expect(saved?.career.champions.EnglishPlayer).toBeTruthy();
   });
 
-  it("opens a champion record for a character, so it can be levelled", async () => {
+  it("opens a bundle into everything it stands for", async () => {
     const issued = await register(store, "Ana");
-    const id = CHARACTERS[1].id;
 
-    const career = await unlockAsset(store, issued.player, id);
+    await applyPurchaseEvent(store, event(issued.player.id, "bundle_balls"));
 
-    expect(career.champions[id]).toBeTruthy();
+    const owned = (await store.get(issued.player.id))?.career.unlockedAssets ?? [];
+    expect(owned).toContain("BlueBall");
+    expect(owned).toContain("BlueAndRoseBall");
+    expect(owned).toContain("OrangeAndBlackBall");
   });
 
-  it("treats a repeated unlock as settled rather than as an error", async () => {
-    // A client retrying after a dropped response must arrive at the same
-    // answer, not at a failure.
+  it("credits a retried webhook exactly once", async () => {
+    // RevenueCat retries anything it did not get an answer to, so the same
+    // purchase arrives again. Coins credited twice are coins nobody paid for.
     const issued = await register(store, "Ana");
-    await unlockAsset(store, issued.player, "ball_hammer");
+    const e = event(issued.player.id, "coins_handful", "evt-once");
 
-    const again = await unlockAsset(store, issued.player, "ball_hammer");
+    await applyPurchaseEvent(store, e);
+    await applyPurchaseEvent(store, e);
+    await applyPurchaseEvent(store, e);
 
-    expect((again.unlockedAssets ?? []).filter((a) => a === "ball_hammer")).toHaveLength(1);
+    expect((await store.get(issued.player.id))?.career.coins).toBe(1200);
   });
 
-  it("refuses an asset id that is not one", async () => {
+  it("grants nothing on an event that is not a purchase", async () => {
     const issued = await register(store, "Ana");
-    await expect(unlockAsset(store, issued.player, "../../etc")).rejects.toThrow();
-    await expect(unlockAsset(store, issued.player, 42)).rejects.toThrow();
+
+    const out = await applyPurchaseEvent(store, {
+      ...event(issued.player.id, "coins_bag"),
+      type: "CANCELLATION",
+    });
+
+    expect(out.applied).toBe(false);
+    expect((await store.get(issued.player.id))?.career.coins).toBe(0);
+  });
+
+  it("says no rather than failing for a player it cannot find", async () => {
+    // Answering 200 stops RevenueCat retrying something that can never work.
+    const out = await applyPurchaseEvent(store, event("ZZZZZZZZ", "coins_bag"));
+    expect(out.applied).toBe(false);
+  });
+
+  it("refuses a product the game does not sell", async () => {
+    // The catalogue and the store disagreeing is worth hearing about, not
+    // worth silently succeeding on.
+    const issued = await register(store, "Ana");
+    await expect(
+      applyPurchaseEvent(store, event(issued.player.id, "coins_infinite"))
+    ).rejects.toThrow();
   });
 
   it("keeps a claimed challenge on the account", async () => {

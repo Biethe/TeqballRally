@@ -28,7 +28,7 @@ import {
   register,
   removeFriend,
   rename,
-  unlockAsset,
+  applyPurchaseEvent,
   upgrade,
 } from "./accounts.mjs";
 import {
@@ -293,10 +293,34 @@ export async function handleApi(store, req, res, now = new Date()) {
       return true;
     }
 
-    if (path === "/api/players/me/unlock" && isPost) {
-      const player = await requirePlayer(store, req);
+    /**
+     * RevenueCat telling us somebody has bought something.
+     *
+     * The only route by which coins or an unlock are ever granted. It is not
+     * authenticated as a player, because the caller is not one: it is
+     * RevenueCat, proved by a shared secret it sends in the Authorization
+     * header and which is configured beside the webhook. Without the secret
+     * set this route refuses everything rather than trusting whoever calls it.
+     *
+     * Always 200 on anything that cannot succeed but is not our fault — an
+     * unknown player, an event type we do not grant on — because RevenueCat
+     * retries a failure, and retrying something impossible forever helps
+     * nobody.
+     */
+    if (path === "/api/revenuecat" && isPost) {
+      const secret = process.env.REVENUECAT_WEBHOOK_SECRET;
+      if (!secret) {
+        console.error("[api] REVENUECAT_WEBHOOK_SECRET is not set — refusing the webhook");
+        sendJson(res, 503, { error: "webhook not configured" });
+        return true;
+      }
+      if (req.headers.authorization !== secret) {
+        sendJson(res, 401, { error: "no" });
+        return true;
+      }
       const body = await readBody(req);
-      sendJson(res, 200, { career: await unlockAsset(store, player, body.assetId, now) });
+      const result = await applyPurchaseEvent(store, body?.event);
+      sendJson(res, 200, result);
       return true;
     }
 
