@@ -264,6 +264,18 @@ export async function fetchLeaderboard(token?: string): Promise<LeaderboardView>
   return request<LeaderboardView>("/api/leaderboard?limit=50", { token });
 }
 
+/**
+ * How many people are reachable right now.
+ *
+ * Needs no account, because it is a count and not a list: it answers "is
+ * there anybody to play" and says nothing at all about who. Quick match reads
+ * it to decide how hard to look — see `searchWindow` in `main.ts`.
+ */
+export async function fetchOnlineCount(): Promise<number> {
+  const body = await request<{ count: number }>("/api/online", {});
+  return Number.isFinite(body.count) ? body.count : 0;
+}
+
 export async function fetchFriends(token: string): Promise<Profile[]> {
   const body = await request<{ friends: Profile[] }>("/api/players/me/friends", { token });
   return body.friends;

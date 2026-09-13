@@ -121,6 +121,7 @@ import {
   fetchFriends,
   fetchLeaderboard,
   fetchMe,
+  fetchOnlineCount,
   joinClub,
   lastSeenLabel,
   leaveClub,
@@ -225,7 +226,21 @@ const TOUR_POLL_MS = 350;
  * still meet, short enough that somebody alone is playing rather than reading
  * a spinner.
  */
-const QUEUE_WAIT_MS = 9000;
+/**
+ * How long to keep looking for a real opponent, in milliseconds.
+ *
+ * Two numbers rather than one, because the old single number was wrong in both
+ * directions at once. Nine seconds is far too long to spend proving that an
+ * empty game is empty, and nowhere near long enough to let somebody who is
+ * actually around notice a callout, walk back to their phone and answer it.
+ *
+ * The relay can tell us which situation this is — see `/api/online` — so the
+ * wait is chosen rather than guessed.
+ */
+const SEARCH_ALONE_MS = 3500;
+const SEARCH_WITH_OTHERS_MS = 25_000;
+/** How long an unasked-for invitation stays on screen before giving up. */
+const CALLOUT_SHOWN_SECONDS = 20;
 /**
  * How long a rival appears to spend choosing their player, and answering a
  * rematch, in milliseconds: a range, picked from at random.
@@ -237,6 +252,10 @@ const QUEUE_WAIT_MS = 9000;
  */
 const RIVAL_CHOOSE_MS: [number, number] = [1400, 3600];
 const RIVAL_REMATCH_MS: [number, number] = [1600, 4200];
+/** How long a rival takes to answer something the player said. */
+const RIVAL_EMOTE_MS: [number, number] = [900, 2600];
+/** And how long after the first whistle before it says hello. */
+const RIVAL_GREETING_MS: [number, number] = [1200, 3000];
 
 /**
  * How long the app waits for a purchase to reach the server, and how often.
@@ -570,6 +589,8 @@ async function boot(): Promise<void> {
     session?.dispose();
     session = null;
     rivalGame = null;
+    ui.clearEmotes();
+    ui.setEmotes(null);
     netConn?.close();
     netConn = null;
     practiceCoach?.dispose();
@@ -1244,15 +1265,47 @@ async function boot(): Promise<void> {
     presence = null;
     if (!identity || !onlineAvailable) return;
     presence = new PresenceLink(identity.token, {
-      onInvited: (from, room) => {
+      onInvited: (from, room, open) => {
         // Never on top of a match. Being pulled out of a rally by a dialog is
         // worse than missing the invite, and the asker is told either way.
         if (match) return;
+        if (open) {
+          // A stranger calling out to everybody who happens to be online. It
+          // is the thing that makes quick match work at all in a game this
+          // size, and it is also unasked-for, so it gets a card that can be
+          // ignored rather than a dialog that has to be answered. Nobody is
+          // told it was refused: with a broadcast almost everybody refuses.
+          if (!prefs.callouts) return;
+          if (searchRoom) {
+            // Both of us pressed QUICK MATCH at about the same moment, so we
+            // are each advertising a room and each hearing the other. If both
+            // accepted we would swap rooms and neither would get a game, so
+            // the lower player id yields and joins; the higher ignores this
+            // and waits to be joined. An agreement reached without talking,
+            // which is the only kind available here.
+            if ((identity?.id ?? "") < from.id) acceptInvite(room, from.name, false);
+            return;
+          }
+          ui.showCallout({
+            room,
+            name: from.name,
+            tier: from.tier ?? "",
+            seconds: CALLOUT_SHOWN_SECONDS,
+            // Not a private game: a stranger from the open queue, so the
+            // pause stays unavailable exactly as it does for any other quick
+            // match.
+            onAccept: () => acceptInvite(room, from.name, false),
+          });
+          return;
+        }
         ui.showOnlinePause(tf("invite.from.title", { name: from.name }), "", [
           [tr("invite.accept"), () => { ui.hideOnlinePause(); acceptInvite(room, from.name); }],
           [tr("invite.decline"), () => { ui.hideOnlinePause(); presence?.decline(from.id); }],
         ]);
       },
+      // Somebody else took the seat, or the caller gave up. Take the offer
+      // down rather than leave a button that cannot work.
+      onCalloutGone: (room) => ui.hideCallout(room),
       onReply: (answer, who) => {
         const name = who ?? asking?.name ?? "";
         asking = null;
@@ -1658,7 +1711,39 @@ async function boot(): Promise<void> {
       notes,
       onContinue: after,
       onRematch,
+      onAddFriend: friendOffer(),
     });
+  };
+
+  /**
+   * Offer to keep the person just played, when there was one.
+   *
+   * This is the only thing in the online flow that makes next week easier than
+   * this week. Quick match can only ever find somebody who happens to be
+   * around at the same moment; a friend can be asked directly, whenever. Every
+   * stranger turned into a friend is one fewer match that depends on
+   * coincidence.
+   *
+   * Offered for a real opponent only — never for a rival, which has no account
+   * to add. Somebody already on the list is not filtered out here, because
+   * this screen has no list to check against and fetching one to grey out a
+   * button is not worth a request: adding a friend twice is the same as
+   * adding them once, and the server already says so.
+   */
+  const friendOffer = (): (() => void) | null => {
+    const them = opponent;
+    const token = identity?.token;
+    if (!token || !them || rivalGame) return null;
+    return () => {
+      void addFriend(token, them.id).then(
+        () => ui.banner(tf("result.friendAdded", { name: them.name })),
+        (err: unknown) => {
+          // They deleted their account between the whistle and the press, or
+          // the network went. Nothing is lost that a second press cannot fix.
+          ui.banner(errorMessage(err));
+        }
+      );
+    };
   };
 
   // ------------------------------------------------------------- mode flow
@@ -2220,6 +2305,18 @@ async function boot(): Promise<void> {
             hint: tr("settings.autoReception.hint"),
             control: { kind: "toggle", value: prefs.autoReception },
           },
+          {
+            id: "callouts",
+            label: tr("settings.callouts"),
+            hint: tr("settings.callouts.sub"),
+            control: { kind: "toggle", value: prefs.callouts },
+          },
+          {
+            id: "emotes",
+            label: tr("settings.emotes"),
+            hint: tr("settings.emotes.sub"),
+            control: { kind: "toggle", value: prefs.emotes },
+          },
         ];
       }
       return [
@@ -2344,6 +2441,12 @@ async function boot(): Promise<void> {
             prefs.autoReception = value;
             if (match) match.autoFirstReception = value;
           }
+          if (id === "callouts" && typeof value === "boolean") {
+            prefs.callouts = value;
+          }
+          if (id === "emotes" && typeof value === "boolean") {
+            prefs.emotes = value;
+          }
           if (id === "music" && typeof value === "boolean") {
             prefs.music = value;
             audio.setMusicEnabled(value);
@@ -2444,6 +2547,7 @@ async function boot(): Promise<void> {
   const abandonLobby = () => {
     netConn?.close();
     netConn = null;
+    searchRoom = null;
     showModes();
   };
 
@@ -2457,6 +2561,16 @@ async function boot(): Promise<void> {
   let opponent: PeerIdentity | null = null;
   /** The relay's name for the match, which both sides report against. */
   let onlineMatchId: string | null = null;
+  /**
+   * The room this player is advertising, while a quick match is searching.
+   *
+   * Its other job is the tie-break. Two people pressing QUICK MATCH at the
+   * same moment each call out and each hear the other, and if both accept
+   * they swap rooms and neither gets a game. Whoever holds the lower player
+   * id yields; the other ignores the callout and waits to be joined. Which of
+   * them yields does not matter, only that they agree without talking.
+   */
+  let searchRoom: string | null = null;
   /**
    * The rival being played, when a quick match found nobody and fell back.
    *
@@ -2488,17 +2602,10 @@ async function boot(): Promise<void> {
       ui.showLobbyStatus(tr("net.offline.title"), tr("net.offline.body"), null, showOnline);
       return;
     }
+    const code = makeRoomCode();
     const conn = new NetConnection(
       relayUrl(),
       {
-        // Searching, not waiting. The player did not join a queue and sit
-        // down; they asked the game to go and find somebody, and the line
-        // that describes it decides whether they give it another five
-        // seconds.
-        onQueued: (ahead) =>
-          ui.setLobbyDetail(
-            ahead === 0 ? tr("net.searching") : tf("net.searching.ahead", { n: ahead })
-          ),
         onPeer: (present, who, id) => {
           if (!present) return;
           opponent = who ?? null;
@@ -2508,36 +2615,78 @@ async function boot(): Promise<void> {
       identity?.token
     );
     netConn = conn;
+    searchRoom = code;
     ui.showLobbyStatus(tr("net.searching.title"), tr("net.searching"), null, abandonLobby, {
       searching: true,
     });
 
     /**
-     * How long a real opponent is waited for before a rival is offered.
+     * Give up on people and play a rival.
      *
-     * Long enough that two people tapping QUICK MATCH within a few seconds of
-     * each other still find one another, which is the whole point of a queue
-     * — and short enough that somebody alone is playing rather than reading a
-     * spinner. The queue is always searched first; a rival never takes a match
-     * a person was waiting for.
+     * How long that takes is a question the relay can answer, so it is asked
+     * rather than guessed: a few seconds when there is provably nobody around,
+     * far longer when there is, because a callout has to reach somebody, be
+     * noticed, and be answered by a person who may be halfway through
+     * something else.
      */
-    const searchFor = setTimeout(() => {
-      if (netConn !== conn) return;
-      conn.cancelQueue();
-      conn.close();
-      netConn = null;
-      startRivalMatch();
-    }, QUEUE_WAIT_MS);
+    let giveUp: number | null = null;
+    const stopSearching = () => {
+      if (giveUp !== null) window.clearTimeout(giveUp);
+      giveUp = null;
+    };
+    const settleFor = (ms: number) => {
+      stopSearching();
+      giveUp = window.setTimeout(() => {
+        if (netConn !== conn) return;
+        conn.close();
+        netConn = null;
+        searchRoom = null;
+        startRivalMatch();
+      }, ms);
+    };
+    // Start on the short fuse and lengthen it if it turns out anybody is
+    // there. The other way round leaves a player alone in an empty game
+    // staring at a spinner for twenty-five seconds to learn what the server
+    // could have told them immediately.
+    settleFor(SEARCH_ALONE_MS);
+    void fetchOnlineCount().then(
+      (count) => {
+        if (netConn !== conn) return;
+        // One is this player. Anybody past that is somebody who might answer.
+        if (count > 1) {
+          ui.setLobbyDetail(tf("online.count", { n: count - 1 }));
+          settleFor(SEARCH_WITH_OTHERS_MS);
+        } else {
+          ui.setLobbyDetail(tr("online.none"));
+        }
+      },
+      () => {
+        // No answer from the server. The short fuse already set stands.
+      }
+    );
 
     conn
-      .quickMatch()
-      .then(({ role }) => {
-        clearTimeout(searchFor);
-        startOnlineMatch(conn, role, false);
+      .join(code)
+      .then(({ ready }) => {
+        if (netConn !== conn) return;
+        // Somebody was already sitting in a room with this code, which the
+        // mint makes vanishingly unlikely — take it and play them.
+        if (ready) {
+          stopSearching();
+          searchRoom = null;
+          startOnlineMatch(conn, "host", false);
+          return;
+        }
+        // Seated and alone. Now tell everybody who has the app open, which is
+        // the whole change: the old queue only ever paired two people who
+        // pressed the same button within a few seconds of each other, and in
+        // a game this size that is nobody.
+        presence?.callout(code);
       })
       .catch((e: unknown) => {
-        clearTimeout(searchFor);
-        if (netConn !== conn) return; // the player already cancelled, or the timer fired
+        stopSearching();
+        if (netConn !== conn) return;
+        searchRoom = null;
         ui.showLobbyStatus(
           "NO GAME FOUND",
           e instanceof Error ? e.message : "Could not find an opponent",
@@ -2545,6 +2694,19 @@ async function boot(): Promise<void> {
           abandonLobby
         );
       });
+
+    // Somebody joined the room that was called out. `onPeer` has the identity;
+    // this is the transition into the match itself.
+    conn.setHandlers({
+      onPeer: (present, who, id) => {
+        if (!present || netConn !== conn) return;
+        opponent = who ?? null;
+        onlineMatchId = id ?? null;
+        stopSearching();
+        searchRoom = null;
+        startOnlineMatch(conn, "host", false);
+      },
+    });
   };
 
   /**
@@ -2581,6 +2743,8 @@ async function boot(): Promise<void> {
         const me = withCareer(base, levelOf(career, base.id));
         const go = () => {
           rivalGame = rival;
+          // A word at the start, the way somebody sitting down to a game does.
+          rivalGreets();
           void startMatch(me, ballId, {
             opponent: withCareer(them, levelOf(career, them.id)),
             // Their own way of playing, not a difficulty setting. See
@@ -2606,6 +2770,46 @@ async function boot(): Promise<void> {
   };
 
   /**
+   * What a rival says, and when.
+   *
+   * Three rules, all of them about not being a machine. It does not answer
+   * every message, because people do not. It never answers instantly, because
+   * the reply arrives before a person could have read the thing they are
+   * replying to — `thinkingFor` exists for exactly this. And what it says is
+   * loosely appropriate rather than random: a greeting is met with a greeting,
+   * praise with thanks.
+   */
+  const RIVAL_REPLIES: Record<string, string[]> = {
+    gl: ["gl"],
+    nice: ["thanks", "wp"],
+    shot: ["thanks"],
+    close: ["nice"],
+    mine: ["nice", "shot"],
+    thanks: ["wp"],
+    wp: ["wp", "thanks"],
+    again: ["gl"],
+  };
+
+  /** Reply to something the player said, sometimes, after a moment. */
+  const answerEmote = (id: string) => {
+    if (Math.random() > 0.55) return;
+    const pool = RIVAL_REPLIES[id] ?? ["nice"];
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    window.setTimeout(() => {
+      if (!match || !rivalGame) return;
+      ui.showEmote("ai", pick);
+    }, thinkingFor(RIVAL_EMOTE_MS));
+  };
+
+  /** Say something unprompted, the way somebody sitting down to a game does. */
+  const rivalGreets = () => {
+    window.setTimeout(() => {
+      if (!match || !rivalGame) return;
+      ui.showEmote("ai", "gl");
+    }, thinkingFor(RIVAL_GREETING_MS));
+  };
+
+  /**
    * End a rival match the way an online one ends.
    *
    * The card, then a rematch that is asked for and answered. Settled through
@@ -2615,6 +2819,8 @@ async function boot(): Promise<void> {
    */
   const settleRival = (won: boolean, championId: string) => {
     const leave = () => leaveMatch();
+    // "Well played", most times, before the result card covers the court.
+    if (Math.random() < 0.7) ui.showEmote("ai", won ? "wp" : "thanks");
     const { outcome } = settleCareer(won, championId, "normal");
     showOutcome(won, outcome, leave, () => {
       // Asked, not taken. Online the other player has to agree, and a rematch
@@ -2691,8 +2897,14 @@ async function boot(): Promise<void> {
   };
 
   /** Accept one: join the room the invite named, as the guest. */
-  const acceptInvite = (room: string, friendName: string) => {
+  const acceptInvite = (room: string, friendName: string, priv = true) => {
     if (!onlineAvailable) return;
+    // Let go of whatever the lobby was doing first. Accepting while a search
+    // is running would otherwise leave that socket open and its room held, so
+    // the caller would go on advertising a game they had already left.
+    netConn?.close();
+    netConn = null;
+    searchRoom = null;
     const conn = new NetConnection(
       relayUrl(),
       {
@@ -2707,12 +2919,15 @@ async function boot(): Promise<void> {
     ui.showLobbyStatus(tf("invite.from.title", { name: friendName }), "", null, abandonLobby);
     conn
       .join(room)
-      .then(({ role }) => startOnlineMatch(conn, role, true))
+      .then(({ role }) => startOnlineMatch(conn, role, priv))
       .catch((e: unknown) => {
         if (netConn !== conn) return;
+        // Almost always "room is full": somebody else answered the same
+        // callout first. Said plainly, with a way back to searching, rather
+        // than as a connection error it is not.
         ui.showLobbyStatus(
-          tr("net.reconnecting"),
-          e instanceof Error ? e.message : "",
+          priv ? tr("net.reconnecting") : tr("callout.taken"),
+          priv ? (e instanceof Error ? e.message : "") : "",
           null,
           showOnline
         );
@@ -3729,10 +3944,31 @@ async function boot(): Promise<void> {
         onRematch: () => {
           input.setTouchControlsEnabled(true);
           ui.showHUD();
+          ui.clearEmotes();
           match?.reset();
+        },
+        // Both bubbles come back through here, this player's own included, so
+        // one piece of code decides where a message sits and how long it
+        // holds. `mine` is the sender, in local terms — every peer is the near
+        // side of its own screen.
+        onEmote: (id, mine) => {
+          if (!mine && !prefs.emotes) return;
+          ui.showEmote(mine ? "player" : "ai", id);
         },
       });
       session.pauseAllowed = opts.online.private;
+      ui.setEmotes((id) => session?.sendEmote(id));
+    } else if (rivalGame) {
+      // The rival talks too. A stranger who never says a word in a game where
+      // everyone else does is as much of a tell as the missing result card
+      // was, and for the same reason: it is not what a person would do.
+      ui.setEmotes((id) => {
+        ui.showEmote("player", id);
+        answerEmote(id);
+      });
+    } else {
+      // Nobody to say it to.
+      ui.setEmotes(null);
     }
     cameraMode = "court";
     ui.setCameraMode(cameraMode);

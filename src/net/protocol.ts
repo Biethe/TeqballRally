@@ -34,7 +34,7 @@ import { stepBall, type BallState, type Side } from "../ball";
  * The relay refuses to seat peers of different versions together, so a version
  * change is a clean break rather than a negotiation.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /**
  * Crockford base32: no I, L, O or U. The first three are the characters people
@@ -391,6 +391,31 @@ export interface FxMessage {
   pos?: Vec3Wire;
 }
 
+/**
+ * One of a fixed set of things a player can say, mid-match.
+ *
+ * Only the id crosses. The words are looked up on the far side, so two players
+ * on different languages read the same message in their own — and, more to the
+ * point, nothing a player types ever reaches anybody. A fixed catalogue is not
+ * user-generated content, which keeps this out of the moderation and reporting
+ * obligations that come with a chat box, and keeps it out of the trouble that
+ * comes with strangers being able to write to each other.
+ *
+ * Carries no geometry, so `reframe` passes it through untouched.
+ */
+export interface EmoteMessage {
+  t: "emote";
+  /**
+   * When it was said. Nothing reads it — a message is shown on arrival, not
+   * scheduled — but `NetConnection.send` stamps every game message so that no
+   * call site can forget one that does matter, and pause and rematch carry it
+   * on the same terms.
+   */
+  tick: number;
+  /** An id from the catalogue in `src/emotes.ts`. */
+  id: string;
+}
+
 export type GameMessage =
   | PauseMessage
   | RematchMessage
@@ -398,6 +423,7 @@ export type GameMessage =
   | InputMessage
   | SnapshotMessage
   | FxMessage
+  | EmoteMessage
   | MoveMessage
   | StrikeMessage
   | StateMessage
@@ -525,10 +551,57 @@ export interface InviteMessage {
   room: string;
 }
 
-/** Relay -> the friend being asked. `from` is verified, never announced. */
+/**
+ * Ask *everyone* who is listening, because nobody in particular is.
+ *
+ * Quick match used to be a rendezvous: the relay held a queue and paired two
+ * people only if both were in it at the same moment. That works for a game
+ * with a crowd and fails completely for a game without one — two players have
+ * to press the same button within a few seconds of each other, which with a
+ * handful of users never happens, so every quick match quietly became a match
+ * against the AI and the online mode was decorative.
+ *
+ * This changes the odds rather than the machinery. The relay already knows
+ * every account with the app open, because presence sockets are held for as
+ * long as it is; it simply was not asking them anything. A callout asks all of
+ * them at once, and the question goes from "is somebody else searching right
+ * now" to "is anybody around".
+ *
+ * Carries no more than an invite does. The caller has already minted a room
+ * and taken the host seat, so accepting is an ordinary join by code, down the
+ * same path that already works.
+ */
+export interface CalloutMessage {
+  t: "callout";
+  v: number;
+  /** The room the caller is already sitting in. */
+  room: string;
+}
+
+/**
+ * Relay -> the friend being asked. `from` is verified, never announced.
+ *
+ * `open` separates the two kinds. A friend asking by name has earned a dialog;
+ * a stranger calling out to everybody has earned a notice that can be ignored,
+ * and treating them the same would make the second one feel like the first.
+ */
 export interface InvitedMessage {
   t: "invited";
   from: PeerIdentity;
+  room: string;
+  /** True when this came from a callout rather than from a friend. */
+  open?: boolean;
+}
+
+/**
+ * That game is taken — stop offering it.
+ *
+ * A callout reaches everybody and only one of them can have the seat, so
+ * without this the rest are left looking at an offer that cannot be accepted,
+ * and find that out by tapping it.
+ */
+export interface CalloutGoneMessage {
+  t: "callout-gone";
   room: string;
 }
 
@@ -560,7 +633,9 @@ export type SignalMessage =
   | HelloMessage
   | InviteMessage
   | InvitedMessage
-  | InviteReplyMessage;
+  | InviteReplyMessage
+  | CalloutMessage
+  | CalloutGoneMessage;
 export type NetMessage = GameMessage | SignalMessage;
 
 // ------------------------------------------------------------------- helpers
@@ -750,6 +825,48 @@ export function isValidInvited(msg: unknown): msg is InvitedMessage {
     typeof m.room === "string" &&
     isValidRoomCode(m.room.toUpperCase())
   );
+}
+
+/**
+ * A callout worth relaying: a room, and nothing else to get wrong.
+ *
+ * `typeof` before anything else, for the reason spelled out on `isValidInvite`
+ * — stringifying whatever arrived lets the number 12345 through as a room
+ * code, which is five characters of the alphabet and not a code anybody typed.
+ */
+export function isValidCallout(msg: unknown): msg is CalloutMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<CalloutMessage>;
+  return (
+    m.t === "callout" &&
+    typeof m.room === "string" &&
+    isValidRoomCode(m.room.toUpperCase())
+  );
+}
+
+/** The withdrawal of one. Only the room matters; the caller is long gone. */
+export function isValidCalloutGone(msg: unknown): msg is CalloutGoneMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<CalloutGoneMessage>;
+  return (
+    m.t === "callout-gone" &&
+    typeof m.room === "string" &&
+    isValidRoomCode(m.room.toUpperCase())
+  );
+}
+
+/**
+ * A message worth showing.
+ *
+ * The id is checked against the catalogue by the caller, not here: this file
+ * is shared with the relay's plain ESM and must not reach into the game's
+ * modules. What it can say is that the shape is right and the id is short
+ * enough not to be an attack.
+ */
+export function isValidEmote(msg: unknown): msg is EmoteMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<EmoteMessage>;
+  return m.t === "emote" && typeof m.id === "string" && m.id.length > 0 && m.id.length <= 32;
 }
 
 export const PAUSE_ACTIONS = ["request", "accept", "decline", "resume"] as const;

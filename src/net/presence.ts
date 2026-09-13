@@ -2,6 +2,7 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
+  isValidCalloutGone,
   isValidInvited,
   type PeerIdentity,
 } from "./protocol";
@@ -33,8 +34,17 @@ import { relayUrl } from "./endpoint";
 const BACKOFF_MS = [1000, 3000, 8000, 20000, 45000];
 
 export interface PresenceHandlers {
-  /** A friend has asked for a game, and is sitting in `room` waiting. */
-  onInvited?: (from: PeerIdentity, room: string) => void;
+  /**
+   * Somebody has asked for a game and is sitting in `room` waiting.
+   *
+   * `open` separates a friend asking by name from a stranger calling out to
+   * everybody. The first has earned an interruption; the second has earned a
+   * notice that can be ignored, and showing them the same way would make the
+   * second one feel like the first.
+   */
+  onInvited?: (from: PeerIdentity, room: string, open: boolean) => void;
+  /** That game is taken, or its caller gave up. Stop offering it. */
+  onCalloutGone?: (room: string) => void;
   /** An invite this player sent came back unanswered or refused. */
   onReply?: (answer: "declined" | "gone", who: string | null) => void;
   /** The connection came up or went down; drives the friends list's dot. */
@@ -47,9 +57,17 @@ export class PresenceLink {
   private closed = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * `url` defaults to the build's own relay, which is what every caller in the
+   * game wants. It is a parameter at all so a test can point one of these at a
+   * server it started itself — `NetConnection` has taken its URL this way from
+   * the beginning, and a presence link that could not be aimed anywhere was
+   * the reason the callout had no end-to-end test.
+   */
   constructor(
     private token: string,
-    private handlers: PresenceHandlers = {}
+    private handlers: PresenceHandlers = {},
+    private url: string = relayUrl()
   ) {}
 
   get connected(): boolean {
@@ -71,6 +89,19 @@ export class PresenceLink {
    */
   invite(friendId: string, room: string): void {
     this.send({ t: "invite", to: friendId, room });
+  }
+
+  /**
+   * Ask everybody who is around, rather than one friend by name.
+   *
+   * Same shape as `invite`: the room already exists and this peer is already
+   * sitting in it, so all that crosses is where to come. Dropped when the link
+   * is down, for the same reason an invite is — it is an offer to play right
+   * now, and one that waits for a socket is an offer to play at some
+   * unspecified past moment.
+   */
+  callout(room: string): void {
+    this.send({ t: "callout", v: PROTOCOL_VERSION, room });
   }
 
   /** Turn one down, so whoever asked is told rather than left waiting. */
@@ -96,7 +127,7 @@ export class PresenceLink {
     if (this.closed || this.socket) return;
     let socket: WebSocket;
     try {
-      socket = new WebSocket(relayUrl());
+      socket = new WebSocket(this.url);
     } catch {
       // A build with no reachable relay. Nothing to report and nothing to
       // retry against.
@@ -124,7 +155,11 @@ export class PresenceLink {
     const msg = decode(raw);
     if (!msg) return;
     if (isValidInvited(msg)) {
-      this.handlers.onInvited?.(msg.from, msg.room);
+      this.handlers.onInvited?.(msg.from, msg.room, msg.open === true);
+      return;
+    }
+    if (isValidCalloutGone(msg)) {
+      this.handlers.onCalloutGone?.(msg.room);
       return;
     }
     if (msg.t === "invite-reply") {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NetConnection } from "../src/net/connection";
+import { PresenceLink } from "../src/net/presence";
 import { CHARACTERS, SETS_TO_WIN, WIN_SCORE } from "../src/config";
 import type { PeerIdentity } from "../src/net/protocol";
 
@@ -241,6 +242,131 @@ describe("clubs over HTTP", () => {
   it("needs a signed-in player, like everything that owns something", async () => {
     const anon = await api("POST", "/api/clubs", { body: { name: "Nobody's Club" } });
     expect(anon.status).toBe(401);
+  });
+});
+
+describe("calling out for a game", () => {
+  it("rings everybody who is around, and not the caller", async () => {
+    /*
+     * The whole point of the change. The old queue paired two people only if
+     * both were waiting in the same few seconds, which for a game with a
+     * handful of players is never — so quick match always fell through to the
+     * AI and the online mode was decorative.
+     *
+     * Three accounts: one mints a room and calls out, and the other two are
+     * simply sitting in the app. Both should hear it, and the caller should
+     * not hear itself.
+     */
+    const [a, b, c] = await Promise.all([
+      api("POST", "/api/players", { body: { name: "Caller" } }),
+      api("POST", "/api/players", { body: { name: "Idle One" } }),
+      api("POST", "/api/players", { body: { name: "Idle Two" } }),
+    ]);
+
+    const heard: { who: string; room: string; open: boolean }[] = [];
+    const listen = (name: string, token: string) => {
+      const link = new PresenceLink(
+        token,
+        {
+          onInvited: (from, room, isOpen) =>
+            heard.push({ who: `${name}<-${from.name}`, room, open: isOpen }),
+        },
+        WS
+      );
+      link.start();
+      return link;
+    };
+
+    const callerLink = listen("caller", a.body.token);
+    const one = listen("one", b.body.token);
+    const two = listen("two", c.body.token);
+    await settle(400);
+
+    // The caller takes the host seat first; the callout only hands out the code.
+    const conn = track(new NetConnection(WS, {}, a.body.token));
+    await conn.join("CA5T1");
+    await settle(200);
+    callerLink.callout("CA5T1");
+    await settle(400);
+
+    expect(heard.map((h) => h.who).sort()).toEqual(["one<-Caller", "two<-Caller"]);
+    // Marked open, because a stranger reaching everybody has to be shown
+    // differently from a friend asking by name.
+    expect(heard.every((h) => h.open)).toBe(true);
+    expect(heard.every((h) => h.room === "CA5T1")).toBe(true);
+
+    callerLink.close();
+    one.close();
+    two.close();
+  });
+
+  it("will not let anybody advertise a room they are not hosting", async () => {
+    // Otherwise a callout is a way to send the entire game into somebody
+    // else's match.
+    const [a, b] = await Promise.all([
+      api("POST", "/api/players", { body: { name: "Owner" } }),
+      api("POST", "/api/players", { body: { name: "Stranger" } }),
+    ]);
+
+    const heard: string[] = [];
+    const watcher = new PresenceLink(
+      b.body.token,
+      { onInvited: (from) => heard.push(from.name) },
+      WS
+    );
+    watcher.start();
+    const liar = new PresenceLink(b.body.token, {}, WS);
+    liar.start();
+    await settle(400);
+
+    const conn = track(new NetConnection(WS, {}, a.body.token));
+    await conn.join("CA5T2");
+    await settle(200);
+    // Somebody else's room, advertised by somebody who is not in it.
+    liar.callout("CA5T2");
+    await settle(400);
+
+    expect(heard).toEqual([]);
+
+    watcher.close();
+    liar.close();
+  });
+
+  it("says the game is gone once somebody has taken it", async () => {
+    // A callout reaches everybody and only one of them can have the seat.
+    // Without this the rest are left holding an offer that cannot be accepted,
+    // and find that out by tapping it.
+    const [a, b, c] = await Promise.all([
+      api("POST", "/api/players", { body: { name: "Caller Two" } }),
+      api("POST", "/api/players", { body: { name: "Taker" } }),
+      api("POST", "/api/players", { body: { name: "Too Slow" } }),
+    ]);
+
+    const gone: string[] = [];
+    const callerLink = new PresenceLink(a.body.token, {}, WS);
+    callerLink.start();
+    const slow = new PresenceLink(
+      c.body.token,
+      { onCalloutGone: (room) => gone.push(room) },
+      WS
+    );
+    slow.start();
+    await settle(400);
+
+    const host = track(new NetConnection(WS, {}, a.body.token));
+    await host.join("CA5T3");
+    await settle(200);
+    callerLink.callout("CA5T3");
+    await settle(300);
+
+    const taker = track(new NetConnection(WS, {}, b.body.token));
+    await taker.join("CA5T3");
+    await settle(400);
+
+    expect(gone).toEqual(["CA5T3"]);
+
+    callerLink.close();
+    slow.close();
   });
 });
 

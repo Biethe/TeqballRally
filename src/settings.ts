@@ -42,6 +42,17 @@ export interface Preferences {
    * depending on which way up the phone is held.
    */
   toured: boolean;
+  /**
+   * Whether a stranger looking for a game may ring this player.
+   *
+   * On by default and meant to stay on: it is the whole reason quick match
+   * finds anybody at all in a game this size. The switch exists because being
+   * reachable by strangers should always be refusable, not because refusing is
+   * expected.
+   */
+  callouts: boolean;
+  /** Whether the other player's messages are shown during a match. */
+  emotes: boolean;
   /** Name, number and crest painted onto the player's shirt. */
   kit: Kit;
 }
@@ -55,6 +66,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   gameSpeed: 1.25,
   coached: false,
   toured: false,
+  callouts: true,
+  emotes: true,
   kit: { ...BLANK_KIT },
 };
 
@@ -77,6 +90,9 @@ export function readPreferences(): Preferences {
         typeof stored.autoReception === "boolean"
           ? stored.autoReception
           : DEFAULT_PREFERENCES.autoReception,
+      callouts:
+        typeof stored.callouts === "boolean" ? stored.callouts : DEFAULT_PREFERENCES.callouts,
+      emotes: typeof stored.emotes === "boolean" ? stored.emotes : DEFAULT_PREFERENCES.emotes,
       gameSpeed: stored.gameSpeed === 1.45 ? 1.45 : 1.25,
       coached: stored.coached === true,
       toured: stored.toured === true,

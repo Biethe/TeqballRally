@@ -19,6 +19,7 @@ import type { Side } from "../ball";
 import type { NetConnection } from "./connection";
 import { TickAge } from "./sync";
 import {
+  isValidEmote,
   isValidFx,
   isValidInput,
   readLoft,
@@ -35,6 +36,7 @@ import {
   type GameMessage,
   type PeerRole,
 } from "./protocol";
+import { EMOTE_COOLDOWN_MS, emoteFor } from "../emotes";
 
 /**
  * Authoritative frames per second. Guests play the ball back from a buffer
@@ -133,10 +135,19 @@ export interface SessionHandlers {
   onRematch?: () => void;
   /** The relay minted a fresh match id for both seats (the new match's name). */
   onMatchId?: (id: string) => void;
+  /**
+   * Somebody said something. `mine` is true for this player's own message,
+   * which is echoed back through the same path so both bubbles are drawn by
+   * one piece of code rather than two that can disagree.
+   */
+  onEmote?: (id: string, mine: boolean) => void;
 }
 
 export class OnlineSession {
   private tick = 0;
+  /** When a message was last accepted, each way. See `EMOTE_COOLDOWN_MS`. */
+  private lastEmoteIn = 0;
+  private lastEmoteOut = 0;
   private sinceMove = 0;
   private disposed = false;
   private peerPresent = true;
@@ -294,6 +305,27 @@ export class OnlineSession {
    * both players already agreed to be paired, and the stall the pause gate
    * exists for does not apply to a match that has already ended.
    */
+  /**
+   * Say one of the fixed things.
+   *
+   * Echoed straight back to this player as well as sent, so one piece of code
+   * draws both bubbles. Drawing your own locally and the other player's from
+   * the wire is two paths that can disagree about timing, position and how
+   * long a message stays up, and they would.
+   *
+   * Silently dropped inside the cooldown. A message that queued up behind a
+   * rate limit would arrive detached from whatever it was about.
+   */
+  sendEmote(id: string): boolean {
+    if (this.disposed || !emoteFor(id)) return false;
+    const now = Date.now();
+    if (now - this.lastEmoteOut < EMOTE_COOLDOWN_MS) return false;
+    this.lastEmoteOut = now;
+    this.conn.send({ t: "emote", id });
+    this.handlers.onEmote?.(id, true);
+    return true;
+  }
+
   requestRematch(): void {
     if (this.disposed) return;
     // Pressing REMATCH while the opponent is already asking is an answer.
@@ -495,6 +527,19 @@ export class OnlineSession {
           sets: msg.sets,
           serveOwner: msg.serveOwner,
         });
+        return;
+      }
+
+      // Either side: one of the fixed things a player can say.
+      case "emote": {
+        if (!isValidEmote(msg)) return;
+        if (!emoteFor(msg.id)) return; // A newer build said something this one has no word for.
+        // Rate-limited on receipt as well as on send, because the limit on the
+        // way out lives in a build the other player controls.
+        const now = Date.now();
+        if (now - this.lastEmoteIn < EMOTE_COOLDOWN_MS) return;
+        this.lastEmoteIn = now;
+        this.handlers.onEmote?.(msg.id, false);
         return;
       }
 

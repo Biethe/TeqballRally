@@ -12,7 +12,7 @@ that cost a session to rediscover.
 ## Before you finish anything
 
 ```bash
-npm run check      # typecheck + lint + ~1030 tests. Must be green.
+npm run check      # typecheck + lint + ~1050 tests. Must be green.
 ```
 
 Tests are not decoration here. Most of the hard bugs in this project were found
@@ -49,7 +49,7 @@ the export does not exist.
 
 **A Play `versionCode` is spent the moment Play accepts an upload**, even for a
 release you halt or discard. Bump `android/app/build.gradle` *before* building,
-not after discovering a problem. Currently 10006 / 0.1.2.
+not after discovering a problem. Currently 10007 / 0.1.3.
 
 ## Online play
 
@@ -59,7 +59,7 @@ is told. `reframe` in `src/net/protocol.ts` is the single place the guest's
 mirrored world lives. The README's "Online play" section is long and worth
 reading before touching any of it.
 
-**`PROTOCOL_VERSION` (currently 3) must match between both clients and the
+**`PROTOCOL_VERSION` (currently 4) must match between both clients and the
 relay**, which refuses to seat peers on different versions. Bumping it means
 every phone needs the new build, and the relay needs redeploying — the two
 halves always ship together.
@@ -105,6 +105,12 @@ Do not relitigate these without asking:
 - **AI rivals never appear on the leaderboard.** They fill an empty quick-match
   queue (`src/rivals.ts`) and that is all. The leaderboard is where players
   measure themselves against each other and it stays real.
+- **Quick match calls out to everybody online** rather than pairing two people
+  who happen to be queued at the same instant, which for a game this size is
+  nobody. A rival is the fallback, never the first answer.
+- **What players can say to each other is a fixed list** (`src/emotes.ts`).
+  Never a text field: a fixed catalogue is not user-generated content, and that
+  is what keeps the feature clear of Play's moderation and reporting duties.
 - **Online play is refused without a network**, rather than quietly becoming an
   AI match. A player with no signal knows they are offline.
 - **The onboarding tour is interactive** (`src/tour.ts`), not a stack of cards.

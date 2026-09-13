@@ -1,4 +1,5 @@
 import type { Side } from "./ball";
+import { EMOTES, EMOTE_SHOWN_MS, emoteFor } from "./emotes";
 import type { CameraMode, CharacterDef } from "./config";
 import type { ViewerKind } from "./viewer";
 
@@ -196,6 +197,15 @@ export interface ResultView {
   notes: string[];
   onContinue: () => void;
   onRematch: (() => void) | null;
+  /**
+   * Keep the person you just played, when there was a person.
+   *
+   * The one thing on this card that makes the *next* game easier to find: a
+   * stranger met once is a stranger, and a friend can be asked directly. Null
+   * for anything but a real online match against somebody not already on the
+   * list.
+   */
+  onAddFriend?: (() => void) | null;
 }
 
 /** The card that reports a season that ended while the player was away. */
@@ -441,7 +451,17 @@ function confettiLayer(): HTMLDivElement {
 export class UI {
   private root: HTMLElement;
   /** The guided tour's overlay, built on first use and removed when it ends. */
+  private emoteBtn: HTMLButtonElement | null = null;
+  private emotePickerEl: HTMLDivElement | null = null;
+  private emoteBubbleEl: HTMLDivElement | null = null;
+  private emoteTimers = new Map<Side, number>();
+  /** Set while a match can carry messages. Null everywhere else. */
+  private onEmotePick: ((id: string) => void) | null = null;
   private tourEl: HTMLDivElement | null = null;
+  private toastEl: HTMLDivElement | null = null;
+  private toastTimer: number | null = null;
+  /** Which room the toast is currently offering, so it can be withdrawn. */
+  private toastRoom: string | null = null;
   private tourFrame: number | null = null;
   private loadingEl: HTMLDivElement;
   private loadingText: HTMLDivElement;
@@ -739,6 +759,22 @@ export class UI {
     cameraBtn.onclick = () => this.onCameraRequest?.();
     this.cameraBtn = cameraBtn;
     this.setCameraMode("court");
+    // Top left, deliberately: pause and camera already share the top right,
+    // and the stick and the strike buttons own both bottom corners. This is
+    // the one corner of a match screen that nothing else wants.
+    const emoteBtn = document.createElement("button");
+    emoteBtn.id = "emote-btn";
+    emoteBtn.type = "button";
+    emoteBtn.textContent = "💬";
+    emoteBtn.classList.add("hidden");
+    emoteBtn.onclick = () => this.toggleEmotePicker();
+    this.emoteBtn = emoteBtn;
+    this.emotePickerEl = document.createElement("div");
+    this.emotePickerEl.id = "emote-picker";
+    this.emotePickerEl.classList.add("hidden");
+    this.emoteBubbleEl = document.createElement("div");
+    this.emoteBubbleEl.id = "emote-bubbles";
+
     const pauseBtn = document.createElement("button");
     pauseBtn.id = "pause-btn";
     pauseBtn.textContent = "❚❚";
@@ -775,6 +811,9 @@ export class UI {
       this.meterEl,
       this.meterFlashEl,
       this.practiceEl,
+      this.emoteBubbleEl,
+      this.emotePickerEl,
+      emoteBtn,
       cameraBtn,
       pauseBtn
     );
@@ -2106,6 +2145,21 @@ export class UI {
       };
       btns.appendChild(again);
     }
+    if (view.onAddFriend) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "big-btn alt";
+      add.id = "btn-result-friend";
+      add.textContent = t("result.addFriend");
+      add.onclick = () => {
+        // Disabled rather than removed, and the label becomes the outcome:
+        // taking the button away at the moment it is pressed leaves the player
+        // unsure whether it worked.
+        add.disabled = true;
+        view.onAddFriend?.();
+      };
+      btns.appendChild(add);
+    }
     const go = document.createElement("button");
     go.type = "button";
     go.className = "big-btn";
@@ -2479,6 +2533,155 @@ export class UI {
       this.tourFrame = requestAnimationFrame(place);
     };
     place();
+  }
+
+  /**
+   * Turn the message button on, and say where a chosen one should go.
+   *
+   * Called with a handler when a match can carry messages, and with null when
+   * it cannot — a local match against the CPU, or a player who has turned them
+   * off. Null also takes the button off the screen, rather than leaving a
+   * control that does nothing.
+   */
+  setEmotes(onPick: ((id: string) => void) | null): void {
+    this.onEmotePick = onPick;
+    this.emoteBtn?.classList.toggle("hidden", onPick === null);
+    if (!onPick) this.closeEmotePicker();
+  }
+
+  private toggleEmotePicker(): void {
+    if (!this.emotePickerEl || !this.onEmotePick) return;
+    if (!this.emotePickerEl.classList.contains("hidden")) {
+      this.closeEmotePicker();
+      return;
+    }
+    this.emotePickerEl.replaceChildren();
+    for (const emote of EMOTES) {
+      const chip = document.createElement("button");
+      chip.className = "emote-chip";
+      chip.type = "button";
+      chip.innerHTML = `<span class="emote-emoji"></span><span class="emote-label"></span>`;
+      chip.querySelector<HTMLElement>(".emote-emoji")!.textContent = emote.emoji;
+      chip.querySelector<HTMLElement>(".emote-label")!.textContent = t(emote.says);
+      chip.onclick = () => {
+        // Closed first. A picker that stayed open would sit over the court
+        // through the cooldown, which is the moment the player most wants it
+        // gone.
+        this.closeEmotePicker();
+        this.onEmotePick?.(emote.id);
+      };
+      this.emotePickerEl.appendChild(chip);
+    }
+    this.emotePickerEl.classList.remove("hidden");
+  }
+
+  private closeEmotePicker(): void {
+    this.emotePickerEl?.classList.add("hidden");
+  }
+
+  /**
+   * Show what somebody said, on their own side of the score.
+   *
+   * Both bubbles are drawn here, the player's own included, so there is one
+   * piece of code deciding where a message sits and how long it holds. Drawn
+   * in two places they drift apart, and a player sees their own message behave
+   * differently from the one they are answering.
+   */
+  showEmote(side: Side, id: string): void {
+    const emote = emoteFor(id);
+    if (!emote || !this.emoteBubbleEl) return;
+    const existing = this.emoteTimers.get(side);
+    if (existing !== undefined) window.clearTimeout(existing);
+    const cls = side === "player" ? "mine" : "theirs";
+    let bubble = this.emoteBubbleEl.querySelector<HTMLDivElement>(`.emote-bubble.${cls}`);
+    if (!bubble) {
+      bubble = document.createElement("div");
+      bubble.className = `emote-bubble ${cls}`;
+      this.emoteBubbleEl.appendChild(bubble);
+    }
+    bubble.innerHTML = `<span class="emote-emoji"></span><span class="emote-label"></span>`;
+    bubble.querySelector<HTMLElement>(".emote-emoji")!.textContent = emote.emoji;
+    bubble.querySelector<HTMLElement>(".emote-label")!.textContent = t(emote.says);
+    bubble.classList.remove("hidden");
+    // Restart the entry animation even when a bubble is already up, or a
+    // second message in the same place arrives with no sign it is new.
+    bubble.classList.remove("pop");
+    void bubble.offsetWidth;
+    bubble.classList.add("pop");
+    const held = window.setTimeout(() => {
+      bubble?.classList.add("hidden");
+      this.emoteTimers.delete(side);
+    }, EMOTE_SHOWN_MS);
+    this.emoteTimers.set(side, held);
+  }
+
+  /** Clear both bubbles, for a rematch or a match ending. */
+  clearEmotes(): void {
+    for (const timer of this.emoteTimers.values()) window.clearTimeout(timer);
+    this.emoteTimers.clear();
+    this.emoteBubbleEl?.replaceChildren();
+    this.closeEmotePicker();
+  }
+
+  /**
+   * Somebody out there wants a game.
+   *
+   * Deliberately not a dialog. A friend asking by name has earned an
+   * interruption — `showOnlinePause` is right for that — but a stranger
+   * calling out to everybody who happens to be online has earned a notice,
+   * and dressing the second as the first would make every open callout feel
+   * like a summons. So: a card at the top, one button, ignorable, and gone by
+   * itself whether or not anybody looks at it.
+   *
+   * `room` is remembered so the same offer can be withdrawn the moment
+   * somebody else takes the seat, rather than leaving a dead button behind.
+   */
+  showCallout(view: {
+    room: string;
+    name: string;
+    tier: string;
+    seconds: number;
+    onAccept: () => void;
+    onDismiss?: () => void;
+  }): void {
+    this.hideCallout();
+    const el = document.createElement("div");
+    el.className = "callout-toast";
+    el.innerHTML = `
+      <div class="callout-who">
+        <strong class="callout-name"></strong>
+        <span class="callout-tier"></span>
+      </div>
+      <button class="callout-play" type="button"></button>
+      <button class="callout-close" type="button" aria-label="Dismiss">×</button>`;
+    el.querySelector<HTMLElement>(".callout-name")!.textContent = view.name;
+    el.querySelector<HTMLElement>(".callout-tier")!.textContent = view.tier
+      ? `${view.tier} · ${t("callout.wants")}`
+      : t("callout.wants");
+    const play = el.querySelector<HTMLButtonElement>(".callout-play")!;
+    play.textContent = t("callout.play");
+    play.onclick = () => {
+      this.hideCallout();
+      view.onAccept();
+    };
+    el.querySelector<HTMLButtonElement>(".callout-close")!.onclick = () => {
+      this.hideCallout();
+      view.onDismiss?.();
+    };
+    this.root.appendChild(el);
+    this.toastEl = el;
+    this.toastRoom = view.room;
+    this.toastTimer = window.setTimeout(() => this.hideCallout(), view.seconds * 1000);
+  }
+
+  /** Take it away. With a room, only if that is the one being offered. */
+  hideCallout(room?: string): void {
+    if (room !== undefined && this.toastRoom !== room) return;
+    if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
+    this.toastTimer = null;
+    this.toastEl?.remove();
+    this.toastEl = null;
+    this.toastRoom = null;
   }
 
   /** Take the tour's overlay away. */

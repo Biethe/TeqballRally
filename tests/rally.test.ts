@@ -55,6 +55,26 @@ async function pair() {
 }
 
 describe("a match across two peers", () => {
+  it("carries a message across unchanged, in both directions", async () => {
+    // Everything positional is mirrored on the way over, because each peer is
+    // the near side of its own screen. A message has no place on the court, so
+    // any change at all here would mean the two players were reading different
+    // words — which is the one thing a fixed catalogue exists to prevent.
+    const { host, guest, hostInbox, guestInbox } = await pair();
+
+    host.send({ t: "emote", id: "wp" });
+    guest.send({ t: "emote", id: "gl" });
+    await settle(250);
+
+    const atGuest = guestInbox.filter((m) => m.t === "emote");
+    const atHost = hostInbox.filter((m) => m.t === "emote");
+    expect(atGuest).toHaveLength(1);
+    expect(atHost).toHaveLength(1);
+    // Read through the same reframe the session applies on arrival.
+    expect(reframe(atGuest[0], "guest")).toMatchObject({ t: "emote", id: "wp" });
+    expect(reframe(atHost[0], "host")).toMatchObject({ t: "emote", id: "gl" });
+  });
+
   it("sends the host's frames to the guest and the guest's controls to the host", async () => {
     const { host, guest, hostInbox, guestInbox } = await pair();
 

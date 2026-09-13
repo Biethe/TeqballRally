@@ -13,6 +13,9 @@ import {
   isValidFx,
   isValidInput,
   isPlayerCode,
+  isValidCallout,
+  isValidCalloutGone,
+  isValidEmote,
   isValidInvite,
   isValidInvited,
   isValidSetup,
@@ -415,5 +418,37 @@ describe("invites", () => {
     // carry, so a frame without one is not an invite.
     expect(isValidInvited({ t: "invited", room: "ABC12" })).toBe(false);
     expect(isValidInvited({ t: "invited", from, room: "nope" })).toBe(false);
+  });
+
+  it("tells an open callout apart from a friend asking by name", () => {
+    // The two are shown completely differently — one is a card that can be
+    // ignored, the other a dialog — so the flag that separates them has to
+    // survive the wire rather than being inferred at the far end.
+    const from = { id: "2D6FR6WG", name: "Bie", trophies: 12, tier: "BEGINNER" };
+    expect(isValidInvited({ t: "invited", from, room: "ABC12", open: true })).toBe(true);
+    expect(isValidInvited({ t: "invited", from, room: "ABC12" })).toBe(true);
+  });
+
+  it("accepts a callout that names a room, and nothing that does not", () => {
+    expect(isValidCallout({ t: "callout", v: PROTOCOL_VERSION, room: "ABC12" })).toBe(true);
+    // The bug `isValidInvite` had: stringify whatever arrived and the number
+    // 12345 is five characters of the alphabet and a room nobody typed.
+    expect(isValidCallout({ t: "callout", v: PROTOCOL_VERSION, room: 12345 })).toBe(false);
+    expect(isValidCallout({ t: "callout", v: PROTOCOL_VERSION })).toBe(false);
+    expect(isValidCallout({ t: "callout", v: PROTOCOL_VERSION, room: "nope!" })).toBe(false);
+    expect(isValidCallout({ t: "invited", room: "ABC12" })).toBe(false);
+  });
+
+  it("accepts the withdrawal of one", () => {
+    expect(isValidCalloutGone({ t: "callout-gone", room: "ABC12" })).toBe(true);
+    expect(isValidCalloutGone({ t: "callout-gone", room: 12345 })).toBe(false);
+    expect(isValidCalloutGone({ t: "callout", room: "ABC12" })).toBe(false);
+  });
+
+  it("accepts a message id, and refuses one long enough to be an attack", () => {
+    expect(isValidEmote({ t: "emote", tick: 4, id: "gl" })).toBe(true);
+    expect(isValidEmote({ t: "emote", tick: 4, id: "" })).toBe(false);
+    expect(isValidEmote({ t: "emote", tick: 4, id: "x".repeat(33) })).toBe(false);
+    expect(isValidEmote({ t: "emote", tick: 4, id: 7 })).toBe(false);
   });
 });

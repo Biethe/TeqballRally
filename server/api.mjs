@@ -41,6 +41,7 @@ import {
   renameClub,
   rotateInvite,
 } from "./clubs.mjs";
+import { onlineCount } from "./presence.mjs";
 
 /** Requests bigger than this are not a player finishing a match. */
 const MAX_BODY_BYTES = 4 * 1024;
@@ -328,6 +329,18 @@ export async function handleApi(store, req, res, now = new Date()) {
       const player = await requirePlayer(store, req);
       const body = await readBody(req);
       sendJson(res, 200, { career: await upgrade(store, player, body.championId) });
+      return true;
+    }
+
+    if (path === "/api/online" && req.method === "GET") {
+      // How many people are actually reachable right now. Open, because it is
+      // a count and not a list — it says whether there is anybody to play, and
+      // nothing whatever about who.
+      //
+      // Quick match reads it to decide how long to keep looking. Waiting
+      // twenty-five seconds to prove an empty game is empty helps nobody, and
+      // giving up after nine when somebody is right there is worse.
+      sendJson(res, 200, { count: onlineCount() });
       return true;
     }
 
