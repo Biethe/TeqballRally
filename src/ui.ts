@@ -1396,6 +1396,10 @@ export class UI {
     for (const row of rows) {
       const el = document.createElement("div");
       el.className = "setting-row";
+      // Named in the DOM so the guided tour can ring one particular row. The
+      // rows are otherwise indistinguishable from the outside, and "the second
+      // one down" is not a thing a tour can point at once the list changes.
+      el.dataset.setting = row.id;
       const text = document.createElement("div");
       text.className = "setting-text";
       const label = document.createElement("div");

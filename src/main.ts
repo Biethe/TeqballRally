@@ -26,7 +26,7 @@ import {
 } from "./venue";
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
 import { CRESTS, applyKit, type Kit, type PersonalKit } from "./kit";
-import { Tour } from "./tour";
+import { Tour, type TourScreen } from "./tour";
 import { characterFor, rivalFor, type Rival } from "./rivals";
 import { PresenceLink } from "./net/presence";
 import {
@@ -263,6 +263,14 @@ interface MatchOpts {
   /** The opponent's own kit marks, when there is a person behind them. */
   opponentKit?: PersonalKit;
   practice?: boolean;
+  /**
+   * Whether the practice drill's coach runs. Defaults to `practice`.
+   *
+   * Separated so the app tour can stand the player on the no-stakes practice
+   * court without the drill starting underneath it. Two tutorials talking at
+   * once teaches neither.
+   */
+  coached?: boolean;
   onEnd: (winner: Side, sets: [number, number]) => void;
 }
 
@@ -1730,19 +1738,61 @@ async function boot(): Promise<void> {
     }
   };
 
+  /**
+   * Open the screen a step lives on.
+   *
+   * Called once per step, as it begins. This is the difference between a tour
+   * that leads and a tour that comments: without it the ring has nothing to
+   * ring the moment the player goes one level deeper than the button it
+   * pointed at, and finishing a step leaves them reading an instruction about
+   * a screen they have to find their own way back to.
+   */
+  const goToTourScreen = (screen: TourScreen) => {
+    switch (screen) {
+      case "settings":
+        showSettings();
+        return;
+      case "kit":
+        showSettingsGroup("kit", () => showSettings());
+        return;
+      case "gameplay":
+        showSettingsGroup("gameplay", () => showSettings());
+        return;
+      case "court":
+        startTourCourt();
+        return;
+    }
+  };
+
   const refreshTour = () => {
     if (!tour) return;
     const step = tour.current({
       kitName: prefs.kit.name,
+      kitNumber: prefs.kit.number,
+      kitCrest: prefs.kit.crest,
       hasProfile: identity !== null,
       changedSetting: tourSawSetting,
       portrait: input.isPortrait,
     });
     if (!step) {
       endTour();
-      ui.notice(tr("tour.done.title"), tr("tour.done.body"), tr("nav.done"));
+      // The tour now finishes standing on a live court, so the closing card
+      // would otherwise go up over a match in play and the player would read
+      // it while losing a point behind it. Held still until they are done
+      // reading, then handed back.
+      const onCourt = match !== null;
+      if (onCourt) match?.setTutorialFrozen(true);
+      ui.notice(tr("tour.done.title"), tr("tour.done.body"), tr("nav.done"), () => {
+        if (onCourt) {
+          match?.setTutorialFrozen(false);
+          input.setTouchControlsEnabled(true);
+        }
+      });
       return;
     }
+    // Navigate before drawing the cue, so the ring has something to measure on
+    // the frame it first appears.
+    if (tour.takeArrival()) goToTourScreen(step.screen);
     const { step: n, of } = tour.progress();
     ui.showTourCue({
       target: step.target,
@@ -1754,17 +1804,46 @@ async function boot(): Promise<void> {
   };
 
   /**
-   * Start the tour on the settings screen, where three of its four steps live.
+   * The court the tour finishes on.
+   *
+   * The last thing it teaches is that the game plays differently depending on
+   * which way up the phone is held, and that cannot be taught on a menu — a
+   * player told to turn their phone while looking at a list of settings has
+   * been told a fact, not shown one. Here they turn it and the controls change
+   * under their hands, which is the whole lesson in one movement.
+   *
+   * Nothing is at stake. It is the practice court, which pays nothing and
+   * cannot be lost, and with the drill's own coach suppressed: two tutorials
+   * talking over each other teaches neither.
+   */
+  const startTourCourt = () => {
+    const base = CHARACTERS[0];
+    const me = withCareer(base, levelOf(career, base.id));
+    const them =
+      CHARACTERS.find((c) => c.id !== me.id && c.id === "SpanishPlayer") ??
+      CHARACTERS.find((c) => c.id !== me.id) ??
+      CHARACTERS[0];
+    void startMatch(me, BALLS[0].id, {
+      opponent: them,
+      difficulty: "easy",
+      labels: [prefs.kit.name.trim() || tr("hud.you"), them.label],
+      practice: true,
+      coached: false,
+      onEnd: () => match?.reset(),
+    });
+  };
+
+  /**
+   * Start the tour on the settings screen, where the first of its steps lives.
    *
    * Sent there rather than left to find it: a first sentence that says "open
    * settings, then open profile" is two instructions, and the tour's whole
-   * rule is one at a time.
+   * rule is one at a time. Every step after this one navigates for itself.
    */
   const startTour = () => {
     if (tour) return;
     tourSawSetting = false;
     tour = new Tour(input.isPortrait);
-    showSettings();
     refreshTour();
     if (tourTimer !== null) window.clearInterval(tourTimer);
     tourTimer = window.setInterval(refreshTour, TOUR_POLL_MS);
@@ -3673,7 +3752,7 @@ async function boot(): Promise<void> {
         opts.opponent,
       ]);
     }
-    practiceCoach = opts.practice
+    practiceCoach = (opts.coached ?? opts.practice)
       ? new PracticeCoach(
           controller,
           ui,

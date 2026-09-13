@@ -31,12 +31,24 @@ import type { StringKey } from "./i18n";
 export type TourGoal =
   /** Put a name on the shirt. */
   | "kit"
+  /** Put a number or a crest on it too. */
+  | "marks"
   /** Have an account. */
   | "profile"
   /** Change any gameplay setting from what it was. */
   | "settings"
   /** Turn the device to the other orientation. */
   | "tilt";
+
+/**
+ * Where a step lives.
+ *
+ * The tour takes the player here when the step begins. It has to: a tour that
+ * points at a button on a screen the player is not looking at is a tour that
+ * asks them to guess which way is back, and they only guess wrong once before
+ * they stop reading it.
+ */
+export type TourScreen = "settings" | "kit" | "gameplay" | "court";
 
 export interface TourStep {
   goal: TourGoal;
@@ -54,8 +66,14 @@ export interface TourStep {
   /**
    * Where the step lives, so the tour can send the player there rather than
    * pointing at something no screen is currently showing.
+   *
+   * Acted on once, when the step begins, and never again while it runs. The
+   * player is meant to go deeper than the screen the ring is on — tapping the
+   * ringed button is usually the whole instruction — and a tour that kept
+   * dragging them back to where it pointed would be fighting them for the
+   * controls.
    */
-  screen: "profile" | "settings" | "kit" | "anywhere";
+  screen: TourScreen;
 }
 
 /**
@@ -70,16 +88,21 @@ export interface TourStep {
  * with and a memorable thing to end on.
  */
 export const TOUR: readonly TourStep[] = [
-  { goal: "profile", target: "#btn-set-profile", says: "tour.profile", screen: "anywhere" },
-  { goal: "kit", target: "#btn-set-kit", says: "tour.kit", screen: "anywhere" },
-  { goal: "settings", target: "#btn-set-gameplay", says: "tour.settings", screen: "anywhere" },
-  { goal: "tilt", target: "", says: "tour.tilt", screen: "anywhere" },
+  { goal: "profile", target: "#btn-set-profile", says: "tour.profile", screen: "settings" },
+  { goal: "kit", target: '[data-setting="kit-name"]', says: "tour.kit", screen: "kit" },
+  { goal: "marks", target: '[data-setting="kit-number"]', says: "tour.marks", screen: "kit" },
+  { goal: "settings", target: "#btn-set-gameplay", says: "tour.settings", screen: "settings" },
+  { goal: "tilt", target: "", says: "tour.tilt", screen: "court" },
 ];
 
 /** What the tour can see about the player, to know whether a step is done. */
 export interface TourFacts {
   /** A name written across the shoulders of the shirt. */
   kitName: string;
+  /** The squad number on the front and the left leg. Empty for none. */
+  kitNumber: string;
+  /** The badge on the chest. "none" until they choose one. */
+  kitCrest: string;
   /** Whether there is an account on this device. */
   hasProfile: boolean;
   /** Whether any gameplay setting has been changed during the tour. */
@@ -88,11 +111,25 @@ export interface TourFacts {
   portrait: boolean;
 }
 
-/** Whether the facts satisfy this step, given how the tour started. */
-export function stepDone(step: TourStep, facts: TourFacts, startedPortrait: boolean): boolean {
+/**
+ * Whether the facts satisfy this step.
+ *
+ * `wasPortrait` is the orientation when *this step* began, not when the tour
+ * did. The difference matters for one step and matters a lot: somebody who
+ * happened to turn their phone during the kit step would otherwise arrive at
+ * the tilt step with it already counted, and the tour would end without ever
+ * having asked them to do the one thing it exists to teach.
+ */
+export function stepDone(step: TourStep, facts: TourFacts, wasPortrait: boolean): boolean {
   switch (step.goal) {
     case "kit":
       return facts.kitName.trim().length > 0;
+    case "marks":
+      // Either one. The point of the step is that the shirt has more on it
+      // than a name, not that the player wants both — demanding a number from
+      // somebody who only wanted a crest is the tour deciding how their shirt
+      // should look.
+      return facts.kitNumber.trim().length > 0 || facts.kitCrest !== "none";
     case "profile":
       return facts.hasProfile;
     case "settings":
@@ -102,7 +139,7 @@ export function stepDone(step: TourStep, facts: TourFacts, startedPortrait: bool
       // landscape is a tour that cannot be finished by somebody whose phone is
       // already there, and the thing worth learning is that turning it does
       // something at all.
-      return facts.portrait !== startedPortrait;
+      return facts.portrait !== wasPortrait;
   }
 }
 
@@ -116,17 +153,33 @@ export function stepDone(step: TourStep, facts: TourFacts, startedPortrait: bool
  */
 export class Tour {
   private at = 0;
-  private readonly startedPortrait: boolean;
+  /** The orientation when the step now running began. */
+  private stepPortrait: boolean;
   private done = false;
+  /** True on the first `current` call for a step, so the caller can navigate. */
+  private entered = true;
 
   constructor(portrait: boolean) {
-    this.startedPortrait = portrait;
+    this.stepPortrait = portrait;
   }
 
   /** The step being shown, or null once the tour is over. */
   current(facts: TourFacts): TourStep | null {
     this.advance(facts);
     return this.done ? null : TOUR[this.at];
+  }
+
+  /**
+   * Whether the step just returned is one the player has not been sent to yet.
+   *
+   * Read once and cleared, so the caller navigates on the step changing and
+   * not on every poll — a tour that re-opened its own screen three times a
+   * second would take the app away from the player for as long as it ran.
+   */
+  takeArrival(): boolean {
+    const first = this.entered;
+    this.entered = false;
+    return first;
   }
 
   get finished(): boolean {
@@ -140,8 +193,12 @@ export class Tour {
 
   /** Skip over everything the player has already satisfied. */
   private advance(facts: TourFacts): void {
-    while (!this.done && stepDone(TOUR[this.at], facts, this.startedPortrait)) {
+    while (!this.done && stepDone(TOUR[this.at], facts, this.stepPortrait)) {
       this.at++;
+      this.entered = true;
+      // The next step measures the phone from where it is now, not from where
+      // it was when the tour opened.
+      this.stepPortrait = facts.portrait;
       if (this.at >= TOUR.length) this.done = true;
     }
   }
