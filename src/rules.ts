@@ -64,6 +64,7 @@ export {
   buyUpgrade,
   claimChallenge,
   freshCareer,
+  grantAssetUnlock,
   isUnlocked,
   levelOf,
   rollOver,

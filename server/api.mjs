@@ -28,6 +28,7 @@ import {
   register,
   removeFriend,
   rename,
+  unlockAsset,
   upgrade,
 } from "./accounts.mjs";
 import {
@@ -289,6 +290,13 @@ export async function handleApi(store, req, res, now = new Date()) {
       const player = await requirePlayer(store, req);
       const body = await readBody(req);
       sendJson(res, 200, { career: await claim(store, player, body.challengeId, now) });
+      return true;
+    }
+
+    if (path === "/api/players/me/unlock" && isPost) {
+      const player = await requirePlayer(store, req);
+      const body = await readBody(req);
+      sendJson(res, 200, { career: await unlockAsset(store, player, body.assetId, now) });
       return true;
     }
 

@@ -251,6 +251,23 @@ export async function claimOnServer(token: string, challengeId: string): Promise
   return body.career;
 }
 
+/**
+ * Tell the server about something the player has bought.
+ *
+ * The career is re-read from the server on every launch, so an unlock that
+ * only the device knows about is one that disappears when the app is next
+ * opened — while the store, which does remember, then refuses to sell it
+ * again. Both of those were happening.
+ */
+export async function unlockOnServer(token: string, assetId: string): Promise<Career> {
+  const body = await request<{ career: Career }>("/api/players/me/unlock", {
+    method: "POST",
+    body: { assetId },
+    token,
+  });
+  return body.career;
+}
+
 export async function upgradeOnServer(token: string, championId: string): Promise<Career> {
   const body = await request<{ career: Career }>("/api/players/me/upgrade", {
     method: "POST",

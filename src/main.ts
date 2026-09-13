@@ -136,6 +136,8 @@ import {
   renameClub,
   reportMatch,
   reportOnlineMatch,
+  claimOnServer,
+  unlockOnServer,
   restore,
   signUp,
   storeIdentity,
@@ -1448,8 +1450,29 @@ async function boot(): Promise<void> {
       })),
       resetsIn: untilMidnight(),
       onClaim: (id) => {
+        // Claimed on the server, not just here. The career is re-read from the
+        // server on every launch, so a reward only this device knows about is
+        // a reward that disappears when the app is next opened — which is
+        // exactly what was happening to every claimed challenge.
+        //
+        // Shown immediately all the same: the arithmetic is the same on both
+        // ends, so the local answer is what the server is about to say, and
+        // making a player wait a round trip to see coins they have earned is
+        // the wrong way round. The server's answer replaces it when it lands.
         saveCareer(claimChallenge(career, id));
         showChallenges();
+        if (!identity) return;
+        void claimOnServer(identity.token, id).then(
+          (next) => {
+            adoptServerCareer(next);
+            showChallenges();
+          },
+          // Offline. The local claim stands for now and the next launch reads
+          // the server's copy, which is the honest outcome: a reward that was
+          // never recorded is a reward that was not earned as far as anyone
+          // else is concerned.
+          () => undefined
+        );
       },
       onBack: showTitle,
     });
@@ -1754,9 +1777,18 @@ async function boot(): Promise<void> {
     if (!user) return false;
     const outcome = await purchaseAsset(assetId);
     if (outcome.ok) {
-      career = grantAssetUnlock(career, assetId);
-      refreshWallet();
+      // Locally first, so the thing they just paid for is theirs immediately.
+      // This line used to assign the variable without saving it, so the unlock
+      // did not even survive a reload, let alone a relaunch.
+      saveCareer(grantAssetUnlock(career, assetId));
       ui.notice(tr("pro.restored.title"), "Asset unlocked successfully!", tr("pro.ok"));
+      // Then on the server, which is the copy every launch reads back. Without
+      // this the unlock vanished on the next start while the store, which does
+      // remember, refused to sell it again — the player left owning nothing and
+      // unable to buy it.
+      if (identity) {
+        void unlockOnServer(identity.token, assetId).then(adoptServerCareer, () => undefined);
+      }
       return true;
     }
     if (!outcome.cancelled) {

@@ -523,6 +523,15 @@ function isUnlocked(career, id) {
   if (career.champions[id]) return true;
   return career.best >= (UNLOCK_AT[id] ?? Infinity);
 }
+function grantAssetUnlock(career, id) {
+  const list = career.unlockedAssets ?? [];
+  if (list.includes(id)) return career;
+  const champions = { ...career.champions };
+  if (CHARACTERS.some((c) => c.id === id) && !champions[id]) {
+    champions[id] = { level: 1, xp: 0 };
+  }
+  return { ...career, unlockedAssets: [...list, id], champions };
+}
 function rollOver(career, today) {
   if (career.day === today) return career;
   return { ...career, day: today, progress: {}, claimed: [] };
@@ -633,6 +642,7 @@ export {
   dailyChallenges,
   dayKey,
   freshCareer,
+  grantAssetUnlock,
   isComplete,
   isUnlocked,
   levelOf,

@@ -29,6 +29,7 @@ import {
   regenerateRecovery,
   register,
   removeFriend,
+  unlockAsset,
   rename,
   upgrade,
   validateResult,
@@ -976,5 +977,69 @@ describe("the HTTP API", () => {
   it("leaves paths that are not ours alone", async () => {
     const res = await call("GET", "/healthz");
     expect(res.status).toBe(404); // not handled — the relay serves it
+  });
+});
+
+/**
+ * Things a player owns have to be owned by the *server*.
+ *
+ * The career is re-read from the server on every launch, so anything only the
+ * device knew about disappeared the next time the app was opened — while the
+ * store, which does remember a purchase, then refused to sell it again. The
+ * player was left owning nothing and unable to buy it.
+ */
+describe("what a player keeps", () => {
+  it("records an unlock against the account, not just the device", async () => {
+    const issued = await register(store, "Ana");
+
+    const career = await unlockAsset(store, issued.player, "char_england");
+
+    expect(career.unlockedAssets).toContain("char_england");
+    // And it is on the record the next launch will read, not only in the
+    // answer handed back to the caller.
+    expect((await store.get(issued.player.id))?.career.unlockedAssets).toContain("char_england");
+  });
+
+  it("opens a champion record for a character, so it can be levelled", async () => {
+    const issued = await register(store, "Ana");
+    const id = CHARACTERS[1].id;
+
+    const career = await unlockAsset(store, issued.player, id);
+
+    expect(career.champions[id]).toBeTruthy();
+  });
+
+  it("treats a repeated unlock as settled rather than as an error", async () => {
+    // A client retrying after a dropped response must arrive at the same
+    // answer, not at a failure.
+    const issued = await register(store, "Ana");
+    await unlockAsset(store, issued.player, "ball_hammer");
+
+    const again = await unlockAsset(store, issued.player, "ball_hammer");
+
+    expect((again.unlockedAssets ?? []).filter((a) => a === "ball_hammer")).toHaveLength(1);
+  });
+
+  it("refuses an asset id that is not one", async () => {
+    const issued = await register(store, "Ana");
+    await expect(unlockAsset(store, issued.player, "../../etc")).rejects.toThrow();
+    await expect(unlockAsset(store, issued.player, 42)).rejects.toThrow();
+  });
+
+  it("keeps a claimed challenge on the account", async () => {
+    // The same failure wearing different clothes: claimed coins that only the
+    // device knew about were gone by the next launch.
+    const issued = await register(store, "Ana");
+    const challenge = dailyChallenges(issued.player.career.day)[0];
+    issued.player.career = {
+      ...issued.player.career,
+      progress: { ...issued.player.career.progress, [challenge.id]: challenge.goal },
+    };
+    await store.save(issued.player);
+
+    const career = await claim(store, issued.player, challenge.id);
+
+    expect(career.claimed).toContain(challenge.id);
+    expect((await store.get(issued.player.id))?.career.claimed).toContain(challenge.id);
   });
 });

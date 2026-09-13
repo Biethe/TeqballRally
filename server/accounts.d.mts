@@ -93,6 +93,18 @@ export declare function claim(
   challengeId: unknown,
   now?: Date
 ): Promise<Career>;
+/**
+ * Record that a player owns something they paid for. Idempotent: a repeated
+ * unlock settles rather than failing, so a retry after a dropped response
+ * arrives at the same answer.
+ */
+export declare function unlockAsset(
+  store: PlayerStore,
+  player: PlayerRecord,
+  assetId: unknown,
+  now?: Date
+): Promise<Career>;
+
 export declare function upgrade(
   store: PlayerStore,
   player: PlayerRecord,

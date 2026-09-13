@@ -47,6 +47,7 @@ import {
   claimChallenge,
   dayKey,
   freshCareer,
+  grantAssetUnlock,
   rollOver,
   seasonKey,
   settleMatch,
@@ -455,6 +456,34 @@ export async function claim(store, player, challengeId, now = new Date()) {
     throw new ValidationError("that challenge is not ready, or is already collected");
   }
   await store.save(player);
+  return player.career;
+}
+
+/**
+ * Record that a player owns something they paid for.
+ *
+ * The career is the server's copy and it is what every launch reads back, so
+ * an unlock the client alone knew about disappeared the next time the app was
+ * opened — while Play, which does remember, then refused to sell it again.
+ * That is the pair of symptoms this exists to end.
+ *
+ * It takes the client's word that the purchase happened, which is the same
+ * trust `recordMatch` already extends to a result. That is a hole, and the
+ * shape of the fix is known: RevenueCat can call this server itself when a
+ * purchase completes, and then the grant comes from the party that watched
+ * the money move rather than from the party that benefits. Until then the
+ * cost of the hole is unlocks given away, not accounts compromised.
+ */
+export async function unlockAsset(store, player, assetId, now = new Date()) {
+  if (typeof assetId !== "string" || !/^[a-zA-Z0-9_]{1,40}$/.test(assetId)) {
+    throw new ValidationError("unknown asset");
+  }
+  await freshen(store, player, now);
+  const before = player.career;
+  player.career = grantAssetUnlock(player.career, assetId);
+  // Already owned is not an error: a client retrying after a dropped response
+  // must be able to arrive at the same answer rather than at a failure.
+  if (player.career !== before) await store.save(player);
   return player.career;
 }
 

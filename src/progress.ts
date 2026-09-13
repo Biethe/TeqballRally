@@ -200,7 +200,15 @@ export function isUnlocked(career: Career, id: string): boolean {
 
 /**
  * Grant a permanent asset unlock (character, ball, or venue).
- * Persists immediately and initializes champion level if character.
+ *
+ * Pure, like every other rule here, so the server can run it too — and it has
+ * to, because the career is re-read from the server on every launch and an
+ * unlock only this device knew about vanished the next time the app opened.
+ * It used to write to local storage itself, which is the one thing a rule in
+ * this file may not do; saving is the caller's job.
+ *
+ * A character also needs its champion record opening, or the roster has an
+ * entry nothing can level up.
  */
 export function grantAssetUnlock(career: Career, id: string): Career {
   const list = career.unlockedAssets ?? [];
@@ -209,13 +217,7 @@ export function grantAssetUnlock(career: Career, id: string): Career {
   if (CHARACTERS.some((c) => c.id === id) && !champions[id]) {
     champions[id] = { level: 1, xp: 0 };
   }
-  const next: Career = {
-    ...career,
-    unlockedAssets: [...list, id],
-    champions,
-  };
-  storeCareer(next);
-  return next;
+  return { ...career, unlockedAssets: [...list, id], champions };
 }
 
 /** Whole, non-negative counts keyed by id, from whatever was in storage. */
