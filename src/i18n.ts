@@ -22,6 +22,9 @@ export const LANGUAGES: { id: Language; label: string }[] = [
 ];
 
 const EN = {
+  "net.offline.title": "NO CONNECTION",
+  "net.offline.body": "Online play needs a network. Check your connection and try again.",
+  "net.searching": "Looking for an opponent…",
   "friends.invite": "ASK",
   "invite.asking.title": "ASKING {name}",
   "invite.asking.body": "Waiting for them to answer.",
@@ -417,6 +420,9 @@ export type StringKey = keyof typeof EN;
 type Catalogue = Partial<Record<StringKey, string>>;
 
 const FR: Catalogue = {
+  "net.offline.title": "PAS DE CONNEXION",
+  "net.offline.body": "Le jeu en ligne nécessite un réseau. Vérifiez votre connexion et réessayez.",
+  "net.searching": "Recherche d’un adversaire…",
   "friends.invite": "INVITER",
   "invite.asking.title": "INVITATION À {name}",
   "invite.asking.body": "En attente de sa réponse.",
@@ -797,6 +803,9 @@ const FR: Catalogue = {
 };
 
 const ES: Catalogue = {
+  "net.offline.title": "SIN CONEXIÓN",
+  "net.offline.body": "El juego en línea necesita red. Comprueba tu conexión e inténtalo de nuevo.",
+  "net.searching": "Buscando rival…",
   "friends.invite": "INVITAR",
   "invite.asking.title": "INVITANDO A {name}",
   "invite.asking.body": "Esperando su respuesta.",
@@ -1177,6 +1186,9 @@ const ES: Catalogue = {
 };
 
 const PT: Catalogue = {
+  "net.offline.title": "SEM LIGAÇÃO",
+  "net.offline.body": "O jogo online precisa de rede. Verifica a tua ligação e tenta outra vez.",
+  "net.searching": "À procura de adversário…",
   "friends.invite": "CONVIDAR",
   "invite.asking.title": "A CONVIDAR {name}",
   "invite.asking.body": "À espera da resposta.",
@@ -1560,6 +1572,9 @@ const PT: Catalogue = {
 // starter string is translated below — every other key falls back to English
 // until the catalogues are filled in. See the note on `Catalogue` above.
 const JA: Catalogue = {
+  "net.offline.title": "接続がありません",
+  "net.offline.body": "オンライン対戦にはネットワークが必要です。接続を確認してからもう一度お試しください。",
+  "net.searching": "対戦相手を探しています…",
   "friends.invite": "さそう",
   "invite.asking.title": "{name} をさそっています",
   "invite.asking.body": "返事を待っています。",
@@ -1804,6 +1819,9 @@ const JA: Catalogue = {
 };
 
 const ZH: Catalogue = {
+  "net.offline.title": "没有网络连接",
+  "net.offline.body": "在线对战需要网络。请检查连接后重试。",
+  "net.searching": "正在寻找对手…",
   "friends.invite": "邀请",
   "invite.asking.title": "正在邀请 {name}",
   "invite.asking.body": "等待对方回应。",
@@ -2048,6 +2066,9 @@ const ZH: Catalogue = {
 };
 
 const HI: Catalogue = {
+  "net.offline.title": "कोई कनेक्शन नहीं",
+  "net.offline.body": "ऑनलाइन खेलने के लिए नेटवर्क चाहिए। कनेक्शन जाँचें और दोबारा कोशिश करें।",
+  "net.searching": "प्रतिद्वंद्वी खोजा जा रहा है…",
   "friends.invite": "बुलाएँ",
   "invite.asking.title": "{name} को बुलाया जा रहा है",
   "invite.asking.body": "उनके जवाब का इंतज़ार है।",

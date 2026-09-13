@@ -27,6 +27,7 @@ import {
 import { cheerCrowd, stopCrowdCheer } from "./crowdrig";
 import { CRESTS, applyKit, type Kit, type PersonalKit } from "./kit";
 import { Tour } from "./tour";
+import { characterFor, rivalFor } from "./rivals";
 import { PresenceLink } from "./net/presence";
 import {
   SUPPLIES,
@@ -52,7 +53,7 @@ import { INTRO_SECONDS, introPose } from "./intro";
 import { Ball, type Side } from "./ball";
 import { Character } from "./character";
 import { MatchController } from "./match";
-import { AIController, DIFFICULTIES, type DifficultyLevel } from "./ai";
+import { AIController, DIFFICULTIES, type DifficultyLevel, type AIDifficulty } from "./ai";
 import {
   Input,
   consumeInput,
@@ -216,10 +217,24 @@ const SETTLE_RETRIES = 8;
  */
 const TOUR_POLL_MS = 350;
 
+/**
+ * How long QUICK MATCH looks for a real opponent before offering a rival.
+ *
+ * Long enough that two people tapping it within a few seconds of each other
+ * still meet, short enough that somebody alone is playing rather than reading
+ * a spinner.
+ */
+const QUEUE_WAIT_MS = 9000;
+
 /** How one match should be set up and what to do when it ends. */
 interface MatchOpts {
   opponent: CharacterDef;
-  difficulty: DifficultyLevel;
+  /**
+   * How the far side plays: one of the named ladder rungs, or a style of its
+   * own. A rival brings its own, because what makes an opponent read as a
+   * person is that they play the same way every time — see `rivals.ts`.
+   */
+  difficulty: DifficultyLevel | AIDifficulty;
   /** Online: the opponent is a remote human on the far end of this connection. */
   online?: { conn: NetConnection; role: PeerRole; private: boolean };
   labels: [string, string];
@@ -2277,8 +2292,24 @@ async function boot(): Promise<void> {
   /** The relay's name for the match, which both sides report against. */
   let onlineMatchId: string | null = null;
 
+  /**
+   * Whether this device has a network at all.
+   *
+   * `navigator.onLine` is a weak signal — it says the radio is on, not that
+   * anything is reachable — but it is decisive in the one direction that
+   * matters here. False means there is certainly no connection, and online
+   * play is then refused outright rather than quietly turned into something
+   * else: a player with no signal knows they are offline, so an opponent
+   * found in that state would be transparently invented.
+   */
+  const hasNetwork = (): boolean => navigator.onLine !== false;
+
   const quickMatch = () => {
     if (!onlineAvailable) return;
+    if (!hasNetwork()) {
+      ui.showLobbyStatus(tr("net.offline.title"), tr("net.offline.body"), null, showOnline);
+      return;
+    }
     const conn = new NetConnection(
       relayUrl(),
       {
@@ -2295,12 +2326,34 @@ async function boot(): Promise<void> {
       identity?.token
     );
     netConn = conn;
-    ui.showLobbyStatus("QUICK MATCH", "Connecting…", null, abandonLobby);
+    ui.showLobbyStatus("QUICK MATCH", tr("net.searching"), null, abandonLobby);
+
+    /**
+     * How long a real opponent is waited for before a rival is offered.
+     *
+     * Long enough that two people tapping QUICK MATCH within a few seconds of
+     * each other still find one another, which is the whole point of a queue
+     * — and short enough that somebody alone is playing rather than reading a
+     * spinner. The queue is always searched first; a rival never takes a match
+     * a person was waiting for.
+     */
+    const searchFor = setTimeout(() => {
+      if (netConn !== conn) return;
+      conn.cancelQueue();
+      conn.close();
+      netConn = null;
+      startRivalMatch();
+    }, QUEUE_WAIT_MS);
+
     conn
       .quickMatch()
-      .then(({ role }) => startOnlineMatch(conn, role, false))
+      .then(({ role }) => {
+        clearTimeout(searchFor);
+        startOnlineMatch(conn, role, false);
+      })
       .catch((e: unknown) => {
-        if (netConn !== conn) return; // the player already cancelled
+        clearTimeout(searchFor);
+        if (netConn !== conn) return; // the player already cancelled, or the timer fired
         ui.showLobbyStatus(
           "NO GAME FOUND",
           e instanceof Error ? e.message : "Could not find an opponent",
@@ -2308,6 +2361,40 @@ async function boot(): Promise<void> {
           abandonLobby
         );
       });
+  };
+
+  /**
+   * Play the nearest rival, when the queue had nobody in it.
+   *
+   * An ordinary local match underneath — the AI runs the far side, there is no
+   * session and no socket — dressed as the online one the player asked for:
+   * their name on the scoreboard, their shirt on the far player, and a
+   * character from the roster they always play.
+   */
+  const startRivalMatch = () => {
+    const rival = rivalFor(career.trophies);
+    const them = characterFor(rival);
+    // The same picker an online match uses, in the same order: found first,
+    // then chosen. Skipping it here is the sort of difference a player notices
+    // without being able to say what changed.
+    showSelect(
+      tr("select.title"),
+      (charId, ballId) => {
+        const base = CHARACTERS.find((c) => c.id === charId) ?? CHARACTERS[0];
+        const me = withCareer(base, levelOf(career, base.id));
+        void startMatch(me, ballId, {
+          opponent: withCareer(them, levelOf(career, them.id)),
+          // Their own way of playing, not a difficulty setting. See `rivals.ts`
+          // for why a consistent opponent is what reads as a person.
+          difficulty: rival.style,
+          opponentKit: rival.kit,
+          labels: [prefs.kit.name.trim() || tr("hud.you"), rival.name],
+          onEnd: (winner) => settleCareer(winner === "player", me.id, "normal"),
+        });
+      },
+      showOnline,
+      "ONLINE"
+    );
   };
 
   /**
@@ -3222,7 +3309,9 @@ async function boot(): Promise<void> {
       }
     };
     await paint(playerChar, kitForCharacter(playerDef, prefs.kit));
-    // Offline the far side is the CPU, which wears the kit the artist made.
+    // The far side wears its own marks when there is somebody behind it: the
+    // other human online, or the rival a quick match found when the queue was
+    // empty. A plain CPU opponent wears the kit the artist made.
     if (opts.opponentKit) await paint(aiChar, kitForCharacter(opponentDef, opts.opponentKit));
     if (needsNewBall && loadedBall) {
       if (ballMesh) {
@@ -3325,7 +3414,14 @@ async function boot(): Promise<void> {
     // no AI; the session turns `versus` on for itself.
     aiCtl = opts.online
       ? null
-      : new AIController(controller, opts.practice ? PRACTICE_DIFFICULTY : DIFFICULTIES[opts.difficulty]);
+      : new AIController(
+          controller,
+          opts.practice
+            ? PRACTICE_DIFFICULTY
+            : typeof opts.difficulty === "string"
+              ? DIFFICULTIES[opts.difficulty]
+              : opts.difficulty
+        );
     if (opts.online) {
       // The guest shows a match the host runs. Without this both peers would
       // run their own rule engine, disagree from the first serve, and end up

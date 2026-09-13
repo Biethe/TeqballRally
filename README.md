@@ -340,6 +340,38 @@ own — through every serve phase, because outside a rally the stick does not
 drive the characters and a walk that stops halfway reads as the player moving
 on its own.
 
+## When the queue is empty
+
+A new game's online mode is empty almost all of the time, and an empty online
+mode is not a quiet one — it is a dead end. A player taps QUICK MATCH, waits,
+and learns that this part of the game does not work. They only need to learn
+that once.
+
+So the queue has a floor. It is searched first, for `QUEUE_WAIT_MS` — long
+enough that two people tapping within a few seconds of each other still meet,
+which is the whole point of having a queue — and if nobody is there, one of the
+rivals in `src/rivals.ts` plays instead.
+
+A rival is a name, a shirt with something written on it, a character from the
+roster and a way of playing that is theirs. None of that is decoration. What
+makes an opponent read as a person is that they are *consistent*, that the one
+who hit everything flat last week hits everything flat again, and consistency
+is the one thing a difficulty slider cannot give. The four styles are built
+from the same knobs the CPU ladder uses; what is new is the combinations, since
+a ladder moves every knob together and a person does not. `atLevel` then scales
+a style without changing its shape, so a weak technician is still a technician
+rather than a generic beginner.
+
+Two limits on where this reaches.
+
+**Only with a connection.** Online play is refused outright on a device with no
+network rather than quietly turned into something else. A player with no signal
+knows they are offline, so an opponent found there would be transparently
+invented, and the deception would be the thing they remember.
+
+**Never in place of somebody real.** The queue is searched first and a rival is
+the fallback, so one never takes a match a person was waiting for.
+
 ## Asking a friend for a game
 
 A room code works between two people who are already talking to each other. It
