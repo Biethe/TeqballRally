@@ -46,6 +46,7 @@ import {
   coinPackages,
   purchaseCoins,
   bindUserToPurchases,
+  unbindUserFromPurchases,
   formattedPriceFor,
   purchaseAsset,
 } from "./purchases";
@@ -845,6 +846,10 @@ async function boot(): Promise<void> {
    */
   let identity: Identity | null = readIdentity();
   let profile: Profile | null = null;
+  // A profile restored from storage has to be handed to the store again. It is
+  // the id the purchase webhook matches on, and the store does not remember it
+  // across a reinstall or a device.
+  if (identity) void bindUserToPurchases(identity.id, identity.name);
 
   const saveCareer = (next: Career) => {
     career = next;
@@ -880,6 +885,7 @@ async function boot(): Promise<void> {
         // The account is gone from the server's side; stop pretending it is not.
         identity = null;
         syncPresence();
+        void unbindUserFromPurchases();
         profile = null;
         storeIdentity(null);
       }
@@ -1319,6 +1325,9 @@ async function boot(): Promise<void> {
    */
   const adopt = (issued: Issued, note: string | null) => {
     identity = issued.identity;
+    // Signing up and recovering both come through here, and both change who
+    // the store should be charging.
+    void bindUserToPurchases(issued.identity.id, issued.identity.name);
     // A different token, so a different connection. Signing in is also the
     // moment a player first becomes reachable at all.
     syncPresence();
@@ -1790,7 +1799,6 @@ async function boot(): Promise<void> {
           try {
             const created = await signUp(tidyName(rawName));
             adopt(created, null);
-            await bindUserToPurchases(created.identity.id, created.identity.name);
             resolve(created.identity);
             return true;
           } catch (err) {

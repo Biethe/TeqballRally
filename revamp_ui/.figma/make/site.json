@@ -1,0 +1,10 @@
+{
+  "description": "Experience a dynamic sports gaming interface that immerses players in a vibrant arena atmosphere, enhancing engagement and excitement in competitive gameplay.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

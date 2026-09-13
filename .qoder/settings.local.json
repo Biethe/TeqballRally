@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/bierh/TeqballRally/src -type f | head -60 && echo --- && wc -l /home/bierh/TeqballRally/src/*.ts 2>/dev/null | tail -5)",
+      "Bash(cd /home/bierh/TeqballRally && grep -n \"forfeit\\\\|trackPresence\\\\|PRESENCE\\\\|walkover\\\\|disconnect\" src/net/session.ts | head -20 && grep -n \"onMatchEnd\\\\|showEnd\\\\|\\\\\"over\\\\\"\\\\|'over'\" src/main.ts src/net/session.ts src/match.ts | head -30)",
+      "Bash(ls -la /home/bierhoff/TeqballRally && find /home/bierhoff/TeqballRally -type f \\\\\\( -name \"*.js\" -o -name \"*.ts\" -o -name \"*.html\" \\\\\\) | grep -v node_modules | head -100)",
+      "Bash(ls /home/bierhoff/TeqballRally && ls /home/bierhoff/TeqballRally/src 2>/dev/null || true)",
+      "Bash(ls -la /home/bierhoff/TeqballRally)",
+      "Read(//home/bierhoff/**)",
+      "Bash(ls -la /home/bierh/TeqballRally && find /home/bierh/TeqballRally -type f \\\\\\( -name \"*.js\" -o -name \"*.ts\" -o -name \"*.html\" \\\\\\) -not -path \"*/node_modules/*\" | head -100)",
+      "Bash(find /home/bierh/TeqballRally/src -type d | head -50 && echo \"---\" && cat /home/bierh/TeqballRally/package.json)",
+      "Bash(wc:*)",
+      "Bash(find /home/bierh/TeqballRally/server /home/bierh/TeqballRally/scripts -type f | head -60)",
+      "Bash(find /home/bierh/TeqballRally/src -type f -name \"*.ts\" -o -type f -name \"*.tsx\" | sort; echo \"=== SERVER \\(non node_modules\\) ===\"; find /home/bierh/TeqballRally/server -type f -not -path \"*/node_modules/*\" | sort)",
+      "Bash(grep -n \"main.ts\\\\|type=\\\\\"module\\\\\"\\\\|<script\" /home/bierh/TeqballRally/index.html | head -5; grep -n \"new Engine\\\\|createEngine\\\\|Babylon\" /home/bierh/TeqballRally/src/scene.ts /home/bierh/TeqballRally/src/main.ts | head -10)"
+    ]
+  }
+}

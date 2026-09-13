@@ -156,11 +156,24 @@ export function ownsArena(): boolean {
 }
 
 /**
- * Bind the player profile identity to RevenueCat so purchases belong to
- * this user ID and can be restored or synced across devices.
+ * Tell the store who is playing.
+ *
+ * This is what puts the player's own id in `app_user_id` on the purchase
+ * webhook, and the webhook is the only thing that grants anything. Bound to
+ * the wrong id — or to RevenueCat's anonymous one — a real payment reaches the
+ * server as "no such player" and the player is charged for nothing.
+ *
+ * So it runs on every launch that has an account, not only the launch that
+ * created one. Cheap to repeat: RevenueCat no-ops a login to the id it already
+ * holds.
  */
 export async function bindUserToPurchases(userId: string, userName?: string): Promise<void> {
-  if (!purchasesAvailable()) return;
+  // Configure first, always. `purchasesAvailable` says only that a store could
+  // exist, not that the SDK has been set up, and logging in before `configure`
+  // throws straight into the catch below. That is precisely how this failed
+  // without a sound for every returning player: bound once at sign-up,
+  // anonymous every launch after.
+  if (!(await initPurchases())) return;
   try {
     await Purchases.logIn({ appUserID: userId });
     if (userName) {
@@ -169,6 +182,23 @@ export async function bindUserToPurchases(userId: string, userName?: string): Pr
     await refreshArena();
   } catch (err) {
     console.warn("[purchases] could not bind user ID:", err);
+  }
+}
+
+/**
+ * Let go of the player, when the account goes.
+ *
+ * Without this the store still names a deleted account as the purchaser, and
+ * on a shared device the next person's payment is granted to the last
+ * person's profile.
+ */
+export async function unbindUserFromPurchases(): Promise<void> {
+  if (!purchasesAvailable()) return;
+  try {
+    await Purchases.logOut();
+  } catch (err) {
+    // Already anonymous, which is the state this was asking for.
+    console.warn("[purchases] could not release the user ID:", err);
   }
 }
 
