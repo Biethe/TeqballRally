@@ -2424,10 +2424,17 @@ async function boot(): Promise<void> {
             prefs.language = value;
             setLanguage(value);
           }
-          // Either of the two gameplay settings finishes that step of the
-          // tour. Which one they touched does not matter; that they found the
-          // screen and changed something on it is the whole lesson.
-          if (id === "gameSpeed" || id === "autoReception") tourSawSetting = true;
+          // Anything on the gameplay screen finishes that step of the tour.
+          // Which row they touched does not matter; that they found the screen
+          // and changed something on it is the whole lesson.
+          //
+          // Asked of the group rather than of a list of row ids, because the
+          // list was the bug: two rows were added to this screen and the tour
+          // went on waiting for one of the original two, so a player who did
+          // exactly what it asked sat there while nothing happened. A rule
+          // that has to be updated every time a row is added is a rule that
+          // will not be.
+          if (group === "gameplay") tourSawSetting = true;
           if (id === "gameSpeed" && typeof value === "string") {
             const num = Number(value) || 1.25;
             prefs.gameSpeed = num;
