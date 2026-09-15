@@ -509,6 +509,14 @@ export class OnlineSession {
           // After reframe, hostAnchor is this peer's own.
           selfAnchor: msg.hostAnchor ?? null,
           selfAnchorEta: msg.hostAnchorEta,
+          // Also already swapped: after reframe the "host" legs are this
+          // peer's own. Read defensively, because a number arriving as
+          // anything else would hand a NaN to the movement equation.
+          selfEffort: OnlineSession.unit(msg.hostEffort),
+          opponentEffort: OnlineSession.unit(msg.guestEffort),
+          selfReserve: OnlineSession.unit(msg.hostReserve),
+          opponentReserve: OnlineSession.unit(msg.guestReserve),
+          ballSpin: Number.isFinite(msg.ballSpin) ? msg.ballSpin : undefined,
           // After reframe these are already in this peer's seat names.
           strikeable: readStrikeable(msg.strikeable),
           touches: readTouches(msg.touches),
@@ -703,6 +711,20 @@ export class OnlineSession {
   }
 
   /** Host: publish the whole authoritative frame in one message. */
+  /**
+   * A fraction from the wire, or nothing.
+   *
+   * Effort and reserve both feed the movement equation, where a NaN would not
+   * throw — it would quietly make a character's position NaN and take them off
+   * the court for good. Clamped as well as checked, because a value outside
+   * [0, 1] is not a value this game ever produces.
+   */
+  private static unit(v: unknown): number | undefined {
+    return typeof v === "number" && Number.isFinite(v)
+      ? Math.max(0, Math.min(1, v))
+      : undefined;
+  }
+
   private sendSnapshot(): void {
     const ball = this.match.ball;
     // A window only describes the clip currently playing; a stale window from
@@ -726,6 +748,10 @@ export class OnlineSession {
           ballPos: vec(ball.state.pos),
           ballVel: vec(ball.state.vel),
           ballHeld: ball.held,
+          // How this flight looks, which only `launch` knows and only the host
+          // calls. Without it a guest spins every ball at the default and a
+          // floated set-up reads as a drive.
+          ballSpin: ball.spinRate,
           hostPos: vec(this.match.chars.player.position),
           guestPos: vec(this.match.chars.ai.position),
           hostVel: vec(this.match.chars.player.velocity),
@@ -746,6 +772,14 @@ export class OnlineSession {
           hostAnchorEta: this.match.anchorState.player?.eta,
           guestAnchor: anchorOf("ai"),
           guestAnchorEta: this.match.anchorState.ai?.eta,
+          // How much is left in each pair of legs. The guest drains none of it
+          // itself, so without this its bars sit full all match and — the part
+          // that is actually felt — it predicts its own character at full
+          // effort while the host moves it on empty ones.
+          hostEffort: this.match.chars.player.effort,
+          guestEffort: this.match.chars.ai.effort,
+          hostReserve: this.match.chars.player.reserve,
+          guestReserve: this.match.chars.ai.reserve,
           // Possession, in the host's seat names. The guest needs it to know
           // whether a tap on the court means "play the ball" or "walk there".
           strikeable:

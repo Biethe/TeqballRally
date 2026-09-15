@@ -93,6 +93,55 @@ describe("reframe", () => {
     expect(wire.tick).toBe(s.tick);
   });
 
+  it("swaps the legs with the seats, and leaves the ball's spin alone", () => {
+    /*
+     * Both were missing from the snapshot entirely, and both showed.
+     *
+     * A guest never runs `stepEffort`, so it held both characters at full
+     * effort all match — its stamina bars never moved, and, worse, it
+     * predicted its own character on fresh legs while the host moved that same
+     * character on empty ones. Effort scales acceleration and top speed, so
+     * the prediction ran up to a third fast for as long as the rally lasted.
+     *
+     * A guest never calls `Ball.launch` either, so every flight spun at the
+     * default and a floated set-up looked like a drive.
+     *
+     * Legs belong to a seat and swap with it. The spin belongs to the flight
+     * and belongs to neither, so it crosses untouched.
+     */
+    const snap = {
+      t: "snap" as const,
+      tick: 9,
+      ballPos: { x: 1, y: 1, z: 0 },
+      ballVel: { x: 0, y: 0, z: 0 },
+      ballHeld: false,
+      ballSpin: 0.45,
+      hostPos: { x: -3, y: 0.4, z: 0 },
+      guestPos: { x: 3, y: 0.4, z: 0 },
+      hostVel: { x: 0, y: 0, z: 0 },
+      guestVel: { x: 0, y: 0, z: 0 },
+      hostClip: null,
+      guestClip: null,
+      hostEffort: 0.42,
+      guestEffort: 0.91,
+      hostReserve: 0.6,
+      guestReserve: 0.99,
+      score: [0, 0] as [number, number],
+      sets: [0, 0] as [number, number],
+      serveOwner: "player" as const,
+      phase: "rally",
+    };
+
+    const wire = reframe(snap, "guest");
+    expect(wire.hostEffort).toBe(0.91);
+    expect(wire.guestEffort).toBe(0.42);
+    expect(wire.hostReserve).toBe(0.99);
+    expect(wire.guestReserve).toBe(0.6);
+    expect(wire.ballSpin).toBe(0.45);
+    // Send and receive share a function, so applying it twice is the original.
+    expect(reframe(wire, "guest")).toEqual(snap);
+  });
+
   it("does not touch messages with no geometry", () => {
     const state = {
       t: "state" as const,

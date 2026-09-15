@@ -158,6 +158,16 @@ export interface SnapshotMessage {
   ballPos: Vec3Wire;
   ballVel: Vec3Wire;
   ballHeld: boolean;
+  /**
+   * How fast this flight is spinning, as the multiplier `Ball.launch` was
+   * given: about 0.45 for a floated set-up, 0.7 and up for a smash.
+   *
+   * Purely how it looks, and it still has to cross. A guest never calls
+   * `launch` — its ball is placed from this timeline — so without it every
+   * ball spins at the default 1, and a delicate pop reads as a drive. A
+   * scalar: nothing to mirror. Optional, and absent means 1.
+   */
+  ballSpin?: number;
   /** Both characters, in the sender's frame. */
   hostPos: Vec3Wire;
   guestPos: Vec3Wire;
@@ -238,6 +248,27 @@ export interface SnapshotMessage {
    */
   hostAnchorEta?: number;
   guestAnchorEta?: number;
+  /**
+   * How much each seat has left in their legs, and how much of that they will
+   * ever get back — `Character.effort` and `Character.reserve`.
+   *
+   * A guest runs no rules and so never drains either, which cost it twice. The
+   * stamina bars on its HUD sat full for the whole match, hiding the one thing
+   * the game sells supplies to fix. And, less visibly and much worse, its own
+   * character was *predicted* at full effort while the host moved that same
+   * character on empty legs — effort scales both the acceleration and the top
+   * speed, so a tired player was predicted up to a third faster than the host
+   * was actually moving them, every step, for as long as the rally lasted.
+   * That is not noise `reconcile` absorbs; it is a constant pull the joined
+   * player feels as rubber-banding exactly when the points are longest.
+   *
+   * Four numbers. Optional, and absent leaves both at full, which is what an
+   * older host implied.
+   */
+  hostEffort?: number;
+  guestEffort?: number;
+  hostReserve?: number;
+  guestReserve?: number;
   /**
    * Which seat may touch the ball, and how many touches that seat has spent,
    * in the host's frame.
@@ -721,6 +752,13 @@ export function reframe<T extends GameMessage>(msg: T, role: PeerRole): T {
         guestAnchor: msg.hostAnchor ? mirror(msg.hostAnchor) : msg.hostAnchor,
         hostAnchorEta: msg.guestAnchorEta,
         guestAnchorEta: msg.hostAnchorEta,
+        // Legs belong to a seat, so they swap with the seat. Scalars, so
+        // nothing reflects. `ballSpin` is a property of the flight rather than
+        // of either player and crosses untouched, below.
+        hostEffort: msg.guestEffort,
+        guestEffort: msg.hostEffort,
+        hostReserve: msg.guestReserve,
+        guestReserve: msg.hostReserve,
         // Possession swaps seats with everything else: the host's "guest" is
         // this peer's own side. The touch count belongs to the possession
         // rather than to a seat, so it crosses unchanged.

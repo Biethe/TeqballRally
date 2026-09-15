@@ -324,12 +324,40 @@ export class Ball {
   update(dt: number, onEvent?: (e: BallEvent) => void, colliders?: BodyCollider[]): void {
     if (!this.held) stepBall(this.state, dt, onEvent, colliders);
     this.mesh?.position.copyFrom(this.state.pos);
-    if (this.mesh && !this.held) {
-      const w = (this.state.vel.length() / BALL_RADIUS) * this.spin;
-      if (w > 0.5) {
-        this.mesh.rotate(new Vector3(this.state.vel.z, 0, -this.state.vel.x).normalize(), w * dt * 0.5);
-      }
-    }
+    this.spinMesh(dt);
+  }
+
+  /**
+   * Roll the ball about its own axis, without touching the physics.
+   *
+   * Split out for the online guest, which owns no physics: its ball is placed
+   * from the host's timeline, so it called `update(0)` to move the mesh — and
+   * a zero dt makes the rotation below exactly zero as well. The result was a
+   * ball that slid through the air like a bead on a wire, in a game where the
+   * local ball visibly spins. One of the plainest differences between a joined
+   * match and a local one, and the last place anybody would look for it.
+   */
+  spinMesh(dt: number): void {
+    if (!this.mesh || this.held || dt <= 0) return;
+    const w = (this.state.vel.length() / BALL_RADIUS) * this.spin;
+    if (w <= 0.5) return;
+    this.mesh.rotate(new Vector3(this.state.vel.z, 0, -this.state.vel.x).normalize(), w * dt * 0.5);
+  }
+
+  /**
+   * How fast this flight is spinning, as a multiplier.
+   *
+   * Readable and writable so it can cross the wire: `launch` sets it from what
+   * the shot was — 0.45 for a floated set-up, 0.7 and up for a smash — and a
+   * guest that never calls `launch` would otherwise spin every ball at 1 and
+   * make a delicate pop look like a drive.
+   */
+  get spinRate(): number {
+    return this.spin;
+  }
+
+  set spinRate(v: number) {
+    this.spin = Number.isFinite(v) ? v : 1;
   }
 
   place(pos: Vector3): void {

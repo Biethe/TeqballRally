@@ -1421,7 +1421,13 @@ export class MatchController {
       this.ball.held = view.ballHeld;
       this.ball.state.pos.set(view.ball.x, view.ball.y, view.ball.z);
       this.ball.state.vel.set(view.ballVel.x, view.ballVel.y, view.ballVel.z);
-      this.ball.update(0); // mesh follows; no physics with dt 0
+      // The mesh follows the timeline's position, and then rolls on the real
+      // frame time. It used to be `update(0)` — no physics, which is right,
+      // but a zero dt also makes the spin term exactly zero, so the ball slid
+      // through the air like a bead on a wire while the local game's ball
+      // visibly turned. Position from the host, rotation from the clock.
+      this.ball.mesh?.position.copyFrom(this.ball.state.pos);
+      this.ball.spinMesh(dt);
       this.fireDueFx(view.renderTick);
       this.updateFollowerClips(
         view.renderTick,
@@ -1953,6 +1959,13 @@ export class MatchController {
     selfAnchor?: { x: number; y: number; z: number } | null;
     /** Seconds until the ball reaches that spot. */
     selfAnchorEta?: number;
+    /** How much is left in each pair of legs, and the ceiling it falls to. */
+    selfEffort?: number;
+    opponentEffort?: number;
+    selfReserve?: number;
+    opponentReserve?: number;
+    /** How fast this flight spins, purely for how it looks. */
+    ballSpin?: number;
     /** Possession, already in this peer's seat names. */
     strikeable?: "host" | "guest" | null;
     /** Touches spent in the possession. */
@@ -2005,6 +2018,32 @@ export class MatchController {
     // then nothing at all. Nothing else on the follower path reads `state`:
     // the rules switch it gates is upstream of `updateAsFollower`.
     if (isMatchState(snap.phase)) this.state = snap.phase;
+    /*
+     * Legs, taken rather than simulated.
+     *
+     * A follower never runs `stepEffort`, so both characters stayed at full
+     * effort for the whole match. That showed twice. The stamina bars on this
+     * screen never moved, which hid the one thing the game sells supplies to
+     * fix — and worse, the prediction of this peer's own character ran on
+     * full legs while the host moved that same character on empty ones.
+     * Effort scales acceleration *and* top speed, so a tired player was
+     * predicted up to a third faster than they were really going, every step,
+     * and `reconcile` spent the whole rally pulling them back. That is felt as
+     * rubber-banding, and it got worse the longer the point went on, which is
+     * exactly when it is least forgivable.
+     */
+    if (snap.ballSpin !== undefined) this.ball.spinRate = snap.ballSpin;
+    if (snap.selfEffort !== undefined) this.chars.player.effort = snap.selfEffort;
+    if (snap.opponentEffort !== undefined) this.chars.ai.effort = snap.opponentEffort;
+    if (snap.selfReserve !== undefined) this.chars.player.reserve = snap.selfReserve;
+    if (snap.opponentReserve !== undefined) this.chars.ai.reserve = snap.opponentReserve;
+    // Shown here rather than from `stepEffort`, which this path never reaches.
+    this.ui.stamina?.(
+      this.chars.player.effort,
+      this.chars.ai.effort,
+      this.chars.player.reserve,
+      this.chars.ai.reserve
+    );
     if (snap.strikeable !== undefined) {
       this.strikeableSide =
         snap.strikeable === null ? null : snap.strikeable === "host" ? "player" : "ai";

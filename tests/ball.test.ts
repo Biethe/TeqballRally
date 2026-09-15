@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import {
+  Ball,
   MAX_SPEED,
   type BallEvent,
   type BallState,
@@ -279,6 +280,64 @@ describe("stepBall", () => {
     const events = simulate(s, 0.3, 1 / 120, [collider]);
 
     expect(events.some((e) => e.type === "body")).toBe(false);
+  });
+});
+
+describe("the ball's own rotation", () => {
+  /** Just enough of a mesh to be turned, and to say how often it was. */
+  const spinnable = () => {
+    let turns = 0;
+    const mesh = {
+      position: { copyFrom: () => {} },
+      rotate: () => {
+        turns++;
+      },
+    };
+    const ball = new Ball();
+    ball.mesh = mesh as unknown as Ball["mesh"];
+    ball.launch(new Vector3(8, 2, 0));
+    return { ball, turns: () => turns };
+  };
+
+  it("does not turn on a zero time step", () => {
+    /*
+     * The bug this exists for. The online guest owns no physics — its ball is
+     * placed from the host's timeline — so it moved the mesh with `update(0)`:
+     * no physics, which is right, and no rotation either, which is not. The
+     * ball slid through the air like a bead on a wire in a game whose local
+     * ball visibly turns, and it is the last place anybody would think to
+     * look for the difference.
+     */
+    const { ball, turns } = spinnable();
+    ball.spinMesh(0);
+    expect(turns()).toBe(0);
+  });
+
+  it("turns on a real one, faster the faster the ball is going", () => {
+    const { ball, turns } = spinnable();
+    ball.spinMesh(1 / 60);
+    expect(turns()).toBe(1);
+  });
+
+  it("does not turn a ball somebody is holding", () => {
+    const { ball, turns } = spinnable();
+    ball.held = true;
+    ball.spinMesh(1 / 60);
+    expect(turns()).toBe(0);
+  });
+
+  it("carries the spin a launch was given, so it can cross the wire", () => {
+    // A guest never calls `launch`, so without this every flight spins at the
+    // default and a floated set-up reads as a drive.
+    const ball = new Ball();
+    ball.launch(new Vector3(6, 2, 0), 0.45);
+    expect(ball.spinRate).toBe(0.45);
+
+    ball.spinRate = 1.3;
+    expect(ball.spinRate).toBe(1.3);
+    // A number that is not one must never reach the rotation maths.
+    ball.spinRate = Number.NaN;
+    expect(ball.spinRate).toBe(1);
   });
 });
 
