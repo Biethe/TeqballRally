@@ -1724,12 +1724,28 @@ export class MatchController {
       }
       const from = w.from ?? Number.NEGATIVE_INFINITY;
       const to = w.to ?? Number.POSITIVE_INFINITY;
+      /*
+       * A clip with nothing to meet is simply played.
+       *
+       * Pinning an animation to the host's clock exists so the foot and the
+       * ball describe the same instant. A celebration, a stunt, a defeat has
+       * no contact at all — there is nothing for it to agree with, and all the
+       * pinning can do is fight this device's render loop: held back, hurried
+       * on, and cut off at a window that has nothing to do with how long the
+       * animation actually is. That is the victory backflip that never gets to
+       * its last frame.
+       *
+       * So these start once and run. The host's window still says which
+       * instance it is, which is all that is needed to avoid replaying one.
+       */
+      const freeRunning = contactFraction(w.clip) <= 0;
       // Identity is the instance number when the host sends one. Keying on the
       // window's start stopped working the moment the host began restating the
       // window from the clip's real progress, because then the start moves
       // every frame and every frame looks like a new clip.
       const key = `${w.clip}@${w.seq ?? from}`;
       if (this.followerClipKey[side] === key) {
+        if (freeRunning) continue;
         if (renderTick >= to) {
           // Over. Cancel what is playing, and keep the key: clearing it sent
           // the next step back round to the "not played yet" branch, which
@@ -1788,8 +1804,12 @@ export class MatchController {
           }
           continue;
         }
-        const at = c.actionFraction;
-        if (at === null || Math.abs(at - frac) > CLIP_RESYNC_FRACTION) c.seekAction(frac);
+        // Steered by rate, not jumped. Correcting with a seek meant yanking
+        // the animation backwards several times a second on any device whose
+        // render loop and tick clock disagree — a swing that judders, never
+        // appears to reach its last frame, and makes the ball it is meant to
+        // meet look wrong with it.
+        c.steerAction(frac, clipWindowSpeed(w.clip, from, to));
         continue;
       }
       // A clip instance this screen has not played yet. Where in it the host

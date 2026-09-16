@@ -984,9 +984,10 @@ export function readTouches(v: unknown): number | undefined {
  * forgotten, or one that has not happened, gets the nearest one it is entitled
  * to rather than a rewind of its own choosing.
  */
-export function readViewTick(v: unknown, now: number): number | undefined {
+export function readViewTick(v: unknown, now: number, budget = MAX_CATCHUP_TICKS): number | undefined {
   if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
-  return Math.max(now - MAX_CATCHUP_TICKS, Math.min(now, Math.round(v)));
+  const reach = Math.max(0, Math.min(MAX_CATCHUP_TICKS, Math.round(budget)));
+  return Math.max(now - reach, Math.min(now, Math.round(v)));
 }
 
 /** Two finite numbers, which is the shape of every per-seat pair here. */

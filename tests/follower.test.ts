@@ -788,6 +788,22 @@ describe("lag compensation", () => {
     expect(readViewTick(497, 500)).toBe(497);
     expect(readViewTick(undefined, 500)).toBeUndefined();
     expect(readViewTick(Number.NaN, 500)).toBeUndefined();
+
+    /*
+     * And no further back than the link actually costs.
+     *
+     * The protocol's outside limit is half a second. Honouring a press from
+     * that far back means judging it against a ball metres from where either
+     * screen still shows it, and the contact then pulls the ball onto the
+     * foot — which is a player watching the ball go past them and retrieve
+     * itself anyway. A quick link may rewind a little; only a slow one may
+     * rewind a lot.
+     */
+    expect(readViewTick(480, 500, 6)).toBe(494);
+    expect(readViewTick(499, 500, 6)).toBe(499);
+    // Never past the protocol's own ceiling, whatever a peer claims to need.
+    expect(readViewTick(0, 500, 9999)).toBe(500 - MAX_CATCHUP_TICKS);
+    expect(readViewTick(480, 500, -5)).toBe(500);
   });
 });
 

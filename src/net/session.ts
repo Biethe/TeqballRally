@@ -18,6 +18,7 @@ import type { InputState } from "../input";
 import type { Side } from "../ball";
 import type { NetConnection } from "./connection";
 import { TickAge } from "./sync";
+import { MIN_EFFORT, MIN_RESERVE } from "../character";
 import {
   isValidEmote,
   isValidFx,
@@ -448,11 +449,25 @@ export class OnlineSession {
         // Which scheme the guest is playing with, so the host reads their axes
         // as the thing they meant. Absent means an older peer, and landscape.
         this.match.versusPortrait = msg.portrait === true;
-        // The instant their screen was showing when they pressed. The reach
-        // test and the limb choice are read there rather than here, so a
-        // press means what the player meant by it. Undefined for a peer too
-        // old to say, and the match then judges live as it used to.
-        this.match.versusViewTick = readViewTick(msg.viewTick, this.tick) ?? null;
+        /*
+         * The instant their screen was showing when they pressed. The reach
+         * test and the limb choice are read there rather than here, so a press
+         * means what the player meant by it. Undefined for a peer too old to
+         * say, and the match then judges live as it used to.
+         *
+         * Bounded by what this link actually costs, not by the protocol's
+         * outside limit. Half a second of rewind is a ball several metres
+         * further on, and honouring a press that far back is how a player
+         * watches the ball go past and then get retrieved anyway — the touch
+         * was granted against a ball nobody on either screen could still see
+         * there, and the contact then pulls the ball onto the foot.
+         *
+         * The round trip plus a snapshot interval is the whole of the delay a
+         * press can honestly have suffered.
+         */
+        this.match.versusViewTick =
+          readViewTick(msg.viewTick, this.tick, this.conn.latencyTicks + 2 + this.snapJitter) ??
+          null;
         this.match.versusInput = {
           moveX: msg.moveX,
           moveZ: msg.moveZ,
@@ -512,10 +527,14 @@ export class OnlineSession {
           // Also already swapped: after reframe the "host" legs are this
           // peer's own. Read defensively, because a number arriving as
           // anything else would hand a NaN to the movement equation.
-          selfEffort: OnlineSession.unit(msg.hostEffort),
-          opponentEffort: OnlineSession.unit(msg.guestEffort),
-          selfReserve: OnlineSession.unit(msg.hostReserve),
-          opponentReserve: OnlineSession.unit(msg.guestReserve),
+          // Floored the way the rules floor them. Effort divides the movement
+          // equation's time constant, so a zero arriving from anywhere — a
+          // peer with a bug, a frame that lost a field — would put a character
+          // on an infinite one, and their position with it.
+          selfEffort: OnlineSession.unit(msg.hostEffort, MIN_EFFORT),
+          opponentEffort: OnlineSession.unit(msg.guestEffort, MIN_EFFORT),
+          selfReserve: OnlineSession.unit(msg.hostReserve, MIN_RESERVE),
+          opponentReserve: OnlineSession.unit(msg.guestReserve, MIN_RESERVE),
           ballSpin: Number.isFinite(msg.ballSpin) ? msg.ballSpin : undefined,
           // After reframe these are already in this peer's seat names.
           strikeable: readStrikeable(msg.strikeable),
@@ -719,9 +738,9 @@ export class OnlineSession {
    * the court for good. Clamped as well as checked, because a value outside
    * [0, 1] is not a value this game ever produces.
    */
-  private static unit(v: unknown): number | undefined {
+  private static unit(v: unknown, floor = 0): number | undefined {
     return typeof v === "number" && Number.isFinite(v)
-      ? Math.max(0, Math.min(1, v))
+      ? Math.max(floor, Math.min(1, v))
       : undefined;
   }
 

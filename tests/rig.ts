@@ -9,7 +9,7 @@ import { Vector3, Quaternion } from "@babylonjs/core/Maths/math.vector";
 import { Ball } from "../src/ball";
 import { MatchController, type MatchEvent, type MatchUI } from "../src/match";
 import { AIController, DIFFICULTIES, type AIDifficulty } from "../src/ai";
-import { bodyPartOf, type Character } from "../src/character";
+import { ACTION_SEEK_FRACTION, bodyPartOf, type Character } from "../src/character";
 import { CLIPS, SIM_DT, CHARACTERS, type BodyPart, type CharacterDef } from "../src/config";
 import type { InputState } from "../src/input";
 import { InteractionVolumeDef, type WorldVolume } from "../src/interaction";
@@ -167,6 +167,28 @@ export class FakeCharacter {
     const start = this.startFracs[this.startFracs.length - 1] ?? 0;
     const through = Math.min(1, Math.max(0, (frac - start) / Math.max(1e-6, 1 - start)));
     a.left = a.total * (1 - through);
+  }
+
+  /**
+   * Mirrors `Character.steerAction`: close the drift by playing a little fast
+   * or a little slow, and only jump when it is too large to steer out.
+   *
+   * The fake has no playback rate, so the rate correction is applied as the
+   * small step toward the target it would amount to over one frame. What the
+   * tests care about is that a clip is nudged rather than yanked, which this
+   * reproduces: a large drift still lands exactly, a small one does not.
+   */
+  steerAction(frac: number, _baseSpeed: number): void {
+    const a = this.action;
+    if (!a) return;
+    const at = this.actionFraction;
+    if (at === null) return;
+    const drift = frac - at;
+    if (Math.abs(drift) > ACTION_SEEK_FRACTION) {
+      this.seekAction(frac);
+      return;
+    }
+    this.seekAction(at + drift * 0.5);
   }
 
   stopAction(): void {

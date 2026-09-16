@@ -307,6 +307,20 @@ export function assistStrength(slack: number): number {
  * character standing still watching a ball go past, and that is a worse thing
  * to watch than a slow one chasing it.
  */
+/**
+ * How far a clip may drift from the clock before it is jumped rather than
+ * steered, as a fraction of the clip.
+ *
+ * A third of a clip is not drift, it is a different moment.
+ */
+export const ACTION_SEEK_FRACTION = 0.35;
+/**
+ * How hard a rate correction pulls. At a gain of six, an eighth of a clip
+ * behind plays at about 1.75x until it catches up — quick enough to close in a
+ * few frames, gentle enough that nobody sees the clip hurrying.
+ */
+export const ACTION_STEER_GAIN = 6;
+
 export const MIN_EFFORT = 0.05;
 
 /**
@@ -506,6 +520,38 @@ export class Character {
     if (!g) return;
     const f = Math.min(1, Math.max(0, frac));
     g.goToFrame(g.from + f * (g.to - g.from));
+  }
+
+  /**
+   * Bring a clip back to where the clock says it should be, by changing how
+   * fast it is playing rather than by jumping it there.
+   *
+   * A guest's clip is pinned to the host's tick clock while the animation
+   * itself runs on this device's render loop, and on anything that stutters
+   * the two drift apart constantly. Correcting that with `goToFrame` means
+   * yanking the animation backwards several times a second, which is a swing
+   * that judders, never seems to reach its last frame, and makes the ball it
+   * is supposed to meet look wrong as well.
+   *
+   * A rate correction converges just as fast and is invisible: the clip runs a
+   * little quick or a little slow until it agrees again. Only a drift too
+   * large to close that way is still taken as a jump — at that size the clip
+   * is describing a different moment altogether and there is nothing to
+   * preserve.
+   */
+  steerAction(frac: number, baseSpeed: number): void {
+    const g = this.action;
+    if (!g) return;
+    const at = this.actionFraction;
+    if (at === null) return;
+    const drift = frac - at;
+    if (Math.abs(drift) > ACTION_SEEK_FRACTION) {
+      this.seekAction(frac);
+      g.speedRatio = baseSpeed;
+      return;
+    }
+    const want = baseSpeed * (1 + drift * ACTION_STEER_GAIN);
+    g.speedRatio = Math.min(baseSpeed * 2, Math.max(baseSpeed * 0.4, want));
   }
 
   get actionFraction(): number | null {
