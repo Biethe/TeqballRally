@@ -1758,9 +1758,34 @@ export class MatchController {
         if (!live) continue;
         const frac = clipFractionAt(from, to, renderTick);
         if (c.currentActionClip !== w.clip) {
-          // It ran itself off the end before the clock reached it. Put it back
-          // where it belongs rather than leaving the player standing.
-          c.playAction(w.clip, { startFrac: frac, speed: clipWindowSpeed(w.clip, from, to) });
+          /*
+           * It ran itself off the end before the clock reached it.
+           *
+           * Which happens all the time, because these are two clocks. The clip
+           * is advanced by Babylon off the render loop in wall time; the
+           * window is measured in simulation ticks, and the simulation caps its
+           * frame delta and drops the remainder. On a phone that stutters — an
+           * emulator above all — the animation runs on and the tick clock does
+           * not, so the clip finishes with the window still open.
+           *
+           * Putting it back is right while there is real clip left to play.
+           * Doing it at the end is a loop: the last sliver plays, finishes,
+           * and is started again on the very next frame, over and over, for
+           * as long as the window stays open. That is the winner's celebration
+           * restarting for ever instead of finishing, and it is every bit as
+           * wrong on a kick — the strike pose flickering while the ball, which
+           * is on the tick clock, has not left yet.
+           *
+           * So: once, and only once. A clip that started before this screen
+           * reached its window is worth re-seating. A clip that has genuinely
+           * run out is worth leaving alone — the character stands for the rest
+           * of the window, which lasts a fraction of a second and is nothing
+           * beside a backflip going round for ever.
+           */
+          if (!this.followerClipReseated[side] && frac < 1 - CLIP_RESYNC_FRACTION) {
+            this.followerClipReseated[side] = true;
+            c.playAction(w.clip, { startFrac: frac, speed: clipWindowSpeed(w.clip, from, to) });
+          }
           continue;
         }
         const at = c.actionFraction;
@@ -1784,6 +1809,7 @@ export class MatchController {
       }
       c.playAction(w.clip, { startFrac: frac, speed: clipWindowSpeed(w.clip, from, to) });
       this.followerClipKey[side] = key;
+      this.followerClipReseated[side] = false;
     }
   }
 
@@ -1895,6 +1921,8 @@ export class MatchController {
   /** Whether the host currently owns each character's feet, so the remainder
    * above is taken once on the way in rather than on every jump. */
   private followerHeld: Record<Side, boolean> = { player: false, ai: false };
+  /** Whether the clip now playing has already been put back once. See above. */
+  private followerClipReseated: Record<Side, boolean> = { player: false, ai: false };
   /** This peer's own character was predicted last step. */
   private selfPredicting = false;
   /** Latest lead-carried self pose; the reconcile target while predicting. */

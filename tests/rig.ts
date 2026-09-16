@@ -174,6 +174,21 @@ export class FakeCharacter {
     this.lunge = null;
   }
 
+  /**
+   * The clip reached its own end, with the tick clock still short of the
+   * window that describes it.
+   *
+   * Not a shortcut: it is the case the real game hits constantly. Babylon
+   * advances a clip off the render loop in wall time and the simulation caps
+   * its frame delta and drops the remainder, so on anything that stutters the
+   * animation finishes first. There is no way to reach that state by stepping
+   * this fake, because this fake's clip is driven by the same clock as
+   * everything else in it.
+   */
+  finishActionEarly(): void {
+    this.action = null;
+  }
+
   /** Mirrors `Character.cancelActionToLoco`: stop, and land back on the feet. */
   cancelActionToLoco(): void {
     this.stopAction();

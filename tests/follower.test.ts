@@ -1194,6 +1194,70 @@ describe("the serve marker", () => {
  * slamming the locomotion blend to full weight, which is a character standing
  * frozen and shivering instead of walking.
  */
+describe("a clip that outruns the tick clock", () => {
+  it("is not started again once it has finished", () => {
+    /*
+     * Two clocks. Babylon advances the clip off the render loop in wall time;
+     * the window is measured in simulation ticks, and the simulation caps its
+     * frame delta and drops the remainder. On a phone that stutters the
+     * animation runs on while the tick clock does not, so the clip finishes
+     * with the window still open.
+     *
+     * Restarting it then is a loop: the last sliver plays, ends, and is
+     * started again on the next frame, for as long as the window stays open.
+     * That is the winner's celebration going round for ever instead of
+     * finishing, and the same fault flickers a strike pose while the ball,
+     * which is on the tick clock, has not left yet.
+     */
+    const r = rig({ ui: silentUI() });
+    r.match.versus = true;
+    r.match.netFollower = true;
+
+    let plays = 0;
+    const original = r.ai.playAction.bind(r.ai);
+    (r.ai as { playAction: (clip: string, opts?: unknown) => boolean }).playAction = (
+      clip: string,
+      opts?: unknown
+    ) => {
+      plays++;
+      return original(clip, opts as Parameters<typeof original>[1]);
+    };
+
+    const frame = (tick: number): Frame => ({
+      ballPos: { x: 0, y: 1, z: 0 },
+      ballVel: { x: 0, y: 0, z: 0 },
+      ballHeld: false,
+      selfPos: { x: -3, z: 0 },
+      opponentPos: { x: 3, z: 0 },
+      selfVel: { x: 0, z: 0 },
+      opponentVel: { x: 0, z: 0 },
+      selfClip: null,
+      // A celebration, and a window far longer than the clip — which is what a
+      // host that has stopped stepping leaves behind at the final whistle.
+      opponentClip: "Celebration1",
+      opponentClipFrom: 0,
+      opponentClipTo: 600,
+      opponentClipSeq: 3,
+      tick,
+      score: [0, 0],
+      sets: [0, 0],
+      serveOwner: "player",
+      phase: "over",
+    });
+
+    for (let t = 1; t <= 200; t += 2) {
+      r.match.applySnapshot(frame(t), 0);
+      // The clip ends of its own accord, the way it does when the render loop
+      // has outrun the tick clock.
+      r.ai.finishActionEarly();
+      r.step(SIM_DT);
+    }
+
+    // Started once, and then left alone. Looping, this ran to a hundred.
+    expect(plays).toBeLessThanOrEqual(2);
+  });
+});
+
 describe("a clip whose window has passed", () => {
   it("is cancelled once, not on every step", () => {
     const r = rig({ ui: silentUI() });
