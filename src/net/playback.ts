@@ -106,6 +106,15 @@ export const PLAYBACK_MAX_EXTRAPOLATE_TICKS = 30;
  */
 const MAX_BALL_STEPS = MAX_CATCHUP_TICKS;
 /**
+ * The longest a flight will wait at a contact it cannot resolve yet.
+ *
+ * Eight ticks is about 130 ms: longer than the delay the pin exists to cover,
+ * and short enough that nobody reads the pause as the ball having stopped.
+ * Without a bound the wait is however long the next snapshot takes, which on a
+ * phone is sometimes a quarter of a second.
+ */
+const MAX_PIN_TICKS = 8;
+/**
  * A contradiction further than this is taken outright rather than eased: a new
  * point, a serve, a reconnect. Sized like the character's `FOLLOWER_SNAP` —
  * further than anything a correction could plausibly be.
@@ -416,8 +425,23 @@ export class PlaybackBuffer {
       // compute. It can see it coming, though — so the flight stops at the
       // contact instead of sailing through the foot and being dragged back.
       const contact = this.nextContactTick(a);
-      const until =
-        contact === null ? renderTick : Math.min(renderTick, Math.floor(contact));
+      /*
+       * Waiting has to be bounded, and it was not.
+       *
+       * The pin holds the flight at the contact until the frame carrying its
+       * outcome arrives. That is right for the transport delay it was written
+       * for — a tick or two — and quietly wrong for anything longer, because
+       * the wait is however long the *next snapshot* takes. Under the delivery
+       * a phone actually gets, that is sometimes a quarter of a second, and a
+       * ball that stops dead in mid-air for a quarter of a second does not
+       * read as a prediction being careful. It reads as the game freezing.
+       *
+       * So: hold briefly, then fly on. Being a little past the foot and eased
+       * back is what `easeBall` is for and is barely visible; stopping is
+       * unmistakable.
+       */
+      const held = contact === null ? renderTick : Math.floor(contact);
+      const until = Math.min(renderTick, Math.max(held, renderTick - MAX_PIN_TICKS));
       pinned = until < renderTick;
       const steps = Math.min(Math.max(0, until - a.tick), MAX_BALL_STEPS);
       for (let i = 0; i < steps; i++) stepBall(state, SIM_DT, undefined, colliders);

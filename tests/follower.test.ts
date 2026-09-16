@@ -35,8 +35,23 @@ import type { InputState } from "../src/input";
 type Frame = Parameters<Rig["match"]["applySnapshot"]>[0];
 type BallPos = { x: number; y: number; z: number };
 
-/** Snapshots sampled every 2 host ticks (30 Hz), delivered `delay` ticks late. */
-function feed(host: Rig, guest: Rig, delay: number) {
+/**
+ * Snapshots sampled every 2 host ticks (30 Hz), delivered `delay` ticks late.
+ *
+ * `jitter` spreads the delivery the way a phone actually receives it: a few
+ * ticks of variation and the occasional long gap. A fixed delay is the easy
+ * case and hides the two faults this file now pins — the flight stalling at a
+ * contact it cannot resolve, and the character teleporting when the host takes
+ * its feet — because both are about how long the *next* frame takes to come.
+ */
+function feed(host: Rig, guest: Rig, delay: number, jitter = 0, lead = 0) {
+  let seed = 987654321;
+  const spread = () => {
+    if (jitter <= 0) return 0;
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    const r = seed / 0x7fffffff;
+    return Math.floor(r * jitter) + (r < 0.08 ? jitter * 3 : 0);
+  };
   const cpu = new AIController(host.match, DIFFICULTIES.normal);
   // The session's publishing wiring, reproduced the way session.step does it:
   // drain once per host step, in the step's tick, so clip windows are stamped
@@ -70,7 +85,7 @@ function feed(host: Rig, guest: Rig, delay: number) {
       const pw = win("player");
       const ow = win("ai");
       queue.push({
-        due: tick + delay,
+        due: tick + delay + spread(),
         frame: {
           ballPos: { x: b.state.pos.x, y: b.state.pos.y, z: b.state.pos.z },
           ballVel: { x: b.state.vel.x, y: b.state.vel.y, z: b.state.vel.z },
@@ -85,6 +100,26 @@ function feed(host: Rig, guest: Rig, delay: number) {
           selfClipTo: pw?.to,
           opponentClipFrom: ow?.from,
           opponentClipTo: ow?.to,
+          // The fields the guest predicts its own character from. Left out of
+          // this harness for a long time, which meant every test here drove a
+          // guest that never ran the reach assist, never leashed, and never
+          // handed its feet over — the whole of the prediction path, untested.
+          selfLocked: m.lockedState.player,
+          // Read field by field. Spreading a Babylon Vector3 copies `_x/_y/_z`
+          // and not the accessors, so `{...pos}` is an object with no `x` on
+          // it at all — which typechecks nowhere and would have fed this
+          // harness an anchor of undefined.
+          selfAnchor: m.anchorState.player
+            ? {
+                x: m.anchorState.player.pos.x,
+                y: m.anchorState.player.pos.y,
+                z: m.anchorState.player.pos.z,
+              }
+            : null,
+          selfAnchorEta: m.anchorState.player?.eta,
+          strikeable:
+            m.strikeableSide === null ? null : m.strikeableSide === "player" ? "host" : "guest",
+          touches: m.touchCount,
           tick,
           score: [m.score.player, m.score.ai],
           sets: [m.sets.player, m.sets.ai],
@@ -97,7 +132,11 @@ function feed(host: Rig, guest: Rig, delay: number) {
 
   const deliver = () => {
     while (queue.length > 0 && queue[0].due <= tick) {
-      guest.match.applySnapshot(queue.shift()!.frame, 0);
+      // The lead the session would have measured for this link. Zero is the
+      // default only because the older tests here were written against it;
+      // a real session always leads, and the pin the ball waits at is sized
+      // in exactly that.
+      guest.match.applySnapshot(queue.shift()!.frame, lead);
     }
   };
 
@@ -876,13 +915,27 @@ describe("a character the host fully owns", () => {
     r.step(SIM_DT);
     r.step(SIM_DT);
     expect(r.ai.busy).toBe(true);
-    expect(r.match.chars.ai.position.x).toBeCloseTo(3, 3);
+    // Whatever gap this character arrived with is still washing out — see the
+    // note at the handover — so what is pinned here is the *motion*, not the
+    // placement. Measured from wherever it has got to.
+    const before = r.match.chars.ai.position.x;
 
-    // The lunge: half a metre onto the ball, over a handful of ticks.
+    // The lunge: half a metre onto the ball, over a handful of ticks. It has
+    // to arrive on time and at full size, because the ball is already flying
+    // to meet a foot that is going to be there. A correction chasing it is
+    // always behind, which is what left a reception playing out with the ball
+    // beyond the foot.
     for (const t of [5, 7]) r.match.applySnapshot(frame(t, 3.5), 0);
     r.step(SIM_DT);
 
-    expect(r.match.chars.ai.position.x).toBeCloseTo(3.5, 3);
+    expect(r.match.chars.ai.position.x - before).toBeGreaterThan(0.45);
+
+    // And the gap it arrived with washes out rather than being carried
+    // through the whole touch. Exponential, so it is a tail rather than a
+    // deadline: half a metre is the artificial worst case here, and the few
+    // centimetres a real prediction drifts are gone in a quarter of a second.
+    for (let i = 0; i < 30; i++) r.step(SIM_DT);
+    expect(Math.abs(r.match.chars.ai.position.x - 3.5)).toBeLessThan(0.01);
   });
 });
 
@@ -891,6 +944,46 @@ describe("a character the host fully owns", () => {
  * the ball has to move, and the last few seconds are counted down so the clock
  * is never a surprise.
  */
+/**
+ * What the second phone actually looks like on a link that stutters.
+ *
+ * Both faults here were invisible on a fixed delay and obvious the moment the
+ * delivery was allowed to vary the way a phone's really does — which is also
+ * why they reached a build.
+ */
+describe("a guest on a link that stutters", () => {
+  it("never teleports the character whose feet the host has just taken", () => {
+    /*
+     * Prediction has usually drifted by the time a touch starts, and handing
+     * over in a single frame put the whole of that drift into one step. Half a
+     * metre in one tick, with no stick input at all, which on screen is the
+     * player jumping sideways on its own.
+     */
+    const host = rig();
+    const guest = rig();
+    guest.match.netFollower = true;
+    const f = feed(host, guest, 6, 10, 6);
+
+    let worst = 0;
+    let prev = { x: 0, z: 0 };
+    for (let i = 0; i < 700; i++) {
+      f.stepHost(i === 180 ? { strikePressed: true } : i > 180 && i % 24 === 0 ? { popPressed: true } : {});
+      f.deliver();
+      f.stepGuest();
+      const p = guest.match.chars.player.position;
+      if (i >= 200) worst = Math.max(worst, Math.hypot(p.x - prev.x, p.z - prev.z));
+      prev = { x: p.x, z: p.z };
+    }
+
+    // A character's own top speed is a few metres a second, so anything past
+    // about a fifth of a metre in one tick is not movement, it is a jump. The
+    // contact lunge is the host's own and arrives at 30 Hz, which is what the
+    // remaining headroom is for; before the handover was smoothed this run
+    // reached two thirds of a metre.
+    expect(worst).toBeLessThan(0.34);
+  }, 30_000);
+});
+
 describe("the serve clock", () => {
   /** Step to the instant the server is standing ready, where the clock starts. */
   const toServeReady = (r: Rig) => {

@@ -24,6 +24,75 @@ import {
 
 const WALK = 1.5; // m/s, a character's constant pace along x
 
+/**
+ * How long a flight will wait at a contact it cannot resolve.
+ *
+ * The guest can see a touch coming — the clip window says when the foot gets
+ * there — but not what it does to the ball, so the flight is held at the
+ * contact rather than sailing through the foot and being dragged back.
+ *
+ * The wait had no bound. It lasted until the next snapshot, and on the
+ * delivery a phone actually gets that is sometimes a fifth of a second: long
+ * enough that the ball does not read as being held carefully, it reads as the
+ * game having frozen. Held briefly, then flying on, is the trade — being a
+ * little past the foot is what the easing is for and is barely visible.
+ */
+describe("waiting at a contact", () => {
+  /**
+   * A frame whose clip contacts the ball just ahead of it.
+   *
+   * The pin engages while the contact sits between the newest frame and the
+   * instant being drawn — so on a slow link, where the render point leads by a
+   * lot, it engages on every frame and stays engaged.
+   */
+  const withContact = (tick: number, aheadTicks: number): PlaybackSample => {
+    const clip = "ChestKick";
+    const frac = contactFraction(clip);
+    const span = 60;
+    return {
+      ...sample(tick),
+      // Solve the window so the contact lands `aheadTicks` after this frame.
+      selfClip: { clip, from: tick + aheadTicks - frac * span, to: tick + aheadTicks + (1 - frac) * span, seq: 1 },
+    };
+  };
+
+  it("holds the flight at the touch, then lets it go on", () => {
+    // A slow link: the screen is drawn twenty ticks ahead of the newest frame,
+    // and every frame reports a contact five ticks after itself. The contact
+    // is therefore always behind the render point and always ahead of the
+    // frame, which is the pin's engaged condition, on every single frame.
+    const buf = new PlaybackBuffer();
+    buf.setLead(20);
+    let tick = 100;
+    buf.push(withContact(tick, 5));
+
+    let held = 0;
+    let longest = 0;
+    let prev = buf.advance()!.ball;
+    for (let i = 0; i < 40; i++) {
+      // Frames keep arriving, so this is never starvation — it is the pin.
+      if (i % 2 === 0) {
+        tick += 2;
+        buf.push(withContact(tick, 5));
+      }
+      const view = buf.advance();
+      if (!view) break;
+      const moved = Math.hypot(view.ball.x - prev.x, view.ball.y - prev.y, view.ball.z - prev.z);
+      if (moved < 1e-6) {
+        held += 1;
+        longest = Math.max(longest, held);
+      } else {
+        held = 0;
+      }
+      prev = view.ball;
+    }
+
+    // Unbounded this never lets go at all: the ball hangs for the whole run,
+    // and on a phone for as long as the link stays slow.
+    expect(longest).toBeLessThan(12);
+  });
+});
+
 function sample(tick: number, held = false): PlaybackSample {
   return {
     tick,

@@ -328,6 +328,14 @@ const CLIP_RESYNC_FRACTION = 0.08;
 /** How much of it is counted down on screen. */
 export const SERVE_CLOCK_COUNTDOWN = 3;
 const FOLLOWER_BLEND_SECONDS = 0.25;
+/**
+ * How long the drift left over at a handover takes to wash out, in seconds.
+ *
+ * Much shorter than a blend, because during a touch the host's position is the
+ * truth and the remainder is an apology for having guessed. Long enough that a
+ * tenth of a metre is spread over six frames instead of landing in one.
+ */
+const FOLLOWER_HANDOFF_SECONDS = 0.1;
 
 /** Position on a sampled flight at (or just after) time `t`, clipped to before any ground bounce. */
 function flightAt(flight: FlightSample[], t: number): Vector3 {
@@ -1474,6 +1482,13 @@ export class MatchController {
         !this.followerSelfLocked;
       if (predicting) {
         selfPredicted = true;
+        // The stick has the feet back, so the remainder from the last handover
+        // is finished with. Cleared here as well as in the branches below,
+        // because this path leaves the loop early — and without it the flag
+        // stayed set for the rest of the match and the *next* touch handed
+        // over with no smoothing at all.
+        this.followerHandoff[side] = null;
+        this.followerHeld[side] = false;
         this.predictSelf(c, input, dt);
         if (this.followerSelfPose) {
           const fixed = reconcile(
@@ -1498,21 +1513,55 @@ export class MatchController {
         const tv = side === "player" ? view.self : view.opponent;
         const gap = Math.hypot(tv.x - c.position.x, tv.z - c.position.z);
         if (gap > FOLLOWER_SNAP || c.busy) {
-          // Take it outright. Either it is too far to be a correction — a cold
-          // start or a reset — or the character is mid-touch, and a character
-          // mid-touch belongs entirely to the host.
-          //
-          // Easing is there to hide a *prediction* error, and during a clip
-          // nothing is being predicted. Easing anyway is what stopped the limb
-          // ever arriving: the contact lunge darts half a metre onto the ball
-          // in a fifth of a second, and a quarter-second correction chasing it
-          // is always behind — so the guest watched a reception animation play
-          // out with the ball beyond the foot, and then the ball bend toward a
-          // contact it never saw happen.
-          c.position.x = tv.x;
-          c.position.z = tv.z;
+          /*
+           * The host's motion, exactly — but not the host's *place*, all at
+           * once.
+           *
+           * Mid-touch the timeline is the truth: the contact lunge darts half
+           * a metre onto the ball in a fifth of a second, and a quarter-second
+           * correction chasing it is always behind, which is what left a
+           * reception animation playing with the ball beyond the foot.
+           *
+           * Taking the position outright fixed that and introduced something
+           * else. Prediction has usually drifted by the time a touch starts,
+           * and handing over in one frame put the whole of that drift into one
+           * step — measured at half a metre in a single tick, which on screen
+           * is the player teleporting. It is the "moves on its own" that has
+           * nothing to do with the stick.
+           *
+           * So the difference is kept as an offset and bled off over a tenth
+           * of a second. Every frame is the host's position plus a shrinking
+           * remainder: the lunge keeps its shape and its timing, and the drift
+           * washes out instead of being thrown away in one frame.
+           *
+           * A gap too large to be drift is a reset or a cold start, and that
+           * is still taken whole — there is nothing there to smooth.
+           */
+          // Captured once, on the way in, and never again for as long as the
+          // host holds the feet. Re-reading it whenever the target moved would
+          // turn the remainder into a correction chasing the lunge — which is
+          // the exact lag taking the position outright was written to remove,
+          // and `tests/follower.test.ts` fails the moment it creeps back.
+          if (gap > FOLLOWER_SNAP) {
+            this.followerHandoff[side] = null;
+            this.followerHeld[side] = true;
+          } else if (!this.followerHeld[side]) {
+            this.followerHeld[side] = true;
+            this.followerHandoff[side] = { x: c.position.x - tv.x, z: c.position.z - tv.z };
+          }
+          const off = this.followerHandoff[side];
+          c.position.x = tv.x + (off?.x ?? 0);
+          c.position.z = tv.z + (off?.z ?? 0);
+          if (off) {
+            const keep = Math.max(0, 1 - dt / FOLLOWER_HANDOFF_SECONDS);
+            off.x *= keep;
+            off.z *= keep;
+            if (Math.hypot(off.x, off.z) < 0.005) this.followerHandoff[side] = null;
+          }
           this.followerBlend[side] = 0;
         } else if (this.followerBlend[side] > 0 || gap > 0.05) {
+          this.followerHandoff[side] = null;
+          this.followerHeld[side] = false;
           this.followerBlend[side] = Math.max(0, this.followerBlend[side] - dt);
           const fixed = reconcile({ x: c.position.x, z: c.position.z }, { x: tv.x, z: tv.z }, dt);
           c.position.x = fixed.x;
@@ -1520,6 +1569,8 @@ export class MatchController {
         } else {
           // The timeline is already smooth at 60 Hz: take it exactly. Easing
           // toward it would only add a second, slower motion on top.
+          this.followerHandoff[side] = null;
+          this.followerHeld[side] = false;
           c.position.x = tv.x;
           c.position.z = tv.z;
         }
@@ -1830,6 +1881,20 @@ export class MatchController {
   private followerClipKey: Record<Side, string | null> = { player: null, ai: null };
   /** Seconds of gliding onto the timeline left, per side. */
   private followerBlend: Record<Side, number> = { player: 0, ai: 0 };
+  /**
+   * How far each character was from the host when the host took its feet, and
+   * how much of that is still being carried.
+   *
+   * See the note where it is set. Cleared on every path that is not the
+   * handover, so a stale remainder can never ride into an ordinary frame.
+   */
+  private followerHandoff: Record<Side, { x: number; z: number } | null> = {
+    player: null,
+    ai: null,
+  };
+  /** Whether the host currently owns each character's feet, so the remainder
+   * above is taken once on the way in rather than on every jump. */
+  private followerHeld: Record<Side, boolean> = { player: false, ai: false };
   /** This peer's own character was predicted last step. */
   private selfPredicting = false;
   /** Latest lead-carried self pose; the reconcile target while predicting. */
@@ -3581,6 +3646,8 @@ export class MatchController {
     this.followerAwaitingRestart = this.netFollower ? 60 : 0;
     this.followerSelfPose = null;
     this.followerSelfAnchor = null;
+    this.followerHandoff = { player: null, ai: null };
+    this.followerHeld = { player: false, ai: false };
     this.followerRenderTick = null;
     this.versusViewTick = null;
     this.ballHistory = [];
