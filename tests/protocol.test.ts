@@ -13,7 +13,6 @@ import {
   isValidFx,
   isValidInput,
   isPlayerCode,
-  isValidCallout,
   isValidCalloutGone,
   isValidEmote,
   isValidInvite,
@@ -420,29 +419,30 @@ describe("invites", () => {
     expect(isValidInvited({ t: "invited", from, room: "nope" })).toBe(false);
   });
 
-  it("tells an open callout apart from a friend asking by name", () => {
-    // The two are shown completely differently — one is a card that can be
-    // ignored, the other a dialog — so the flag that separates them has to
-    // survive the wire rather than being inferred at the far end.
+  it("takes an open callout without a room, and a friend's invite only with one", () => {
+    /*
+     * The two are different messages wearing one name. A friend's invite names
+     * the room they are sitting in, because accepting it is joining that room.
+     * An open callout names nothing: the relay sent it on behalf of whoever is
+     * waiting in the queue, and accepting is asking for a quick match of your
+     * own.
+     *
+     * Requiring a code of both is how the first version of this failed. Every
+     * callout was thrown away on arrival, silently, so the notice simply never
+     * appeared and there was nothing anywhere to say why.
+     */
     const from = { id: "2D6FR6WG", name: "Bie", trophies: 12, tier: "BEGINNER" };
-    expect(isValidInvited({ t: "invited", from, room: "ABC12", open: true })).toBe(true);
+    expect(isValidInvited({ t: "invited", from, open: true })).toBe(true);
     expect(isValidInvited({ t: "invited", from, room: "ABC12" })).toBe(true);
-  });
-
-  it("accepts a callout that names a room, and nothing that does not", () => {
-    expect(isValidCallout({ t: "callout", v: PROTOCOL_VERSION, room: "ABC12" })).toBe(true);
-    // The bug `isValidInvite` had: stringify whatever arrived and the number
-    // 12345 is five characters of the alphabet and a room nobody typed.
-    expect(isValidCallout({ t: "callout", v: PROTOCOL_VERSION, room: 12345 })).toBe(false);
-    expect(isValidCallout({ t: "callout", v: PROTOCOL_VERSION })).toBe(false);
-    expect(isValidCallout({ t: "callout", v: PROTOCOL_VERSION, room: "nope!" })).toBe(false);
-    expect(isValidCallout({ t: "invited", room: "ABC12" })).toBe(false);
+    // A room on an open callout means the two shapes have been confused.
+    expect(isValidInvited({ t: "invited", from, room: "ABC12", open: true })).toBe(false);
+    // And a friend's invite without one has nothing to accept.
+    expect(isValidInvited({ t: "invited", from })).toBe(false);
   });
 
   it("accepts the withdrawal of one", () => {
-    expect(isValidCalloutGone({ t: "callout-gone", room: "ABC12" })).toBe(true);
-    expect(isValidCalloutGone({ t: "callout-gone", room: 12345 })).toBe(false);
-    expect(isValidCalloutGone({ t: "callout", room: "ABC12" })).toBe(false);
+    expect(isValidCalloutGone({ t: "callout-gone" })).toBe(true);
+    expect(isValidCalloutGone({ t: "invited" })).toBe(false);
   });
 
   it("accepts a message id, and refuses one long enough to be an attack", () => {

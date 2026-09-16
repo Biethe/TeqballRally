@@ -43,7 +43,7 @@ const MAX_FRAME_BYTES = 8 * 1024;
 /** A peer that has not pinged within this window is considered gone. */
 const IDLE_TIMEOUT_MS = 45_000;
 
-/** @type {Map<string, { seats: (import("ws").WebSocket|null)[], emptyAt: number|null, rung: import("ws").WebSocket[]|null }>} */
+/** @type {Map<string, { seats: (import("ws").WebSocket|null)[], emptyAt: number|null }>} */
 const rooms = new Map();
 
 /**
@@ -115,18 +115,6 @@ function isValidInvite(msg) {
   );
 }
 
-/**
- * A callout worth broadcasting.
- *
- * Written here rather than imported for the same reason `isValidInvite` is:
- * this file is plain ESM and the client's copy is TypeScript. `typeof` before
- * anything else, or the number 12345 arrives as a five-character room code
- * that nobody typed.
- */
-function isValidCallout(msg) {
-  return msg && typeof msg.room === "string" && /^[0-9A-Z]{4,8}$/.test(msg.room.toUpperCase());
-}
-
 function mintRoomCode() {
   // Retry rather than trusting randomness: a collision would drop a waiting
   // pair into somebody else's match.
@@ -142,7 +130,11 @@ function mintRoomCode() {
 
 function dequeue(socket) {
   const i = queue.indexOf(socket);
-  if (i >= 0) queue.splice(i, 1);
+  if (i >= 0) {
+    queue.splice(i, 1);
+    // They stopped looking. Whatever was said on their behalf is withdrawn.
+    if (queue.length === 0) callOff();
+  }
 }
 
 /** Seat two waiting players in a freshly minted room. */
@@ -166,6 +158,9 @@ function pair(host, guest) {
     send(socket, { t: "joined", room: code, role, ready: true });
     send(socket, { t: "peer", joined: true, who: peer.identity ?? null, match: socket.matchId });
   }
+  // Somebody took it. Everyone else who was rung is looking at an offer that
+  // can no longer be accepted, and would find that out by tapping it.
+  callOff();
   console.log(`[relay] paired two players into ${code} (${rooms.size} rooms)`);
 }
 
@@ -215,6 +210,10 @@ async function handleQueue(socket, msg) {
   socket.isAlive = true;
   send(socket, { t: "queued", ahead: 0 });
   console.log(`[relay] queued a player (${queue.length} waiting)`);
+  // Nobody was waiting, so nobody is coming unless they are told. This is the
+  // whole of the change: the queue alone only ever paired two people who
+  // pressed the button within seconds of each other.
+  callOut(socket);
 }
 
 const send = (socket, msg) => {
@@ -224,7 +223,7 @@ const send = (socket, msg) => {
 function roomFor(code) {
   let room = rooms.get(code);
   if (!room) {
-    room = { seats: [null, null], emptyAt: null, rung: null };
+    room = { seats: [null, null], emptyAt: null };
     rooms.set(code, room);
   }
   room.emptyAt = null;
@@ -314,7 +313,7 @@ async function handleInvite(store, socket, msg) {
  * A callout reaches every player who has the app open, which is exactly what
  * makes it worth having and exactly what makes it worth limiting. Thirty
  * seconds is long enough that a stuck button cannot ring anybody twice, and
- * short enough that somebody whose first call went unanswered can try again
+ * short enough that somebody whose first search went unanswered can try again
  * without feeling punished for it.
  */
 const CALLOUT_COOLDOWN_MS = 30_000;
@@ -329,51 +328,38 @@ const CALLOUT_COOLDOWN_MS = 30_000;
  */
 const CALLOUT_FANOUT = 50;
 
-/**
- * Ask everybody who is around, because nobody in particular is.
- *
- * The pairing queue only ever worked when two people happened to be searching
- * in the same few seconds. For a game that is just starting out that is
- * effectively never, so quick match always fell through to the AI and the
- * online mode never had a chance to be real.
- *
- * Nothing here makes a match. The caller has already minted a room and taken
- * the host seat; this hands the code to every idle player and lets the first
- * one who wants it join by code, down the path that already works.
- *
- * Two things are deliberately *not* checked. There is no friends test, unlike
- * `handleInvite` — meeting strangers is the whole point of quick match, and
- * the consent for that lives on the receiving side, which can ignore a callout
- * or turn them off entirely. And nobody is told who declined, because with a
- * broadcast almost everybody does.
- */
-function handleCallout(socket, msg) {
-  if (!socket.presenceId) return send(socket, { t: "error", reason: "sign in first" });
-  const code = String(msg.room).toUpperCase();
-  /*
-   * The caller has to be hosting the room they are advertising, or a callout
-   * is a way to send the whole game into somebody else's match.
-   *
-   * Checked against the *room* rather than against this socket, and that is
-   * not a detail. The callout arrives on the presence link — the socket held
-   * for as long as the app is open, and the only one every other player is
-   * listening on — while the room is held by the separate match connection.
-   * Two sockets, one account. Asking whether this socket is seated would
-   * refuse every real callout ever sent.
-   */
-  const room = rooms.get(code);
-  if (!room || room.seats[0]?.presenceId !== socket.presenceId) {
-    return send(socket, { t: "error", reason: "not in that room" });
-  }
-  // Somebody is already in the other seat. Nothing to advertise.
-  if (room.seats[1]) return;
-  const now = Date.now();
-  if (socket.calledAt && now - socket.calledAt < CALLOUT_COOLDOWN_MS) return;
-  socket.calledAt = now;
+/** Who was told about the player now waiting, so they can be told it is over. */
+let rung = [];
+/** When each account last had the game called out on its behalf. */
+const calledAt = new Map();
 
-  const from = socket.identity;
-  if (!from) return;
-  const rung = [];
+/**
+ * Tell everybody who is around that somebody is looking for a game.
+ *
+ * The queue on its own only ever paired two people who happened to be waiting
+ * in it at the same moment. For a game with a crowd that is enough; for a game
+ * with a handful of players it is never, so quick match always fell through to
+ * the AI and the online mode was decorative.
+ *
+ * Nothing here makes a match, and nothing here mints a room. Accepting is
+ * simply asking for a quick match of your own, which lands in `handleQueue`
+ * and pairs with whoever is already waiting — the path that has always worked.
+ * An earlier version had the caller mint a room and advertise the code, which
+ * replaced the queue instead of feeding it, so two people searching at the same
+ * moment minted different rooms and never met.
+ *
+ * Only for a caller with an account, because the notice names them and a name
+ * a peer chooses for itself is a name that can be somebody else's. Anonymous
+ * players still queue and still pair; they simply do not get announced.
+ */
+function callOut(socket) {
+  if (!socket.presenceId || !socket.identity) return;
+  const now = Date.now();
+  const last = calledAt.get(socket.presenceId);
+  if (last && now - last < CALLOUT_COOLDOWN_MS) return;
+  calledAt.set(socket.presenceId, now);
+
+  callOff();
   for (const held of byPlayer.values()) {
     for (const peer of held) {
       if (rung.length >= CALLOUT_FANOUT) break;
@@ -381,22 +367,17 @@ function handleCallout(socket, msg) {
       // way out. `teq` is the seat, so its absence is "idle" for free.
       if (peer === socket || peer.teq || peer.readyState !== peer.OPEN) continue;
       if (peer.presenceId === socket.presenceId) continue;
-      send(peer, { t: "invited", from, room: code, open: true });
+      send(peer, { t: "invited", from: socket.identity, open: true });
       rung.push(peer);
     }
   }
-  // Remembered on the room rather than the socket, because whoever has to be
-  // told the game is gone is the same set however it went — filled, or
-  // abandoned by the caller.
-  room.rung = rung;
-  console.log(`[relay] callout for ${code} reached ${rung.length}`);
+  console.log(`[relay] callout for ${socket.identity.name} reached ${rung.length}`);
 }
 
-/** That game is taken. Told once, to exactly the sockets that were rung. */
-function callOff(room, code) {
-  if (!room?.rung) return;
-  for (const peer of room.rung) send(peer, { t: "callout-gone", room: code });
-  room.rung = null;
+/** Whoever was waiting is waiting no longer. Told once, to whoever was rung. */
+function callOff() {
+  for (const peer of rung) send(peer, { t: "callout-gone" });
+  rung = [];
 }
 
 /** Carry a declined answer back to whoever asked. */
@@ -425,9 +406,6 @@ function releaseSeat(socket) {
   dequeue(socket);
   const { room, code } = socket.teq ?? {};
   if (!room) return;
-  // The caller left the room they were advertising. Same withdrawal as a room
-  // that filled: the offer is gone either way.
-  if (room.seats[0] === socket) callOff(room, code);
   const i = room.seats.indexOf(socket);
   if (i >= 0) room.seats[i] = null;
   send(peerOf(room, socket), { t: "peer", joined: false });
@@ -457,10 +435,6 @@ async function handleJoin(socket, msg) {
   const peer = peerOf(room, socket);
   send(socket, { t: "joined", room: code, role: socket.teq.role, ready: Boolean(peer) });
   if (peer) {
-    // Somebody answered the callout. Everyone else who was rung is looking at
-    // an offer that can no longer be accepted, and would find that out by
-    // tapping it.
-    callOff(room, code);
     openMatch(socket, peer);
     // Tell the peer someone arrived, and re-confirm its own seat is now live.
     send(peer, { t: "peer", joined: true, who: socket.identity ?? null, match: peer.matchId });
@@ -545,21 +519,6 @@ wss.on("connection", (socket) => {
         return send(socket, { t: "error", reason: "version mismatch — update the app" });
       }
       void identify(socket, msg).catch((err) => console.error("[relay] hello failed", err));
-      return;
-    }
-
-    if (type === "callout") {
-      let msg;
-      try {
-        msg = JSON.parse(text);
-      } catch {
-        return;
-      }
-      if (msg.v !== PROTOCOL_VERSION) {
-        return send(socket, { t: "error", reason: "version mismatch — update the app" });
-      }
-      if (!isValidCallout(msg)) return;
-      handleCallout(socket, msg);
       return;
     }
 

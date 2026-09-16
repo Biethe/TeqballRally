@@ -460,8 +460,6 @@ export class UI {
   private tourEl: HTMLDivElement | null = null;
   private toastEl: HTMLDivElement | null = null;
   private toastTimer: number | null = null;
-  /** Which room the toast is currently offering, so it can be withdrawn. */
-  private toastRoom: string | null = null;
   private tourFrame: number | null = null;
   private loadingEl: HTMLDivElement;
   private loadingText: HTMLDivElement;
@@ -2633,11 +2631,12 @@ export class UI {
    * like a summons. So: a card at the top, one button, ignorable, and gone by
    * itself whether or not anybody looks at it.
    *
-   * `room` is remembered so the same offer can be withdrawn the moment
-   * somebody else takes the seat, rather than leaving a dead button behind.
+   * There is never more than one of these up, so taking it away needs no
+   * identifier — which is just as well, because an open callout names no room:
+   * accepting it is asking for a quick match of your own, and the relay pairs
+   * you with whoever it was sent on behalf of.
    */
   showCallout(view: {
-    room: string;
     name: string;
     tier: string;
     seconds: number;
@@ -2670,18 +2669,15 @@ export class UI {
     };
     this.root.appendChild(el);
     this.toastEl = el;
-    this.toastRoom = view.room;
     this.toastTimer = window.setTimeout(() => this.hideCallout(), view.seconds * 1000);
   }
 
-  /** Take it away. With a room, only if that is the one being offered. */
-  hideCallout(room?: string): void {
-    if (room !== undefined && this.toastRoom !== room) return;
+  /** Take it away, whether it was answered, withdrawn or simply ignored. */
+  hideCallout(): void {
     if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
     this.toastTimer = null;
     this.toastEl?.remove();
     this.toastEl = null;
-    this.toastRoom = null;
   }
 
   /** Take the tour's overlay away. */

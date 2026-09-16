@@ -35,16 +35,20 @@ const BACKOFF_MS = [1000, 3000, 8000, 20000, 45000];
 
 export interface PresenceHandlers {
   /**
-   * Somebody has asked for a game and is sitting in `room` waiting.
+   * Somebody wants a game.
    *
-   * `open` separates a friend asking by name from a stranger calling out to
-   * everybody. The first has earned an interruption; the second has earned a
-   * notice that can be ignored, and showing them the same way would make the
-   * second one feel like the first.
+   * A friend asking by name comes with the `room` they are sitting in, and
+   * accepting is joining it. An open callout comes with none: the relay sent
+   * it on behalf of whoever is waiting in the quick-match queue, so accepting
+   * is asking for a quick match of your own and being paired with them.
+   *
+   * `open` also decides how it is shown. A friend has earned an interruption;
+   * a stranger reaching everybody who happens to be online has earned a notice
+   * that can be ignored.
    */
-  onInvited?: (from: PeerIdentity, room: string, open: boolean) => void;
-  /** That game is taken, or its caller gave up. Stop offering it. */
-  onCalloutGone?: (room: string) => void;
+  onInvited?: (from: PeerIdentity, room: string | null, open: boolean) => void;
+  /** Whoever was waiting is waiting no longer. Stop offering it. */
+  onCalloutGone?: () => void;
   /** An invite this player sent came back unanswered or refused. */
   onReply?: (answer: "declined" | "gone", who: string | null) => void;
   /** The connection came up or went down; drives the friends list's dot. */
@@ -89,19 +93,6 @@ export class PresenceLink {
    */
   invite(friendId: string, room: string): void {
     this.send({ t: "invite", to: friendId, room });
-  }
-
-  /**
-   * Ask everybody who is around, rather than one friend by name.
-   *
-   * Same shape as `invite`: the room already exists and this peer is already
-   * sitting in it, so all that crosses is where to come. Dropped when the link
-   * is down, for the same reason an invite is — it is an offer to play right
-   * now, and one that waits for a socket is an offer to play at some
-   * unspecified past moment.
-   */
-  callout(room: string): void {
-    this.send({ t: "callout", v: PROTOCOL_VERSION, room });
   }
 
   /** Turn one down, so whoever asked is told rather than left waiting. */
@@ -155,11 +146,11 @@ export class PresenceLink {
     const msg = decode(raw);
     if (!msg) return;
     if (isValidInvited(msg)) {
-      this.handlers.onInvited?.(msg.from, msg.room, msg.open === true);
+      this.handlers.onInvited?.(msg.from, msg.room ?? null, msg.open === true);
       return;
     }
     if (isValidCalloutGone(msg)) {
-      this.handlers.onCalloutGone?.(msg.room);
+      this.handlers.onCalloutGone?.();
       return;
     }
     if (msg.t === "invite-reply") {

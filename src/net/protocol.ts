@@ -583,57 +583,50 @@ export interface InviteMessage {
 }
 
 /**
- * Ask *everyone* who is listening, because nobody in particular is.
+ * Relay -> somebody who might want a game. `from` is verified, never announced.
  *
- * Quick match used to be a rendezvous: the relay held a queue and paired two
- * people only if both were in it at the same moment. That works for a game
- * with a crowd and fails completely for a game without one — two players have
- * to press the same button within a few seconds of each other, which with a
- * handful of users never happens, so every quick match quietly became a match
- * against the AI and the online mode was decorative.
+ * Two kinds, told apart by `open`.
  *
- * This changes the odds rather than the machinery. The relay already knows
- * every account with the app open, because presence sockets are held for as
- * long as it is; it simply was not asking them anything. A callout asks all of
- * them at once, and the question goes from "is somebody else searching right
- * now" to "is anybody around".
+ * A **friend** asking by name carries a `room`: they have already minted one
+ * and taken the host seat, so accepting is an ordinary join by code.
  *
- * Carries no more than an invite does. The caller has already minted a room
- * and taken the host seat, so accepting is an ordinary join by code, down the
- * same path that already works.
- */
-export interface CalloutMessage {
-  t: "callout";
-  v: number;
-  /** The room the caller is already sitting in. */
-  room: string;
-}
-
-/**
- * Relay -> the friend being asked. `from` is verified, never announced.
+ * An **open callout** carries none, and that is the whole of its design. It is
+ * sent by the relay, not by a player, to everybody idle the moment somebody is
+ * left waiting in the quick-match queue — so accepting is not joining a room,
+ * it is simply asking for a quick match yourself, and the relay pairs the two
+ * of you because one of you is already waiting. No room to mint, no code to
+ * carry, nothing to go stale, and it works for a player with no account, who
+ * has no presence link to be reached on but can still queue.
  *
- * `open` separates the two kinds. A friend asking by name has earned a dialog;
- * a stranger calling out to everybody has earned a notice that can be ignored,
- * and treating them the same would make the second one feel like the first.
+ * The first shape of this did mint a room and the caller advertised it. That
+ * was worse in three ways at once: it replaced the queue, so two people
+ * searching at the same moment minted different rooms and never met; it needed
+ * a tie-break for when both called out; and it left an empty room behind every
+ * time nobody answered.
+ *
+ * The presentation differs as much as the mechanism. A friend asking by name
+ * has earned an interruption; a stranger reaching everybody who happens to be
+ * online has earned a notice that can be ignored.
  */
 export interface InvitedMessage {
   t: "invited";
   from: PeerIdentity;
-  room: string;
-  /** True when this came from a callout rather than from a friend. */
+  /** Where to go, for a friend's invite. Absent on an open callout. */
+  room?: string;
+  /** True when the relay sent this on behalf of somebody in the queue. */
   open?: boolean;
 }
 
 /**
- * That game is taken — stop offering it.
+ * Whoever was waiting is waiting no longer — stop offering it.
  *
- * A callout reaches everybody and only one of them can have the seat, so
- * without this the rest are left looking at an offer that cannot be accepted,
- * and find that out by tapping it.
+ * A callout reaches everybody and only one of them can have the game, so
+ * without this the rest are left looking at an offer that cannot be taken and
+ * find that out by tapping it. No room, because an open callout never named
+ * one: there is only ever one of these on screen.
  */
 export interface CalloutGoneMessage {
   t: "callout-gone";
-  room: string;
 }
 
 /**
@@ -665,7 +658,6 @@ export type SignalMessage =
   | InviteMessage
   | InvitedMessage
   | InviteReplyMessage
-  | CalloutMessage
   | CalloutGoneMessage;
 export type NetMessage = GameMessage | SignalMessage;
 
@@ -852,45 +844,32 @@ export function isValidInvite(msg: unknown): msg is InviteMessage {
   );
 }
 
-/** An invite as it reaches the friend. Their answer decides what happens. */
+/**
+ * An invitation as it reaches whoever might take it.
+ *
+ * A friend's invite must name a room, because accepting it is joining that
+ * room. An open callout must not: there is nothing to join, and accepting it
+ * is asking for a quick match of your own. Requiring a code of both would have
+ * thrown every callout away on arrival — which is precisely what an earlier
+ * version of this did, silently, for the several hours it took to notice that
+ * the notice never appeared.
+ */
 export function isValidInvited(msg: unknown): msg is InvitedMessage {
   if (typeof msg !== "object" || msg === null) return false;
   const m = msg as Partial<InvitedMessage>;
-  return (
-    m.t === "invited" &&
-    typeof m.from?.id === "string" &&
-    typeof m.from?.name === "string" &&
-    typeof m.room === "string" &&
-    isValidRoomCode(m.room.toUpperCase())
-  );
+  if (m.t !== "invited") return false;
+  if (typeof m.from?.id !== "string" || typeof m.from?.name !== "string") return false;
+  if (m.open === true) return m.room === undefined;
+  // `typeof` first: stringifying whatever arrived would let the number 12345
+  // through as a room code, which is five characters of the alphabet and not
+  // a code anybody typed.
+  return typeof m.room === "string" && isValidRoomCode(m.room.toUpperCase());
 }
 
-/**
- * A callout worth relaying: a room, and nothing else to get wrong.
- *
- * `typeof` before anything else, for the reason spelled out on `isValidInvite`
- * — stringifying whatever arrived lets the number 12345 through as a room
- * code, which is five characters of the alphabet and not a code anybody typed.
- */
-export function isValidCallout(msg: unknown): msg is CalloutMessage {
-  if (typeof msg !== "object" || msg === null) return false;
-  const m = msg as Partial<CalloutMessage>;
-  return (
-    m.t === "callout" &&
-    typeof m.room === "string" &&
-    isValidRoomCode(m.room.toUpperCase())
-  );
-}
-
-/** The withdrawal of one. Only the room matters; the caller is long gone. */
+/** The withdrawal of one. Nothing to check but the name. */
 export function isValidCalloutGone(msg: unknown): msg is CalloutGoneMessage {
   if (typeof msg !== "object" || msg === null) return false;
-  const m = msg as Partial<CalloutGoneMessage>;
-  return (
-    m.t === "callout-gone" &&
-    typeof m.room === "string" &&
-    isValidRoomCode(m.room.toUpperCase())
-  );
+  return (msg as Partial<CalloutGoneMessage>).t === "callout-gone";
 }
 
 /**

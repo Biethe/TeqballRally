@@ -246,124 +246,133 @@ describe("clubs over HTTP", () => {
 });
 
 describe("calling out for a game", () => {
-  it("rings everybody who is around, and not the caller", async () => {
+  const signUp = async (name: string) =>
+    (await api("POST", "/api/players", { body: { name } })).body.token as string;
+
+  it("rings everybody who is around when somebody is left waiting", async () => {
     /*
-     * The whole point of the change. The old queue paired two people only if
-     * both were waiting in the same few seconds, which for a game with a
-     * handful of players is never — so quick match always fell through to the
-     * AI and the online mode was decorative.
+     * The whole point of the change. The queue alone paired two people only if
+     * both were in it at the same moment, which for a game with a handful of
+     * players is never — so quick match always fell through to the AI and the
+     * online mode was decorative.
      *
-     * Three accounts: one mints a room and calls out, and the other two are
-     * simply sitting in the app. Both should hear it, and the caller should
-     * not hear itself.
+     * Three accounts: one asks for a quick match and is left waiting, and the
+     * other two are simply sitting in the app. Both should hear about it, and
+     * the one waiting should not hear about itself.
      */
-    const [a, b, c] = await Promise.all([
-      api("POST", "/api/players", { body: { name: "Caller" } }),
-      api("POST", "/api/players", { body: { name: "Idle One" } }),
-      api("POST", "/api/players", { body: { name: "Idle Two" } }),
+    const [ta, tb, tc] = await Promise.all([
+      signUp("Caller"),
+      signUp("Idle One"),
+      signUp("Idle Two"),
     ]);
 
-    const heard: { who: string; room: string; open: boolean }[] = [];
+    const heard: { who: string; open: boolean; room: string | null }[] = [];
     const listen = (name: string, token: string) => {
       const link = new PresenceLink(
         token,
-        {
-          onInvited: (from, room, isOpen) =>
-            heard.push({ who: `${name}<-${from.name}`, room, open: isOpen }),
-        },
+        { onInvited: (from, room, open) => heard.push({ who: `${name}<-${from.name}`, open, room }) },
         WS
       );
       link.start();
       return link;
     };
 
-    const callerLink = listen("caller", a.body.token);
-    const one = listen("one", b.body.token);
-    const two = listen("two", c.body.token);
+    const callerLink = listen("caller", ta);
+    const one = listen("one", tb);
+    const two = listen("two", tc);
     await settle(400);
 
-    // The caller takes the host seat first; the callout only hands out the code.
-    const conn = track(new NetConnection(WS, {}, a.body.token));
-    await conn.join("CA5T1");
-    await settle(200);
-    callerLink.callout("CA5T1");
-    await settle(400);
+    // Asking for a quick match with nobody waiting is what triggers it. No
+    // room is minted and none is advertised.
+    const waiting = track(new NetConnection(WS, {}, ta));
+    // Never resolves here — nobody is coming — and `cancelQueue` below rejects
+    // it, so the rejection needs somewhere to land.
+    waiting.quickMatch().catch(() => {});
+    await settle(500);
 
     expect(heard.map((h) => h.who).sort()).toEqual(["one<-Caller", "two<-Caller"]);
-    // Marked open, because a stranger reaching everybody has to be shown
-    // differently from a friend asking by name.
     expect(heard.every((h) => h.open)).toBe(true);
-    expect(heard.every((h) => h.room === "CA5T1")).toBe(true);
+    // Nothing to join: accepting means queueing, and the relay does the rest.
+    expect(heard.every((h) => h.room === null)).toBe(true);
 
+    // Leave the queue empty. The relay's queue outlives a test, so a socket
+    // left waiting here pairs with the first caller of the next one — which
+    // is exactly how the two pairing tests below came to time out.
+    waiting.cancelQueue();
+    waiting.close();
     callerLink.close();
     one.close();
     two.close();
+    await settle(200);
   });
 
-  it("will not let anybody advertise a room they are not hosting", async () => {
-    // Otherwise a callout is a way to send the entire game into somebody
-    // else's match.
-    const [a, b] = await Promise.all([
-      api("POST", "/api/players", { body: { name: "Owner" } }),
-      api("POST", "/api/players", { body: { name: "Stranger" } }),
+  it("pairs two people who ask at the same moment", async () => {
+    /*
+     * The regression this replaced. An earlier version had each searcher mint
+     * a private room and advertise the code, which meant two people searching
+     * at the same moment sat in two different rooms and never met — both ended
+     * up playing the AI while the other was right there.
+     */
+    const [ta, tb] = await Promise.all([signUp("First"), signUp("Second")]);
+    const seatsA: string[] = [];
+    const seatsB: string[] = [];
+    const a = track(new NetConnection(WS, {}, ta));
+    const b = track(new NetConnection(WS, {}, tb));
+
+    const [ra, rb] = await Promise.all([
+      a.quickMatch().then((r) => {
+        seatsA.push(r.role);
+        return r;
+      }),
+      b.quickMatch().then((r) => {
+        seatsB.push(r.role);
+        return r;
+      }),
     ]);
 
-    const heard: string[] = [];
-    const watcher = new PresenceLink(
-      b.body.token,
-      { onInvited: (from) => heard.push(from.name) },
-      WS
-    );
-    watcher.start();
-    const liar = new PresenceLink(b.body.token, {}, WS);
-    liar.start();
-    await settle(400);
+    expect(ra.ready).toBe(true);
+    expect(rb.ready).toBe(true);
+    // One of each, so they are in the same room facing each other.
+    expect([seatsA[0], seatsB[0]].sort()).toEqual(["guest", "host"]);
+  });
 
-    const conn = track(new NetConnection(WS, {}, a.body.token));
-    await conn.join("CA5T2");
-    await settle(200);
-    // Somebody else's room, advertised by somebody who is not in it.
-    liar.callout("CA5T2");
-    await settle(400);
+  it("pairs two people with no accounts at all", async () => {
+    // Quick match has to work signed out, the way it always did. The callout
+    // needs an account because it names the caller; the queue does not.
+    const a = track(new NetConnection(WS, {}));
+    const b = track(new NetConnection(WS, {}));
 
-    expect(heard).toEqual([]);
+    const [ra, rb] = await Promise.all([a.quickMatch(), b.quickMatch()]);
 
-    watcher.close();
-    liar.close();
+    expect([ra.role, rb.role].sort()).toEqual(["guest", "host"]);
   });
 
   it("says the game is gone once somebody has taken it", async () => {
-    // A callout reaches everybody and only one of them can have the seat.
-    // Without this the rest are left holding an offer that cannot be accepted,
+    // A callout reaches everybody and only one of them can have the game.
+    // Without this the rest are left holding an offer that cannot be taken,
     // and find that out by tapping it.
-    const [a, b, c] = await Promise.all([
-      api("POST", "/api/players", { body: { name: "Caller Two" } }),
-      api("POST", "/api/players", { body: { name: "Taker" } }),
-      api("POST", "/api/players", { body: { name: "Too Slow" } }),
+    const [ta, tb, tc] = await Promise.all([
+      signUp("Caller Two"),
+      signUp("Taker"),
+      signUp("Too Slow"),
     ]);
 
-    const gone: string[] = [];
-    const callerLink = new PresenceLink(a.body.token, {}, WS);
+    let gone = 0;
+    const callerLink = new PresenceLink(ta, {}, WS);
     callerLink.start();
-    const slow = new PresenceLink(
-      c.body.token,
-      { onCalloutGone: (room) => gone.push(room) },
-      WS
-    );
+    const slow = new PresenceLink(tc, { onCalloutGone: () => gone++ }, WS);
     slow.start();
     await settle(400);
 
-    const host = track(new NetConnection(WS, {}, a.body.token));
-    await host.join("CA5T3");
-    await settle(200);
-    callerLink.callout("CA5T3");
-    await settle(300);
-
-    const taker = track(new NetConnection(WS, {}, b.body.token));
-    await taker.join("CA5T3");
+    const waiting = track(new NetConnection(WS, {}, ta));
+    waiting.quickMatch().catch(() => {});
     await settle(400);
 
-    expect(gone).toEqual(["CA5T3"]);
+    const taker = track(new NetConnection(WS, {}, tb));
+    await taker.quickMatch();
+    await settle(400);
+
+    expect(gone).toBeGreaterThan(0);
 
     callerLink.close();
     slow.close();

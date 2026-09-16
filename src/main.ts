@@ -1270,42 +1270,36 @@ async function boot(): Promise<void> {
         // worse than missing the invite, and the asker is told either way.
         if (match) return;
         if (open) {
-          // A stranger calling out to everybody who happens to be online. It
-          // is the thing that makes quick match work at all in a game this
-          // size, and it is also unasked-for, so it gets a card that can be
-          // ignored rather than a dialog that has to be answered. Nobody is
+          // Somebody is waiting in the queue and the relay is saying so on
+          // their behalf. It is what makes quick match work at all in a game
+          // this size, and it is also unasked-for, so it gets a card that can
+          // be ignored rather than a dialog that has to be answered. Nobody is
           // told it was refused: with a broadcast almost everybody refuses.
           if (!prefs.callouts) return;
-          if (searchRoom) {
-            // Both of us pressed QUICK MATCH at about the same moment, so we
-            // are each advertising a room and each hearing the other. If both
-            // accepted we would swap rooms and neither would get a game, so
-            // the lower player id yields and joins; the higher ignores this
-            // and waits to be joined. An agreement reached without talking,
-            // which is the only kind available here.
-            if ((identity?.id ?? "") < from.id) acceptInvite(room, from.name, false);
-            return;
-          }
+          // Already looking. The relay will pair us the moment one of us
+          // reaches the front of the queue, so there is nothing to accept and
+          // nothing worth interrupting a search to say.
+          if (searching) return;
           ui.showCallout({
-            room,
             name: from.name,
             tier: from.tier ?? "",
             seconds: CALLOUT_SHOWN_SECONDS,
-            // Not a private game: a stranger from the open queue, so the
-            // pause stays unavailable exactly as it does for any other quick
-            // match.
-            onAccept: () => acceptInvite(room, from.name, false),
+            // Accepting is asking for a quick match, not joining a room. The
+            // person who called out is at the front of the queue, so the relay
+            // pairs the two of us as soon as this lands.
+            onAccept: () => quickMatch(),
           });
           return;
         }
+        if (!room) return;
         ui.showOnlinePause(tf("invite.from.title", { name: from.name }), "", [
           [tr("invite.accept"), () => { ui.hideOnlinePause(); acceptInvite(room, from.name); }],
           [tr("invite.decline"), () => { ui.hideOnlinePause(); presence?.decline(from.id); }],
         ]);
       },
-      // Somebody else took the seat, or the caller gave up. Take the offer
-      // down rather than leave a button that cannot work.
-      onCalloutGone: (room) => ui.hideCallout(room),
+      // Whoever was waiting is waiting no longer. Take the offer down rather
+      // than leave a button that cannot work.
+      onCalloutGone: () => ui.hideCallout(),
       onReply: (answer, who) => {
         const name = who ?? asking?.name ?? "";
         asking = null;
@@ -2554,7 +2548,7 @@ async function boot(): Promise<void> {
   const abandonLobby = () => {
     netConn?.close();
     netConn = null;
-    searchRoom = null;
+    searching = false;
     showModes();
   };
 
@@ -2568,16 +2562,13 @@ async function boot(): Promise<void> {
   let opponent: PeerIdentity | null = null;
   /** The relay's name for the match, which both sides report against. */
   let onlineMatchId: string | null = null;
-  /**
-   * The room this player is advertising, while a quick match is searching.
+/**
+   * Whether a quick match is looking for somebody right now.
    *
-   * Its other job is the tie-break. Two people pressing QUICK MATCH at the
-   * same moment each call out and each hear the other, and if both accept
-   * they swap rooms and neither gets a game. Whoever holds the lower player
-   * id yields; the other ignores the callout and waits to be joined. Which of
-   * them yields does not matter, only that they agree without talking.
+   * Read when a callout arrives: a player already in the queue has nothing to
+   * accept, because the relay will pair the two of them by itself.
    */
-  let searchRoom: string | null = null;
+  let searching = false;
   /**
    * The rival being played, when a quick match found nobody and fell back.
    *
@@ -2609,10 +2600,10 @@ async function boot(): Promise<void> {
       ui.showLobbyStatus(tr("net.offline.title"), tr("net.offline.body"), null, showOnline);
       return;
     }
-    const code = makeRoomCode();
     const conn = new NetConnection(
       relayUrl(),
       {
+        onQueued: () => ui.setLobbyDetail(tr("net.searching")),
         onPeer: (present, who, id) => {
           if (!present) return;
           opponent = who ?? null;
@@ -2622,7 +2613,8 @@ async function boot(): Promise<void> {
       identity?.token
     );
     netConn = conn;
-    searchRoom = code;
+    searching = true;
+    ui.hideCallout();
     ui.showLobbyStatus(tr("net.searching.title"), tr("net.searching"), null, abandonLobby, {
       searching: true,
     });
@@ -2632,9 +2624,13 @@ async function boot(): Promise<void> {
      *
      * How long that takes is a question the relay can answer, so it is asked
      * rather than guessed: a few seconds when there is provably nobody around,
-     * far longer when there is, because a callout has to reach somebody, be
-     * noticed, and be answered by a person who may be halfway through
-     * something else.
+     * far longer when there is, because the relay's callout has to reach
+     * somebody, be noticed, and be answered by a person who may be halfway
+     * through something else.
+     *
+     * Nothing is ever said about which of the two it was. A player told
+     * "nobody is online" knows exactly what the opponent they are about to be
+     * given must be, and the rival's whole worth is that it is not announced.
      */
     let giveUp: number | null = null;
     const stopSearching = () => {
@@ -2645,26 +2641,26 @@ async function boot(): Promise<void> {
       stopSearching();
       giveUp = window.setTimeout(() => {
         if (netConn !== conn) return;
+        conn.cancelQueue();
         conn.close();
         netConn = null;
-        searchRoom = null;
+        searching = false;
         startRivalMatch();
       }, ms);
     };
     // Start on the short fuse and lengthen it if it turns out anybody is
     // there. The other way round leaves a player alone in an empty game
-    // staring at a spinner for twenty-five seconds to learn what the server
-    // could have told them immediately.
+    // watching a spinner for half a minute to learn what the server could have
+    // told us immediately.
     settleFor(SEARCH_ALONE_MS);
     void fetchOnlineCount().then(
       (count) => {
         if (netConn !== conn) return;
-        // One is this player. Anybody past that is somebody who might answer.
+        // One is this player. Anybody past that is somebody who might answer,
+        // and worth waiting for. A count of one says nothing out loud.
         if (count > 1) {
           ui.setLobbyDetail(tf("online.count", { n: count - 1 }));
           settleFor(SEARCH_WITH_OTHERS_MS);
-        } else {
-          ui.setLobbyDetail(tr("online.none"));
         }
       },
       () => {
@@ -2672,28 +2668,32 @@ async function boot(): Promise<void> {
       }
     );
 
+    /*
+     * The queue, which is the whole mechanism again.
+     *
+     * The relay pairs whoever is waiting with whoever arrives next, so two
+     * people searching at the same moment meet instantly — and when nobody is
+     * waiting it calls out to everybody who has the app open, whose answer is
+     * simply to search themselves and land here.
+     *
+     * An earlier version of this minted a private room and advertised the code
+     * instead. It replaced the queue rather than feeding it, so two people
+     * searching at the same moment sat in two different rooms and never met,
+     * and a player with no account was left out entirely, having no presence
+     * link to be called on.
+     */
     conn
-      .join(code)
-      .then(({ ready }) => {
+      .quickMatch()
+      .then(({ role }) => {
+        stopSearching();
         if (netConn !== conn) return;
-        // Somebody was already sitting in a room with this code, which the
-        // mint makes vanishingly unlikely — take it and play them.
-        if (ready) {
-          stopSearching();
-          searchRoom = null;
-          startOnlineMatch(conn, "host", false);
-          return;
-        }
-        // Seated and alone. Now tell everybody who has the app open, which is
-        // the whole change: the old queue only ever paired two people who
-        // pressed the same button within a few seconds of each other, and in
-        // a game this size that is nobody.
-        presence?.callout(code);
+        searching = false;
+        startOnlineMatch(conn, role, false);
       })
       .catch((e: unknown) => {
         stopSearching();
-        if (netConn !== conn) return;
-        searchRoom = null;
+        if (netConn !== conn) return; // already cancelled, or the timer fired
+        searching = false;
         ui.showLobbyStatus(
           "NO GAME FOUND",
           e instanceof Error ? e.message : "Could not find an opponent",
@@ -2701,19 +2701,6 @@ async function boot(): Promise<void> {
           abandonLobby
         );
       });
-
-    // Somebody joined the room that was called out. `onPeer` has the identity;
-    // this is the transition into the match itself.
-    conn.setHandlers({
-      onPeer: (present, who, id) => {
-        if (!present || netConn !== conn) return;
-        opponent = who ?? null;
-        onlineMatchId = id ?? null;
-        stopSearching();
-        searchRoom = null;
-        startOnlineMatch(conn, "host", false);
-      },
-    });
   };
 
   /**
@@ -2911,7 +2898,7 @@ async function boot(): Promise<void> {
     // the caller would go on advertising a game they had already left.
     netConn?.close();
     netConn = null;
-    searchRoom = null;
+    searching = false;
     const conn = new NetConnection(
       relayUrl(),
       {
