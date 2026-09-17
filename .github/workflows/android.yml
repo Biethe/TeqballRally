@@ -85,7 +85,17 @@ jobs:
 
       # Installs the command-line tools and accepts the SDK licences. Gradle
       # then fetches compileSdk 35 and the matching build-tools itself.
+      #
+      # `packages:` is set only to drop `tools` from the action's default of
+      # `tools platform-tools`. `tools` is the obsolete SDK Tools package
+      # Google has now removed from the repository, so sdkmanager answers
+      # "Failed to find package 'tools'" and exits 1 — which fails this job in
+      # the first thirty seconds, before a line of the app is built, and reads
+      # like a broken commit rather than a package that stopped existing. The
+      # same workflow passed four days earlier; nothing here changed.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install dependencies
         run: npm ci
