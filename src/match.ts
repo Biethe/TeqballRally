@@ -1202,7 +1202,7 @@ export class MatchController {
    * old to stamp its frames — gets the live ball, which is what it saw.
    */
   private seenBall(side: Side): Vector3 {
-    if (side !== "ai" || !this.versus || this.versusViewTick === null) return this.ball.state.pos;
+    if (side !== "ai" || !this.versus || this.versusViewTick === null || this.judgeLive) return this.ball.state.pos;
     const at = this.versusViewTick;
     for (let i = this.ballHistory.length - 1; i >= 0; i--) {
       if (this.ballHistory[i].tick <= at) return this.ballHistory[i].pos;
@@ -1211,8 +1211,22 @@ export class MatchController {
   }
 
   /** The flight this side was looking at, for the decisions a press is judged by. */
+  /**
+   * Judge the touch in hand against the live ball whoever it is for: set while
+   * an automatic reception is decided.
+   *
+   * The rewind above answers for a press — what the player was looking at when
+   * they made it. The first touch has no press. Asked every step whether the
+   * ball the guest last saw was in reach, the host said yes a whole round trip
+   * plus the guest's buffer after the real ball got there — about a third of a
+   * second on a phone link, by which time it had gone past. Measured over 95 ms
+   * each way with nobody touching a control: the host's seat received 7 serves
+   * of 7, the guest's 0 of 8.
+   */
+  private judgeLive = false;
+
   private seenFlight(side: Side, seconds: number): ReturnType<typeof sampleFlight> {
-    if (side !== "ai" || !this.versus || this.versusViewTick === null) {
+    if (side !== "ai" || !this.versus || this.versusViewTick === null || this.judgeLive) {
       return sampleFlight(this.ball.state, seconds);
     }
     const at = this.versusViewTick;
@@ -3180,28 +3194,35 @@ export class MatchController {
     // no press of their own to explain it. What the delay actually costs is
     // answered by `seenBall` inside `canTouch` now.
     const reach = AUTO_RECEPTION_REACH;
-    if (!this.canTouch(side, reach)) return;
-    const tapAim = this.receptionAim[side];
-    this.receptionAim[side] = null;
-    let aimX = 0;
-    let aimZ = 0;
-    if (tapAim) {
-      aimX = tapAim.x;
-      aimZ = tapAim.z;
-    } else if (stick && !this.portraitFor(side)) {
-      const mag = Math.hypot(stick.moveX, stick.moveZ);
-      if (mag > RECEPTION_STICK_DEADZONE) {
-        aimX = stick.moveX;
-        aimZ = stick.moveZ;
+    // Nobody pressed anything, so there is no earlier moment to judge it at —
+    // see `judgeLive`.
+    this.judgeLive = true;
+    try {
+      if (!this.canTouch(side, reach)) return;
+      const tapAim = this.receptionAim[side];
+      this.receptionAim[side] = null;
+      let aimX = 0;
+      let aimZ = 0;
+      if (tapAim) {
+        aimX = tapAim.x;
+        aimZ = tapAim.z;
+      } else if (stick && !this.portraitFor(side)) {
+        const mag = Math.hypot(stick.moveX, stick.moveZ);
+        if (mag > RECEPTION_STICK_DEADZONE) {
+          aimX = stick.moveX;
+          aimZ = stick.moveZ;
+        }
       }
+      this.tryControlTouch(side, aimX, aimZ, reach);
+    } finally {
+      this.judgeLive = false;
     }
-    this.tryControlTouch(side, aimX, aimZ, reach);
   }
 
   /** A committed touch waiting for the ball to drop back into striking range. */
   private pendingTouch:
     | { side: Side; kind: "strike"; aim: StrikeAim; wait: number; asked: number }
-    | { side: Side; kind: "pop"; aimX: number; aimZ: number; wait: number; asked: number }
+    | { side: Side; kind: "pop"; aimX: number; aimZ: number; wait: number; asked: number; live: boolean }
     | null = null;
 
   /**
@@ -3688,7 +3709,7 @@ export class MatchController {
     // Ball still climbing (or way overhead): queue the touch until it drops.
     const wait = this.touchWait(c);
     if (wait > 0) {
-      this.pendingTouch = { side, kind: "pop", aimX, aimZ, wait, asked: wait + timingSlip };
+      this.pendingTouch = { side, kind: "pop", aimX, aimZ, wait, asked: wait + timingSlip, live: this.judgeLive };
       return true;
     }
 
@@ -4375,7 +4396,16 @@ export class MatchController {
             // player who asked for it a second before the ball was there did
             // not time it, and the ball they get says so.
             if (p.kind === "strike") this.tryStrike(p.side, p.aim, early);
-            else this.tryControlTouch(p.side, p.aimX, p.aimZ, this.touchCount === 0 ? AUTO_RECEPTION_REACH : PLAYER_REACH, early);
+            else {
+              // A reception that queued for a rising ball is still one nobody
+              // pressed for.
+              this.judgeLive = p.live;
+              try {
+                this.tryControlTouch(p.side, p.aimX, p.aimZ, this.touchCount === 0 ? AUTO_RECEPTION_REACH : PLAYER_REACH, early);
+              } finally {
+                this.judgeLive = false;
+              }
+            }
           }
         }
         // Track where the incoming ball can be intercepted, for the reach assist.

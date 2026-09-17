@@ -1887,6 +1887,16 @@ ticks of fall is a whole band, which is why a joined player kept meeting a knee
 ball with a foot; the second seat used to be handed a silent 15% of extra reach
 to paper over it, which widened the window without aligning it.
 
+The automatic first touch is not a press, and is judged live (`judgeLive`). It
+was judged through the same rewind, and asked every step whether the ball the
+guest last saw was in reach, the host said yes a round trip and a buffer after
+the real ball got there — a third of a second on a phone link, by which time it
+had gone past. On two real clients over 95 ms each way with nobody on the
+controls, the host's seat received 7 serves of 7 and the guest's 0 of 8; the
+guest's player walked toward every serve on the reach assist and never touched
+one. The clock that ran into the host's future had been hiding it, by making
+the rewind zero.
+
 **A clip that ends lets go of its name.** `finishAction` is the exit almost
 every clip takes, and it used to leave `actionClip` set — so
 `currentActionClip` went on naming a finished animation until something else

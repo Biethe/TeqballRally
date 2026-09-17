@@ -659,6 +659,35 @@ describe("lag compensation", () => {
     expect(bodyPartOf(setUpAt(178, 4) ?? "")).toBe("foot");
   });
 
+  it("takes the automatic first touch against the live ball, since nobody pressed for it", () => {
+    // The rewind is for a press. Asked every step whether the ball the guest
+    // last saw was in reach, the host answered a round trip and a buffer after
+    // the real ball got there, and it had gone. Measured on two real clients
+    // over 95 ms each way with nobody on the controls: the host's seat took 7
+    // serves of 7, the guest's 0 of 8.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const receives = (back: number | null): boolean => {
+      const r = rig({ ui: silentUI() });
+      r.match.versus = true;
+      r.match.netPublish = true;
+      let received = false;
+      r.match.subscribe((e) => {
+        if (e.type === "touch-committed" && e.side === "ai") received = true;
+      });
+      r.step(3); // walk to the service line
+      r.step(0.2, { strikePressed: true }); // the host serves to the guest's seat
+      for (let tick = 1; tick <= 240 && !received; tick++) {
+        r.step(SIM_DT);
+        r.match.recordBallAt(tick);
+        // A guest a round trip and a buffer behind, as a phone link leaves it.
+        r.match.versusViewTick = back === null ? null : Math.max(0, tick - back);
+      }
+      return received;
+    };
+    expect(receives(null)).toBe(true);
+    expect(receives(26)).toBe(true);
+  });
+
   it("judges live for a seat that does not say what it was looking at", () => {
     // A peer too old to stamp its frames, and every local match: the live ball
     // is the one they saw.
