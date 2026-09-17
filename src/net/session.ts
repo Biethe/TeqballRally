@@ -125,6 +125,11 @@ export interface SessionHandlers {
   onOpponentAbsent?: (secondsLeft: number) => void;
   /** The opponent came back before the grace ran out. */
   onOpponentReturned?: () => void;
+  /**
+   * The opponent's match has not started yet — still loading, or still in
+   * its opening shot. Repeated every couple of seconds while it lasts.
+   */
+  onOpponentLoading?: () => void;
   /** The grace expired. The local player wins by default; fired once. */
   onOpponentForfeit?: () => void;
   /** Authoritative score from the host, for a guest to display. */
@@ -259,6 +264,28 @@ export class OnlineSession {
   /** True while the match should not advance on either peer. */
   get isPaused(): boolean {
     return this.pause === "paused";
+  }
+
+  /**
+   * Whether the opponent's match is running: the first frame of its traffic
+   * has arrived — controls at a host, a snapshot at a guest.
+   */
+  private opponentStarted = false;
+  private loadingShownFor = 0;
+
+  /**
+   * True while this peer's match must not advance: a negotiated pause, or a
+   * host whose guest has not started playing yet.
+   *
+   * The host runs the whole match, serve clock included, from the moment its
+   * own scene is ready. Two phones do not finish loading together, so a host
+   * that got there first used to start the first serve's countdown while the
+   * guest was still looking at a loading screen — and "too slow to serve" gave
+   * the host free points. A guest's controls start flowing only once its match
+   * is stepping, so the first of them is the start.
+   */
+  get matchHeld(): boolean {
+    return this.isPaused || (this.isHost && !this.opponentStarted);
   }
 
   get pauseState(): PauseState {
@@ -476,6 +503,7 @@ export class OnlineSession {
       // rather than a parallel one.
       case "input": {
         if (!this.isHost || !isValidInput(msg)) return;
+        this.opponentStarted = true;
         // Which scheme the guest is playing with, so the host reads their axes
         // as the thing they meant. Absent means an older peer, and landscape.
         this.match.versusPortrait = msg.portrait === true;
@@ -527,6 +555,7 @@ export class OnlineSession {
       // reframe, so it is in this peer's own coordinates.
       case "snap": {
         if (this.isHost || !isValidSnapshot(msg)) return;
+        this.opponentStarted = true;
         this.arrive(() => this.applySnapshot(msg));
         return;
       }
@@ -711,7 +740,7 @@ export class OnlineSession {
     // Frozen during a negotiated pause, on both peers at once, so the tick
     // stays the one time base: snapshots, clip windows and fx events are all
     // stamped in it, and the match stands still while it does.
-    if (!this.isPaused) this.tick++;
+    if (!this.matchHeld) this.tick++;
     this.conn.tick = this.tick;
 
     if (this.isHost) {
@@ -1019,6 +1048,18 @@ export class OnlineSession {
     // by the player who actually left. The clock is held, not reset: if the
     // retries run out the connection fails on its own terms.
     if (this.conn.isReconnecting) return;
+    // Silence from an opponent whose match has not started yet is loading, not
+    // leaving: a slow phone took longer than the grace to open the court, and
+    // was awarded against for it. The relay still says when a socket really
+    // goes.
+    if (!this.opponentStarted && this.peerPresent) {
+      this.loadingShownFor -= dt;
+      if (this.loadingShownFor <= 0) {
+        this.loadingShownFor = 1.5;
+        this.handlers.onOpponentLoading?.();
+      }
+      return;
+    }
     const absent = !this.peerPresent || this.sinceMessage > ABSENT_AFTER_SECONDS;
 
     if (!absent) {

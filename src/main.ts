@@ -319,6 +319,23 @@ async function boot(): Promise<void> {
   // match began — and shown on screen when the setting asks for it.
   const rates = new RateMeter();
   const statsOverlay = new NetStatsOverlay(uiRoot);
+  /*
+   * Online matches are played sideways, for now. The upright scheme turns taps
+   * and swipes into intent the host has to read back — a destination, a carry,
+   * a swipe's aim — and each of those has been its own bug on a guest. Until
+   * that path has had the same real-device run the sideways one has, an
+   * upright phone in an online match is asked to turn instead of being given
+   * controls. Shown by CSS (`body.online-match` on an upright touch screen), so
+   * turning the phone needs nothing from here.
+   */
+  const rotateOnline = document.createElement("div");
+  rotateOnline.id = "rotate-online";
+  const rotateTitle = document.createElement("div");
+  rotateTitle.className = "rotate-online-title";
+  const rotateText = document.createElement("div");
+  rotateText.className = "rotate-online-text";
+  rotateOnline.append(rotateTitle, rotateText);
+  document.body.appendChild(rotateOnline);
   let framesSimulated = 0;
   let framesDropped = 0;
   let frameSimMs = 0;
@@ -629,6 +646,7 @@ async function boot(): Promise<void> {
   const leaveMatch = () => {
     session?.dispose();
     session = null;
+    document.body.classList.remove("online-match");
     // A guest has been playing at the host's speed. The match is over, and so
     // is that: back to what this player chose.
     applyTimeScale(preferredTimeScale());
@@ -866,7 +884,8 @@ async function boot(): Promise<void> {
       // the axes are free to carry that aim instead of steering. Only on a
       // touch screen — a narrow desktop window has a keyboard, and taking its
       // movement away would leave the player rooted to the spot.
-      match.tapSteering = input.isTouch && input.isPortrait;
+      // Never online: see `rotateOnline`.
+      match.tapSteering = input.isTouch && input.isPortrait && !session;
       match.portraitControls = match.tapSteering;
       const placement = input.pollTapPlacement();
       if (placement && !freecam) {
@@ -902,7 +921,8 @@ async function boot(): Promise<void> {
         // A negotiated pause freezes the match on both peers, but not the
         // session: traffic has to keep flowing or a pause would look exactly
         // like a disconnect and forfeit the game it was meant to interrupt.
-        if (!session?.isPaused) {
+        // A host also holds until its guest is playing (`matchHeld`).
+        if (!session?.matchHeld) {
           match.update(SIM_DT, freecam ? idleInput : stepInput, (d) => aiCtl?.update(d));
           // The lesson is finished the moment the last coached step is done.
           // Remembered immediately rather than when they leave the screen, so
@@ -4002,10 +4022,14 @@ async function boot(): Promise<void> {
       // run their own rule engine, disagree from the first serve, and end up
       // playing two unrelated games over one socket.
       controller.netFollower = opts.online.role === "guest";
+      rotateTitle.textContent = tr("online.rotate.title");
+      rotateText.textContent = tr("online.rotate.text");
+      document.body.classList.add("online-match");
       session = new OnlineSession(opts.online.conn, controller, opts.online.role, {
         onOpponentAbsent: (left) =>
           ui.banner("OPPONENT DISCONNECTED", `Awarding the match in ${Math.ceil(left)}s`),
         onOpponentReturned: () => ui.banner("OPPONENT RECONNECTED"),
+        onOpponentLoading: () => ui.banner("WAITING FOR OPPONENT", "They are still loading the match"),
         onOpponentForfeit: () => {
           ui.banner("OPPONENT LEFT", "Match awarded to you");
           // Reported like any other win. The server decides whether it counts:

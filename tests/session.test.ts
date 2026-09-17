@@ -132,6 +132,9 @@ function runPresent(s: OnlineSession, deliver: (m: GameMessage) => void, seconds
   }
 }
 
+/** The opponent's match has started: its first frame of controls has arrived. */
+const firstInput: GameMessage = { t: "input", tick: 0, moveX: 0, moveZ: 0, strike: false, pop: false, confirm: false };
+
 /** A well-formed snapshot, with any field overridden. */
 function snapshot(over: Partial<SnapshotMessage> = {}): SnapshotMessage {
   return {
@@ -182,7 +185,8 @@ describe("opponent presence", () => {
 
   it("starts a countdown once the opponent goes quiet", () => {
     const seen: number[] = [];
-    const { s } = session({ onOpponentAbsent: (left) => seen.push(left) });
+    const { s, deliver } = session({ onOpponentAbsent: (left) => seen.push(left) });
+    deliver(firstInput);
 
     run(s, ABSENT_AFTER_SECONDS + 1);
 
@@ -194,7 +198,8 @@ describe("opponent presence", () => {
 
   it("awards the match after the grace period", () => {
     const onOpponentForfeit = vi.fn();
-    const { s } = session({ onOpponentForfeit });
+    const { s, deliver } = session({ onOpponentForfeit });
+    deliver(firstInput);
 
     run(s, ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS - 1);
     expect(onOpponentForfeit).not.toHaveBeenCalled();
@@ -205,7 +210,8 @@ describe("opponent presence", () => {
 
   it("awards the match only once, however long the wait continues", () => {
     const onOpponentForfeit = vi.fn();
-    const { s } = session({ onOpponentForfeit });
+    const { s, deliver } = session({ onOpponentForfeit });
+    deliver(firstInput);
 
     run(s, ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 30);
 
@@ -216,6 +222,7 @@ describe("opponent presence", () => {
     const onOpponentReturned = vi.fn();
     const onOpponentForfeit = vi.fn();
     const { s, deliver } = session({ onOpponentReturned, onOpponentForfeit });
+    deliver(firstInput);
 
     run(s, ABSENT_AFTER_SECONDS + 3); // gone, but not long enough
     runPresent(s, deliver, 1); // back
@@ -230,7 +237,8 @@ describe("opponent presence", () => {
     // would hand the loser a win they lost.
     const onOpponentAbsent = vi.fn();
     const onOpponentForfeit = vi.fn();
-    const { s, match } = session({ onOpponentAbsent, onOpponentForfeit });
+    const { s, match, deliver } = session({ onOpponentAbsent, onOpponentForfeit });
+    deliver(firstInput);
     (match as unknown as { matchWinner: string | null }).matchWinner = "player";
 
     run(s, ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 30);
@@ -242,6 +250,7 @@ describe("opponent presence", () => {
   it("gives a returning opponent the full grace again", () => {
     const onOpponentForfeit = vi.fn();
     const { s, deliver } = session({ onOpponentForfeit });
+    deliver(firstInput);
 
     // Two long absences, each short of the grace, with a recovery between.
     run(s, ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS - 2);
@@ -266,12 +275,49 @@ describe("opponent presence", () => {
 
   it("stops tracking after dispose", () => {
     const onOpponentForfeit = vi.fn();
-    const { s } = session({ onOpponentForfeit });
+    const { s, deliver } = session({ onOpponentForfeit });
+    deliver(firstInput);
     s.dispose();
 
     run(s, ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 5);
 
     expect(onOpponentForfeit).not.toHaveBeenCalled();
+  });
+
+  it("does not count an opponent still loading the match as gone", () => {
+    // Phones do not finish loading together. A slow one used to spend its
+    // loading screen being counted out, and could lose the match on it.
+    const onOpponentAbsent = vi.fn();
+    const onOpponentLoading = vi.fn();
+    const { s, setPeer } = session({ onOpponentAbsent, onOpponentLoading });
+
+    run(s, ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 10);
+    expect(onOpponentAbsent).not.toHaveBeenCalled();
+    expect(onOpponentLoading).toHaveBeenCalled();
+
+    // The relay saying the socket went is still a departure.
+    setPeer(false);
+    s.step(SIM_DT);
+    expect(onOpponentAbsent).toHaveBeenCalled();
+  });
+
+  it("holds the host's match, serve clock and all, until the guest is playing", () => {
+    // The host that loaded first used to start the first serve's countdown
+    // while its guest was still on a loading screen, and take the points.
+    const h = session({}, "host");
+    run(h.s, 3);
+    expect(h.s.matchHeld).toBe(true);
+    // The tick is held with it, as in a pause: nothing is stamped in a match
+    // that is not running.
+    const snaps = h.sent.filter((m) => m.t === "snap");
+    expect(snaps.length).toBeGreaterThan(0);
+    expect(snaps.every((m) => m.tick === 0)).toBe(true);
+
+    h.deliver(firstInput);
+    h.s.step(SIM_DT);
+    expect(h.s.matchHeld).toBe(false);
+    // A guest has nothing to hold: the host's frames are its match.
+    expect(session({}, "guest").s.matchHeld).toBe(false);
   });
 });
 
@@ -465,6 +511,7 @@ describe("host and guest exchange", () => {
 
   it("publishes the match's contact events stamped with the sim tick", () => {
     const h = session({}, "host");
+    h.deliver(firstInput);
     h.drainNet.mockReturnValue([{ kind: "kick" }, { kind: "table", pos: { x: 1, y: 0.9, z: 0 } }]);
     h.s.step(SIM_DT);
 
@@ -851,6 +898,7 @@ describe("pausing an online match", () => {
   it("still forfeits if the opponent vanishes during a pause", () => {
     const onOpponentForfeit = vi.fn();
     const ctx = session({ onOpponentForfeit }, "host");
+    ctx.deliver(firstInput);
     ctx.s.pauseAllowed = true;
     ctx.deliver({ t: "pause", tick: 1, action: "request" });
     ctx.s.respondToPause(true);
@@ -1136,6 +1184,7 @@ describe("a socket that is our own problem", () => {
     const session = new OnlineSession(net.conn, match.match, "host", {
       onOpponentForfeit: () => (forfeited = true),
     });
+    net.deliver(firstInput);
     net.setReconnecting(true);
 
     for (let i = 0; i < (ABSENT_AFTER_SECONDS + DISCONNECT_GRACE_SECONDS + 5) / SIM_DT; i++) {
@@ -1152,6 +1201,7 @@ describe("a socket that is our own problem", () => {
     const session = new OnlineSession(net.conn, match.match, "host", {
       onOpponentForfeit: () => (forfeited = true),
     });
+    net.deliver(firstInput);
     net.setReconnecting(true);
     for (let i = 0; i < 60; i++) session.step(SIM_DT);
     net.setReconnecting(false);

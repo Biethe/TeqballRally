@@ -1908,6 +1908,25 @@ player stood still: "the player moves on its own". `applySnapshot` now sets the
 limit from the phase. The test rig's character never clamped at all, which is
 why no test saw it; it clamps like the real one now.
 
+**Online matches are played sideways, for now.** The upright scheme turns taps
+and swipes into intent the host has to read back — a destination, a carry, a
+swipe's aim — and each of those has been its own bug on a guest. Until that path
+has had the same real-device run the sideways one has, an upright touch screen
+in an online match gets a "turn your phone sideways" screen (`rotateOnline` in
+`src/main.ts`, `body.online-match` in the CSS) and `tapSteering` stays off. The
+host still reads a seat that says it is upright, for an older build.
+
+**A host holds its match until its guest is playing.** The host runs the whole
+match, serve clock included, from the moment its own scene is ready, and two
+phones do not finish loading together: a host that got there first started the
+first serve's countdown while its guest was still on a loading screen, and "too
+slow to serve" handed it free points. A guest's controls only start flowing once
+its match is stepping, so the first of them is the start (`matchHeld`); until
+then the host's match and its tick stand still, as in a pause, under "WAITING FOR
+OPPONENT". Neither end counts an opponent who has not started yet as gone,
+either — a slow phone was being counted out on its loading screen — though the
+relay reporting a closed socket still starts the forfeit countdown.
+
 **A clip that ends lets go of its name.** `finishAction` is the exit almost
 every clip takes, and it used to leave `actionClip` set — so
 `currentActionClip` went on naming a finished animation until something else

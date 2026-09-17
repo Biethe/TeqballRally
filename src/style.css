@@ -6426,3 +6426,42 @@ button.pad-focus {
   white-space: pre;
   pointer-events: none;
 }
+
+/*
+ * An upright phone in an online match: online is played sideways for now (see
+ * `rotateOnline` in main.ts). Covers everything, touch controls included, so
+ * nothing upright reaches the match while it shows.
+ */
+#rotate-online {
+  display: none;
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+  body.online-match #rotate-online {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 24px;
+    background: var(--arena-deep);
+    color: var(--text);
+    text-align: center;
+    pointer-events: auto;
+  }
+}
+
+.rotate-online-title {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.rotate-online-text {
+  max-width: 320px;
+  font-size: 15px;
+  opacity: 0.8;
+}
