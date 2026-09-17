@@ -2025,6 +2025,106 @@ button.pad-focus {
   }
 }
 
+/* ------- legal viewer ------- */
+.legal-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  padding: max(10px, env(safe-area-inset-top)) 16px max(10px, env(safe-area-inset-bottom));
+  box-sizing: border-box;
+}
+
+.legal-external-link {
+  margin-top: 4px;
+}
+
+.legal-external-link a {
+  color: var(--accent, #00d2be);
+  text-decoration: underline;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.legal-content-card {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: min(840px, 100%);
+  margin: 0 auto 12px;
+  background: #ffffff;
+  color: #222222;
+  border-radius: 14px;
+  padding: 24px 22px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.40);
+  line-height: 1.6;
+  font-family: Arial, Helvetica, sans-serif;
+  text-align: left;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.legal-content-card h1 {
+  font-size: 1.4rem;
+  color: #111827;
+  margin-top: 0.6em;
+  margin-bottom: 0.4em;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 6px;
+}
+
+.legal-content-card h2 {
+  font-size: 1.15rem;
+  color: #1f2937;
+  margin-top: 1.2em;
+  margin-bottom: 0.4em;
+  border-bottom: 1px solid #f3f4f6;
+  padding-bottom: 4px;
+}
+
+.legal-content-card h3 {
+  font-size: 1.0rem;
+  color: #374151;
+  margin-top: 1.0em;
+  margin-bottom: 0.3em;
+}
+
+.legal-content-card p,
+.legal-content-card li {
+  color: #4b5563;
+  font-size: 0.88rem;
+  margin-bottom: 0.5em;
+}
+
+.legal-content-card a {
+  color: #0284c7;
+  text-decoration: underline;
+}
+
+.legal-content-card .badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: #e6f4ea;
+  color: #137333;
+  font-size: 0.78rem;
+  font-weight: bold;
+  margin-bottom: 8px;
+}
+
+@media (max-height: 500px) {
+  .legal-content-card {
+    padding: 14px 16px;
+  }
+}
+
 /* ------- competition standings ------- */
 .standings-shell {
   display: flex;

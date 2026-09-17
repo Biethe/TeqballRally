@@ -483,4 +483,20 @@ describe("identity on the wire", () => {
     const joined = await b.join("GUEST");
     expect(joined.ready).toBe(true);
   });
+
+  it("permanently deletes an account and denies subsequent authenticated requests", async () => {
+    const created = await api("POST", "/api/players", { body: { name: "To Delete" } });
+    expect(created.status).toBe(201);
+    const token = created.body.token;
+
+    const meBefore = await api("GET", "/api/players/me", { token });
+    expect(meBefore.status).toBe(200);
+
+    const del = await api("POST", "/api/players/me/delete", { token });
+    expect(del.status).toBe(200);
+    expect(del.body.deleted).toBe(true);
+
+    const meAfter = await api("GET", "/api/players/me", { token });
+    expect(meAfter.status).toBe(401);
+  });
 });

@@ -512,6 +512,7 @@ export class UI {
   private friendsEl: HTMLDivElement;
   private seasonEl: HTMLDivElement;
   private clubEl: HTMLDivElement;
+  private legalEl: HTMLDivElement;
   /** The coins/trophies strip drawn over the title screen. */
   private walletEl: HTMLDivElement;
   private backdropEl: HTMLDivElement;
@@ -751,6 +752,7 @@ export class UI {
       </div>`;
 
     this.settingsEl = this.screen("settings-screen");
+    this.legalEl = this.screen("legal-screen");
 
     this.hudEl = this.screen("hud");
     this.hudEl.classList.add("transparent");
@@ -987,6 +989,7 @@ export class UI {
       this.friendsEl,
       this.seasonEl,
       this.clubEl,
+      this.legalEl,
     ]) {
       el.classList.add("hidden");
     }
@@ -1522,6 +1525,44 @@ export class UI {
     back.onclick = () => {
       this.collapseScreen(this.settingsEl, back, () => onBack());
     };
+  }
+
+  /**
+   * Dedicated in-game viewer for legal documents (Privacy Policy, Terms of Service).
+   * Displays formatted content inside a scrollable card with a clean header and back button.
+   */
+  showDocument(
+    title: string,
+    contentHtml: string,
+    onBack: () => void,
+    externalUrl?: string
+  ): void {
+    this.hideAll();
+    this.revealScreen(this.legalEl);
+    this.legalEl.innerHTML = `
+      <main class="menu-shell legal-shell">
+        <header class="menu-header">
+          <div class="menu-brand"><img src="/figma/icon.png" alt="" class="menu-brand-icon" /><span>TeqRallly</span></div>
+          <button class="menu-back" id="btn-legal-back" type="button" data-menu-back>← ${t("nav.back")}</button>
+        </header>
+        <section class="menu-heading">
+          <h1>${title}</h1>
+          ${
+            externalUrl
+              ? `<div class="legal-external-link"><a href="${externalUrl}" target="_blank" rel="noopener noreferrer">Open in Web Browser ↗</a></div>`
+              : ""
+          }
+        </section>
+        <div class="legal-content-card">
+          ${contentHtml}
+        </div>
+      </main>`;
+    const back = this.legalEl.querySelector<HTMLButtonElement>("#btn-legal-back");
+    if (back) {
+      back.onclick = () => {
+        this.collapseScreen(this.legalEl, back, () => onBack());
+      };
+    }
   }
 
   /**

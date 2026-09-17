@@ -139,3 +139,14 @@ export declare function recordOnlineMatch(
   body: unknown,
   now?: Date
 ): Promise<{ career: Career; outcome: MatchOutcome } | { pending: true }>;
+
+/**
+ * Erase an account: the player, every index that points at them, and their
+ * seat in a club — handing the club on, or deleting it when they were the
+ * last one in it. Not reversible, and deliberately so: this is what answers
+ * Play's requirement that a player can delete what the game holds on them.
+ */
+export declare function deletePlayerAccount(
+  store: PlayerStore,
+  player: PlayerRecord
+): Promise<{ deleted: true }>;

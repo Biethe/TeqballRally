@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Data Deletion Request - Teqball Rally</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --heading: #f0f6fc;
+      --accent: #238636;
+      --link: #58a6ff;
+      --danger: #da3633;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      background-color: var(--bg);
+      color: var(--text);
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 32px 20px 80px;
+    }
+    h1, h2, h3 {
+      color: var(--heading);
+      margin-top: 1.5em;
+      margin-bottom: 0.5em;
+    }
+    h1 {
+      font-size: 2.2em;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+    h2 {
+      font-size: 1.5em;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+    }
+    a {
+      color: var(--link);
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: rgba(218, 54, 51, 0.2);
+      color: #f85149;
+      font-size: 0.85em;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin: 20px 0;
+    }
+    .btn {
+      display: inline-block;
+      background-color: var(--danger);
+      color: #ffffff;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      text-decoration: none;
+      margin-top: 12px;
+    }
+    .btn:hover {
+      opacity: 0.9;
+      text-decoration: none;
+    }
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 14px;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: #f0f6fc;
+      font-size: 1em;
+      margin-top: 8px;
+      margin-bottom: 16px;
+    }
+    ul, ol {
+      padding-left: 24px;
+    }
+    li {
+      margin-bottom: 8px;
+    }
+    .footer {
+      margin-top: 50px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      font-size: 0.9em;
+      color: #8b949e;
+    }
+  </style>
+</head>
+<body>
+
+  <span class="badge">Google Play Data Safety Requirement</span>
+  <h1>Account & Data Deletion Request</h1>
+  <p>In compliance with Google Play's User Data policy and international data protection laws (GDPR/CCPA), players of <strong>Teqball Rally</strong> can request the permanent deletion of their account and all associated gameplay data.</p>
+
+  <h2>Option 1: Instant In-App Deletion (Recommended)</h2>
+  <div class="card">
+    <p>You can delete your account and wipe all stored data immediately from inside the game without submitting a request:</p>
+    <ol>
+      <li>Open <strong>Teqball Rally</strong> on your device.</li>
+      <li>Tap <strong>SETTINGS</strong> on the title screen.</li>
+      <li>Select <strong>Legal & Privacy</strong>.</li>
+      <li>Tap <strong>Delete Account & Data</strong> and confirm your choice.</li>
+    </ol>
+    <p><em>This immediately removes your account from the leaderboards, disbands or leaves your clubs, and deletes your local save file.</em></p>
+  </div>
+
+  <h2>Option 2: Web Deletion Request Form</h2>
+  <div class="card">
+    <p>If you have uninstalled the app or cannot access your device, submit your 8-character Player ID code (visible on your in-game profile card) to request manual deletion:</p>
+    <form action="mailto:bierhofftheolien@gmail.com" method="get" enctype="text/plain">
+      <label for="player_code"><strong>Your 8-Character Player Code:</strong></label>
+      <input type="text" id="player_code" name="subject" placeholder="e.g. 7K4M9X2P (Teqball Rally Data Deletion Request)" required>
+      <button type="submit" class="btn">Send Deletion Request via Email</button>
+    </form>
+  </div>
+
+  <h2>What Data Is Deleted?</h2>
+  <p>Upon processing your deletion request:</p>
+  <ul>
+    <li><strong>Player Identity & Profile:</strong> Nickname, unique player token, and account record are permanently purged from the server database.</li>
+    <li><strong>Leaderboard Entries:</strong> Your scores, trophies, and rank are permanently removed from all global and regional leaderboards.</li>
+    <li><strong>Club Memberships:</strong> You are removed from all clubs (if you are the owner, ownership is transferred or the club is disbanded).</li>
+    <li><strong>Friend Links:</strong> All mutual friend connections are deleted.</li>
+  </ul>
+
+  <h2>Data Retention Timeline</h2>
+  <p>In-app deletions are executed instantaneously. Web requests sent by email are processed and confirmed within <strong>48 hours</strong>.</p>
+
+  <div class="footer">
+    <p>&copy; 2026 Teqball Rally. All rights reserved. | <a href="privacy.html">Privacy Policy</a> | <a href="terms.html">Terms of Service</a></p>
+  </div>
+
+</body>
+</html>

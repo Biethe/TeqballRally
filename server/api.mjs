@@ -30,6 +30,7 @@ import {
   rename,
   applyPurchaseEvent,
   upgrade,
+  deletePlayerAccount,
 } from "./accounts.mjs";
 import {
   clubOf,
@@ -211,6 +212,13 @@ export async function handleApi(store, req, res, now = new Date()) {
       // lost the slip of paper — or thinks somebody else has seen it.
       const player = await requirePlayer(store, req);
       sendJson(res, 200, { recoveryCode: await regenerateRecovery(store, player) });
+      return true;
+    }
+
+    if ((path === "/api/players/me/delete" && isPost) || (path === "/api/players/me" && req.method === "DELETE")) {
+      const player = await requirePlayer(store, req);
+      await deletePlayerAccount(store, player);
+      sendJson(res, 200, { deleted: true });
       return true;
     }
 

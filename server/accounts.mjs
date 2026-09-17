@@ -702,3 +702,28 @@ export async function leaderboard(store, limit, now = new Date()) {
   }
   return fetched.slice(0, want).map((player, i) => publicProfile(player, i + 1));
 }
+
+/**
+ * Permanently delete a player account and clean up club memberships.
+ */
+export async function deletePlayerAccount(store, player) {
+  if (player.clubId) {
+    try {
+      const club = await store.getClub?.(player.clubId);
+      if (club) {
+        const remaining = club.members.filter((m) => m !== player.id);
+        if (remaining.length === 0) {
+          await store.deleteClub(club);
+        } else {
+          club.members = remaining;
+          if (club.ownerId === player.id) club.ownerId = remaining[0];
+          await store.saveClub(club);
+        }
+      }
+    } catch {
+      // Best-effort club cleanup
+    }
+  }
+  await store.deletePlayer(player);
+  return { deleted: true };
+}

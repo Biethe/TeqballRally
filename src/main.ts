@@ -143,6 +143,8 @@ import {
   restore,
   signUp,
   storeIdentity,
+  deleteAccount,
+  wipeLocalAccountData,
   tidyCode,
   tidyName,
   type Club,
@@ -151,6 +153,7 @@ import {
   type Profile,
 } from "./account";
 import { RATING_KEYS, rating, totalPower } from "./ratings";
+import { PRIVACY_POLICY_HTML, TERMS_OF_SERVICE_HTML } from "./legalData";
 import { dailyChallenges, isComplete, secondsUntilRollover } from "./challenges";
 import { LANGUAGES, detectLanguage, isLanguage, setLanguage, t as tr, tf } from "./i18n";
 import {
@@ -2103,6 +2106,7 @@ async function boot(): Promise<void> {
         ...(prefs.toured && !tour
           ? [{ id: "btn-set-tour", label: tr("tour.replay"), sub: tr("tour.replay.sub") }]
           : []),
+        { id: "btn-set-legal", label: tr("settings.legal"), sub: tr("settings.legal.sub") },
       ],
       (id) => {
         if (id === "btn-set-display") showSettingsGroup("display", back);
@@ -2110,6 +2114,7 @@ async function boot(): Promise<void> {
         else if (id === "btn-set-kit") showSettingsGroup("kit", back);
         else if (id === "btn-set-profile") showProfile();
         else if (id === "btn-set-tour") startTour();
+        else if (id === "btn-set-legal") showSettingsGroup("legal", back);
         else showSettingsGroup("audio", back);
       },
       undefined,
@@ -2336,10 +2341,32 @@ async function boot(): Promise<void> {
 
   /** One focused screen of settings, and the rows that belong on it. */
   const showSettingsGroup = (
-    group: "display" | "gameplay" | "audio" | "pro" | "kit",
+    group: "display" | "gameplay" | "audio" | "pro" | "kit" | "legal",
     back: () => void
   ) => {
     const rows = (): SettingRow[] => {
+      if (group === "legal") {
+        return [
+          {
+            id: "legal-privacy",
+            label: tr("settings.privacy"),
+            hint: tr("settings.privacy.hint"),
+            control: { kind: "action", label: tr("settings.privacy.view") },
+          },
+          {
+            id: "legal-terms",
+            label: tr("settings.terms"),
+            hint: tr("settings.terms.hint"),
+            control: { kind: "action", label: tr("settings.terms.view") },
+          },
+          {
+            id: "legal-delete",
+            label: tr("settings.delete_account"),
+            hint: tr("settings.delete_account.hint"),
+            control: { kind: "action", label: tr("settings.delete_account.action") },
+          },
+        ];
+      }
       if (group === "kit") {
         return [
           {
@@ -2547,6 +2574,55 @@ async function boot(): Promise<void> {
                 ui.notice(tr("pro.failed.title"), outcome.message, tr("pro.ok"));
               }
             });
+            return;
+          }
+          if (id === "legal-privacy") {
+            ui.showDocument(
+              tr("settings.privacy"),
+              PRIVACY_POLICY_HTML,
+              () => showSettingsGroup("legal", back),
+              "privacy.html"
+            );
+            return;
+          }
+          if (id === "legal-terms") {
+            ui.showDocument(
+              tr("settings.terms"),
+              TERMS_OF_SERVICE_HTML,
+              () => showSettingsGroup("legal", back),
+              "terms.html"
+            );
+            return;
+          }
+          if (id === "legal-delete") {
+            ui.confirm(
+              tr("settings.delete_account.title"),
+              tr("settings.delete_account.body"),
+              tr("settings.delete_account.confirm"),
+              tr("settings.delete_account.cancel"),
+              () => {
+                void (async () => {
+                  try {
+                    if (identity) {
+                      await deleteAccount(identity.token);
+                    }
+                  } catch (err) {
+                    console.warn("Delete account server sync error:", err);
+                  } finally {
+                    wipeLocalAccountData();
+                    identity = null;
+                    career = openCareer().career;
+                    ui.setWallet(career.coins, career.trophies, tierFor(career.trophies).label);
+                    ui.notice(
+                      tr("settings.delete_account.title"),
+                      tr("settings.delete_account.success"),
+                      tr("pro.ok")
+                    );
+                    showSettings(back);
+                  }
+                })();
+              }
+            );
             return;
           }
           if (id === "graphics") {

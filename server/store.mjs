@@ -169,6 +169,19 @@ export class JsonStore {
     this.touch();
   }
 
+  /** Delete a player and remove all their indices. */
+  async deletePlayer(player) {
+    this.players.delete(player.id);
+    this.names.delete(nameKey(player.name));
+    for (const [digest, id] of this.tokens) {
+      if (id === player.id) this.tokens.delete(digest);
+    }
+    for (const [digest, id] of this.recoveries) {
+      if (id === player.id) this.recoveries.delete(digest);
+    }
+    this.touch();
+  }
+
   /** Mark the store changed; the file catches up shortly. */
   touch() {
     this.dirty = true;

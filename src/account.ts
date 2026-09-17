@@ -202,6 +202,36 @@ export async function changeName(token: string, name: string): Promise<Profile &
 }
 
 /**
+ * Permanently delete the signed-in player account from the server and local storage.
+ */
+export async function deleteAccount(token: string): Promise<{ deleted: boolean }> {
+  try {
+    const res = await request<{ deleted: boolean }>("/api/players/me/delete", {
+      method: "POST",
+      token,
+    });
+    storeIdentity(null);
+    return res;
+  } catch (err) {
+    storeIdentity(null);
+    throw err;
+  }
+}
+
+/**
+ * Wipe all local gameplay saves and identity from localStorage.
+ */
+export function wipeLocalAccountData(): void {
+  try {
+    localStorage.removeItem(KEY);
+    localStorage.removeItem("teqopen.career");
+    localStorage.removeItem("teqopen.prefs");
+  } catch {
+    // ignore
+  }
+}
+
+/**
  * Report a finished match and take back the career the server holds.
  *
  * The server scores it from the same rules the client just ran, so the two

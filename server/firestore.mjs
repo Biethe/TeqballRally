@@ -153,6 +153,21 @@ export class FirestoreStore {
     await this.db.collection(RECOVERIES).doc(digest).delete();
   }
 
+  /** Delete a player from Firestore and purge all index documents. */
+  async deletePlayer(player) {
+    const key = nameKey(player.name);
+    const batch = this.db.batch();
+    batch.delete(this.db.collection(PLAYERS).doc(player.id));
+    batch.delete(this.db.collection(NAMES).doc(key));
+    if (player.tokenHash) {
+      batch.delete(this.db.collection(TOKENS).doc(player.tokenHash));
+    }
+    if (player.recoveryLookup) {
+      batch.delete(this.db.collection(RECOVERIES).doc(player.recoveryLookup));
+    }
+    await batch.commit();
+  }
+
   // ---- clubs ----
   //
   // Same shape as the players above and for the same reasons: the two index

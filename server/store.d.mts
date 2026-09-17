@@ -81,6 +81,8 @@ export interface PlayerStore {
   saveClub(club: ClubRecord, opts?: { previousInvite?: string }): Promise<void>;
   renameClub(club: ClubRecord, name: string): Promise<void>;
   deleteClub(club: ClubRecord): Promise<void>;
+  /** Erase a player and every index pointing at them. Not reversible. */
+  deletePlayer(player: PlayerRecord): Promise<void>;
   leaderboard(limit: number): Promise<PlayerRecord[]>;
   rankOf(id: string): Promise<number | null>;
   size(): Promise<number>;
@@ -114,6 +116,7 @@ export declare class JsonStore implements PlayerStore {
   saveClub(club: ClubRecord, opts?: { previousInvite?: string }): Promise<void>;
   renameClub(club: ClubRecord, name: string): Promise<void>;
   deleteClub(club: ClubRecord): Promise<void>;
+  deletePlayer(player: PlayerRecord): Promise<void>;
   leaderboard(limit: number): Promise<PlayerRecord[]>;
   rankOf(id: string): Promise<number | null>;
   size(): Promise<number>;
