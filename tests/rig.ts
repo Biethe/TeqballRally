@@ -10,7 +10,7 @@ import { Ball } from "../src/ball";
 import { MatchController, type MatchEvent, type MatchUI } from "../src/match";
 import { AIController, DIFFICULTIES, type AIDifficulty } from "../src/ai";
 import { bodyPartOf, type Character } from "../src/character";
-import { CLIPS, SIM_DT, CHARACTERS, clipStartFraction, type BodyPart, type CharacterDef } from "../src/config";
+import { CLIPS, COURT, SIM_DT, CHARACTERS, clipStartFraction, clearTable, type BodyPart, type CharacterDef } from "../src/config";
 import { clipFractionAt, clipFrameAt, rebaseClip, type ClockedClip } from "../src/animclock";
 import type { InputState } from "../src/input";
 import { InteractionVolumeDef, type WorldVolume } from "../src/interaction";
@@ -47,6 +47,8 @@ export class FakeCharacter {
   groups = new Map<string, { from: number; to: number }>();
   velocity = new Vector3();
   faceDir: 1 | -1 = 1;
+  /** Set by the match, as on a real character; see `clampToCourt`. */
+  minCourtX: number = COURT.minX;
   effort = 1;
   reserve = 1;
   /** Every clip this possession played, in order, for the assertions below. */
@@ -220,6 +222,23 @@ export class FakeCharacter {
     this.velocity.set(dirX * speed, 0, dirZ * speed);
     this.position.x += this.velocity.x * dt;
     this.position.z += this.velocity.z * dt;
+    this.clampToCourt();
+  }
+
+  /**
+   * Mirrors `Character.clampToCourt`. Without it a follower whose own player
+   * was clamped back onto the service line for a whole rally passed every test
+   * here, and slid 1.4 m after every kick on a real phone.
+   */
+  private clampToCourt(): void {
+    const p = this.position;
+    const sideSign = this.faceDir === -1 ? -1 : 1;
+    const minX = Math.max(COURT.minX, this.minCourtX);
+    p.x = sideSign * Math.min(COURT.maxX, Math.max(minX, sideSign * p.x));
+    p.z = Math.max(-COURT.maxZ, Math.min(COURT.maxZ, p.z));
+    const clear = clearTable(p.x, p.z);
+    p.x = clear.x;
+    p.z = clear.z;
   }
 
   moveToward(target: Vector3, speed: number, dt: number): number {
@@ -233,6 +252,7 @@ export class FakeCharacter {
     const step = Math.min(d, speed * dt);
     this.position.x += (dx / d) * step;
     this.position.z += (dz / d) * step;
+    this.clampToCourt();
     this.velocity.set((dx / d) * speed, 0, (dz / d) * speed);
     return d - step;
   }

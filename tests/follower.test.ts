@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { CLIPS, SETS_TO_WIN, SIM_DT, WIN_SCORE, clipStartFraction } from "../src/config";
+import { CLIPS, SERVE_X, SETS_TO_WIN, SIM_DT, WIN_SCORE, clipStartFraction } from "../src/config";
 import { stepBall, type BallState } from "../src/ball";
 import { AIController, DIFFICULTIES } from "../src/ai";
 import { idle, rig, silentUI, type Rig } from "./rig";
@@ -747,6 +747,45 @@ describe("lag compensation", () => {
     // With the host's anchor on the wire, the same push bends onto it — the
     // same bend the host is applying to the same character at the same moment.
     expect(run(true)).toBeGreaterThan(0.2);
+  });
+
+  it("lets its own player stand in front of the service line once the serve is struck", () => {
+    // The host lifts the service line when the serve leaves; a follower never
+    // runs that, so its own predicted player was clamped back onto the line
+    // every step and pulled forward again by `reconcile` — measured on a real
+    // portrait guest after a kick, 1.4 m of sliding with the host's player
+    // standing still.
+    const r = rig({ ui: silentUI() });
+    r.match.versus = true;
+    r.match.netFollower = true;
+    expect(r.match.state).toBe("serve_move");
+    const spot = { x: -SERVE_X + 1.5, z: 0.4 };
+    const frame = (tick: number): Frame => ({
+      ballPos: { x: 2, y: 1.5, z: 0 },
+      ballVel: { x: 0, y: 0, z: 0 },
+      ballHeld: false,
+      selfPos: spot,
+      opponentPos: { x: 3, z: 0 },
+      selfVel: { x: 0, z: 0 },
+      opponentVel: { x: 0, z: 0 },
+      selfClip: null,
+      opponentClip: null,
+      strikeable: "guest",
+      touches: 0,
+      tick,
+      score: [0, 0],
+      sets: [0, 0],
+      serveOwner: "ai",
+      phase: "rally",
+    });
+    const p = r.match.chars.player.position;
+    p.x = spot.x;
+    p.z = spot.z;
+    for (let tick = 1; tick <= 90; tick++) {
+      if (tick % 2 === 1) r.match.applySnapshot(frame(tick), 0);
+      r.step(SIM_DT);
+    }
+    expect(Math.hypot(p.x - spot.x, p.z - spot.z)).toBeLessThan(0.05);
   });
 
   it("never rewinds further than the host still remembers", () => {

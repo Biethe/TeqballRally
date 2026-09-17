@@ -1897,6 +1897,17 @@ guest's player walked toward every serve on the reach assist and never touched
 one. The clock that ran into the host's future had been hiding it, by making
 the rewind zero.
 
+**The service line follows the host's phase on a guest too.** The host holds
+both players behind it from the walk to serve until the serve is struck
+(`beginServeCycle`, `launchServe`). A guest runs the first when its match starts
+and never the second, so its own predicted player — moved through
+`Character.move`, which clamps — was pushed back onto the service line every
+step it stood in front of it, and `reconcile` pulled it forward again. On a
+real portrait guest that was 1.4 m of sliding after a kick while the host's
+player stood still: "the player moves on its own". `applySnapshot` now sets the
+limit from the phase. The test rig's character never clamped at all, which is
+why no test saw it; it clamps like the real one now.
+
 **A clip that ends lets go of its name.** `finishAction` is the exit almost
 every clip takes, and it used to leave `actionClip` set — so
 `currentActionClip` went on naming a finished animation until something else

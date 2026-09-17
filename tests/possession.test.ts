@@ -202,6 +202,10 @@ describe("staying with the ball", () => {
     r.match.lastHitter = "ai";
     r.match.strikeableSide = null;
     r.match.touchCount = 0;
+    // What the skipped serve would have done: the service line only holds
+    // players back until the ball leaves.
+    r.match.chars.player.minCourtX = COURT.minX;
+    r.match.chars.ai.minCourtX = COURT.minX;
     r.player.position.set(-SPAWN.x, GROUND_Y, 0);
     r.player.played.length = 0;
     const from = new Vector3(2.4, GROUND_Y + 1.6, 0.3);
@@ -301,11 +305,16 @@ describe("staying with the ball", () => {
     //
     // The momentary version of this is the test above, and it still lands:
     // only a sustained push costs the ball, never a slip.
+    //
+    // Away means somewhere the court lets them go. This used to push back and
+    // wide, which only ever left because the test's character walked through
+    // the back of the court: clamped the way a real one is, it runs into the
+    // back line, the long bounce comes to it there, and the ball is received.
     const r = rig();
     feedPlayer(r);
     let drop: Vector3 | null = null;
     for (let i = 0; i < 60 * 3 && r.match.state === "rally"; i++) {
-      r.match.update(SIM_DT, { ...idle, moveX: -1, moveZ: 0.8 }, () => {});
+      r.match.update(SIM_DT, { ...idle, moveX: -0.3, moveZ: 1 }, () => {});
       drop = readAnchor(r)?.pos.clone() ?? drop;
     }
 

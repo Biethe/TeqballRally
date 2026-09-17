@@ -2353,6 +2353,19 @@ export class MatchController {
     const prevPhase = this.followerPhase;
     const finishedNow = snap.phase === "over" && prevPhase !== "over" && this.state !== "over";
     this.followerPhase = snap.phase;
+    // The service line holds both players back from the walk to serve until
+    // the serve is struck. The host sets it in `beginServeCycle` and lifts it
+    // in `launchServe`; a follower runs the first at the start of the match and
+    // never the second, so this screen kept its own player behind the service
+    // line for every rally after it. Nothing on this screen walks the opponent,
+    // but its own player is predicted through `move`, which clamps: every step
+    // in front of the line it was pushed back onto it, and `reconcile` pulled it
+    // forward to where the host had it. Measured on a real portrait guest after
+    // a kick: 1.4 m of sliding with the host's player standing still. So the
+    // limit follows the host's phase.
+    const behindServeLine = snap.phase === "serve_move" || snap.phase === "serve_ready" || snap.phase === "serve_anim";
+    this.chars.player.minCourtX = behindServeLine ? SERVE_X : COURT.minX;
+    this.chars.ai.minCourtX = behindServeLine ? SERVE_X : COURT.minX;
     // This screen's serve, coached here: the host only coaches its own seat.
     if (snap.phase === "serve_ready" && prevPhase !== "serve_ready" && snap.serveOwner === "player") {
       this.ui.hint(serveHint());
