@@ -17,6 +17,10 @@ interface Sample {
   frames: number;
   simTicks: number;
   dropped: number;
+  /** Milliseconds of this frame spent stepping the match. */
+  simMs: number;
+  /** Milliseconds of this frame spent in Babylon's render call. */
+  renderMs: number;
 }
 
 /** Rolling rates over the last few seconds of wall time. */
@@ -29,8 +33,8 @@ export class RateMeter {
    * One rendered frame at wall time `at` (seconds): the simulation ticks it
    * ran and the simulation time it had to throw away.
    */
-  record(at: number, simTicks: number, droppedSeconds: number): void {
-    this.samples.push({ at, frames: 1, simTicks, dropped: droppedSeconds });
+  record(at: number, simTicks: number, droppedSeconds: number, simMs = 0, renderMs = 0): void {
+    this.samples.push({ at, frames: 1, simTicks, dropped: droppedSeconds, simMs, renderMs });
     const oldest = at - this.windowSeconds;
     while (this.samples.length > 2 && this.samples[0].at < oldest) this.samples.shift();
   }
@@ -41,7 +45,7 @@ export class RateMeter {
   }
 
   /** Sum over every sample but the first, which only marks where the span starts. */
-  private sum(key: "frames" | "simTicks" | "dropped"): number {
+  private sum(key: "frames" | "simTicks" | "dropped" | "simMs" | "renderMs"): number {
     let total = 0;
     for (let i = 1; i < this.samples.length; i++) total += this.samples[i][key];
     return total;
@@ -61,6 +65,27 @@ export class RateMeter {
   get droppedPerSecond(): number {
     const s = this.span();
     return s > 0 ? this.sum("dropped") / s : 0;
+  }
+
+  /**
+   * Where a frame's time goes: stepping the match, and Babylon's render call.
+   * Whatever is left of the frame after both is the GPU and the browser. On a
+   * slow phone it is the difference between "our code is too heavy" and "the
+   * scene is too heavy", which need opposite fixes.
+   */
+  get simMsPerFrame(): number {
+    const n = this.samples.length - 1;
+    return n > 0 ? this.sum("simMs") / n : 0;
+  }
+
+  get renderMsPerFrame(): number {
+    const n = this.samples.length - 1;
+    return n > 0 ? this.sum("renderMs") / n : 0;
+  }
+
+  get ticksPerFrame(): number {
+    const n = this.samples.length - 1;
+    return n > 0 ? this.sum("simTicks") / n : 0;
   }
 
   reset(): void {

@@ -359,6 +359,16 @@ export class Character {
   /** Each locomotion loop's frame, in sim-clock mode. */
   private locoFrames = new Map<LocoClip, number>();
   /**
+   * Frames placed by `update` and not yet put on the skeleton, per group.
+   *
+   * Posing a skeleton is the expensive part of an animation — every bone of
+   * every blended group interpolated — and a phone drawing twenty frames a
+   * second runs three or four simulation steps per frame. Posing on every step
+   * posed each skeleton three or four times for one picture. `update` decides
+   * the frame; `present` poses once, just before the frame is drawn.
+   */
+  private pendingFrames = new Map<AnimationGroup, number>();
+  /**
    * Minimum distance from the net (|x| coordinate boundary).
    * Defaults to COURT.minX (0), but can be set to SERVE_X during serve preparation
    * to prevent receiving players from crossing the service line forward.
@@ -546,6 +556,29 @@ export class Character {
     for (const g of this.groups.values()) if (g.isStarted) g.restart();
     if (this.action && this.clocked) this.action.speedRatio = this.clocked.speed;
     this.clocked = null;
+  }
+
+  /**
+   * Put the frames `update` placed on the skeleton. Called once per rendered
+   * frame, however many simulation steps it ran; a paused group holds its pose
+   * between calls, so a frame with no step to present needs nothing.
+   */
+  present(): void {
+    if (this.pendingFrames.size === 0) return;
+    for (const [g, frame] of this.pendingFrames) {
+      // A group stopped since its frame was placed — a clip cut short on a
+      // later step of the same frame — has nothing left to pose.
+      if (!g.isStarted) continue;
+      // Nor does one blended out since: a locomotion loop whose weight fell to
+      // zero on a later step. Posing it anyway hands Babylon's blend a
+      // zero-weight entry, and two of those at the head of a bone's list divide
+      // zero by zero — every bone of the skeleton not a number, and the
+      // character not drawn for that frame. Caught in a real two-client match.
+      const anim = g.animatables[0];
+      if (!anim || anim.weight <= 0) continue;
+      g.goToFrame(frame, true);
+    }
+    this.pendingFrames.clear();
   }
 
   /**
@@ -859,7 +892,7 @@ export class Character {
         to: g.to,
         loop: opts.loop ?? false,
       };
-      g.goToFrame(clipFrameAt(this.clocked, this.clockTick).frame, true);
+      this.pendingFrames.set(g, clipFrameAt(this.clocked, this.clockTick).frame);
       // Ended by `update`, on the clock. A paused group never reaches its end.
       return true;
     }
@@ -928,7 +961,7 @@ export class Character {
     if (this.simClock) {
       if (!g.isStarted) g.start(true, 1.0);
       g.pause();
-      g.goToFrame(this.locoFrames.get(this.currentLoco) ?? g.from, true);
+      this.pendingFrames.set(g, this.locoFrames.get(this.currentLoco) ?? g.from);
     } else if (!g.isPlaying) {
       g.start(true, 1.0);
     }
@@ -998,7 +1031,7 @@ export class Character {
         // Placed, not played: the frame this tick says, callbacks crossed on
         // the way to it, and the end when the clock reaches it.
         const at = clipFrameAt(this.clocked, this.clockTick);
-        g.goToFrame(at.frame, true);
+        this.pendingFrames.set(g, at.frame);
         const frac = clipFractionAt(this.clocked, this.clockTick);
         while (this.actionCallbacks.length > 0 && frac >= this.actionCallbacks[0].frac) {
           this.actionCallbacks.shift()!.fn();
@@ -1047,7 +1080,7 @@ export class Character {
         g.pause();
         const frame = advanceLoop(this.locoFrames.get(name) ?? g.from, g.from, g.to, dt, playback);
         this.locoFrames.set(name, frame);
-        g.goToFrame(frame, true);
+        this.pendingFrames.set(g, frame);
         continue;
       }
       g.speedRatio = playback;

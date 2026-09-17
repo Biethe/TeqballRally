@@ -321,6 +321,8 @@ async function boot(): Promise<void> {
   const statsOverlay = new NetStatsOverlay(uiRoot);
   let framesSimulated = 0;
   let framesDropped = 0;
+  let frameSimMs = 0;
+  let frameRenderMs = 0;
   /** Both peers' `perf`, as sent, for the overlay. */
   let onlinePerf: { mine?: number; theirs?: number } = {};
   const audio = new AudioManager();
@@ -756,8 +758,12 @@ async function boot(): Promise<void> {
   /** The connection stats overlay's lines for this frame. */
   const netStatsLines = (): string[] => {
     const expected = 60 * timeScale;
+    const frameMs = rates.fps > 0 ? 1000 / rates.fps : 0;
     const lines = [
       `fps ${rates.fps.toFixed(0)}  sim ${((rates.simTicksPerSecond / expected) * 100).toFixed(0)}%  dropped ${(rates.droppedPerSecond * 1000).toFixed(0)} ms/s`,
+      // A frame split into our code, Babylon's render call, and the rest
+      // (GPU and browser). See `RateMeter.simMsPerFrame`.
+      `frame ${frameMs.toFixed(0)} ms: game ${rates.simMsPerFrame.toFixed(1)} (${rates.ticksPerFrame.toFixed(1)} steps)  render ${rates.renderMsPerFrame.toFixed(1)}  ${qualityTier} ${gs.engine.getRenderWidth()}x${gs.engine.getRenderHeight()}`,
     ];
     if (session) {
       const s = session.stats;
@@ -783,9 +789,11 @@ async function boot(): Promise<void> {
     const dt = Math.min(frameSeconds, MAX_FRAME_DT) * timeScale;
     // Last frame's simulation, counted here because every path below may
     // return early.
-    rates.record(performance.now() / 1000, framesSimulated, framesDropped);
+    rates.record(performance.now() / 1000, framesSimulated, framesDropped, frameSimMs, frameRenderMs);
     framesSimulated = 0;
     framesDropped = 0;
+    frameSimMs = 0;
+    frameRenderMs = 0;
     menuNav();
     // Poll even off-court so a held C / Y can never leak into the next match.
     const cameraCycle = input.pollCameraCycle();
@@ -824,7 +832,10 @@ async function boot(): Promise<void> {
       // Match characters are placed on the simulation's clock, which does not
       // run during the shot; their idle has to be stepped here or the players
       // stand frozen mid-breath while the camera sweeps past them.
-      for (const c of chars) c.update(dt);
+      for (const c of chars) {
+        c.update(dt);
+        c.present();
+      }
       if (introLeft <= 0) {
         introLeft = null;
         ui.hideIntro();
@@ -869,6 +880,7 @@ async function boot(): Promise<void> {
       // Step the match in fixed SIM_DT slices, consuming whatever real time
       // this frame delivered. A slow frame runs several steps, a fast one may
       // run none — which is why the presses are latched rather than sampled.
+      const simStarted = performance.now();
       simAccumulator += Math.min(frameSeconds, MAX_CATCHUP_SECONDS) * timeScale;
       framesDropped += Math.max(0, frameSeconds - MAX_CATCHUP_SECONDS) * timeScale;
       let steps = 0;
@@ -907,6 +919,9 @@ async function boot(): Promise<void> {
         simAccumulator = 0;
       }
       framesSimulated += steps;
+      // Posed once for the frame, however many steps it ran.
+      for (const c of chars) c.present();
+      frameSimMs += performance.now() - simStarted;
       if (!freecam) match.updateCamera(gs.camera, cameraMode);
     }
     // Presentation, on wall-clock time and outside the fixed step: neither may
@@ -943,7 +958,9 @@ async function boot(): Promise<void> {
     // over the court.
     volumeInspector?.update();
     statsOverlay.show(prefs.netStats && match ? netStatsLines() : null, performance.now() / 1000);
+    const renderStarted = performance.now();
     gs.scene.render();
+    frameRenderMs += performance.now() - renderStarted;
   });
 
   // ----------------------------------------------------------- the career

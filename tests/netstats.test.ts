@@ -19,6 +19,15 @@ describe("the rate meter", () => {
     expect(m.fps).toBeCloseTo(10, 0);
   });
 
+  it("splits a frame into game time and render time", () => {
+    const m = new RateMeter(3);
+    // Three steps a frame taking 6 ms between them, and a 20 ms render call.
+    for (let i = 0; i <= 40; i++) m.record(i / 20, 3, 0, 6, 20);
+    expect(m.simMsPerFrame).toBeCloseTo(6, 9);
+    expect(m.renderMsPerFrame).toBeCloseTo(20, 9);
+    expect(m.ticksPerFrame).toBeCloseTo(3, 9);
+  });
+
   it("reads nothing until there is a span to read over", () => {
     const m = new RateMeter();
     expect(m.fps).toBe(0);
