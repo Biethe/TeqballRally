@@ -40,6 +40,7 @@ import {
   vec,
   type GameMessage,
   type PeerRole,
+  type SnapshotMessage,
 } from "./protocol";
 import { EMOTE_COOLDOWN_MS, emoteFor } from "../emotes";
 
@@ -202,6 +203,13 @@ export class OnlineSession {
   private snapAge = new TickAge();
   /** Latest jitter reading from `snapAge`: age above the best route seen. */
   private snapJitter = 0;
+  /**
+   * Guest: snapshots waiting for the step that stands for the moment they
+   * arrived. Empty unless the game loop says what time its steps stand for —
+   * see `deliverUpTo`.
+   */
+  private arrived: { at: number; msg: SnapshotMessage }[] = [];
+  private deferSnapshots = false;
   /** Guest: this frame's controls, latched until sent. */
   private localInput: InputState = {
     moveX: 0,
@@ -519,71 +527,11 @@ export class OnlineSession {
       // reframe, so it is in this peer's own coordinates.
       case "snap": {
         if (this.isHost || !isValidSnapshot(msg)) return;
-        // How old this frame already is. Two measures, because neither is
-        // enough alone: the round trip gives the route's absolute delay, and
-        // the estimator — which calibrates out the peers' unrelated clock
-        // origins — gives how far this particular frame ran behind the best
-        // route it has seen. The match carries everything in the frame forward
-        // by the total, so the ball and both players are drawn at the same
-        // instant rather than the ball being shown half a trip in the past.
-        this.snapJitter = this.snapAge.observe(this.tick - msg.tick);
-        const ts = readTimeScale(msg.ts);
-        if (ts !== undefined && ts !== this.hostTimeScale) {
-          this.hostTimeScale = ts;
-          this.handlers.onTimeScale?.(ts);
+        if (this.deferSnapshots) {
+          this.arrived.push({ at: performance.now() / 1000, msg });
+          return;
         }
-        const lead = this.leadTicks();
-        this.match.applySnapshot({
-          ballPos: msg.ballPos,
-          ballVel: msg.ballVel,
-          ballHeld: msg.ballHeld,
-          // After reframe, hostPos is this peer and guestPos is the opponent.
-          selfPos: msg.hostPos,
-          opponentPos: msg.guestPos,
-          selfVel: msg.hostVel,
-          opponentVel: msg.guestVel,
-          selfClip: msg.hostClip,
-          opponentClip: msg.guestClip,
-          selfClipFrom: msg.hostClipFrom,
-          selfClipTo: msg.hostClipTo,
-          opponentClipFrom: msg.guestClipFrom,
-          opponentClipTo: msg.guestClipTo,
-          selfClipSeq: msg.hostClipSeq,
-          opponentClipSeq: msg.guestClipSeq,
-          selfLocked: msg.hostLocked === true,
-          // After reframe, hostAnchor is this peer's own.
-          selfAnchor: msg.hostAnchor ?? null,
-          selfAnchorEta: msg.hostAnchorEta,
-          // Also already swapped: after reframe the "host" legs are this
-          // peer's own. Read defensively, because a number arriving as
-          // anything else would hand a NaN to the movement equation.
-          // Floored the way the rules floor them. Effort divides the movement
-          // equation's time constant, so a zero arriving from anywhere — a
-          // peer with a bug, a frame that lost a field — would put a character
-          // on an infinite one, and their position with it.
-          selfEffort: OnlineSession.unit(msg.hostEffort, MIN_EFFORT),
-          opponentEffort: OnlineSession.unit(msg.guestEffort, MIN_EFFORT),
-          selfReserve: OnlineSession.unit(msg.hostReserve, MIN_RESERVE),
-          opponentReserve: OnlineSession.unit(msg.guestReserve, MIN_RESERVE),
-          ballSpin: Number.isFinite(msg.ballSpin) ? msg.ballSpin : undefined,
-          // After reframe these are already in this peer's seat names.
-          strikeable: readStrikeable(msg.strikeable),
-          touches: readTouches(msg.touches),
-          serveClock: typeof msg.serveClock === "number" ? msg.serveClock : undefined,
-          tally: isScorePair(msg.tally) ? msg.tally : undefined,
-          rallies: Number.isFinite(msg.rallies) ? msg.rallies : undefined,
-          tick: msg.tick,
-          score: msg.score,
-          sets: msg.sets,
-          serveOwner: msg.serveOwner,
-          phase: msg.phase,
-        }, lead);
-        this.handlers.onScore?.({
-          player: msg.score[0],
-          ai: msg.score[1],
-          sets: msg.sets,
-          serveOwner: msg.serveOwner,
-        });
+        this.applySnapshot(msg);
         return;
       }
 
@@ -650,6 +598,99 @@ export class OnlineSession {
       default:
         return;
     }
+  }
+
+  /**
+   * Guest: hand over every snapshot that arrived by `at`, the wall time in
+   * seconds that the coming step stands for. Called before each step.
+   *
+   * A snapshot used to be applied the moment the socket delivered it, and the
+   * playback clock stamps a frame with the step it is first read on. On a phone
+   * drawing sixteen frames a second those are not the same moment: the frames
+   * that arrived during one long frame were all stamped before the four or five
+   * steps that frame then ran, so they looked better routed than they were —
+   * and after a stall, dozens of them looked a whole stall better routed. The
+   * clock aimed itself at that and drew the host's future, replaying every
+   * touch. Held until the step whose time they arrived in, a frame is stamped
+   * with when it really came, however the steps were bunched.
+   *
+   * A session whose loop never calls this applies snapshots on arrival, which
+   * is what the tests drive.
+   */
+  deliverUpTo(at: number): void {
+    this.deferSnapshots = true;
+    while (this.arrived.length > 0 && this.arrived[0].at <= at) {
+      const next = this.arrived.shift();
+      if (next) this.applySnapshot(next.msg);
+    }
+  }
+
+  private applySnapshot(msg: SnapshotMessage): void {
+    // How old this frame already is. Two measures, because neither is
+    // enough alone: the round trip gives the route's absolute delay, and
+    // the estimator — which calibrates out the peers' unrelated clock
+    // origins — gives how far this particular frame ran behind the best
+    // route it has seen. The match carries everything in the frame forward
+    // by the total, so the ball and both players are drawn at the same
+    // instant rather than the ball being shown half a trip in the past.
+    this.snapJitter = this.snapAge.observe(this.tick - msg.tick);
+    const ts = readTimeScale(msg.ts);
+    if (ts !== undefined && ts !== this.hostTimeScale) {
+      this.hostTimeScale = ts;
+      this.handlers.onTimeScale?.(ts);
+    }
+    const lead = this.leadTicks();
+    this.match.applySnapshot({
+      ballPos: msg.ballPos,
+      ballVel: msg.ballVel,
+      ballHeld: msg.ballHeld,
+      // After reframe, hostPos is this peer and guestPos is the opponent.
+      selfPos: msg.hostPos,
+      opponentPos: msg.guestPos,
+      selfVel: msg.hostVel,
+      opponentVel: msg.guestVel,
+      selfClip: msg.hostClip,
+      opponentClip: msg.guestClip,
+      selfClipFrom: msg.hostClipFrom,
+      selfClipTo: msg.hostClipTo,
+      opponentClipFrom: msg.guestClipFrom,
+      opponentClipTo: msg.guestClipTo,
+      selfClipSeq: msg.hostClipSeq,
+      opponentClipSeq: msg.guestClipSeq,
+      selfLocked: msg.hostLocked === true,
+      // After reframe, hostAnchor is this peer's own.
+      selfAnchor: msg.hostAnchor ?? null,
+      selfAnchorEta: msg.hostAnchorEta,
+      // Also already swapped: after reframe the "host" legs are this
+      // peer's own. Read defensively, because a number arriving as
+      // anything else would hand a NaN to the movement equation.
+      // Floored the way the rules floor them. Effort divides the movement
+      // equation's time constant, so a zero arriving from anywhere — a
+      // peer with a bug, a frame that lost a field — would put a character
+      // on an infinite one, and their position with it.
+      selfEffort: OnlineSession.unit(msg.hostEffort, MIN_EFFORT),
+      opponentEffort: OnlineSession.unit(msg.guestEffort, MIN_EFFORT),
+      selfReserve: OnlineSession.unit(msg.hostReserve, MIN_RESERVE),
+      opponentReserve: OnlineSession.unit(msg.guestReserve, MIN_RESERVE),
+      ballSpin: Number.isFinite(msg.ballSpin) ? msg.ballSpin : undefined,
+      // After reframe these are already in this peer's seat names.
+      strikeable: readStrikeable(msg.strikeable),
+      touches: readTouches(msg.touches),
+      serveClock: typeof msg.serveClock === "number" ? msg.serveClock : undefined,
+      tally: isScorePair(msg.tally) ? msg.tally : undefined,
+      rallies: Number.isFinite(msg.rallies) ? msg.rallies : undefined,
+      tick: msg.tick,
+      score: msg.score,
+      sets: msg.sets,
+      serveOwner: msg.serveOwner,
+      phase: msg.phase,
+    }, lead);
+    this.handlers.onScore?.({
+      player: msg.score[0],
+      ai: msg.score[1],
+      sets: msg.sets,
+      serveOwner: msg.serveOwner,
+    });
   }
 
   /**

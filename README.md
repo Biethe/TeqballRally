@@ -607,10 +607,26 @@ overridable from SETTINGS › DISPLAY on the title screen and remembered in
 Applying a tier reloads the page — the engine's MSAA is fixed when the WebGL
 context is created.
 
-| | Pixel ratio cap | MSAA | Shadow map | Venue backdrop |
-| --- | --- | --- | --- | --- |
-| MEDIUM | 1.0 | off | 1024 | loaded |
-| HIGH | 2.0 | on | 1024 | loaded |
+| | Pixel ratio cap | MSAA | Shadow map | Venue backdrop | Players and balls |
+| --- | --- | --- | --- | --- | --- |
+| MEDIUM | 1.0 | off | 1024 | loaded | lite copies |
+| HIGH | 2.0 | on | 1024 | loaded | full |
+
+**Phones draw lighter players.** The player models were 90k–190k triangles
+each and the balls up to 44k, and a match draws both players twice (the shadow
+map is a second pass over them). A Samsung A20e ran a match against the AI at
+sixteen frames a second with over a million triangles a frame, and the pixel
+ratio cap had nothing left to give: it was already rendering 780×360. The build
+writes a lighter copy of each (`scripts/lite-models.mjs`, between `vite build`
+and asset protection): meshoptimizer's simplifier to about a sixth of the
+triangles within 1% of the model's size, and textures capped at 512px, which
+also takes a player's textures from ~50 MB of GPU memory to ~12 MB. The medium tier loads
+the copy and falls back to the full model where there is none — every dev-server
+session, since the copies only exist in a build. A gym frame drops from about
+750k triangles to 250k; connection stats show the count. The arenas are not
+thinned: their triangles are thousands of separate seats and boards, the
+simplifier could only reduce a piece by eating it, and locking the pieces'
+edges saved nine per cent.
 
 There was a third tier below these. LOW dropped the venue backdrop to save a
 1-5 MB download, which meant the venue a player had chosen did not appear — too
@@ -1694,6 +1710,23 @@ frames were stuck behind a slow one on the socket, and when they all land at
 once the newest of them is still old — the clock was right, and snapping to the
 stale sum rewound the whole screen a quarter of a second after every hiccup.
 Only a gap no stall explains (`CLOCK_REWIND_TICKS`, a reconnect) is taken back.
+
+**A frame is stamped with the step it arrived in, not the step after it was
+read.** The clock measures routes in steps, which assumes steps keep real time,
+and on a slow phone they do not. At sixteen frames a second, the snapshots that
+arrived during one frame were applied before the four or five steps that frame
+then ran, so each looked a few ticks better routed than it was; after a stall
+long enough to drop simulation time, dozens of them looked a whole stall better
+routed, and the rate fit read the lost time as a fast host. One 700 ms stall ran
+a guest's clock twenty ticks into the host's future — every touch arrived after
+the screen had passed it and was replayed — and it took fifteen seconds to lean
+back. An A20e showed exactly that: a gap of −37 ticks, 42 replays and 44
+re-anchors in one match. Now the game loop tells the session what wall time each
+step stands for and a snapshot waits for its step (`deliverUpTo`); a frame
+better routed than anything recent by more than `CLOCK_SNAP_TICKS` means this
+device's steps lost time, so the history before it is dropped rather than fitted
+across; and frames landing on one step count once. `a slow guest` in
+`tests/playback.test.ts` replays the stall.
 
 **Both phones play at the host's speed.** Gameplay speed is a per-device
 setting, and it sets how many simulation ticks a second of wall time holds and

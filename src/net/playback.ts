@@ -329,9 +329,30 @@ export class PlaybackBuffer {
     }
     this.entries.push(s);
     if (this.entries.length > PLAYBACK_MAX_ENTRIES) this.entries.shift();
-    // Less one: the step this frame is first read on counts it as zero old.
     // The step this frame is first read on.
-    this.arrivals.push({ step: this.localStep + 1, tick: s.tick });
+    const arrival = { step: this.localStep + 1, tick: s.tick };
+    // A frame arriving *better* routed than anything recent by more than a
+    // snap means this device's steps stopped counting real time — a frame long
+    // enough to drop simulation time, or no steps at all. Delay only ever makes
+    // a frame look worse routed, so nothing on the network does this. The
+    // history before it is measured against a step count that has since lost
+    // time, and fitting the host's rate across the break read the break as a
+    // fast host: one 700 ms stall on a 16 fps phone ran the clock twenty ticks
+    // into the host's future and kept it there for fifteen seconds, replaying
+    // every touch.
+    // Compared with earlier steps only: the frames that piled up during the
+    // stall all land on one step, each a little better routed than the last,
+    // and no single one of them is the jump.
+    const recent = this.arrivals.slice(-CLOCK_WINDOW_ARRIVALS).filter((a) => a.step < arrival.step);
+    const offsetOf = (a: { step: number; tick: number }) => a.tick - this.rate * a.step;
+    if (recent.length > 0 && offsetOf(arrival) - Math.max(...recent.map(offsetOf)) > CLOCK_SNAP_TICKS) {
+      this.arrivals = [];
+    }
+    // One arrival per step, the newest: frames that land together describe one
+    // moment of this device's time, and a column of them at one step is what
+    // the least-squares rate reads as a steep slope.
+    if (this.arrivals[this.arrivals.length - 1]?.step === arrival.step) this.arrivals.pop();
+    this.arrivals.push(arrival);
     if (this.arrivals.length > CLOCK_RATE_ARRIVALS) this.arrivals.shift();
     this.newestTick = s.tick;
     this.lastArrivalStep = this.localStep;

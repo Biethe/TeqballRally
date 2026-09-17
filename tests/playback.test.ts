@@ -642,3 +642,50 @@ describe("the playback clock", () => {
     expect(CLOCK_REWIND_TICKS).toBeGreaterThan(CLOCK_SNAP_TICKS);
   });
 });
+
+describe("a slow guest", () => {
+  /**
+   * A phone drawing sixteen frames a second against a host that keeps up, fed
+   * the way the game loop feeds it: each frame runs the steps its time bought
+   * (a quarter of a second at most), and a frame joins the timeline on the step
+   * that stands for when it arrived. Returns the worst lead over the host's
+   * present, and the clock's gap to its target at the end.
+   */
+  function slowGuest(stallMs: number): { worstLead: number; endGap: number } {
+    const buf = new PlaybackBuffer();
+    buf.usePlaybackBuffer();
+    const sent: { at: number; tick: number }[] = [];
+    for (let tick = 2; tick < 60 * 40; tick += 2) sent.push({ at: tick / 60 + 0.05, tick });
+    let wall = 0;
+    let owed = 0;
+    let next = 0;
+    let worstLead = -Infinity;
+    while (wall < 30) {
+      const frame = wall >= 10 && wall < 10.06 ? stallMs / 1000 : 0.063;
+      wall += frame;
+      owed += Math.min(frame, 0.25);
+      while (owed >= SIM_DT) {
+        const stepAt = wall - (owed - SIM_DT);
+        while (next < sent.length && sent[next].at <= stepAt) buf.push(sample(sent[next++].tick));
+        const view = buf.advance();
+        if (view && wall > 2) worstLead = Math.max(worstLead, view.renderTick - stepAt * 60);
+        owed -= SIM_DT;
+      }
+    }
+    const s = buf.stats;
+    return { worstLead, endGap: (s.target ?? 0) - (s.clock ?? 0) };
+  }
+
+  it("never draws the host's future after a stall that dropped time", () => {
+    // Measured before: one 700 ms stall ran the clock twenty ticks ahead of the
+    // host, so every touch arrived after the screen had passed it and was
+    // replayed, for fifteen seconds. The frames that piled up in the stall
+    // looked better routed than any before it, and the rate fit read the lost
+    // time as a fast host.
+    for (const stall of [700, 2000]) {
+      const r = slowGuest(stall);
+      expect(r.worstLead).toBeLessThanOrEqual(0);
+      expect(Math.abs(r.endGap)).toBeLessThan(3);
+    }
+  });
+});

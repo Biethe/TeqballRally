@@ -38,6 +38,12 @@ export interface QualitySettings {
    * so the lowest tier skips the download and the memory entirely.
    */
   arena: boolean;
+  /**
+   * Load the lighter copies of the players and balls that a build
+   * carries (`scripts/lite-models.mjs`). The full players alone were a quarter
+   * of a million triangles, drawn twice for the shadow map.
+   */
+  liteModels: boolean;
 }
 
 const SETTINGS: Record<QualityTier, Omit<QualitySettings, "tier">> = {
@@ -45,8 +51,8 @@ const SETTINGS: Record<QualityTier, Omit<QualitySettings, "tier">> = {
   // arrives. Shadows stay on because the ball's shadow is a depth cue the game
   // is played on, and the only casters are the table, the ball and the two
   // characters — never the arena.
-  medium: { maxPixelRatio: 1.0, antialias: false, shadowMapSize: 1024, arena: true },
-  high: { maxPixelRatio: 2.0, antialias: true, shadowMapSize: 1024, arena: true },
+  medium: { maxPixelRatio: 1.0, antialias: false, shadowMapSize: 1024, arena: true, liteModels: true },
+  high: { maxPixelRatio: 2.0, antialias: true, shadowMapSize: 1024, arena: true, liteModels: false },
 };
 
 export function settingsFor(tier: QualityTier): QualitySettings {

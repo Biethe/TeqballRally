@@ -39,7 +39,7 @@ import type { QualitySettings } from "./quality";
 import { VENUES, type ArenaModel, type CourtStyle, type Rgb, type Venue } from "./venue";
 import { buildEnvironment } from "./environment";
 import { buildSurroundings } from "./surroundings";
-import { importModel } from "./protected";
+import { importModel, useLiteModels } from "./protected";
 
 // Meshopt-compressed GLBs are decoded locally so hosted builds do not depend
 // on a third-party CDN just to display a character or the arena.
@@ -108,6 +108,7 @@ export async function createGameScene(
   quality: QualitySettings,
   venue: Venue = VENUES.gym
 ): Promise<GameScene> {
+  useLiteModels(quality.liteModels);
   const engine = new Engine(canvas, true, { stencil: false, antialias: quality.antialias });
   // Hardware scaling is the inverse of the pixel ratio: > 1 renders fewer
   // pixels than the canvas has and upscales. Capping the ratio is the single
@@ -679,7 +680,7 @@ const BALL_KEEP_NODE: Record<string, string> = {
 
 /** Import a ball file, discard sibling balls bundled in the same export, and wrap it. */
 export async function importBall(scene: Scene, file: string): Promise<Mesh> {
-  const res = await importModel(scene, "/models/Ball_and_Table/", `${file}.glb`);
+  const res = await importModel(scene, "/models/Ball_and_Table/", `${file}.glb`, { lite: true });
   const keep = BALL_KEEP_NODE[file];
   if (keep) {
     const nodes = [...res.transformNodes, ...res.meshes];

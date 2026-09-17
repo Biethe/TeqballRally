@@ -249,8 +249,39 @@ export function prefetchAsset(path: string): void {
 export async function importModel(
   scene: Scene,
   dir: string,
-  file: string
+  file: string,
+  options: { lite?: boolean } = {}
 ): Promise<ISceneLoaderAsyncResult> {
+  if (options.lite && liteModels) {
+    try {
+      return await importFile(scene, dir, liteModelFile(file));
+    } catch {
+      // No copy: the dev server, or a build made without the art.
+    }
+  }
+  return importFile(scene, dir, file);
+}
+
+/**
+ * Whether models that have a lighter copy load it. Set from the quality tier.
+ *
+ * `scripts/lite-models.mjs` writes the copies into a build — a player at a
+ * sixth of its triangles, with half-size textures — because the full models
+ * held an entry-level phone to sixteen frames a second in a match against the
+ * AI. Only the models passed `lite: true` have one.
+ */
+let liteModels = false;
+
+export function useLiteModels(on: boolean): void {
+  liteModels = on;
+}
+
+/** Must match `liteName` in scripts/lite-models.mjs. */
+export function liteModelFile(file: string): string {
+  return file.replace(/\.glb$/, ".lite.glb");
+}
+
+async function importFile(scene: Scene, dir: string, file: string): Promise<ISceneLoaderAsyncResult> {
   const source = await protectedSource(dir, file);
   if (!source) return SceneLoader.ImportMeshAsync("", dir, file, scene);
   return SceneLoader.ImportMeshAsync("", "", source, scene);

@@ -417,7 +417,7 @@ export class Character {
   static async load(scene: Scene, def: CharacterDef): Promise<Character> {
     const file = def.id;
     const h = def.height * CHARACTER_SCALE;
-    const res = await importModel(scene, "/models/characters/", `${file}.glb`);
+    const res = await importModel(scene, "/models/characters/", `${file}.glb`, { lite: true });
     // Two-level rig: the wrapper origin is the character's foot point (what the
     // game moves around), the inner node carries the scale + grounding offset.
     // Baking the offset into an inner node means position.set(...) on the

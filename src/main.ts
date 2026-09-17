@@ -764,6 +764,9 @@ async function boot(): Promise<void> {
       // A frame split into our code, Babylon's render call, and the rest
       // (GPU and browser). See `RateMeter.simMsPerFrame`.
       `frame ${frameMs.toFixed(0)} ms: game ${rates.simMsPerFrame.toFixed(1)} (${rates.ticksPerFrame.toFixed(1)} steps)  render ${rates.renderMsPerFrame.toFixed(1)}  ${qualityTier} ${gs.engine.getRenderWidth()}x${gs.engine.getRenderHeight()}`,
+      // Triangles drawn in the main pass, which says whether the lighter
+      // models loaded: about 250k with them in the gym, 750k without.
+      `${(gs.scene.getActiveIndices() / 3000).toFixed(0)}k triangles`,
     ];
     if (session) {
       const s = session.stats;
@@ -881,12 +884,16 @@ async function boot(): Promise<void> {
       // this frame delivered. A slow frame runs several steps, a fast one may
       // run none — which is why the presses are latched rather than sampled.
       const simStarted = performance.now();
+      const frameNow = simStarted / 1000;
       simAccumulator += Math.min(frameSeconds, MAX_CATCHUP_SECONDS) * timeScale;
       framesDropped += Math.max(0, frameSeconds - MAX_CATCHUP_SECONDS) * timeScale;
       let steps = 0;
       const maxSteps = getMaxSimSteps();
       while (simAccumulator >= SIM_DT && steps < maxSteps) {
         const stepInput = consumeInput(latchedP1);
+        // Snapshots that arrived by the moment this step stands for — the
+        // time still owed after it, counted back from now. See `deliverUpTo`.
+        session?.deliverUpTo(frameNow - (simAccumulator - SIM_DT) / timeScale);
         // A guest's controls belong to the host's match, so they go to the
         // wire before the local update — which, as a follower, ignores them.
         // Resolved first: portrait taps become the stick direction the wire

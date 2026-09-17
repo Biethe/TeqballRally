@@ -507,6 +507,20 @@ describe("guest applies the authoritative frame", () => {
     });
   });
 
+  it("holds a snapshot until the step that stands for when it arrived", () => {
+    // Once the loop says what time its steps stand for, a frame is applied on
+    // the step it arrived in rather than whenever the socket handed it over —
+    // see `deliverUpTo`.
+    const g = session({}, "guest");
+    const now = performance.now() / 1000;
+    g.s.deliverUpTo(now - 1);
+    g.deliver(snapshot());
+    g.s.deliverUpTo(now - 0.5);
+    expect(g.applySnapshot).not.toHaveBeenCalled();
+    g.s.deliverUpTo(performance.now() / 1000);
+    expect(g.applySnapshot).toHaveBeenCalledTimes(1);
+  });
+
   it("hands over the ball, including whether it is being held", () => {
     const g = session({}, "guest");
     g.deliver(snapshot({ ballPos: { x: 1, y: 2, z: 3 }, ballVel: { x: 4, y: 5, z: 6 }, ballHeld: true }));
