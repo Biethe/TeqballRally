@@ -22,7 +22,8 @@ import {
 } from "./protocol";
 
 /**
- * A game message minus its tick, which `send` fills in.
+ * A game message minus its tick, which `send` fills in when the message does
+ * not name one.
  *
  * The conditional is what makes this distribute across the union: a plain
  * `Omit<GameMessage, "tick">` collapses to the keys every variant shares,
@@ -404,15 +405,24 @@ export class NetConnection {
   }
 
   /**
-   * Send a game message, stamped with the current tick. Silently dropped when
-   * the room is not ready — a strike with nobody to hear it is not an error.
+   * Send a game message, stamped with the current tick unless it names its
+   * own. Silently dropped when the room is not ready — a strike with nobody to
+   * hear it is not an error.
    *
    * The tick is supplied here rather than by the caller so no site can forget
    * it; a message without one cannot be fast-forwarded on arrival.
+   *
+   * A decision names its own, and it is not the tick it leaves on: a kick is
+   * published when the swing starts, for the tick the limb arrives. This used
+   * to stamp over it, so every kick reached the guest dated the moment it was
+   * sent — the guest turned the ball a whole wind-up early and a snapshot
+   * dragged it back, which on the phones was a re-anchor for nearly every
+   * touch. The tests never saw it, because every fake connection in them
+   * passes messages through untouched.
    */
   send(msg: SendableMessage): void {
     if (this.state !== "ready") return;
-    this.rawSend({ ...msg, tick: this.tick });
+    this.rawSend({ ...msg, tick: msg.tick ?? this.tick });
   }
 
   private teardown(): void {

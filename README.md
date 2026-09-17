@@ -1726,7 +1726,10 @@ step stands for and a snapshot waits for its step (`deliverUpTo`); a frame
 better routed than anything recent by more than `CLOCK_SNAP_TICKS` means this
 device's steps lost time, so the history before it is dropped rather than fitted
 across; and frames landing on one step count once. `a slow guest` in
-`tests/playback.test.ts` replays the stall.
+`tests/playback.test.ts` replays the stall. The host's decisions wait in the
+same queue, in order: a snapshot with the ball in a hand ends the flight and
+drops every decision queued before it, so an older one applied after a newer
+toss would wipe the toss.
 
 **Both phones play at the host's speed.** Gameplay speed is a per-device
 setting, and it sets how many simulation ticks a second of wall time holds and
@@ -1752,6 +1755,20 @@ within a touch: the clip choice sits on height thresholds, and the launch used
 to be read off the striking bone's position, which is wherever that device's
 animation happened to be. The earlier authority-handoff design above is what
 re-deriving looks like.
+
+**Every kick used to arrive dated wrong.** A kick is
+published when the swing starts, for the tick the limb arrives — and
+`NetConnection.send` stamped every outgoing message with the tick it left on,
+over the tick the message named. So the guest turned the ball a whole wind-up
+early, and the next snapshot dragged it back: 106 re-anchors in two minutes of a
+real two-client match, and it looked like balls that never touched a limb and
+flights that bent. Every test passed, because every fake connection passes a
+message through untouched. `send` now keeps a tick the message names. It was
+found by running two real clients against the local relay with rendering
+switched off, and checking on the host that the ball keeps every launch it
+publishes while the guest counts re-anchors — the check to repeat when anything
+between `drainNet` and the socket changes. A healthy match re-anchors zero
+times.
 
 **A kick is decided when it is committed, not when it lands.** `tryStrike` and
 `tryControlTouch` now work out the launch the moment the touch commits, from

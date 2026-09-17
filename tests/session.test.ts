@@ -521,6 +521,19 @@ describe("guest applies the authoritative frame", () => {
     expect(g.applySnapshot).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the host's decisions in order with its snapshots while holding them", () => {
+    // A snapshot showing the ball in a hand drops every decision queued before
+    // it. Held back while a newer toss went straight through, it wiped the toss.
+    const g = session({}, "guest");
+    const now = performance.now() / 1000;
+    g.s.deliverUpTo(now - 1);
+    g.deliver(snapshot({ tick: 10, ballHeld: true }));
+    g.deliver({ t: "launch", tick: 11, pos: { x: 0, y: 1, z: 0 }, vel: { x: 1, y: 2, z: 0 }, spin: 1 });
+    expect(g.queueLaunch).not.toHaveBeenCalled();
+    g.s.deliverUpTo(performance.now() / 1000);
+    expect(g.applySnapshot.mock.invocationCallOrder[0]).toBeLessThan(g.queueLaunch.mock.invocationCallOrder[0]);
+  });
+
   it("hands over the ball, including whether it is being held", () => {
     const g = session({}, "guest");
     g.deliver(snapshot({ ballPos: { x: 1, y: 2, z: 3 }, ballVel: { x: 4, y: 5, z: 6 }, ballHeld: true }));

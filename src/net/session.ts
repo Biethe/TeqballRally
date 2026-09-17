@@ -204,12 +204,12 @@ export class OnlineSession {
   /** Latest jitter reading from `snapAge`: age above the best route seen. */
   private snapJitter = 0;
   /**
-   * Guest: snapshots waiting for the step that stands for the moment they
-   * arrived. Empty unless the game loop says what time its steps stand for —
-   * see `deliverUpTo`.
+   * Guest: the host's frames and decisions, waiting for the step that stands
+   * for the moment they arrived. Empty unless the game loop says what time its
+   * steps stand for — see `deliverUpTo`.
    */
-  private arrived: { at: number; msg: SnapshotMessage }[] = [];
-  private deferSnapshots = false;
+  private arrived: { at: number; apply: () => void }[] = [];
+  private deferArrivals = false;
   /** Guest: this frame's controls, latched until sent. */
   private localInput: InputState = {
     moveX: 0,
@@ -527,11 +527,7 @@ export class OnlineSession {
       // reframe, so it is in this peer's own coordinates.
       case "snap": {
         if (this.isHost || !isValidSnapshot(msg)) return;
-        if (this.deferSnapshots) {
-          this.arrived.push({ at: performance.now() / 1000, msg });
-          return;
-        }
-        this.applySnapshot(msg);
+        this.arrive(() => this.applySnapshot(msg));
         return;
       }
 
@@ -551,14 +547,16 @@ export class OnlineSession {
       // Guest: what the ball does, and from which tick. Flown locally.
       case "launch": {
         if (this.isHost || !isValidLaunch(msg)) return;
-        this.match.queueLaunch({
-          tick: msg.tick,
-          pos: msg.pos,
-          vel: msg.vel,
-          spin: msg.spin,
-          kick: msg.kick === true,
-          settled: msg.settled === true,
-        });
+        this.arrive(() =>
+          this.match.queueLaunch({
+            tick: msg.tick,
+            pos: msg.pos,
+            vel: msg.vel,
+            spin: msg.spin,
+            kick: msg.kick === true,
+            settled: msg.settled === true,
+          })
+        );
         return;
       }
 
@@ -566,24 +564,26 @@ export class OnlineSession {
       // peer's own seat.
       case "clip": {
         if (this.isHost || !isValidClip(msg)) return;
-        this.match.queueClip({
-          tick: msg.tick,
-          side: msg.seat === "host" ? "player" : "ai",
-          clip: msg.clip,
-          startFrac: msg.startFrac,
-          speed: msg.speed,
-          seq: msg.seq,
-          at: msg.at,
-          lungeTo: msg.lungeTo,
-          lungeSeconds: msg.lungeSeconds,
-        });
+        this.arrive(() =>
+          this.match.queueClip({
+            tick: msg.tick,
+            side: msg.seat === "host" ? "player" : "ai",
+            clip: msg.clip,
+            startFrac: msg.startFrac,
+            speed: msg.speed,
+            seq: msg.seq,
+            at: msg.at,
+            lungeTo: msg.lungeTo,
+            lungeSeconds: msg.lungeSeconds,
+          })
+        );
         return;
       }
 
       // Guest: a contact to play when the playback clock reaches its tick.
       case "fx": {
         if (this.isHost || !isValidFx(msg)) return;
-        this.match.queueFx({ tick: msg.tick, kind: msg.kind });
+        this.arrive(() => this.match.queueFx({ tick: msg.tick, kind: msg.kind }));
         return;
       }
 
@@ -601,8 +601,8 @@ export class OnlineSession {
   }
 
   /**
-   * Guest: hand over every snapshot that arrived by `at`, the wall time in
-   * seconds that the coming step stands for. Called before each step.
+   * Guest: hand over everything from the host that arrived by `at`, the wall
+   * time in seconds that the coming step stands for. Called before each step.
    *
    * A snapshot used to be applied the moment the socket delivered it, and the
    * playback clock stamps a frame with the step it is first read on. On a phone
@@ -614,15 +614,23 @@ export class OnlineSession {
    * touch. Held until the step whose time they arrived in, a frame is stamped
    * with when it really came, however the steps were bunched.
    *
-   * A session whose loop never calls this applies snapshots on arrival, which
-   * is what the tests drive.
+   * Decisions wait in the same queue, because their order against the
+   * snapshots matters: a snapshot showing the ball in a hand ends the flight
+   * and drops every decision already queued, which is right for the ones that
+   * came before it and wrong for a toss that came after. Snapshots alone
+   * waiting let an older one be applied after a newer toss, and wipe it.
+   *
+   * A session whose loop never calls this applies everything on arrival,
+   * which is what the tests drive.
    */
   deliverUpTo(at: number): void {
-    this.deferSnapshots = true;
-    while (this.arrived.length > 0 && this.arrived[0].at <= at) {
-      const next = this.arrived.shift();
-      if (next) this.applySnapshot(next.msg);
-    }
+    this.deferArrivals = true;
+    while (this.arrived.length > 0 && this.arrived[0].at <= at) this.arrived.shift()?.apply();
+  }
+
+  private arrive(apply: () => void): void {
+    if (this.deferArrivals) this.arrived.push({ at: performance.now() / 1000, apply });
+    else apply();
   }
 
   private applySnapshot(msg: SnapshotMessage): void {

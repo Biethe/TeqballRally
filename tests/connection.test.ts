@@ -205,6 +205,22 @@ describe("messaging", () => {
     guest.close();
   });
 
+  it("keeps the tick a message names for itself", async () => {
+    // A kick is published at the start of its swing for the tick the limb
+    // arrives on. Stamped with the send tick, the guest played it a whole
+    // wind-up early.
+    const [host, guest, , guestInbox] = await pair();
+
+    host.tick = 124;
+    host.send({ t: "launch", tick: 163, pos: { x: 1, y: 2, z: 3 }, vel: { x: 0, y: 0, z: 0 }, spin: 1 });
+
+    const got = await waitFor(() => guestInbox.find((m) => m.t === "launch") ?? null);
+    expect(got).toMatchObject({ tick: 163 });
+
+    host.close();
+    guest.close();
+  });
+
   it("does not deliver signalling frames as game messages", async () => {
     const [host, guest, hostInbox, guestInbox] = await pair();
 

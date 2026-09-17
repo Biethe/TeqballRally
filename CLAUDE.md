@@ -78,6 +78,13 @@ There is one clock. A match's animations are *placed* on simulation ticks
 caused most of the guest's visual bugs. Never add a match clip that runs on the
 render loop, and never time anything in a match against wall time.
 
+**The unit tests never touch the real socket layer.** Every fake connection
+passes messages through untouched, and `NetConnection.send` does not — it once
+stamped the send tick over every decision's own, which broke every kick on real
+phones while all ~1100 tests passed. "Re-anchors" in the connection stats should
+be zero; if they are not, reproduce with two real clients against
+`npm run relay` before trusting a green test run.
+
 The faster device hosts (`chooseAuthority`, `perf` on `setup`), and a guest draws
 the host's past from a measured buffer at the host's rate (`PlaybackBuffer`).
 Turn on "Connection stats" in settings before judging an online match on a
