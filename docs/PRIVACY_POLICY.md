@@ -66,5 +66,5 @@ Teqball Rally is designed as a sports game for general audiences. We do not know
 ## 6. Contact Us
 If you have questions or suggestions about this Privacy Policy or wish to exercise your data protection rights, please contact us at:
 
-**Email:** bierhofftheolien@gmail.com  
+**Email:** teqrallly@gmail.com  
 **Developer:** Bierhoff Theolien (Teqball Rally Team)

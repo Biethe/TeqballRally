@@ -45,4 +45,4 @@ We may update these Terms from time to time. Continued use of the Game following
 ---
 
 ## 7. Contact Information
-For questions concerning these Terms, contact us at: bierhofftheolien@gmail.com.
+For questions concerning these Terms, contact us at: teqrallly@gmail.com.
