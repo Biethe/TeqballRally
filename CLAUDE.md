@@ -49,7 +49,7 @@ the export does not exist.
 
 **A Play `versionCode` is spent the moment Play accepts an upload**, even for a
 release you halt or discard. Bump `android/app/build.gradle` *before* building,
-not after discovering a problem. Currently 10007 / 0.1.3.
+not after discovering a problem. Currently 10008 / 0.1.3.
 
 **The browser harnesses need `npm run build:harness`, not `npm run build`.**
 They drive the game through `window.__teq*`, and a release build does not
