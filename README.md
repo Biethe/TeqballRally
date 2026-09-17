@@ -491,7 +491,7 @@ npm run check        # all three
 The unit tests in `tests/` cover the pure gameplay maths — ball physics and
 trajectory solving, clip timing, character traits, and the AI presets. They run
 in Node in under a second and need no browser. `tests/config.test.ts` also
-parses `Animation.txt` and fails if the frame numbers in `src/config.ts` drift
+parses `docs/Animation.txt` and fails if the frame numbers in `src/config.ts` drift
 away from it.
 
 GitHub Actions runs all four steps (typecheck, lint, test, build) on every push
@@ -510,15 +510,40 @@ node scripts/screenshot.mjs       # screenshots of the menus and a match
 node scripts/verify-practice.mjs  # the first-launch lesson, unasked and unskippable
 ```
 
+These harnesses drive the game from outside through handles it puts on
+`window` — `__teq` (the live match), `__teqUi`, `__viewer`, `__swap` — because
+the screens they check are otherwise reachable only by playing a match out,
+which a software renderer at a frame a second cannot do.
+
+**A release build does not carry them.** Whatever can read the match can write
+to it, so in a shipped build those handles are a cheat console parked in front
+of the leaderboard, and the F2 free camera beside them is a second one. They
+are compiled in only for the dev server and for `npm run build:harness`, which
+is the production build with `VITE_HARNESS=1` — same bundle, same assets, same
+minification, plus the handles. That is what the harnesses below are run
+against; `EXPOSE_INTERNALS` in `src/main.ts` is the switch.
+
 To smoke-test a production build end to end (this is the check that catches a
 broken asset pipeline — the wrong loader import still typechecks and builds):
 
 ```bash
-npm run build
+npm run build:harness
 npm run preview -- --port 5199 --strictPort
 node scripts/verify-build.mjs
 node scripts/verify-portrait.mjs        # the phone-upright control scheme
 node scripts/verify-purchase-gate.mjs   # the locked venue, and the restore path
+```
+
+That leaves the bundle players actually receive — the one with the handles cut
+out — as the only build nothing loads, which is also the build the dead-code
+elimination changes most. `verify:release` covers it: it boots the real thing
+and asserts both halves, that a screen was drawn and that none of the handles
+survived.
+
+```bash
+npm run build
+npm run preview -- --port 5199 --strictPort
+npm run verify:release
 ```
 
 The account flow needs a server as well as a page, because what it checks is
@@ -1000,6 +1025,25 @@ because it is short enough for a person to type. The lookup digest beside it is
 unsalted, which lets a leaked table be attacked once rather than once per row —
 and at sixteen Crockford characters it is eighty bits either way. A database
 snapshot that leaks should not hand anybody every account in the game.
+
+**The token never leaves the device it was minted on.** It lives in the
+WebView's local storage, which Android would otherwise copy into the player's
+Google Drive backup and carry across a device-to-device transfer — a second key
+to an account whose only key it is. `allowBackup="false"` and
+`res/xml/data_extraction_rules.xml` take both paths away. The cost is that a
+player moving phones signs in with their recovery code rather than arriving
+already signed in, which is the flow the recovery code exists for.
+
+**The rate limit counts callers, not proxies.** 120 requests a minute per
+address, generous for a person and mean for a script, keyed on the *last* hop
+of `x-forwarded-for` rather than on the socket. Behind Cloud Run the socket is
+Google's frontend, so keying on it put every player in the world in one
+bucket — the limit protected nothing and could answer 429 to somebody who had
+made a single request. The last hop is the address the frontend actually saw
+and the one entry a caller cannot invent; the first entries are theirs to make
+up. This holds because the service is reached directly on `run.app`. Put a load
+balancer in front of it and the last hop becomes the balancer, one bucket
+again, and `clientAddress` in `server/api.mjs` is the line to change.
 
 The typed code is forgiving about case, hyphens and spaces, and folds the three
 letters Crockford's own decoder folds — O to zero, I and L to one. Not Q: an
@@ -1649,9 +1693,11 @@ cap every frame at `MAX_FRAME_DT` (50 ms) and throw the rest away, so a device
 drawing fewer than twenty frames a second ran the match itself slower than real
 time. The simulation is cheap beside drawing a frame, so a match may now catch
 up to `MAX_CATCHUP_SECONDS` per frame; only longer stalls still drop. The
-connection stats overlay (a setting) shows frame rate, simulation speed and
-dropped time on both screens, which is what tells a slow device from a slow
-link.
+connection stats overlay shows frame rate, simulation speed and dropped time on
+both screens, which is what tells a slow device from a slow link. It is a
+diagnostic rather than a setting — a player has no use for it and nothing to do
+about it — so it is compiled into `npm run build:harness` and into nothing
+else.
 
 **One clock: a match's animations are placed on simulation time.** Babylon used
 to play every clip on the render loop's own delta while the ball, the positions
@@ -2220,7 +2266,7 @@ theatre.
 Two things that are easy to get wrong and fail quietly: the entitlement
 identifier is a dictionary key and must match the dashboard exactly, and the
 default API key is a **Test Store** key — a Play release needs the `goog_…` one
-via `VITE_REVENUECAT_KEY`. See **PURCHASES.md** for the dashboard setup, usage
+via `VITE_REVENUECAT_KEY`. See **docs/PURCHASES.md** for the dashboard setup, usage
 examples and the release checklist.
 
 ## Balls, and the shirt
@@ -2372,6 +2418,23 @@ npx firebase-tools deploy --only firestore:indexes
 - `assets/` — compressed GLB models, audio, and the local Meshopt decoder.
 - `tests/` — Vitest unit tests for the pure gameplay maths.
 - `scripts/` — headless-Chromium helpers for the parts unit tests cannot reach.
+- `docs/` — the notes that are not this file: `Animation.txt` (the rig's frame
+  numbers, which `tests/config.test.ts` parses), `TUNING.md`, `PURCHASES.md`,
+  and the handover note.
+
+The repository holds the game and nothing else. The Figma Make exports the
+menus were drawn from (`revamp_ui/`, `figma_export/`) and the harness scratch
+from getting Chromium to run without ALSA (`.verify-logs/`) stay on disk and
+out of git: none of them is read by a build, and a lockfile for a second
+application — or a compiled `.so` — in here is a thing somebody has to work out
+is not load-bearing.
+
+A release bundle carries no source maps, no comments and no `console` calls:
+esbuild drops the lot (`vite.config.ts`). The maps are the point — a map hands
+back the original TypeScript, file names and prose comments included, which is
+the whole client. The one thing that still speaks up in a shipped build is the
+startup reporter in `index.html`, which is a separate classic script and the
+only reason a black screen on a stranger's phone is ever reportable.
 
 Babylon is emitted as its own `babylon-*.js` chunk, so shipping game code does
 not invalidate the ~1.8 MB engine a returning player already has cached. Only

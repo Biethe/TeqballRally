@@ -18,6 +18,23 @@ import { RATING_KEYS, rating, totalPower, type RatingKey } from "./ratings";
 import { MAX_CLUB_MEMBERS, tidyCode } from "./account";
 import { assetUrl } from "./protected";
 
+/**
+ * A string safe to interpolate into markup.
+ *
+ * Most of this file builds its screens with `innerHTML` from literals and
+ * translated strings, which are ours. This is for the handful of places where
+ * something that arrived over the network — a player's name — ends up in the
+ * same template. Everywhere else, a value from outside is written with
+ * `textContent` and needs nothing.
+ */
+function escapeText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /** The opening cinematic, and the blurred still that sits behind its bars. */
 const INTRO_CLIP = "/video/intro.mp4";
 const BACKDROP = "/video/intro-backdrop.webp";
@@ -3322,13 +3339,31 @@ export class UI {
     const aServe = server === "ai" ? "●" : "";
     const sets = `<span class="sets">(${setsPlayer})</span>`;
     const sets2 = `<span class="sets">(${setsAi})</span>`;
+    // The labels are the only part of this line that came from outside: one of
+    // them is the name of whoever is on the other end of the match. The server
+    // will not mint a name with a `<` in it — see NAME_RE in accounts.mjs, and
+    // the relay takes identities from the token rather than from the frame —
+    // so this is the second lock, not the first. It is here because the day
+    // that rule is loosened for emoji or a longer alphabet must not be the day
+    // a name becomes a script tag running inside the app's own origin, where
+    // the account token lives.
     this.scoreEl.innerHTML =
-      `<span class="serve">${pServe}</span> ${this.labels[0]} ${sets} <b>${player}</b>` +
-      ` : <b>${ai}</b> ${sets2} ${this.labels[1]} <span class="serve">${aServe}</span>`;
+      `<span class="serve">${pServe}</span> ${escapeText(this.labels[0])} ${sets} <b>${player}</b>` +
+      ` : <b>${ai}</b> ${sets2} ${escapeText(this.labels[1])} <span class="serve">${aServe}</span>`;
   }
 
   banner(text: string, sub?: string): void {
-    this.bannerEl.innerHTML = `<div>${text}</div>${sub ? `<div class="banner-sub">${sub}</div>` : ""}`;
+    // Nodes rather than markup, for the same reason: banners carry names
+    // ("{name} added", "X declined") and no caller has ever passed HTML.
+    this.bannerEl.innerHTML = "";
+    const line = (content: string, className?: string): HTMLDivElement => {
+      const el = document.createElement("div");
+      if (className) el.className = className;
+      el.textContent = content;
+      return el;
+    };
+    this.bannerEl.appendChild(line(text));
+    if (sub) this.bannerEl.appendChild(line(sub, "banner-sub"));
     this.bannerEl.classList.remove("hidden");
     if (this.bannerTimer !== null) window.clearTimeout(this.bannerTimer);
     this.bannerTimer = window.setTimeout(() => this.bannerEl.classList.add("hidden"), 2000);

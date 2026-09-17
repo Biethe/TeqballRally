@@ -55,13 +55,6 @@ export interface Preferences {
   emotes: boolean;
   /** Name, number and crest painted onto the player's shirt. */
   kit: Kit;
-  /**
-   * Show a live readout of frame rate, simulation speed and, online, the
-   * connection's timing. A diagnostic: whether a match looks wrong because of
-   * the link or because one of the two devices cannot keep up is otherwise
-   * impossible to tell from either screen.
-   */
-  netStats: boolean;
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -76,7 +69,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   callouts: true,
   emotes: true,
   kit: { ...BLANK_KIT },
-  netStats: false,
 };
 
 const KEY = "teqopen.prefs";
@@ -105,7 +97,6 @@ export function readPreferences(): Preferences {
       coached: stored.coached === true,
       toured: stored.toured === true,
       kit: readKit(stored.kit),
-      netStats: stored.netStats === true,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };

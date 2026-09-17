@@ -773,13 +773,19 @@ describe("the store", () => {
 async function call(
   method: string,
   path: string,
-  opts: { body?: unknown; token?: string } = {}
+  opts: { body?: unknown; token?: string; forwardedFor?: string } = {}
 ): Promise<{ status: number; body: any }> {
   const chunks = opts.body === undefined ? [] : [Buffer.from(JSON.stringify(opts.body))];
   const req: any = {
     method,
     url: path,
-    headers: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
+    headers: {
+      ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+      ...(opts.forwardedFor ? { "x-forwarded-for": opts.forwardedFor } : {}),
+    },
+    // Random, because every request in this suite is a different caller as far
+    // as the rate limiter is concerned. The proxied case is the exception and
+    // says so: see "the rate limit follows the caller, not the proxy".
     socket: { remoteAddress: `10.0.0.${Math.floor(Math.random() * 250) + 1}` },
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk;
@@ -803,6 +809,24 @@ async function call(
 }
 
 describe("the HTTP API", () => {
+  it("rate limits the caller, not the proxy in front of it", async () => {
+    // Behind Cloud Run every request reaches the process from Google's
+    // frontend, so keying on the socket put the whole world in one bucket:
+    // the limit protected nothing and could answer 429 to a player who had
+    // made a single request. The last hop of x-forwarded-for is the address
+    // the frontend actually saw, and the only one the caller cannot invent.
+    const proxied = (client: string) =>
+      call("GET", "/api/leaderboard", { forwardedFor: `203.0.113.9, ${client}` });
+
+    let last = 0;
+    for (let i = 0; i < 130; i++) last = (await proxied("198.51.100.7")).status;
+    expect(last).toBe(429);
+
+    // A different caller through the same proxy is unaffected — which is the
+    // half that was broken, not the half that was missing.
+    expect((await proxied("198.51.100.8")).status).toBe(200);
+  });
+
   it("registers, and hands back both secrets exactly once", async () => {
     const created = await call("POST", "/api/players", { body: { name: "Ana" } });
 

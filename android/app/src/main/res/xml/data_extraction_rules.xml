@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Nothing this app stores leaves the device it was stored on.
+
+  The WebView's local storage holds the account's bearer token — the whole of
+  the player's identity, since there is no password to re-enter — so a copy of
+  it anywhere is a second key to the account. `allowBackup="false"` in the
+  manifest covers cloud backup and `adb backup`; on Android 12 and up
+  device-to-device transfer is governed separately and by this file, which
+  would otherwise carry the token onto the new phone regardless.
+
+  The cost is that a player moving phones signs in with their recovery code
+  instead of arriving already signed in, which is the flow the recovery code
+  exists for and the screen already explains.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

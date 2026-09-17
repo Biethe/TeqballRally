@@ -29,7 +29,7 @@ import { volumeToWorld, type InteractionVolumeDef, type WorldVolume } from "./in
  *
  * The sideways ones are the InPlace variants: movement is integrated from
  * velocity, so a clip that travels as well would move the character twice and
- * drift the rig off where the game thinks it is. See Animation.txt.
+ * drift the rig off where the game thinks it is. See docs/Animation.txt.
  */
 const LOCO_CLIPS = [
   "Idle",
@@ -323,7 +323,7 @@ export const MIN_RESERVE = 0.30;
 /**
  * A loaded, rigged character: kinematic movement plus a two-layer animation
  * controller (cross-faded locomotion + one-shot actions with frame callbacks,
- * so serves can fire toss/contact events at the frames listed in Animation.txt).
+ * so serves can fire toss/contact events at the frames listed in docs/Animation.txt).
  */
 export class Character {
   root: TransformNode;

@@ -67,6 +67,32 @@ function rateLimited(key, now) {
   return seen.count > RATE_LIMIT.max;
 }
 
+/**
+ * Who a request is from, for the rate limiter.
+ *
+ * `socket.remoteAddress` is the truthful answer only when nothing sits in
+ * front of this process. In the deployment that matters it does: Cloud Run
+ * hands every request to the container from Google's own frontend, so every
+ * player in the world arrived from the same handful of internal addresses and
+ * shared a single bucket — which made the limit both useless as protection
+ * and capable of answering 429 to somebody who had made one request.
+ *
+ * The *last* entry of `x-forwarded-for`, not the first. Google's frontend
+ * appends the address it actually saw to whatever the caller sent, so the
+ * first entries are the caller's to invent and the last one is not. This holds
+ * because the service is reached directly on `run.app`; put a load balancer in
+ * front of it and the last entry becomes the balancer, one bucket again.
+ */
+function clientAddress(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.length > 0) {
+    const hops = forwarded.split(",");
+    const nearest = hops[hops.length - 1].trim();
+    if (nearest) return nearest;
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
+
 /** Drop expired buckets; called from the relay's existing sweep. */
 export function sweepRateLimits(now = Date.now()) {
   for (const [key, seen] of hits) {
@@ -84,6 +110,11 @@ function sendJson(res, status, body) {
     // origin is not a host at all.
     "access-control-allow-origin": "*",
     "cache-control": "no-store",
+    // Everything here is JSON. Saying so stops a browser guessing otherwise
+    // about a response that happens to begin with something else — a player's
+    // own name is in most of these bodies, and a name is not this server's to
+    // decide is harmless.
+    "x-content-type-options": "nosniff",
   });
   res.end(text);
 }
@@ -134,7 +165,7 @@ export async function handleApi(store, req, res, now = new Date()) {
     return true;
   }
 
-  const from = req.socket.remoteAddress ?? "unknown";
+  const from = clientAddress(req);
   if (rateLimited(from, now.getTime())) {
     sendJson(res, 429, { error: "too many requests" });
     return true;

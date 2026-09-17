@@ -8,7 +8,7 @@
 // and that it never happens twice.
 //
 // Usage:
-//   npm run build
+//   npm run build:harness
 //   npm run preview -- --port 5199 --strictPort
 //   node scripts/verify-practice.mjs
 //

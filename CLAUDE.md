@@ -51,6 +51,15 @@ the export does not exist.
 release you halt or discard. Bump `android/app/build.gradle` *before* building,
 not after discovering a problem. Currently 10007 / 0.1.3.
 
+**The browser harnesses need `npm run build:harness`, not `npm run build`.**
+They drive the game through `window.__teq*`, and a release build does not
+carry those handles — they are a debugger attached to a live match, which is a
+cheat console in a shipped game. `build:harness` is the same production build
+with `VITE_HARNESS=1` and the handles left in. Run one against a plain build
+and it does not fail: it sits there waiting five minutes for `__teq` to appear.
+`npm run verify:release` is the other half, and checks the shipped bundle boots
+*without* them.
+
 ## Online play
 
 Host-authoritative with client-side prediction: one peer runs the whole match
@@ -87,8 +96,13 @@ be zero; if they are not, reproduce with two real clients against
 
 The faster device hosts (`chooseAuthority`, `perf` on `setup`), and a guest draws
 the host's past from a measured buffer at the host's rate (`PlaybackBuffer`).
-Turn on "Connection stats" in settings before judging an online match on a
-device: frame rate and simulation speed say whether a device is keeping up.
+The connection stats overlay — frame rate, simulation speed, rtt, jitter, the
+guest's clock gap and its re-anchor count — is what says whether a match looks
+wrong because of the link or because a device cannot keep up. It used to be a
+toggle in the gameplay settings and is not any more: it is a diagnostic a
+player has no use for and cannot act on. A build carries it or does not, and
+the build that does is `npm run build:harness` (`EXPOSE_INTERNALS`). To judge
+an online match on a real phone, sync *that* build to the device.
 
 ## Purchases
 

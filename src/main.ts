@@ -283,6 +283,24 @@ const RIVAL_GREETING_MS: [number, number] = [1200, 3000];
 const PURCHASE_POLL_MS = 1200;
 const PURCHASE_POLL_TRIES = 6;
 
+/**
+ * Whether this build hands out the handles on its own internals.
+ *
+ * The browser harnesses in `scripts/` reach into the running game through
+ * `window.__teq*` — they drive screens that are only reachable by playing a
+ * match out, which a software renderer at a frame a second cannot do. Those
+ * handles are a debugger attached to the simulation: whatever can read the
+ * match can write to it, so in a shipped build they are a cheat console
+ * parked in front of the leaderboard, and the free camera beside them is a
+ * second one. A player never needed either.
+ *
+ * The dev server keeps them. A release does not. `npm run build:harness`
+ * makes the production bundle *with* them, which is what the harnesses in
+ * `scripts/` are run against — they check the real build, so the flag is the
+ * only difference between what they drive and what ships.
+ */
+const EXPOSE_INTERNALS = import.meta.env.DEV || import.meta.env.VITE_HARNESS === "1";
+
 /** How one match should be set up and what to do when it ends. */
 interface MatchOpts {
   opponent: CharacterDef;
@@ -352,8 +370,10 @@ async function boot(): Promise<void> {
   // The browser harnesses in scripts/ drive screens that are otherwise only
   // reachable by playing a match out — which, on a software renderer at a
   // frame a second, they cannot do. Same reason __teq exposes the match.
-  (window as unknown as Record<string, unknown>).__teqUi = ui;
-  (window as unknown as Record<string, unknown>).__teqCharacters = CHARACTERS;
+  if (EXPOSE_INTERNALS) {
+    (window as unknown as Record<string, unknown>).__teqUi = ui;
+    (window as unknown as Record<string, unknown>).__teqCharacters = CHARACTERS;
+  }
 
   // Browsers gate audio behind a user gesture.
   const unlock = () => {
@@ -418,20 +438,22 @@ async function boot(): Promise<void> {
   const gs: GameScene = await createGameScene(canvas, settingsFor(qualityTier), venueFor(venueId));
   const viewer = new ModelViewer(gs.engine, canvas);
   viewer.setKit(prefs.kit);
-  (window as unknown as Record<string, unknown>).__viewer = viewer;
-  // Test hook, alongside the viewer's: swaps venues through the same call the
-  // settings screen makes and reports what the scene holds afterwards, which
-  // is how a swap that leaks meshes or textures gets caught.
-  (window as unknown as Record<string, unknown>).__swap = async (id: string) => {
-    venueId = VENUE_IDS.find((v) => v === id) ?? venueId;
-    await gs.setVenue(venueFor(venueId));
-    return {
-      venue: venueId,
-      meshes: gs.scene.meshes.length,
-      materials: gs.scene.materials.length,
-      textures: gs.scene.textures.length,
+  if (EXPOSE_INTERNALS) {
+    (window as unknown as Record<string, unknown>).__viewer = viewer;
+    // Test hook, alongside the viewer's: swaps venues through the same call the
+    // settings screen makes and reports what the scene holds afterwards, which
+    // is how a swap that leaks meshes or textures gets caught.
+    (window as unknown as Record<string, unknown>).__swap = async (id: string) => {
+      venueId = VENUE_IDS.find((v) => v === id) ?? venueId;
+      await gs.setVenue(venueFor(venueId));
+      return {
+        venue: venueId,
+        meshes: gs.scene.meshes.length,
+        materials: gs.scene.materials.length,
+        textures: gs.scene.textures.length,
+      };
     };
-  };
+  }
 
   // The remembered venue is honoured first and checked second, on purpose. The
   // store answers over the network, and holding the first frame for it would
@@ -529,6 +551,10 @@ async function boot(): Promise<void> {
   // Debug free-fly camera (F2): place the camera by hand to evaluate the scene.
   // WASD/arrows move, drag mouse to look, E/Q up/down, hold Shift for speed.
   // Toggling it off logs the position/target so values can be copied into code.
+  //
+  // Development only. A camera that can be flown out of the arena is a tool for
+  // judging the scene, not a feature, and a shipped build that answers F2 is a
+  // shipped build with a cheat in it — the ball is easier to read from above.
   let freecam: UniversalCamera | null = null;
   const toggleFreecam = () => {
     if (viewer.active) return;
@@ -560,14 +586,16 @@ async function boot(): Promise<void> {
       console.log("[freecam] ON — WASD move, drag to look, E/Q up/down, Shift = fast, F2 to exit");
     }
   };
-  window.addEventListener("keydown", (e) => {
-    if (e.code === "F2") toggleFreecam();
-    if (e.code === "F3") void openVolumeInspector();
-    if (e.key === "Shift" && freecam) freecam.speed = 1.2;
-  });
-  window.addEventListener("keyup", (e) => {
-    if (e.key === "Shift" && freecam) freecam.speed = 0.35;
-  });
+  if (EXPOSE_INTERNALS) {
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "F2") toggleFreecam();
+      if (e.code === "F3") void openVolumeInspector();
+      if (e.key === "Shift" && freecam) freecam.speed = 1.2;
+    });
+    window.addEventListener("keyup", (e) => {
+      if (e.key === "Shift" && freecam) freecam.speed = 0.35;
+    });
+  }
 
   // Interaction-volume inspector (F3): play/scrub contact clips and validate
   // their measured volumes against the real rig. Dev tool, freecam mould —
@@ -984,7 +1012,13 @@ async function boot(): Promise<void> {
     // consume simulation steps, and it keeps moving through a menu sitting
     // over the court.
     volumeInspector?.update();
-    statsOverlay.show(prefs.netStats && match ? netStatsLines() : null, performance.now() / 1000);
+    // Diagnostics, not a setting. Frame rate, simulation speed and the link's
+    // timing are how *this* project tells a match that looks wrong because of
+    // the network from one that looks wrong because a device cannot keep up —
+    // which is a question a player does not have and cannot act on. It was a
+    // toggle in the gameplay settings; a build carries it now, or does not.
+    // `npm run build:harness` is the one that does.
+    statsOverlay.show(EXPOSE_INTERNALS && match ? netStatsLines() : null, performance.now() / 1000);
     const renderStarted = performance.now();
     gs.scene.render();
     frameRenderMs += performance.now() - renderStarted;
@@ -2436,12 +2470,6 @@ async function boot(): Promise<void> {
             hint: tr("settings.emotes.sub"),
             control: { kind: "toggle", value: prefs.emotes },
           },
-          {
-            id: "netStats",
-            label: tr("settings.netStats"),
-            hint: tr("settings.netStats.sub"),
-            control: { kind: "toggle", value: prefs.netStats },
-          },
         ];
       }
       return [
@@ -2580,9 +2608,6 @@ async function boot(): Promise<void> {
           }
           if (id === "emotes" && typeof value === "boolean") {
             prefs.emotes = value;
-          }
-          if (id === "netStats" && typeof value === "boolean") {
-            prefs.netStats = value;
           }
           if (id === "music" && typeof value === "boolean") {
             prefs.music = value;
@@ -4157,28 +4182,30 @@ async function boot(): Promise<void> {
         )
       : null;
     practiceCoach?.start();
-    (window as unknown as Record<string, unknown>).__teq = {
-      match,
-      ball,
-      engine: gs.engine,
-      camera: gs.camera,
-      /**
-       * World point to pixels, for the layout harness.
-       *
-       * Exposed because "is the player on screen" is a question only the real
-       * projection can answer, and the alternative — re-deriving the camera
-       * maths in the test — checks a copy of the code rather than the code.
-       */
-      project: (x: number, y: number, z: number) => {
-        const p = Vector3.Project(
-          new Vector3(x, y, z),
-          Matrix.Identity(),
-          gs.scene.getTransformMatrix(),
-          gs.camera.viewport.toGlobal(gs.engine.getRenderWidth(), gs.engine.getRenderHeight())
-        );
-        return { x: p.x, y: p.y };
-      },
-    };
+    if (EXPOSE_INTERNALS) {
+      (window as unknown as Record<string, unknown>).__teq = {
+        match,
+        ball,
+        engine: gs.engine,
+        camera: gs.camera,
+        /**
+         * World point to pixels, for the layout harness.
+         *
+         * Exposed because "is the player on screen" is a question only the real
+         * projection can answer, and the alternative — re-deriving the camera
+         * maths in the test — checks a copy of the code rather than the code.
+         */
+        project: (x: number, y: number, z: number) => {
+          const p = Vector3.Project(
+            new Vector3(x, y, z),
+            Matrix.Identity(),
+            gs.scene.getTransformMatrix(),
+            gs.camera.viewport.toGlobal(gs.engine.getRenderWidth(), gs.engine.getRenderHeight())
+          );
+          return { x: p.x, y: p.y };
+        },
+      };
+    }
   };
 
   ui.hideLoading();

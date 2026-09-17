@@ -6,7 +6,7 @@
 // buying anything first. Unit tests cover the rules; this covers the screens
 // they are wired to.
 //
-//   npm run build && npm run preview -- --port 5199 --strictPort
+//   npm run build:harness && npm run preview -- --port 5199 --strictPort
 //   node scripts/verify-purchase-gate.mjs
 import { chromium } from "playwright-core";
 import { asReturningPlayer } from "./returning-player.mjs";

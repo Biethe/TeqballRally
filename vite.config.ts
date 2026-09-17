@@ -16,7 +16,25 @@ export default defineConfig({
   server: {
     host: true,
   },
+  // What a release hands to anyone who opens the bundle.
+  //
+  // esbuild already mangles locals and drops types; these three take away what
+  // it leaves behind. The console calls are the interesting one: several of
+  // them name internal state as they report it, and a packaged app has nobody
+  // reading them anyway — the one place a shipped build has to speak up is the
+  // startup reporter in index.html, which is a separate classic script.
+  //
+  // Not dropped for `build:harness`: the browser harnesses watch the page's
+  // console for errors, and a build that cannot report one is a build they
+  // cannot fail against.
+  esbuild: {
+    drop: process.env.VITE_HARNESS === "1" ? ["debugger"] : ["console", "debugger"],
+    legalComments: "none",
+  },
   build: {
+    // No source maps in any build: a map hands back the original TypeScript,
+    // file names and comments included, which is the whole of the client.
+    sourcemap: false,
     // Vite defaults to Chrome 87+. The System WebView on a budget Android can
     // be years behind that, and syntax it cannot parse is not a graceful
     // degradation — it is a black screen before a single line of the game runs.

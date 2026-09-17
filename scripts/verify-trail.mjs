@@ -6,7 +6,7 @@
 // through that points straight at the cheat — and it is only visible while a
 // real ball is being really struck, which no unit test can arrange.
 //
-//   npm run build && npm run preview -- --port 5199 --strictPort
+//   npm run build:harness && npm run preview -- --port 5199 --strictPort
 //   node scripts/verify-trail.mjs
 import { chromium } from "playwright-core";
 import { asReturningPlayer } from "./returning-player.mjs";

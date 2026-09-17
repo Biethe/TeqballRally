@@ -34,6 +34,15 @@ interface ImportMetaEnv {
    * about to be made public. Both halves now refuse to run without it.
    */
   readonly VITE_ASSET_KEY?: string;
+  /**
+   * "1" builds the production bundle with its internals still reachable from
+   * `window` (`__teq`, `__teqUi`, `__viewer`, `__swap`) and the F2 free camera
+   * still listening, for the browser harnesses in `scripts/`. A release must
+   * never set it: those handles can write to a live match.
+   *
+   * `npm run build:harness`.
+   */
+  readonly VITE_HARNESS?: string;
 }
 
 interface ImportMeta {

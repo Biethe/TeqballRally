@@ -78,3 +78,20 @@ art-bundle.teq
 *.fbx
 *.blend
 *.blend1
+
+# Design-tool exports and scratch. `revamp_ui/` and `figma_export/` are two
+# Figma Make React apps kept beside the game as UI reference; nothing in the
+# build reads them, and their lockfiles and node_modules made the repository
+# look like it shipped three applications. Same for the zips they arrived in.
+# They stay on disk, out of git.
+revamp_ui/
+figma_export/
+*.zip
+
+# Harness scratch from getting Chromium to run headless on a machine without
+# ALSA — a compiled .so and the probes that produced it. Machine-local by
+# definition: a binary blob in a repository is nobody's idea of a source file.
+.verify-logs/
+
+# Editor/agent local settings.
+.qoder/

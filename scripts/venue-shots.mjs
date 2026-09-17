@@ -6,7 +6,7 @@
 // file size — these arenas are 400-720 meshes over 15-21 materials. Run with
 // `--no-merge` to load them unmerged and compare both numbers and pictures.
 //
-//   npm run build && npm run preview -- --port 5199 --strictPort
+//   npm run build:harness && npm run preview -- --port 5199 --strictPort
 //   node scripts/venue-shots.mjs
 //   node scripts/venue-shots.mjs --no-merge
 import { chromium } from "playwright-core";

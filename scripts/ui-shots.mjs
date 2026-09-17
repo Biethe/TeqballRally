@@ -1,7 +1,7 @@
 // Captures every screen at real phone dimensions so layout problems can be
 // seen rather than guessed at.
 //
-//   npm run build && npm run preview -- --port 5199 --strictPort
+//   npm run build:harness && npm run preview -- --port 5199 --strictPort
 //   node scripts/ui-shots.mjs
 import { chromium } from "playwright-core";
 import { asReturningPlayer } from "./returning-player.mjs";

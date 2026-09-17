@@ -5,7 +5,7 @@
 // message exchange both passed while the guest's court stood still.
 //
 //   npm run relay &
-//   npm run build && npm run preview -- --port 5199 --strictPort
+//   npm run build:harness && npm run preview -- --port 5199 --strictPort
 //   node scripts/verify-online-match.mjs
 import { chromium } from "playwright-core";
 import { asReturningPlayer, withFullRoster } from "./returning-player.mjs";

@@ -1,4 +1,4 @@
-// Drives bake-crowd.html in a browser and writes the baked textures to
+// Drives scripts/bake-crowd.html in a browser and writes the baked textures to
 // assets/models/Crowd/*.vat. Run against a dev server:
 //
 //   npm run dev -- --port 5178 --strictPort
@@ -14,7 +14,7 @@ const browser = await chromium.launch({
 const page = await browser.newPage();
 page.on("console", (m) => console.log(" ", m.text()));
 page.on("pageerror", (e) => console.log("[error]", e.message));
-await page.goto(`http://localhost:${PORT}/bake-crowd.html?bind=${process.env.BIND ?? ""}`, { waitUntil: "load" });
+await page.goto(`http://localhost:${PORT}/scripts/bake-crowd.html?bind=${process.env.BIND ?? ""}`, { waitUntil: "load" });
 // Baking drives one rendered frame per baked frame, which is slow under
 // software rendering; it is a one-off, so simply wait it out.
 await page.waitForFunction(() => window.__bake, null, { timeout: 900000 });

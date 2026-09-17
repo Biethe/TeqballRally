@@ -4,7 +4,7 @@
 // mis-chunked bundle still typechecks, still builds, and only fails here.
 //
 // Usage:
-//   npm run build
+//   npm run build:harness
 //   npm run preview -- --port 5199 --strictPort
 //   node scripts/verify-build.mjs
 //
