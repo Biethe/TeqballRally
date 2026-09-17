@@ -1,5 +1,107 @@
 # Handover: the guest's screen in an online match
 
+## Status (2026-09-17)
+
+The approach below changed. The guest no longer draws the ball and the swings
+from snapshots: the host sends each **decision** — `launch` (the state the ball
+takes, and the host tick it takes it on) and `clip` (a clip started or cut
+short, with its lunge) — and the guest flies and animates from them on its own
+clock. Protocol 5; the relay needs redeploying with the clients. The README's
+"Online play" section has the reasoning; `src/net/guestball.ts` is the guest's
+ball. What this changed, measured with the recipe below on a phone-like link
+(5 ticks each way, 0–4 jitter, 1% spikes of 20, ordered delivery):
+
+| | before (clock + speed fixed, snapshots) | after (decisions) |
+| --- | --- | --- |
+| guest ball vs host at the same tick, mean | 36 cm | 11 cm |
+| second-difference spikes > 2 cm | 456 | 120 |
+| snapshot re-anchors | — | 0 |
+
+On a steady link the guest's ball is the host's to the centimetre on every
+tick outside the fade of a decision that arrived late.
+
+Fixed in this pass, each pinned by a test that fails without it:
+
+1. **The render clock jumped with every packet** (`PlaybackBuffer.stepClock`).
+   Under jitter it went backwards on one step in fourteen. It now runs at one
+   tick a step and leans toward its target by at most 8%; it snaps forward but
+   does not rewind after a stall.
+2. **`timeScale` was per device.** The snapshot carries `ts`; the guest adopts it
+   for the match. (Hypothesis 2 below — confirmed as a real divergence.)
+3. **Kicks are decided at commit**, from the planned contact rather than the
+   bone at contact, and fire from a whole-tick countdown only. The kick's
+   launch is sent before its contact; the wind-up is the head start.
+4. **Clips are started once and played**, not steered to a window. A late clip
+   hurries its wind-up (up to 2×) so the contact frame lands on the ball's tick.
+5. **Serves** toss and strike on tick countdowns; **the serve aim locks at the
+   toss** (a rules change, offline too), so the serve is sent before it leaves.
+6. The guest flies its ball **without body colliders** — deflections are sent
+   as decisions. With them it bounced the ball off strikers whose clip had not
+   reached its screen yet.
+
+Second pass, after the first emulator test (guest animations jerky and
+incomplete, players teleporting, ball missing limbs and bending, serve prompts
+on the wrong screen, no winner's celebration on the guest):
+
+7. **Positions trailed and lurched.** `reconcile` was the whole of a follower's
+   motion, so a running player sat `speed × 0.25 s` behind the timeline and
+   caught up in a jump. Now moved by the reported velocity, error corrected over
+   0.12 s. Opponent error one tick in ten: 37 cm → 12 cm.
+8. **Mid-touch players stood off their spot.** Clips now carry `at`; the guest
+   glides onto it (or the lunge target) before contact and holds it.
+9. **The clock leaned on every late frame** (up to 8%), putting the ball and
+   the render-clock animations out of step. Aimed by the best-routed arrival,
+   deadband 1.5 ticks, slew ≤ 4%; lead scaled to simulation ticks.
+10. **Match-win celebrations were never sent** — not in `CLIPS`, which was
+    where a clip's length came from.
+11. **Serve and set-up prompts** were shown by an online host for both seats and
+    by the guest for neither (`hintsFor`).
+12. Contactless clips play from their start however late; the toss is sent
+    before the serve strike decided with it.
+
+Third pass (device testing showed chaos whenever the medium-phone emulator
+hosted, magic retrievals, unreachable receptions), protocol 6:
+
+13. **The host device set the pace.** The render loop dropped frame time past
+    50 ms, so a slow host ran the match below real time. Now catches up to
+    0.25 s a frame; the faster device hosts (`chooseAuthority`); a "Connection
+    stats" setting shows fps, sim speed and dropped time.
+14. **One clock.** Match animations are placed on simulation ticks
+    (`src/animclock.ts`); the guest places the host's clips on the host's ticks.
+    The hurry/steer/reseat/window machinery is gone.
+15. **The guest draws the host's past** from a jitter-sized buffer, at the
+    host's fitted tick rate. Decisions arrive before their tick; a host at 75%
+    speed is followed, not raced.
+16. **Every touch meets its limb** by a published bend onto the measured contact
+    point. Bodies pushing a resting ball are published (they fired no event).
+
+Still open, and gameplay rather than netcode: nearly half of all touches commit
+with the limb ≥ 25 cm from the ball (still-high balls, last-tick grabs at the
+body). Refusing them cut rallies from 11 touches a point to 3, because
+`dropSpot`, the reach tests and the AI were tuned around the old teleport. Those
+now show as visible bends (or, with one tick of notice, a gap).
+
+Also found: `leadTicks()` is fractional on a real session (`TickAge` jitter), and
+the old snapshot ball path stepped `ceil` of a fractional tick count.
+
+Still open:
+
+- **Device test.** Everything above is measured headless. Two emulators, on
+  *different* gameplay speeds, screens recorded side by side.
+- **A wind-up shorter than the trip** cannot be shown on time by anything; the
+  guest starts it past its contact. Tosses and body deflections are decided as
+  they happen and always arrive a trip late; they fade in over 0.1 s.
+- **The guest's own touches** still go host-and-back before their wind-up
+  starts. If that feels late on device, start the wind-up locally on the press
+  and adopt the host's clip decision when it arrives (plan phase 4).
+- **Dead-in-practice code.** The window steering in `updateFollowerClips`, and
+  the snapshot ball's pinning and easing in `bufferedView`, only run until the
+  first decision of a match arrives. They could go, with the tests that pin
+  them.
+- **The disappearing characters** — untouched, see below.
+
+The rest of this file is the handover as it was written before this pass.
+
 ## What this is
 
 A brief for whoever picks up the online rendering problem. The netcode's shape

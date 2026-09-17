@@ -85,6 +85,8 @@ export interface PlaybackView {
   selfClip?: ClipSample | null;
   opponentClip?: ClipSample | null;
   mode: "buffered" | "extrapolated" | "frozen";
+  /** Host ticks per local step the clock is running at. */
+  rate: number;
 }
 
 /**
@@ -122,6 +124,71 @@ const MAX_PIN_TICKS = 8;
 export const BALL_SNAP = 3.0;
 /** Seconds over which a correction is bled off. */
 export const BALL_CORRECT_SECONDS = 0.1;
+/**
+ * How the playback clock is steered onto the instant it should be showing.
+ *
+ * The clock used to *be* that instant, recomputed every step from the newest
+ * frame: `newestTick + lead + steps since it arrived`. That is only a clock
+ * while frames arrive on a perfect grid. On a phone they do not — one lands a
+ * step late, the next a step early — and every arrival re-anchored the sum, so
+ * the instant on screen stalled, skipped two ticks, or went backwards. Measured
+ * under ordinary jitter it went backwards on one step in fourteen and jumped by
+ * as much as nine ticks. The ball is carried forward from that instant and the
+ * clips are timed against it, so all of that jumping was drawn: the unsteady
+ * ball and the stuttering swing were the clock, not the physics.
+ *
+ * So the clock advances one tick per step, as a clock should, and is steered
+ * toward a target only when it has genuinely drifted from it.
+ *
+ * The target is read off the *least-delayed* recent arrival
+ * (`CLOCK_WINDOW_ARRIVALS`), not the newest. A late frame says nothing about
+ * where the host is — only that the route was slow — and a target that moved
+ * with every late one made the clock lean a few per cent fast or slow almost
+ * all the time. That was invisible as speed and very visible as timing: the
+ * ball runs on this clock and the animations run on the renderer's, so a
+ * wind-up that lasted seventy ticks on one and sixty-five on the other met a
+ * ball that had already gone. Inside `CLOCK_DEADBAND_TICKS` the clock does not
+ * lean at all, and beyond it only gently. A gap too large to lean out of (a
+ * reconnect, a stall) is taken outright.
+ */
+export const CLOCK_GAIN = 0.02;
+export const CLOCK_MAX_SLEW = 0.04;
+export const CLOCK_DEADBAND_TICKS = 1.5;
+export const CLOCK_SNAP_TICKS = 10;
+/** Arrivals the target is read from — about a second and a half of frames. */
+export const CLOCK_WINDOW_ARRIVALS = 45;
+/**
+ * Arrivals the host's tick *rate* is fitted over — about five seconds. Longer
+ * than the target's window because a rate is a slope, and a slope read off a
+ * second and a half of jittery arrivals wobbles more than the difference it is
+ * there to find.
+ */
+export const CLOCK_RATE_ARRIVALS = 150;
+/** A fitted rate this close to one is one: two healthy devices are equal. */
+export const CLOCK_RATE_DEADZONE = 0.02;
+/** The rates a host can plausibly run at relative to this device. */
+export const CLOCK_RATE_MIN = 0.5;
+export const CLOCK_RATE_MAX = 1.2;
+/**
+ * How far behind the newest well-routed frame a buffered guest draws, in
+ * ticks: one snapshot interval, the jitter most frames arrive within, and a
+ * tick of margin — bounded, and eased so it never jumps.
+ */
+export const PLAYBACK_BUFFER_MIN = 3;
+export const PLAYBACK_BUFFER_MAX = 12;
+/**
+ * How far *ahead* of the target the clock may be before it is taken back
+ * outright. Much further than forward, deliberately.
+ *
+ * A clock ahead of its target is nearly always one that kept counting through
+ * a stall, while the frames were stuck behind a slow one on the socket. When
+ * they all land at once the newest of them is still old, and "newest plus the
+ * usual lead" says the host is well behind where it really is. The clock that
+ * kept counting was right; snapping back to the stale sum rewound the whole
+ * screen a quarter of a second after every hiccup. So it leans back instead,
+ * and only a gap no stall explains — a reconnect — is taken whole.
+ */
+export const CLOCK_REWIND_TICKS = 60;
 
 /**
  * The rate the host played a clip at, read back out of its window.
@@ -217,6 +284,27 @@ export class PlaybackBuffer {
   private pendingReengage = false;
   private extrapSteps = 0;
   private lastView: PlaybackView | null = null;
+  /** The instant being shown, in host ticks. Null until the first view. */
+  private clock: number | null = null;
+  /** Where the clock was aimed last step, for the connection stats. */
+  private lastTarget: number | null = null;
+  /** The timeline has been live at least once since the last reset. */
+  private engagedOnce = false;
+  /**
+   * For each recent arrival, the host tick it carried less the local step it
+   * landed on. The host's clock and this one both advance a tick a step, so on
+   * a perfect route this is constant; delay only ever lowers it. The largest is
+   * the best route seen, and the one the clock is aimed by.
+   */
+  private arrivals: { step: number; tick: number }[] = [];
+  /** Host ticks per local step, fitted over `CLOCK_RATE_ARRIVALS`. */
+  private rate = 1;
+  /**
+   * Whether the clock draws behind the frames it has (`bufferTicks`) rather
+   * than `lead` ahead of them. See `usePlaybackBuffer`.
+   */
+  private buffered = false;
+  private bufferTicks = PLAYBACK_BUFFER_MIN + 1;
 
   /**
    * How far ahead of the newest frame to read, in ticks — the transport delay,
@@ -241,11 +329,16 @@ export class PlaybackBuffer {
     }
     this.entries.push(s);
     if (this.entries.length > PLAYBACK_MAX_ENTRIES) this.entries.shift();
+    // Less one: the step this frame is first read on counts it as zero old.
+    // The step this frame is first read on.
+    this.arrivals.push({ step: this.localStep + 1, tick: s.tick });
+    if (this.arrivals.length > CLOCK_RATE_ARRIVALS) this.arrivals.shift();
     this.newestTick = s.tick;
     this.lastArrivalStep = this.localStep;
     if (this.entries.length >= 2) {
       if (!this.engaged && this.recovering && this.lastView) this.pendingReengage = true;
       this.engaged = true;
+      this.engagedOnce = true;
       this.extrapSteps = 0;
     }
   }
@@ -272,10 +365,96 @@ export class PlaybackBuffer {
     }
 
     const view = this.engaged
-      ? this.bufferedView(stepsSince, colliders)
+      ? this.bufferedView(colliders)
       : this.extrapolatedView(stepsSince, colliders);
     if (view) this.lastView = view;
+    // A cold start on a single frame is not an instant worth leaning from:
+    // it sits a whole lead short, and leaning out of that took a second of
+    // screen drawn behind. A starved feed carrying on is — it is still
+    // counting the host's time — so the clock survives it.
+    this.clock = this.engagedOnce && view ? view.renderTick : null;
     return view ?? this.lastView;
+  }
+
+  /** The clock, what it is aimed at, its rate and buffer, for the connection stats. */
+  get stats(): { clock: number | null; target: number | null; lead: number; rate: number; buffer: number | null } {
+    return {
+      clock: this.clock,
+      target: this.lastTarget,
+      lead: this.lead,
+      rate: this.rate,
+      buffer: this.buffered ? this.bufferTicks : null,
+    };
+  }
+
+  /**
+   * Draw behind the frames rather than ahead of them.
+   *
+   * Ahead is a guess about what the host is doing now: every kick, turn and
+   * bounce the frames have not reported yet is drawn wrong and corrected. A
+   * guest that draws a short, measured interval behind its best-routed frame
+   * shows what actually happened — both players interpolated between real
+   * frames, every decision already in hand before its tick — and its own
+   * player, predicted, stays instant. The host judges its presses against the
+   * instant it was showing (`viewTick`), so drawing behind costs no reach.
+   */
+  usePlaybackBuffer(on = true): void {
+    this.buffered = on;
+  }
+
+  /**
+   * The host's tick rate against this device's steps, fitted by least squares
+   * over the recent arrivals.
+   *
+   * Two devices are not always one speed. A host that cannot keep its
+   * simulation on real time runs fewer ticks a second than this device steps,
+   * and a clock that assumed one tick a step raced ahead of every frame and was
+   * snapped back — measured, sixteen per cent was enough to make the screen
+   * chaos. Following the host's real rate makes a slow host look slow, and
+   * nothing worse.
+   */
+  private fitRate(): void {
+    const n = this.arrivals.length;
+    // A slope needs a few seconds of arrivals before it is worth believing: over
+    // one second, ordinary jitter alone reads as a few per cent.
+    if (n < 90) return;
+    const first = this.arrivals[0].step;
+    const span = this.arrivals[n - 1].step - first;
+    if (span < 180) return;
+    let sx = 0;
+    let sy = 0;
+    let sxx = 0;
+    let sxy = 0;
+    for (const a of this.arrivals) {
+      const x = a.step - first;
+      sx += x;
+      sy += a.tick;
+      sxx += x * x;
+      sxy += x * a.tick;
+    }
+    const denom = n * sxx - sx * sx;
+    if (!(denom > 0)) return;
+    const slope = (n * sxy - sx * sy) / denom;
+    if (!Number.isFinite(slope)) return;
+    const fitted = Math.max(CLOCK_RATE_MIN, Math.min(CLOCK_RATE_MAX, slope));
+    const r = Math.abs(fitted - 1) < CLOCK_RATE_DEADZONE ? 1 : fitted;
+    // Eased in, so a change of pace is a change of pace and not a lurch.
+    this.rate += (r - this.rate) * 0.05;
+    if (Math.abs(this.rate - r) < 1e-4) this.rate = r;
+  }
+
+  /** One step of the playback clock toward where it should be. See `CLOCK_GAIN`. */
+  private stepClock(target: number): number {
+    if (this.clock === null || !Number.isFinite(this.clock)) return target;
+    // Where the clock is this step before leaning, which is what the target
+    // has to be compared with. Comparing it with last step's reading counted
+    // the step itself as error, and settled the clock a whole tick ahead.
+    const ticked = this.clock + this.rate;
+    const gap = target - ticked;
+    if (gap > CLOCK_SNAP_TICKS || gap < -CLOCK_REWIND_TICKS) return target;
+    const beyond = Math.abs(gap) - CLOCK_DEADBAND_TICKS;
+    if (beyond <= 0) return ticked;
+    return ticked + Math.sign(gap) * Math.min(CLOCK_MAX_SLEW, CLOCK_GAIN * beyond);
   }
 
   /** Whether fresh data just ended a starvation. Fires once per recovery. */
@@ -299,6 +478,11 @@ export class PlaybackBuffer {
     this.pendingReengage = false;
     this.extrapSteps = 0;
     this.lastView = null;
+    this.clock = null;
+    this.engagedOnce = false;
+    this.arrivals = [];
+    this.rate = 1;
+    this.bufferTicks = PLAYBACK_BUFFER_MIN + 1;
     this.lastBall = null;
     this.ballOffset = { x: 0, y: 0, z: 0 };
   }
@@ -332,17 +516,33 @@ export class PlaybackBuffer {
     return soonest;
   }
 
-  private bufferedView(stepsSince: number, colliders?: BodyCollider[]): PlaybackView {
-    // The instant being shown: where the host is now, which is the newest
-    // frame plus however long it took to get here plus the steps run since it
-    // was read. `stepsSince` counts the step the frame arrived on as one, so
-    // the elapsed part starts at zero and `lead` means exactly the transport
-    // delay rather than that minus a tick.
+  private bufferedView(colliders?: BodyCollider[]): PlaybackView {
+    // The instant being shown: where the host is now, which is a frame plus
+    // however long it took to get here plus the steps run since it was read.
+    // The step a frame is first read on counts it as zero old, so `lead` means
+    // exactly the transport delay rather than that minus a tick.
+    //
+    // That sum is where the clock should be, not where it is, and it is taken
+    // from the best-routed recent frame rather than the newest: see
+    // `CLOCK_GAIN`. On a perfect route the two are the same number.
     //
     // Clamped to the oldest buffered state so that after a gap the screen
     // glides onto the fresh timeline instead of sprinting through frames.
-    const raw = this.newestTick + this.lead + Math.max(0, stepsSince - 1);
-    const renderTick = Math.max(raw, this.entries[0].tick);
+    this.fitRate();
+    const recent = this.arrivals.slice(-CLOCK_WINDOW_ARRIVALS);
+    const offsets = recent.map((a) => a.tick - this.rate * a.step);
+    const best = Math.max(...offsets);
+    if (this.buffered) {
+      // How far behind the best route most frames arrive: the ninetieth
+      // percentile of the shortfall, plus a snapshot interval and a tick.
+      const short = offsets.map((o) => best - o).sort((x, y) => x - y);
+      const p90 = short[Math.min(short.length - 1, Math.floor(short.length * 0.9))];
+      const want = Math.max(PLAYBACK_BUFFER_MIN, Math.min(PLAYBACK_BUFFER_MAX, 2 + p90 + 1));
+      this.bufferTicks += (want - this.bufferTicks) * 0.02;
+    }
+    const due = this.rate * this.localStep + best + (this.buffered ? -this.bufferTicks : this.lead);
+    this.lastTarget = due;
+    const renderTick = Math.max(this.stepClock(due), this.entries[0].tick);
 
     let a = this.entries[0];
     let b: PlaybackSample | null = null;
@@ -477,6 +677,7 @@ export class PlaybackBuffer {
       selfClip: clipView("selfClip"),
       opponentClip: clipView("opponentClip"),
       mode: "buffered",
+      rate: this.rate,
     };
   }
 
@@ -582,6 +783,7 @@ export class PlaybackBuffer {
         selfClip: a.selfClip ?? null,
         opponentClip: a.opponentClip ?? null,
         mode: "extrapolated",
+        rate: this.rate,
       };
     }
     if (this.extrapSteps >= PLAYBACK_MAX_EXTRAPOLATE_TICKS) {
@@ -607,7 +809,7 @@ export class PlaybackBuffer {
       vz: c.vz,
     });
     return {
-      renderTick: last.renderTick + 1,
+      renderTick: last.renderTick + this.rate,
       ball,
       ballVel,
       ballHeld: last.ballHeld,
@@ -616,6 +818,7 @@ export class PlaybackBuffer {
       selfClip: last.selfClip,
       opponentClip: last.opponentClip,
       mode: "extrapolated",
+      rate: this.rate,
     };
   }
 }

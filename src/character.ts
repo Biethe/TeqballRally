@@ -21,6 +21,7 @@ import {
 } from "./config";
 import { brightenKit, fixMetallicMaterials } from "./scene";
 import { importModel } from "./protected";
+import { advanceLoop, clipFractionAt, clipFrameAt, rebaseClip, type ClockedClip } from "./animclock";
 import { volumeToWorld, type InteractionVolumeDef, type WorldVolume } from "./interaction";
 
 /**
@@ -307,20 +308,6 @@ export function assistStrength(slack: number): number {
  * character standing still watching a ball go past, and that is a worse thing
  * to watch than a slow one chasing it.
  */
-/**
- * How far a clip may drift from the clock before it is jumped rather than
- * steered, as a fraction of the clip.
- *
- * A third of a clip is not drift, it is a different moment.
- */
-export const ACTION_SEEK_FRACTION = 0.35;
-/**
- * How hard a rate correction pulls. At a gain of six, an eighth of a clip
- * behind plays at about 1.75x until it catches up — quick enough to close in a
- * few frames, gentle enough that nobody sees the clip hurrying.
- */
-export const ACTION_STEER_GAIN = 6;
-
 export const MIN_EFFORT = 0.05;
 
 /**
@@ -359,6 +346,18 @@ export class Character {
   private actionYawOffset = 0;
   velocity = new Vector3();
   private animationsFrozen = false;
+  /**
+   * Whether this character's clips are placed on the simulation's clock rather
+   * than played by Babylon's. Match characters are; the carousel, the viewer
+   * and the volume inspector keep Babylon's. See `src/animclock.ts`.
+   */
+  private simClock = false;
+  /** The tick the clips are placed at, in sim-clock mode. Set by the match. */
+  private clockTick = 0;
+  /** The playing action as a start, a frame and a rate, in sim-clock mode. */
+  private clocked: ClockedClip | null = null;
+  /** Each locomotion loop's frame, in sim-clock mode. */
+  private locoFrames = new Map<LocoClip, number>();
   /**
    * Minimum distance from the net (|x| coordinate boundary).
    * Defaults to COURT.minX (0), but can be set to SERVE_X during serve preparation
@@ -473,6 +472,11 @@ export class Character {
     return this.action !== null;
   }
 
+  /** A contact lunge is carrying the root. An online guest leaves the feet to it. */
+  get lunging(): boolean {
+    return this.lungeState !== null;
+  }
+
   private actionClip: string | null = null;
 
   /**
@@ -505,58 +509,71 @@ export class Character {
    * at the next serve.
    */
   /**
-   * Put the playing action clip at this fraction of itself.
+   * Place this character's clips on the simulation's clock from now on, or
+   * hand them back to Babylon's.
    *
-   * For an online guest, whose animation is presentation rather than
-   * simulation. The host says where the clip is on every frame, and the clip
-   * belongs to that clock, not to this device's render loop — left to
-   * free-run it drifts away exactly as the host's does, and a drifted clip is
-   * a kick that swings while the ball is still on its way. Pinning it each
-   * step makes the pose a function of the playback tick, the same way the
-   * ball already is.
+   * On: every started group is paused and set frame by frame from `update` —
+   * a paused group holds the frame it is given and still blends by weight,
+   * which a group at speed zero does not. Off: the groups run again at the
+   * rate they were placed at.
    */
-  seekAction(frac: number): void {
-    const g = this.action;
-    if (!g) return;
-    const f = Math.min(1, Math.max(0, frac));
-    g.goToFrame(g.from + f * (g.to - g.from));
+  useSimClock(on = true): void {
+    if (on === this.simClock) return;
+    this.simClock = on;
+    if (on) {
+      for (const name of LOCO_CLIPS) {
+        const g = this.groups.get(name);
+        if (!g) continue;
+        const anim = g.animatables[0];
+        this.locoFrames.set(name, anim ? anim.masterFrame : g.from);
+        if (g.isStarted) g.pause();
+      }
+      const g = this.action;
+      if (g) {
+        const anim = g.animatables[0];
+        this.clocked = {
+          startTick: this.clockTick,
+          startFrame: anim ? anim.masterFrame : g.from,
+          speed: g.speedRatio,
+          from: g.from,
+          to: g.to,
+          loop: g.loopAnimation,
+        };
+        g.pause();
+      }
+      return;
+    }
+    for (const g of this.groups.values()) if (g.isStarted) g.restart();
+    if (this.action && this.clocked) this.action.speedRatio = this.clocked.speed;
+    this.clocked = null;
   }
 
   /**
-   * Bring a clip back to where the clock says it should be, by changing how
-   * fast it is playing rather than by jumping it there.
-   *
-   * A guest's clip is pinned to the host's tick clock while the animation
-   * itself runs on this device's render loop, and on anything that stutters
-   * the two drift apart constantly. Correcting that with `goToFrame` means
-   * yanking the animation backwards several times a second, which is a swing
-   * that judders, never seems to reach its last frame, and makes the ball it
-   * is supposed to meet look wrong as well.
-   *
-   * A rate correction converges just as fast and is invisible: the clip runs a
-   * little quick or a little slow until it agrees again. Only a drift too
-   * large to close that way is still taken as a jump — at that size the clip
-   * is describing a different moment altogether and there is nothing to
-   * preserve.
+   * The simulation tick this character's clips are placed at. The match sets
+   * it at the top of every step, before anything that step can start a clip,
+   * so a clip started on tick N is at its start frame on tick N — on the host
+   * and on a guest placing the same clip against the host's ticks alike.
    */
-  steerAction(frac: number, baseSpeed: number): void {
-    const g = this.action;
-    if (!g) return;
-    const at = this.actionFraction;
-    if (at === null) return;
-    const drift = frac - at;
-    if (Math.abs(drift) > ACTION_SEEK_FRACTION) {
-      this.seekAction(frac);
-      g.speedRatio = baseSpeed;
-      return;
-    }
-    const want = baseSpeed * (1 + drift * ACTION_STEER_GAIN);
-    g.speedRatio = Math.min(baseSpeed * 2, Math.max(baseSpeed * 0.4, want));
+  setClockTick(tick: number): void {
+    this.clockTick = tick;
   }
 
+  /** Change how fast the playing action clip runs, from where it is. */
+  setActionSpeed(speed: number): void {
+    if (!this.action || !Number.isFinite(speed) || speed <= 0) return;
+    if (this.simClock && this.clocked) this.clocked = rebaseClip(this.clocked, this.clockTick, speed);
+    else this.action.speedRatio = speed;
+  }
+
+  /**
+   * How far through the playing action clip the animation is, from 0 to 1, or
+   * null when nothing is playing. On the simulation's clock it is arithmetic;
+   * on Babylon's it is read off the animatable.
+   */
   get actionFraction(): number | null {
     const g = this.action;
     if (!g) return null;
+    if (this.simClock && this.clocked) return clipFractionAt(this.clocked, this.clockTick);
     const anim = g.animatables[0];
     if (!anim) return null;
     const span = g.to - g.from;
@@ -670,16 +687,25 @@ export class Character {
    * every offset was zero; a 2.8 m error on a backflip as soon as one was not.
    */
   clipContactPoint(clip: string): Vector3 | null {
+    return this.clipContactPointAt(clip, this.root.position);
+  }
+
+  /**
+   * Where the striking limb meets the ball, at the clip's contact frame, with
+   * the character's root standing at `root` instead of where it is now.
+   *
+   * The measured offset needs only the root and its facing, not the live
+   * skeleton — which is what makes a contact's geometry something the host can
+   * decide at commit, for the tick the limb arrives on, and a guest can agree
+   * with exactly.
+   */
+  clipContactPointAt(clip: string, root: Vector3): Vector3 | null {
     const off = this.contactOffsets.get(clip);
     if (!off) return null;
     const yaw = this.root.rotation.y - this.actionYawOffset + clipYawOffset(clip);
     const cos = Math.cos(yaw);
     const sin = Math.sin(yaw);
-    return new Vector3(
-      this.root.position.x + off.x * cos + off.z * sin,
-      this.root.position.y + off.y,
-      this.root.position.z - off.x * sin + off.z * cos
-    );
+    return new Vector3(root.x + off.x * cos + off.z * sin, root.y + off.y, root.z - off.x * sin + off.z * cos);
   }
 
   /** Find a rig bone/node (e.g. "RightFoot") inside this character's hierarchy. */
@@ -791,6 +817,12 @@ export class Character {
       callbacks?: FracCallback[];
       onEnd?: () => void;
       loop?: boolean;
+      /**
+       * On the simulation's clock: the tick the clip began on. A guest passes
+       * the host's, so a clip it hears about late is still at the host's frame.
+       * Defaults to now.
+       */
+      startTick?: number;
     } = {}
   ): boolean {
     const g = this.groups.get(name);
@@ -817,6 +849,20 @@ export class Character {
     this.actionClip = name;
     this.actionCallbacks = [...(opts.callbacks ?? [])].sort((a, b) => a.frac - b.frac);
     this.actionOnEnd = opts.onEnd ?? null;
+    if (this.simClock) {
+      g.pause();
+      this.clocked = {
+        startTick: opts.startTick ?? this.clockTick,
+        startFrame: from,
+        speed: opts.speed ?? 1,
+        from: g.from,
+        to: g.to,
+        loop: opts.loop ?? false,
+      };
+      g.goToFrame(clipFrameAt(this.clocked, this.clockTick).frame, true);
+      // Ended by `update`, on the clock. A paused group never reaches its end.
+      return true;
+    }
     if (!(opts.loop ?? false)) {
       g.onAnimationGroupEndObservable.addOnce(() => {
         if (this.action === g) this.finishAction();
@@ -826,6 +872,7 @@ export class Character {
   }
 
   stopAction(): void {
+    this.clocked = null;
     if (this.action) {
       this.action.stop();
       this.action = null;
@@ -860,6 +907,7 @@ export class Character {
    * holding the pose of a kick.
    */
   cancelActionToLoco(): void {
+    this.clocked = null;
     if (this.action) {
       this.action.stop();
       this.action = null;
@@ -869,9 +917,21 @@ export class Character {
     this.actionClip = null;
     this.lungeState = null;
     this.restoreActionYaw();
+    this.resumeLoco();
+  }
+
+  /** Back onto the current locomotion clip at full weight, on whichever clock. */
+  private resumeLoco(): void {
     this.setLocoWeight(this.currentLoco, 1);
     const g = this.groups.get(this.currentLoco);
-    if (g && !g.isPlaying) g.start(true, 1.0);
+    if (!g) return;
+    if (this.simClock) {
+      if (!g.isStarted) g.start(true, 1.0);
+      g.pause();
+      g.goToFrame(this.locoFrames.get(this.currentLoco) ?? g.from, true);
+    } else if (!g.isPlaying) {
+      g.start(true, 1.0);
+    }
   }
 
   private restoreActionYaw(): void {
@@ -889,6 +949,7 @@ export class Character {
     const onEnd = this.actionOnEnd;
     this.action?.stop();
     this.action = null;
+    this.clocked = null;
     // Cleared here too, and not only where a clip is cut short.
     //
     // This is the exit a clip takes when it simply ends, which is almost every
@@ -902,9 +963,7 @@ export class Character {
     this.actionOnEnd = null;
     this.lungeState = null;
     this.restoreActionYaw();
-    this.setLocoWeight(this.currentLoco, 1);
-    const g = this.groups.get(this.currentLoco);
-    if (g && !g.isPlaying) g.start(true, 1.0);
+    this.resumeLoco();
     onEnd?.();
   }
 
@@ -934,8 +993,20 @@ export class Character {
         if (dt > 0) this.velocity.copyFrom(this.position.subtract(was).scale(1 / dt));
         if (l.t >= l.dur) this.lungeState = null;
       }
-      // Fire frame-fraction callbacks (serve toss / ball contact).
       const g = this.action;
+      if (this.simClock && this.clocked) {
+        // Placed, not played: the frame this tick says, callbacks crossed on
+        // the way to it, and the end when the clock reaches it.
+        const at = clipFrameAt(this.clocked, this.clockTick);
+        g.goToFrame(at.frame, true);
+        const frac = clipFractionAt(this.clocked, this.clockTick);
+        while (this.actionCallbacks.length > 0 && frac >= this.actionCallbacks[0].frac) {
+          this.actionCallbacks.shift()!.fn();
+        }
+        if (at.ended && this.action === g) this.finishAction();
+        return;
+      }
+      // Fire frame-fraction callbacks (serve toss / ball contact).
       const anim = g.animatables[0];
       if (anim && this.actionCallbacks.length > 0) {
         const frac = (anim.masterFrame - g.from) / (g.to - g.from || 1);
@@ -969,6 +1040,16 @@ export class Character {
       const g = this.groups.get(name);
       if (!g || next <= 0) continue;
       const playback = name === "Idle" ? 1 : stride;
+      if (this.simClock) {
+        // Integrated by game time, not placed by tick: nothing is timed
+        // against a stride, and its rate changes every step of a run.
+        if (!g.isStarted) g.start(true, playback);
+        g.pause();
+        const frame = advanceLoop(this.locoFrames.get(name) ?? g.from, g.from, g.to, dt, playback);
+        this.locoFrames.set(name, frame);
+        g.goToFrame(frame, true);
+        continue;
+      }
       g.speedRatio = playback;
       if (!g.isPlaying) g.start(true, playback);
     }
@@ -988,6 +1069,8 @@ export class Character {
    * a freeze and a rewind.
    */
   setAnimationsFrozen(frozen: boolean): void {
+    // On the simulation's clock a frozen simulation is already a frozen pose.
+    if (this.simClock) return;
     if (frozen === this.animationsFrozen) return;
     this.animationsFrozen = frozen;
     for (const g of this.groups.values()) {

@@ -69,7 +69,9 @@ import { NetConnection } from "./net/connection";
 import { OnlineSession } from "./net/session";
 import { looksReachable, relayUrl } from "./net/endpoint";
 import { Capacitor } from "@capacitor/core";
+import { NetStatsOverlay, RateMeter } from "./netstats";
 import {
+  chooseAuthority,
   makeRoomCode,
   normalizeRoomCode,
   isValidRoomCode,
@@ -197,6 +199,20 @@ const TRAIL_ALPHA = 0.78;
 const TRAIL_DELAY = 0.09;
 
 const MAX_FRAME_DT = 1 / 20;
+/**
+ * The most real time one frame may hand a match's simulation.
+ *
+ * Presentation is still capped at `MAX_FRAME_DT`, but the match used to be
+ * too, and the remainder was thrown away — so a device drawing fewer than
+ * twenty frames a second ran the match itself slower than real time, while
+ * Babylon went on animating at full speed. Offline that is a slow game. Online
+ * it is the host's pace imposed on the guest, which was measured as the whole
+ * difference between a guest that looked fine and one that looked like chaos:
+ * the same two emulators, swapped. The simulation is cheap next to drawing a
+ * frame, so a slow device can afford to catch up; only a frame longer than
+ * this — a tab coming back, a long GC — still drops the rest.
+ */
+const MAX_CATCHUP_SECONDS = 0.25;
 
 /**
  * How long to wait before asking again for a result that is still pending, and
@@ -298,6 +314,15 @@ async function boot(): Promise<void> {
   const uiRoot = document.getElementById("ui-root") as HTMLElement;
 
   const ui = new UI(uiRoot);
+  // What this device is managing, measured all the time — menus included, so
+  // the rate it offers an online match (`perf` on `setup`) was taken before the
+  // match began — and shown on screen when the setting asks for it.
+  const rates = new RateMeter();
+  const statsOverlay = new NetStatsOverlay(uiRoot);
+  let framesSimulated = 0;
+  let framesDropped = 0;
+  /** Both peers' `perf`, as sent, for the overlay. */
+  let onlinePerf: { mine?: number; theirs?: number } = {};
   const audio = new AudioManager();
   const input = new Input(uiRoot);
   // Not awaited: the store is never allowed to hold up the game starting, and
@@ -432,8 +457,22 @@ async function boot(): Promise<void> {
   let netConn: NetConnection | null = null;
 
   // Dev knob / preference: speeds up game time.
-  let timeScale = Number(new URLSearchParams(location.search).get("ts") ?? prefs.gameSpeed) || 1.25;
+  const preferredTimeScale = () =>
+    Number(new URLSearchParams(location.search).get("ts") ?? prefs.gameSpeed) || 1.25;
+  let timeScale = preferredTimeScale();
   gs.scene.animationTimeScale = timeScale;
+  /**
+   * One place that changes the game's speed, because it has three owners: the
+   * setting, an online host (whose speed a guest plays at for the length of
+   * the match), and leaving that match. The simulation step and the animation
+   * rate must always move together — a clip played at one speed against a
+   * simulation stepping at another is the very drift this exists to prevent.
+   */
+  const applyTimeScale = (ts: number) => {
+    timeScale = ts;
+    gs.scene.animationTimeScale = ts;
+    if (session) session.timeScale = ts;
+  };
 
   // Prefetching the next picker item lets it download while the player reads
   // the menu. Do not spend a metered/very-slow connection's bandwidth on a
@@ -579,15 +618,18 @@ async function boot(): Promise<void> {
   // that actually simulate, so pausing cannot bank time and burst on resume.
   let simAccumulator = 0;
   const latchedP1 = newLatch();
-  // The frame delta is already clamped to MAX_FRAME_DT before the time scale is
-  // applied, so this bound is simply that clamp expressed in simulation steps.
-  const getMaxSimSteps = () => Math.ceil((MAX_FRAME_DT * Math.max(timeScale, 2.0)) / SIM_DT) + 4;
+  // The frame delta is already clamped to MAX_CATCHUP_SECONDS before the time
+  // scale is applied, so this bound is simply that clamp in simulation steps.
+  const getMaxSimSteps = () => Math.ceil((MAX_CATCHUP_SECONDS * Math.max(timeScale, 2.0)) / SIM_DT) + 4;
 
   // ---- pause ----
   let paused = false;
   const leaveMatch = () => {
     session?.dispose();
     session = null;
+    // A guest has been playing at the host's speed. The match is over, and so
+    // is that: back to what this player chose.
+    applyTimeScale(preferredTimeScale());
     rivalGame = null;
     ui.clearEmotes();
     ui.setEmotes(null);
@@ -711,10 +753,39 @@ async function boot(): Promise<void> {
     if (nav.confirm) navFocus.click();
   };
 
+  /** The connection stats overlay's lines for this frame. */
+  const netStatsLines = (): string[] => {
+    const expected = 60 * timeScale;
+    const lines = [
+      `fps ${rates.fps.toFixed(0)}  sim ${((rates.simTicksPerSecond / expected) * 100).toFixed(0)}%  dropped ${(rates.droppedPerSecond * 1000).toFixed(0)} ms/s`,
+    ];
+    if (session) {
+      const s = session.stats;
+      const rtt = s.rttMs === null ? "-" : s.rttMs.toFixed(0);
+      lines.push(
+        `${s.role}  rtt ${rtt} ms  jitter ${s.jitterTicks.toFixed(1)} t  perf ${onlinePerf.mine ?? "-"} vs ${onlinePerf.theirs ?? "-"}`
+      );
+      if (match?.netFollower) {
+        const f = match.followerStats;
+        const gap = f.clock !== null && f.target !== null ? (f.target - f.clock).toFixed(1) : "-";
+        const buffer = f.buffer === null ? `lead ${f.lead.toFixed(1)}` : `buffer ${f.buffer.toFixed(1)}`;
+        lines.push(`clock gap ${gap} t  rate ${f.rate.toFixed(2)}  ${buffer} t`);
+        lines.push(`late clips ${f.lateClips}  replays ${f.replays}  reanchors ${f.reanchors}`);
+      }
+    }
+    return lines;
+  };
+
   gs.engine.runRenderLoop(() => {
     // Frame time drives everything presentational (the model viewer, the
     // cameras). Gameplay is stepped separately, at SIM_DT.
-    const dt = Math.min(gs.engine.getDeltaTime() / 1000, MAX_FRAME_DT) * timeScale;
+    const frameSeconds = gs.engine.getDeltaTime() / 1000;
+    const dt = Math.min(frameSeconds, MAX_FRAME_DT) * timeScale;
+    // Last frame's simulation, counted here because every path below may
+    // return early.
+    rates.record(performance.now() / 1000, framesSimulated, framesDropped);
+    framesSimulated = 0;
+    framesDropped = 0;
     menuNav();
     // Poll even off-court so a held C / Y can never leak into the next match.
     const cameraCycle = input.pollCameraCycle();
@@ -750,6 +821,10 @@ async function boot(): Promise<void> {
       // capped steps would stretch a 3.6 s shot to whatever the framerate
       // felt like.
       introLeft = skip ? 0 : introLeft - Math.min(0.25, gs.engine.getDeltaTime() / 1000);
+      // Match characters are placed on the simulation's clock, which does not
+      // run during the shot; their idle has to be stepped here or the players
+      // stand frozen mid-breath while the camera sweeps past them.
+      for (const c of chars) c.update(dt);
       if (introLeft <= 0) {
         introLeft = null;
         ui.hideIntro();
@@ -794,7 +869,8 @@ async function boot(): Promise<void> {
       // Step the match in fixed SIM_DT slices, consuming whatever real time
       // this frame delivered. A slow frame runs several steps, a fast one may
       // run none — which is why the presses are latched rather than sampled.
-      simAccumulator += dt;
+      simAccumulator += Math.min(frameSeconds, MAX_CATCHUP_SECONDS) * timeScale;
+      framesDropped += Math.max(0, frameSeconds - MAX_CATCHUP_SECONDS) * timeScale;
       let steps = 0;
       const maxSteps = getMaxSimSteps();
       while (simAccumulator >= SIM_DT && steps < maxSteps) {
@@ -826,7 +902,11 @@ async function boot(): Promise<void> {
       }
       // A frame long enough to exhaust the step budget (tab restore, a GC
       // pause) drops the remainder instead of trying to catch up forever.
-      if (steps >= maxSteps) simAccumulator = 0;
+      if (steps >= maxSteps) {
+        framesDropped += simAccumulator;
+        simAccumulator = 0;
+      }
+      framesSimulated += steps;
       if (!freecam) match.updateCamera(gs.camera, cameraMode);
     }
     // Presentation, on wall-clock time and outside the fixed step: neither may
@@ -862,6 +942,7 @@ async function boot(): Promise<void> {
     // consume simulation steps, and it keeps moving through a menu sitting
     // over the court.
     volumeInspector?.update();
+    statsOverlay.show(prefs.netStats && match ? netStatsLines() : null, performance.now() / 1000);
     gs.scene.render();
   });
 
@@ -2311,6 +2392,12 @@ async function boot(): Promise<void> {
             hint: tr("settings.emotes.sub"),
             control: { kind: "toggle", value: prefs.emotes },
           },
+          {
+            id: "netStats",
+            label: tr("settings.netStats"),
+            hint: tr("settings.netStats.sub"),
+            control: { kind: "toggle", value: prefs.netStats },
+          },
         ];
       }
       return [
@@ -2432,8 +2519,10 @@ async function boot(): Promise<void> {
           if (id === "gameSpeed" && typeof value === "string") {
             const num = Number(value) || 1.25;
             prefs.gameSpeed = num;
-            timeScale = num;
-            gs.scene.animationTimeScale = timeScale;
+            // Saved either way, but not applied under a guest's feet: an online
+            // guest plays at the host's speed until the match ends, and
+            // `leaveMatch` picks the new choice up then.
+            if (!match?.netFollower) applyTimeScale(num);
             storePreferences(prefs);
             render();
             return;
@@ -2447,6 +2536,9 @@ async function boot(): Promise<void> {
           }
           if (id === "emotes" && typeof value === "boolean") {
             prefs.emotes = value;
+          }
+          if (id === "netStats" && typeof value === "boolean") {
+            prefs.netStats = value;
           }
           if (id === "music" && typeof value === "boolean") {
             prefs.music = value;
@@ -2479,7 +2571,7 @@ async function boot(): Promise<void> {
    * The ball has to be one ball, so the host's choice settles it.
    */
   const startOnlineMatch = (conn: NetConnection, role: PeerRole, isPrivate: boolean) => {
-    type Seat = { character: string; ball: string; kit?: PersonalKit };
+    type Seat = { character: string; ball: string; kit?: PersonalKit; perf?: number };
     let mine: Seat | null = null;
     let theirs: Seat | null = null;
     let launched = false;
@@ -2493,10 +2585,15 @@ async function boot(): Promise<void> {
       const me = withCareer(base, levelOf(career, base.id));
       const them = CHARACTERS.find((c) => c.id === theirs!.character) ?? CHARACTERS[0];
       const ballId = role === "host" ? mine.ball : theirs.ball;
+      // Who runs the match: the faster device, from the two rates exactly as
+      // they were sent. The relay's seats still name the ball above, because
+      // that is a choice and not a performance question.
+      const authority = chooseAuthority(role, mine.perf, theirs.perf);
+      onlinePerf = { mine: mine.perf, theirs: theirs.perf };
       void startMatch(me, ballId, {
         opponent: them,
         difficulty: "normal",
-        online: { conn, role, private: isPrivate },
+        online: { conn, role: authority, private: isPrivate },
         // Their shirt, painted on this screen too. A kit nobody else can see is
         // a kit worth nothing, and online is the only place there is anybody
         // else to see it.
@@ -2515,7 +2612,7 @@ async function boot(): Promise<void> {
     conn.setHandlers({
       onMessage: (msg) => {
         if (!isValidSetup(msg)) return;
-        theirs = { character: msg.character, ball: msg.ball, kit: readKit(msg.kit) };
+        theirs = { character: msg.character, ball: msg.ball, kit: readKit(msg.kit), perf: msg.perf };
         launch();
       },
       // A phone drops its socket for a few seconds all the time. Say what is
@@ -2534,8 +2631,11 @@ async function boot(): Promise<void> {
           number: prefs.kit.number,
           crest: prefs.kit.crest,
         };
-        mine = { character: charId, ball: ballId, kit };
-        conn.send({ t: "setup", character: charId, ball: ballId, kit });
+        // Rounded once, here, and kept: both peers must decide who hosts from
+        // the same two numbers, so the value used is the value sent.
+        const perf = Math.round(rates.fps);
+        mine = { character: charId, ball: ballId, kit, perf };
+        conn.send({ t: "setup", character: charId, ball: ballId, kit, perf });
         ui.showLobbyStatus("READY", "Waiting for your opponent to choose…", null, abandonLobby);
         launch();
       },
@@ -3809,6 +3909,11 @@ async function boot(): Promise<void> {
     // a controller pointing at disposed rigs.
     for (const c of chars) c.dispose();
     chars = [playerChar, aiChar];
+    // Match characters are placed on the simulation's clock, not played by
+    // Babylon's: the ball and every clip then share one clock on any device.
+    // See `src/animclock.ts`.
+    playerChar.useSimClock();
+    aiChar.useSimClock();
 
     audio.stopMusic();
     ui.setLabels(opts.labels[0], opts.labels[1]);
@@ -3949,8 +4054,13 @@ async function boot(): Promise<void> {
           if (!mine && !prefs.emotes) return;
           ui.showEmote(mine ? "player" : "ai", id);
         },
+        // One match, one speed: the host's. See `SnapshotMessage.ts`.
+        onTimeScale: (ts) => applyTimeScale(ts),
       });
       session.pauseAllowed = opts.online.private;
+      // Published by a host in every snapshot. A guest's value is replaced by
+      // the host's as soon as the first one lands.
+      session.timeScale = timeScale;
       ui.setEmotes((id) => session?.sendEmote(id));
     } else if (rivalGame) {
       // The rival talks too. A stranger who never says a word in a game where

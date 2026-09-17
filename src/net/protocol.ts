@@ -25,6 +25,16 @@ import { CRESTS, type CrestId, type PersonalKit } from "../kit";
 import { stepBall, type BallState, type Side } from "../ball";
 
 /**
+ * Bumped to 6 when the faster of the two devices started running the match
+ * (`perf` on `setup`, `chooseAuthority`), rather than whichever joined first —
+ * two builds that disagreed about who hosts would both run a match, or neither.
+ *
+ * Bumped to 5 when the guest stopped being *shown* the ball and its players'
+ * clips and started playing them itself: the host now sends each decision —
+ * `launch` for the state the ball takes and the tick it takes it on, `clip`
+ * for an animation started or stopped — and a host that does not would leave a
+ * guest with nothing to fly. 4 was the last version drawn from snapshots alone.
+ *
  * Bumped to 3 for the two fields that make a guest's screen agree with the
  * host's match: `viewTick` on an input, so a press is judged against the ball
  * the player was looking at, and the anchors on a snapshot, so a predicted
@@ -34,7 +44,7 @@ import { stepBall, type BallState, type Side } from "../ball";
  * The relay refuses to seat peers of different versions together, so a version
  * change is a clean break rather than a negotiation.
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 6;
 
 /**
  * Crockford base32: no I, L, O or U. The first three are the characters people
@@ -168,6 +178,20 @@ export interface SnapshotMessage {
    * scalar: nothing to mirror. Optional, and absent means 1.
    */
   ballSpin?: number;
+  /**
+   * How fast the host's game runs — its `timeScale`, the gameplay speed the
+   * player picked in settings.
+   *
+   * A per-device preference, and it used to stay per-device in an online
+   * match. It sets how many simulation ticks a second of wall time holds, and
+   * how fast every animation plays, so a guest on 1.45 against a host on 1.25
+   * stepped its playback clock sixteen per cent faster than the frames it was
+   * reading: it raced ahead of the feed, was dragged back by every arrival,
+   * and played every clip against a clock that was not the host's. The guest
+   * adopts this for the length of the match. A scalar: nothing to mirror, and
+   * optional, because the relay never reads a snapshot.
+   */
+  ts?: number;
   /** Both characters, in the sender's frame. */
   hostPos: Vec3Wire;
   guestPos: Vec3Wire;
@@ -339,6 +363,36 @@ export interface SetupMessage {
    * made it, which is what both sides used to see of each other.
    */
   kit?: PersonalKit;
+  /**
+   * How fast this device draws, in frames per second, measured before the
+   * match. The faster device runs the match — see `chooseAuthority`.
+   * Optional: absent counts as no claim, and the relay's host keeps it.
+   */
+  perf?: number;
+}
+
+/**
+ * Frames per second within which two devices count as equally fast, and the
+ * relay's choice of host stands. Stops two near-identical phones swapping who
+ * hosts on a measurement's noise.
+ */
+export const AUTHORITY_PERF_MARGIN = 3;
+
+/**
+ * Which seat runs the match, as seen from the seat the relay gave this peer.
+ *
+ * The host's device sets the pace for both screens: it runs the only match,
+ * and a device that cannot draw twenty frames a second runs it slower than real
+ * time — measured on two emulators, the same pair looked fine one way round and
+ * like chaos the other, depending only on which one hosted. So the faster one
+ * hosts. The rule is symmetric by construction: both peers feed it the same two
+ * numbers, each peer's own value exactly as it was sent, and a tie or a missing
+ * value falls back to the one thing both already agree on, the relay's seats.
+ */
+export function chooseAuthority(relayRole: PeerRole, mine?: number, theirs?: number): PeerRole {
+  const ok = (v: number | undefined): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+  if (!ok(mine) || !ok(theirs) || Math.abs(mine - theirs) <= AUTHORITY_PERF_MARGIN) return relayRole;
+  return mine > theirs ? "host" : "guest";
 }
 
 /**
@@ -423,6 +477,67 @@ export interface FxMessage {
 }
 
 /**
+ * The ball takes this state at the start of host tick `tick`, before that
+ * tick's physics step.
+ *
+ * Everything between two of these is `stepBall`, which the guest runs itself;
+ * see `src/net/guestball.ts` for why it stopped being re-placed from snapshots.
+ * A kick is sent the moment it is decided, with the tick its limb will meet
+ * the ball on, so `tick` is often still ahead of the host when it leaves — and
+ * a wind-up is longer than the trip, which is what lets the guest's ball turn
+ * on the same tick as the host's. A deflection, a toss or a serve is sent as it
+ * happens, for the tick after.
+ */
+export interface LaunchMessage {
+  t: "launch";
+  tick: number;
+  pos: Vec3Wire;
+  vel: Vec3Wire;
+  /** The flight's spin multiplier, as `Ball.launch` took it. */
+  spin: number;
+  /** A limb struck the ball: the guest hears the kick when it applies this. */
+  kick?: boolean;
+  /** The state is also where the ball ended the previous tick. See `LaunchEvent.settled`. */
+  settled?: boolean;
+}
+
+/**
+ * A seat's action clip started, or stopped short, on host tick `tick`.
+ *
+ * The guest plays it with its own animation system, on its own clock, exactly
+ * as the host plays its own: from `startFrac`, at `speed`, to its own end. It
+ * used to be held to a window restated from every snapshot and steered toward
+ * it — two animation clocks chasing each other, which is a swing that hurries,
+ * drags and never quite finishes. A clip that ends by itself sends nothing;
+ * only one cut short (`clip: null`) does, because only the host knows it was.
+ */
+export interface ClipMessage {
+  t: "clip";
+  tick: number;
+  seat: "host" | "guest";
+  /** The clip, or null when the seat's clip was stopped before its end. */
+  clip: string | null;
+  startFrac?: number;
+  speed?: number;
+  /** The same instance number the snapshot's window carries. */
+  seq?: number;
+  /**
+   * Where the character stood when the clip began. The host moves a player
+   * mid-touch by the lunge and nothing else, so with this the guest knows the
+   * player's exact place for the whole clip — and does not play a kick from
+   * wherever a 30 Hz position feed happened to have carried them.
+   */
+  at?: Vec3Wire;
+  /**
+   * The contact lunge that starts with the clip: where the character's root
+   * darts to and how long it takes, in seconds. The half-metre that puts a limb
+   * on the ball, and far too quick for a 30 Hz position feed to draw.
+   */
+  lungeTo?: Vec3Wire;
+  lungeSeconds?: number;
+}
+
+/**
  * One of a fixed set of things a player can say, mid-match.
  *
  * Only the id crosses. The words are looked up on the far side, so two players
@@ -454,6 +569,8 @@ export type GameMessage =
   | InputMessage
   | SnapshotMessage
   | FxMessage
+  | LaunchMessage
+  | ClipMessage
   | EmoteMessage
   | MoveMessage
   | StrikeMessage
@@ -763,6 +880,19 @@ export function reframe<T extends GameMessage>(msg: T, role: PeerRole): T {
     case "fx":
       // The tick is host time on both ends; only the place reflects.
       return msg.pos ? { ...msg, pos: mirror(msg.pos) } : msg;
+    case "launch":
+      // Forget this and the guest's ball flies every kick the wrong way.
+      return { ...msg, pos: mirror(msg.pos), vel: mirror(msg.vel) };
+    case "clip":
+      // A clip belongs to a seat, so it swaps with the seat; the lunge is a
+      // point on the court, so it reflects. Clip names do not mirror — a
+      // player's right foot is their right foot from either end.
+      return {
+        ...msg,
+        seat: msg.seat === "host" ? "guest" : "host",
+        at: msg.at ? mirror(msg.at) : msg.at,
+        lungeTo: msg.lungeTo ? mirror(msg.lungeTo) : msg.lungeTo,
+      };
     default:
       // Scores, phases and clock probes carry no geometry.
       return msg;
@@ -926,7 +1056,12 @@ export function isValidSetup(msg: unknown): msg is SetupMessage {
   const m = msg as Partial<SetupMessage>;
   // The ids are looked up against the roster by the caller, which falls back
   // to a default; this only guarantees there is a string to look up.
-  return m.t === "setup" && typeof m.character === "string" && typeof m.ball === "string";
+  return (
+    m.t === "setup" &&
+    typeof m.character === "string" &&
+    typeof m.ball === "string" &&
+    (m.perf === undefined || (typeof m.perf === "number" && Number.isFinite(m.perf)))
+  );
 }
 
 export function isValidInput(msg: unknown): msg is InputMessage {
@@ -958,6 +1093,17 @@ export function readTaps(v: unknown): number | undefined {
 }
 
 export function readLoft(v: unknown): number | undefined {
+  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+  return Math.min(2, Math.max(0.5, v));
+}
+
+/**
+ * The host's game speed, or undefined. Bounded to what the settings could ever
+ * produce and then some, because it scales the guest's whole simulation — a
+ * zero would stop the match on that screen and a large value would run it
+ * through a point in a second.
+ */
+export function readTimeScale(v: unknown): number | undefined {
   if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
   return Math.min(2, Math.max(0.5, v));
 }
@@ -1035,6 +1181,37 @@ export function isValidFx(msg: unknown): msg is FxMessage {
     (FX_KINDS as readonly string[]).includes(m.kind ?? "") &&
     (m.pos === undefined || isFiniteVec(m.pos))
   );
+}
+
+export function isValidLaunch(msg: unknown): msg is LaunchMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<LaunchMessage>;
+  return (
+    m.t === "launch" &&
+    Number.isFinite(m.tick) &&
+    isFiniteVec(m.pos) &&
+    isFiniteVec(m.vel) &&
+    Number.isFinite(m.spin) &&
+    (m.kick === undefined || typeof m.kick === "boolean") &&
+    (m.settled === undefined || typeof m.settled === "boolean")
+  );
+}
+
+/**
+ * A clip start names a clip and says where in it and how fast; a stop names
+ * none. Numbers are checked because they go straight into an animation's frame
+ * range, where a NaN does not throw — it freezes the character.
+ */
+export function isValidClip(msg: unknown): msg is ClipMessage {
+  if (typeof msg !== "object" || msg === null) return false;
+  const m = msg as Partial<ClipMessage>;
+  const optNum = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v));
+  if (m.t !== "clip" || !Number.isFinite(m.tick)) return false;
+  if (m.seat !== "host" && m.seat !== "guest") return false;
+  if (m.clip !== null && typeof m.clip !== "string") return false;
+  if (!optNum(m.startFrac) || !optNum(m.speed) || !optNum(m.seq) || !optNum(m.lungeSeconds)) return false;
+  if (m.speed !== undefined && m.speed <= 0) return false;
+  return (m.lungeTo === undefined || isFiniteVec(m.lungeTo)) && (m.at === undefined || isFiniteVec(m.at));
 }
 
 export function isValidMove(msg: unknown): msg is MoveMessage {

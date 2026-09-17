@@ -211,3 +211,36 @@ describe("where a serve is aimed", () => {
     expect(serveTarget(1, 0, 0).x).toBeGreaterThan(serveTarget(1, -1, 0).x);
   });
 });
+
+describe("the serve aim at the toss", () => {
+  /**
+   * Hold `before` through the walk, the press and the wind-up, then `after`
+   * from the moment the ball leaves the hand. Returns the serve's launch.
+   */
+  const serveWith = (before: Partial<typeof idle>, after: Partial<typeof idle>, switchAtToss = true) => {
+    const r = rig();
+    for (let i = 0; i < Math.round(3 / SIM_DT); i++) r.step(SIM_DT, before);
+    r.step(SIM_DT, { strikePressed: true, ...before });
+    let tossed = !switchAtToss;
+    for (let i = 0; i < 600; i++) {
+      if (!tossed && !r.match.ball.held) tossed = true;
+      r.step(SIM_DT, tossed ? after : before);
+      if (r.match.state === "rally") return r.match.ball.state.vel.clone();
+    }
+    throw new Error("the serve never left");
+  };
+
+  it("is final once the ball leaves the hand", () => {
+    // Decided at the toss so an online guest can be sent the serve before it
+    // leaves: a stick moved while the ball is in the air changes nothing.
+    const held = serveWith({ strikeTaps: 2, moveZ: 1 }, { strikeTaps: 2, moveZ: 1 });
+    const moved = serveWith({ strikeTaps: 2, moveZ: 1 }, { strikeTaps: 2, moveZ: -1 });
+    expect(moved.asArray()).toEqual(held.asArray());
+  });
+
+  it("still follows the stick up to the toss", () => {
+    const wide = serveWith({ strikeTaps: 2, moveZ: 1 }, { strikeTaps: 2, moveZ: 1 });
+    const other = serveWith({ strikeTaps: 2, moveZ: -1 }, { strikeTaps: 2, moveZ: -1 });
+    expect(other.z).not.toBeCloseTo(wide.z, 3);
+  });
+});

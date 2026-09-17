@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { SIM_DT } from "../src/config";
-import type { MatchController } from "../src/match";
+import type { HostNetEvent, MatchController } from "../src/match";
 import type { NetConnection } from "../src/net/connection";
 import type { NetHandlers } from "../src/net/connection";
 import {
@@ -51,7 +51,11 @@ function fakeMatch() {
   const applySnapshot = vi.fn();
   const drainNet = vi.fn(() => [] as { kind: "kick" | "table" | "net" | "ground" | "side" | "body"; pos?: { x: number; y: number; z: number } }[]);
   const queueFx = vi.fn();
+  const takeNetEvents = vi.fn(() => [] as HostNetEvent[]);
+  const queueLaunch = vi.fn();
+  const queueClip = vi.fn();
   const setPlaybackLead = vi.fn();
+  const usePlaybackBuffer = vi.fn();
   const recordBallAt = vi.fn();
   const match = {
     versus: false,
@@ -87,7 +91,11 @@ function fakeMatch() {
     applySnapshot,
     drainNet,
     queueFx,
+    takeNetEvents,
+    queueLaunch,
+    queueClip,
     setPlaybackLead,
+    usePlaybackBuffer,
     recordBallAt,
   };
   return {
@@ -95,6 +103,9 @@ function fakeMatch() {
     applySnapshot,
     drainNet,
     queueFx,
+    takeNetEvents,
+    queueLaunch,
+    queueClip,
     setPlaybackLead,
     recordBallAt,
     fake: match,
@@ -586,6 +597,65 @@ describe("guest applies the authoritative frame", () => {
 
     expect(h.queueFx).not.toHaveBeenCalled();
   });
+
+  it("sends the match's decisions before the snapshot of the same step", () => {
+    // Ordered so that by the time a snapshot lands every decision about the
+    // ticks it describes is already there, and the guest's check against it
+    // can only fire for something genuinely missed.
+    const h = session({}, "host");
+    h.takeNetEvents.mockReturnValueOnce([
+      { type: "clip", tick: 2, side: "ai", clip: "RightFootKick", startFrac: 0.3, speed: 1.3, seq: 4, lungeTo: { x: 3, y: 0.4, z: 0.2 }, lungeSeconds: 0.2 },
+      { type: "launch", tick: 14, pos: { x: 3, y: 1.2, z: 0 }, vel: { x: -7, y: 3, z: 0 }, spin: 0.9, kick: true },
+    ]);
+    h.s.step(SIM_DT);
+    h.s.step(SIM_DT);
+
+    const order = h.sent.map((m) => m.t).filter((t) => t === "clip" || t === "launch" || t === "snap");
+    expect(order).toEqual(["clip", "launch", "snap"]);
+    // In the host's own frame, with its seat names put on the wire.
+    expect(h.sent.find((m) => m.t === "clip")).toMatchObject({ seat: "guest", clip: "RightFootKick", seq: 4 });
+    expect(h.sent.find((m) => m.t === "launch")).toMatchObject({ tick: 14, vel: { x: -7, y: 3, z: 0 }, kick: true });
+  });
+
+  it("hands decisions to the guest's match in its own frame and seat names", () => {
+    const g = session({}, "guest");
+    g.deliver({ t: "launch", tick: 30, pos: { x: 1, y: 1, z: 0.5 }, vel: { x: 4, y: 2, z: -1 }, spin: 1 });
+    g.deliver({ t: "clip", tick: 28, seat: "guest", clip: "ChestReception", startFrac: 0.2, speed: 1.25, seq: 3 });
+    g.deliver({ t: "clip", tick: 29, seat: "host", clip: null });
+    // Malformed: dropped, not crashed on.
+    g.deliver({ t: "launch", tick: 31, pos: { x: NaN, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 }, spin: 1 });
+
+    expect(g.queueLaunch).toHaveBeenCalledTimes(1);
+    expect(g.queueLaunch.mock.calls[0][0]).toMatchObject({ tick: 30, pos: { x: -1, y: 1, z: -0.5 }, vel: { x: -4, y: 2, z: 1 }, kick: false });
+    // The host's "guest" seat is this peer's own side.
+    expect(g.queueClip.mock.calls[0][0]).toMatchObject({ tick: 28, side: "player", clip: "ChestReception", speed: 1.25 });
+    expect(g.queueClip.mock.calls[1][0]).toMatchObject({ tick: 29, side: "ai", clip: null });
+  });
+
+  it("ignores decisions arriving at a host", () => {
+    const h = session({}, "host");
+    h.deliver({ t: "launch", tick: 30, pos: { x: 1, y: 1, z: 0 }, vel: { x: 4, y: 2, z: 0 }, spin: 1 });
+    h.deliver({ t: "clip", tick: 28, seat: "guest", clip: "ChestReception" });
+
+    expect(h.queueLaunch).not.toHaveBeenCalled();
+    expect(h.queueClip).not.toHaveBeenCalled();
+  });
+
+  it("publishes the host's game speed, and reports a change of it to the guest once", () => {
+    const h = session({}, "host");
+    h.s.timeScale = 1.45;
+    run(h.s, 0.1);
+    expect((h.sent.find((m) => m.t === "snap") as SnapshotMessage).ts).toBe(1.45);
+
+    const onTimeScale = vi.fn();
+    const g = session({ onTimeScale }, "guest");
+    g.deliver(snapshot({ ts: 1.45 }));
+    g.deliver(snapshot({ tick: 2, ts: 1.45 }));
+    g.deliver(snapshot({ tick: 3, ts: 1.25 }));
+    // An older host says nothing, and nothing changes.
+    g.deliver(snapshot({ tick: 4 }));
+    expect(onTimeScale.mock.calls).toEqual([[1.45], [1.25]]);
+  });
 });
 
 /** A session that may ask for a pause, plus a log of the states it passed through. */
@@ -969,21 +1039,26 @@ describe("showing everything at the same moment", () => {
     expect(match.applySnapshot.mock.calls[1][1]).toBeLessThanOrEqual(4);
   });
 
-  it("hands the timeline the same lead the reconcile target is carried by", () => {
-    // One measure for both, so the character being corrected and the ball
-    // beside it describe one instant.
+  it("sets the playback clock by the one-way trip in simulation ticks, without a frame's jitter", () => {
+    // The clock reads the best-routed of many frames, so this frame's jitter
+    // is already out of it; counting it again made the clock wobble with every
+    // late arrival. And a trip is measured in sixtieths of a second, which at
+    // the host's 1.25 are 1.25 ticks each.
     const net = fakeConn();
     const match = fakeMatch();
     const session = new OnlineSession(net.conn, match.match, "guest");
-    net.setLatency(7);
+    net.setLatency(8);
 
     for (let i = 0; i < 10; i++) session.step(SIM_DT);
-    net.deliver(snapshot({ tick: 6 }));
+    net.deliver(snapshot({ tick: 6, ts: 1.25 }));
+    // A late frame: the one carried by its own age sees that age, the clock
+    // does not.
+    for (let i = 0; i < 12; i++) session.step(SIM_DT);
+    net.deliver(snapshot({ tick: 8, ts: 1.25 }));
     session.step(SIM_DT);
 
-    const toTimeline = match.setPlaybackLead.mock.calls.at(-1)![0] as number;
-    expect(toTimeline).toBe(match.applySnapshot.mock.calls[0][1]);
-    expect(toTimeline).toBe(8);
+    expect(match.setPlaybackLead.mock.calls.at(-1)![0]).toBe(10);
+    expect(match.applySnapshot.mock.calls[1][1]).toBeGreaterThan(9);
   });
 
   it("absorbs an opponent whose tick clock started anywhere", () => {

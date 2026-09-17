@@ -35,7 +35,7 @@ const store = await openStore();
 console.log(`[relay] store ready (${await store.size()} players)`);
 
 const PORT = Number(process.env.PORT ?? 8787);
-const PROTOCOL_VERSION = 4;
+const PROTOCOL_VERSION = 6;
 /** A room with no sockets left is dropped after this, so codes get reused. */
 const EMPTY_ROOM_TTL_MS = 60_000;
 /** Frames larger than this are a bug or an attack; neither deserves relaying. */

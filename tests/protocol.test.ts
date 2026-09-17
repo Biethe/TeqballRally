@@ -3,15 +3,19 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { KIT_NAME_MAX, KIT_NUMBER_MAX, SIM_DT, GROUND_Y, TABLE } from "../src/config";
 import { solveLaunchClearingNet, stepBall, type BallState } from "../src/ball";
 import {
+  AUTHORITY_PERF_MARGIN,
   MAX_CATCHUP_TICKS,
   PROTOCOL_VERSION,
+  chooseAuthority,
   ROOM_CODE_ALPHABET,
   ROOM_CODE_LENGTH,
   applyStrike,
   catchupTicks,
   decode,
+  isValidClip,
   isValidFx,
   isValidInput,
+  isValidLaunch,
   isPlayerCode,
   isValidCalloutGone,
   isValidEmote,
@@ -22,6 +26,10 @@ import {
   readKit,
   readLoft,
   readTaps,
+  readTimeScale,
+  reframe,
+  type ClipMessage,
+  type LaunchMessage,
   encode,
   isValidMove,
   isValidRematch,
@@ -450,5 +458,111 @@ describe("invites", () => {
     expect(isValidEmote({ t: "emote", tick: 4, id: "" })).toBe(false);
     expect(isValidEmote({ t: "emote", tick: 4, id: "x".repeat(33) })).toBe(false);
     expect(isValidEmote({ t: "emote", tick: 4, id: 7 })).toBe(false);
+  });
+});
+
+describe("the decisions a guest plays itself", () => {
+  const launch: LaunchMessage = {
+    t: "launch",
+    tick: 240,
+    pos: { x: -2.5, y: 1.3, z: 0.4 },
+    vel: { x: 7, y: 3, z: -1.2 },
+    spin: 0.8,
+    kick: true,
+  };
+  const clip: ClipMessage = {
+    t: "clip",
+    tick: 230,
+    seat: "host",
+    clip: "RightFootKick",
+    startFrac: 0.35,
+    speed: 1.3,
+    seq: 12,
+    lungeTo: { x: -2.4, y: 0.4, z: 0.5 },
+    lungeSeconds: 0.18,
+  };
+
+  it("mirrors a launch into the guest's frame, and back", () => {
+    // The trap: forget this and every kick flies the wrong way on the guest.
+    const guest = reframe(launch, "guest");
+    expect(guest.pos).toEqual({ x: 2.5, y: 1.3, z: -0.4 });
+    expect(guest.vel).toEqual({ x: -7, y: 3, z: 1.2 });
+    expect(guest.tick).toBe(240);
+    expect(guest.spin).toBe(0.8);
+    expect(reframe(guest, "guest")).toEqual(launch);
+    expect(reframe(launch, "host")).toBe(launch);
+  });
+
+  it("swaps a clip's seat and mirrors its lunge, but never its name", () => {
+    const guest = reframe(clip, "guest");
+    expect(guest.seat).toBe("guest");
+    expect(guest.clip).toBe("RightFootKick");
+    expect(guest.lungeTo).toEqual({ x: 2.4, y: 0.4, z: -0.5 });
+    expect(reframe(guest, "guest")).toEqual(clip);
+    const cut: ClipMessage = { t: "clip", tick: 5, seat: "guest", clip: null };
+    const stop = reframe(cut, "guest");
+    expect(stop.seat).toBe("host");
+    expect(stop.lungeTo).toBeUndefined();
+  });
+
+  it("accepts well-formed decisions and refuses anything that would freeze a body or a ball", () => {
+    expect(isValidLaunch(launch)).toBe(true);
+    expect(isValidLaunch({ ...launch, kick: undefined })).toBe(true);
+    expect(isValidLaunch({ ...launch, vel: { x: NaN, y: 0, z: 0 } })).toBe(false);
+    expect(isValidLaunch({ ...launch, spin: Infinity })).toBe(false);
+    expect(isValidLaunch({ ...launch, tick: undefined })).toBe(false);
+
+    expect(isValidClip(clip)).toBe(true);
+    expect(isValidClip({ t: "clip", tick: 5, seat: "host", clip: null })).toBe(true);
+    expect(isValidClip({ ...clip, seat: "referee" })).toBe(false);
+    expect(isValidClip({ ...clip, startFrac: NaN })).toBe(false);
+    expect(isValidClip({ ...clip, speed: 0 })).toBe(false);
+    expect(isValidClip({ ...clip, clip: 7 })).toBe(false);
+    expect(isValidClip({ ...clip, lungeTo: { x: 1, y: 0 } })).toBe(false);
+  });
+});
+
+describe("the host's game speed", () => {
+  it("is taken when sane and bounded when not", () => {
+    expect(readTimeScale(1.25)).toBe(1.25);
+    expect(readTimeScale(1.45)).toBe(1.45);
+    // A zero would stop the guest's match; a huge value would run a point in a
+    // second. Neither is anything the settings produce.
+    expect(readTimeScale(0)).toBe(0.5);
+    expect(readTimeScale(40)).toBe(2);
+    expect(readTimeScale(NaN)).toBeUndefined();
+    expect(readTimeScale("1.25")).toBeUndefined();
+    expect(readTimeScale(undefined)).toBeUndefined();
+  });
+});
+
+describe("which device runs the match", () => {
+  it("is the faster one, and both peers agree on it", () => {
+    // Each peer passes its own rate first; the relay seated one as host.
+    const cases: [number | undefined, number | undefined][] = [
+      [60, 20], [20, 60], [60, 58], [58, 60], [60, 60], [undefined, 30], [30, undefined], [0, 45], [NaN, 45],
+    ];
+    for (const [hostPerf, guestPerf] of cases) {
+      const asHost = chooseAuthority("host", hostPerf, guestPerf);
+      const asGuest = chooseAuthority("guest", guestPerf, hostPerf);
+      // Exactly one of them runs it.
+      expect(asHost === "host", `${hostPerf} vs ${guestPerf}`).not.toBe(asGuest === "host");
+    }
+  });
+
+  it("moves the match to the faster seat, and leaves near-equal devices where the relay put them", () => {
+    expect(chooseAuthority("host", 18, 55)).toBe("guest");
+    expect(chooseAuthority("guest", 55, 18)).toBe("host");
+    expect(chooseAuthority("host", 50, 50 + AUTHORITY_PERF_MARGIN)).toBe("host");
+    expect(chooseAuthority("guest", 50, 50 - AUTHORITY_PERF_MARGIN)).toBe("guest");
+    // An older peer that says nothing changes nothing.
+    expect(chooseAuthority("guest", 60, undefined)).toBe("guest");
+  });
+
+  it("accepts a setup with or without a rate, and refuses a broken one", () => {
+    expect(isValidSetup({ t: "setup", tick: 1, character: "a", ball: "b" })).toBe(true);
+    expect(isValidSetup({ t: "setup", tick: 1, character: "a", ball: "b", perf: 42 })).toBe(true);
+    expect(isValidSetup({ t: "setup", tick: 1, character: "a", ball: "b", perf: NaN })).toBe(false);
+    expect(isValidSetup({ t: "setup", tick: 1, character: "a", ball: "b", perf: "fast" })).toBe(false);
   });
 });

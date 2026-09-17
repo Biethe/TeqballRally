@@ -9,8 +9,9 @@ import { Vector3, Quaternion } from "@babylonjs/core/Maths/math.vector";
 import { Ball } from "../src/ball";
 import { MatchController, type MatchEvent, type MatchUI } from "../src/match";
 import { AIController, DIFFICULTIES, type AIDifficulty } from "../src/ai";
-import { ACTION_SEEK_FRACTION, bodyPartOf, type Character } from "../src/character";
-import { CLIPS, SIM_DT, CHARACTERS, type BodyPart, type CharacterDef } from "../src/config";
+import { bodyPartOf, type Character } from "../src/character";
+import { CLIPS, SIM_DT, CHARACTERS, clipStartFraction, type BodyPart, type CharacterDef } from "../src/config";
+import { clipFractionAt, clipFrameAt, rebaseClip, type ClockedClip } from "../src/animclock";
 import type { InputState } from "../src/input";
 import { InteractionVolumeDef, type WorldVolume } from "../src/interaction";
 import type { InteractionShape } from "../src/config";
@@ -52,7 +53,9 @@ export class FakeCharacter {
   played: string[] = [];
   /** The start fraction each playAction was given, parallel to `played`. */
   startFracs: number[] = [];
-  private action: { name: string; left: number; total: number; callbacks: { frac: number; fn: () => void }[]; onEnd?: () => void } | null = null;
+  private action: { name: string; clip: ClockedClip; callbacks: { frac: number; fn: () => void }[]; onEnd?: () => void } | null = null;
+  /** The tick clips are placed at — set by the match, as on a real character. */
+  private clockTick = 0;
   private lunge: { from: Vector3; to: Vector3; dur: number; t: number } | null = null;
   readonly interactionVolumes = new Map<string, InteractionVolumeDef>();
 
@@ -104,6 +107,9 @@ export class FakeCharacter {
   get busy(): boolean {
     return this.action !== null;
   }
+  get lunging(): boolean {
+    return this.lunge !== null;
+  }
   get currentActionClip(): string | null {
     return this.action?.name ?? null;
   }
@@ -122,93 +128,77 @@ export class FakeCharacter {
     // floor — but a bicycle kick meets the ball *above the head*, which is the
     // entire reason the shot exists. Deriving its limb from the body part would
     // plan every flip at ankle height and make any test of one meaningless.
+    return this.clipContactPointAt(clip, this.position);
+  }
+
+  /** Mirrors `Character.clipContactPointAt`. */
+  clipContactPointAt(clip: string, root: Vector3): Vector3 | null {
+    const part = bodyPartOf(clip);
+    if (!part) return null;
     const rel = CLIP_LIMB_HEIGHT[clip] ?? LIMB_HEIGHT[part];
-    return this.position.add(this.forward.scale(0.42)).add(new Vector3(0, this.height * rel, 0));
+    return root.add(this.forward.scale(0.42)).add(new Vector3(0, this.height * rel, 0));
   }
 
   playAction(
     name: string,
-    opts: { startFrac?: number; speed?: number; callbacks?: { frac: number; fn: () => void }[]; onEnd?: () => void; loop?: boolean } = {}
+    opts: {
+      startFrac?: number;
+      speed?: number;
+      callbacks?: { frac: number; fn: () => void }[];
+      onEnd?: () => void;
+      loop?: boolean;
+      startTick?: number;
+    } = {}
   ): boolean {
     const info = CLIPS[name];
-    if (!this.groups.has(name)) return false;
+    const group = this.groups.get(name);
+    if (!group) return false;
     if (opts.loop) return true; // idle/locomotion loops need no simulation here
     this.played.push(name);
     this.startFracs.push(opts.startFrac ?? 0);
-    const frames = info?.frames ?? 60;
-    const start = opts.startFrac ?? 0;
-    const total = Math.max(0.05, ((1 - start) * frames) / 60 / (opts.speed ?? 1));
+    // Placed on the clock exactly as `Character` places a match character's
+    // clip, the unusable head frames floored the same way.
+    const frames = info?.frames ?? group.to - group.from;
+    const start = Math.max(opts.startFrac ?? 0, clipStartFraction(name));
     this.action = {
       name,
-      left: total,
-      total,
-      callbacks: [...(opts.callbacks ?? [])]
-        .filter((c) => c.frac >= start)
-        .sort((a, b) => a.frac - b.frac)
-        .map((c) => ({ frac: (c.frac - start) / Math.max(1e-6, 1 - start), fn: c.fn })),
+      clip: {
+        startTick: opts.startTick ?? this.clockTick,
+        startFrame: start * frames,
+        speed: opts.speed ?? 1,
+        from: 0,
+        to: frames,
+        loop: false,
+      },
+      callbacks: [...(opts.callbacks ?? [])].sort((a, b) => a.frac - b.frac),
       onEnd: opts.onEnd,
     };
     return true;
   }
 
+  /** Mirrors `Character.setClockTick`. */
+  setClockTick(tick: number): void {
+    this.clockTick = tick;
+  }
+
+  /** Mirrors `Character.useSimClock`; a fake is always on the clock. */
+  useSimClock(): void {}
+
+  /** Mirrors `Character.setActionSpeed`: a new rate from where the clip is. */
+  setActionSpeed(speed: number): void {
+    const a = this.action;
+    if (!a || !(speed > 0)) return;
+    a.clip = rebaseClip(a.clip, this.clockTick, speed);
+  }
+
   /** Mirrors `Character.actionFraction`: progress through the whole clip. */
   get actionFraction(): number | null {
-    const a = this.action;
-    if (!a) return null;
-    const start = this.startFracs[this.startFracs.length - 1] ?? 0;
-    const through = (a.total - a.left) / Math.max(1e-6, a.total);
-    return Math.min(1, Math.max(0, start + through * (1 - start)));
-  }
-
-  /** Mirrors `Character.seekAction`: pin the clip to a fraction of itself. */
-  seekAction(frac: number): void {
-    const a = this.action;
-    if (!a) return;
-    const start = this.startFracs[this.startFracs.length - 1] ?? 0;
-    const through = Math.min(1, Math.max(0, (frac - start) / Math.max(1e-6, 1 - start)));
-    a.left = a.total * (1 - through);
-  }
-
-  /**
-   * Mirrors `Character.steerAction`: close the drift by playing a little fast
-   * or a little slow, and only jump when it is too large to steer out.
-   *
-   * The fake has no playback rate, so the rate correction is applied as the
-   * small step toward the target it would amount to over one frame. What the
-   * tests care about is that a clip is nudged rather than yanked, which this
-   * reproduces: a large drift still lands exactly, a small one does not.
-   */
-  steerAction(frac: number, _baseSpeed: number): void {
-    const a = this.action;
-    if (!a) return;
-    const at = this.actionFraction;
-    if (at === null) return;
-    const drift = frac - at;
-    if (Math.abs(drift) > ACTION_SEEK_FRACTION) {
-      this.seekAction(frac);
-      return;
-    }
-    this.seekAction(at + drift * 0.5);
+    return this.action ? clipFractionAt(this.action.clip, this.clockTick) : null;
   }
 
   stopAction(): void {
     this.action = null;
     this.lunge = null;
-  }
-
-  /**
-   * The clip reached its own end, with the tick clock still short of the
-   * window that describes it.
-   *
-   * Not a shortcut: it is the case the real game hits constantly. Babylon
-   * advances a clip off the render loop in wall time and the simulation caps
-   * its frame delta and drops the remainder, so on anything that stutters the
-   * animation finishes first. There is no way to reach that state by stepping
-   * this fake, because this fake's clip is driven by the same clock as
-   * everything else in it.
-   */
-  finishActionEarly(): void {
-    this.action = null;
   }
 
   /** Mirrors `Character.cancelActionToLoco`: stop, and land back on the feet. */
@@ -257,10 +247,9 @@ export class FakeCharacter {
     }
     const a = this.action;
     if (!a) return;
-    a.left -= dt;
-    const frac = 1 - a.left / a.total;
+    const frac = clipFractionAt(a.clip, this.clockTick);
     while (a.callbacks.length > 0 && frac >= a.callbacks[0].frac) a.callbacks.shift()!.fn();
-    if (a.left <= 0) {
+    if (clipFrameAt(a.clip, this.clockTick).ended) {
       const done = a.onEnd;
       for (const cb of a.callbacks) cb.fn();
       this.action = null;

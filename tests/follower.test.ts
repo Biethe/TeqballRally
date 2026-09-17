@@ -1,17 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { SIM_DT } from "../src/config";
+import { CLIPS, SETS_TO_WIN, SIM_DT, WIN_SCORE, clipStartFraction } from "../src/config";
 import { stepBall, type BallState } from "../src/ball";
 import { AIController, DIFFICULTIES } from "../src/ai";
-import { idle, rig, silentUI, FakeCharacter, type Rig } from "./rig";
+import { idle, rig, silentUI, type Rig } from "./rig";
 import type { MatchEvent } from "../src/match";
 import { bodyPartOf } from "../src/character";
 import { SERVE_CLOCK_SECONDS } from "../src/match";
-import {
-  clipFractionAt,
-  PLAYBACK_MAX_EXTRAPOLATE_TICKS,
-  PLAYBACK_STALE_STEPS,
-} from "../src/net/playback";
 import {
   MAX_CATCHUP_TICKS,
   readLoft,
@@ -321,64 +316,7 @@ describe("the guest's ball, played back from the feed", { timeout: 15_000 }, () 
     expect(Number.isFinite(guest.match.ball.state.pos.x)).toBe(true);
   });
 
-  it("shows the opponent at the same constant delay as the ball", () => {
-    // The chase-easing this replaced ran on its own clock: visible catch-up
-    // sprints beside a ball on the timeline. One delay must describe the
-    // whole screen.
-    const host = rig();
-    const guest = rig({ ui: silentUI() });
-    guest.match.netFollower = true;
-    const f = feed(host, guest, DELAY);
-    const guestAi: { x: number; z: number }[] = [];
-    const step = (input: Partial<InputState> = {}) => {
-      f.stepHost(input);
-      f.deliver();
-      f.stepGuest();
-      const p = guest.match.chars.ai.position;
-      guestAi.push({ x: p.x, z: p.z });
-    };
-    for (let i = 0; i < 180; i++) step();
-    step({ strikePressed: true });
-    for (let i = 1; i < 900; i++) step(i % 24 === 0 ? { popPressed: true } : {});
 
-    let bestOffset = -1;
-    let bestMean = Infinity;
-    for (let offset = DELAY + 2; offset <= DELAY + BUFFER + 5; offset++) {
-      let sum = 0;
-      let n = 0;
-      for (let t = 300; t < guestAi.length - 30; t++) {
-        const truth = f.history[t - offset];
-        if (!truth) continue;
-        sum += Math.hypot(guestAi[t].x - truth.aiX, guestAi[t].z - truth.aiZ);
-        n += 1;
-      }
-      if (n > 100 && sum / n < bestMean) {
-        bestMean = sum / n;
-        bestOffset = offset;
-      }
-    }
-
-    expect(bestOffset).toBeGreaterThanOrEqual(DELAY + 2);
-    expect(bestOffset).toBeLessThanOrEqual(DELAY + BUFFER + 5);
-    // Interpolation between 30 Hz samples of a run keeps sub-centimetre to a
-    // few centimetres error; the old chase easing measured in body lengths.
-    expect(bestMean).toBeLessThan(0.08);
-  });
-
-  it("starts a received clip at its windowed fraction, not from zero", () => {
-    // A clip arriving ten ticks after it started must start ten ticks in —
-    // starting it from its head is the kick lagging the ball by the latency.
-    const host = rig();
-    const guest = rig({ ui: silentUI() });
-    guest.match.netFollower = true;
-    const f = feed(host, guest, DELAY);
-    playRally(f, guest, 900);
-
-    const opp = guest.match.chars.ai as unknown as FakeCharacter;
-    expect(opp.played.length).toBeGreaterThan(0);
-    expect(opp.startFracs.some((fr) => fr > 0.05 && fr < 1)).toBe(true);
-    expect(opp.startFracs.every((fr) => fr >= 0 && fr <= 1)).toBe(true);
-  });
 });
 
 /**
@@ -711,11 +649,14 @@ describe("lag compensation", () => {
     // metres a second: eight ticks earlier it was knee-high, and now it is at
     // the foot. Same press, same rally, two different touches — which is the
     // whole of the wrong-limb complaint.
+    // The instant is the middle of the few ticks where that holds, and it moves
+    // with the serve's timing: it was 180 until the serve left on a count of
+    // steps rather than on its clip's frames.
     vi.spyOn(Math, "random").mockReturnValue(0.5);
-    expect(bodyPartOf(setUpAt(180, null) ?? "")).toBe("foot");
-    expect(bodyPartOf(setUpAt(180, 8) ?? "")).toBe("knee");
+    expect(bodyPartOf(setUpAt(178, null) ?? "")).toBe("foot");
+    expect(bodyPartOf(setUpAt(178, 8) ?? "")).toBe("knee");
     // And a trip short enough not to cross a band changes nothing.
-    expect(bodyPartOf(setUpAt(180, 4) ?? "")).toBe("foot");
+    expect(bodyPartOf(setUpAt(178, 4) ?? "")).toBe("foot");
   });
 
   it("judges live for a seat that does not say what it was looking at", () => {
@@ -807,153 +748,6 @@ describe("lag compensation", () => {
   });
 });
 
-/**
- * A clip window is stamped in simulation ticks and the clip is played by the
- * renderer, and those are two different clocks. The fixed step caps its delta
- * at `MAX_FRAME_DT` and drops the remainder; an animation group advances on
- * the frame's real delta. A device dropping frames therefore runs its
- * animations ahead of its own simulation, and a window predicted once at the
- * clip's start stops describing the clip within a touch or two.
- *
- * On the joined player's screen that showed up as touches with no animation,
- * and an animation arriving out of its moment at the next serve.
- */
-describe("clip windows against a drifting animation clock", () => {
-  it("restates the window from where the clip actually is", () => {
-    const r = rig({ ui: silentUI() });
-    r.match.netPublish = true;
-    let tick = 0;
-    const step = (n: number, input: Partial<InputState> = {}) => {
-      for (let i = 0; i < n; i++) {
-        r.step(SIM_DT, i === 0 ? input : {});
-        tick++;
-        r.match.drainNet(tick);
-      }
-    };
-    step(200);
-    expect(r.match.state).toBe("serve_ready");
-    step(1, { strikePressed: true });
-    const first = r.match.clipWindow.player;
-    expect(first).not.toBeNull();
-
-    // The renderer has run ahead of the fixed step: three quarters through a
-    // clip the tick count still thinks has barely started.
-    Object.defineProperty(r.player, "actionFraction", { get: () => 0.75, configurable: true });
-    step(1);
-    const now = r.match.clipWindow.player!;
-
-    // Same playing of the same clip, and a window that now contains the clip.
-    expect(now.seq).toBe(first!.seq);
-    expect(now.clip).toBe(first!.clip);
-    expect(clipFractionAt(now.from, now.to, tick)).toBeCloseTo(0.75, 6);
-    // The duration is the clip's, not something the correction stretched.
-    expect(now.to - now.from).toBeCloseTo(first!.to - first!.from, 6);
-  });
-
-  /** Where the guest reads a window the host has just opened. */
-  function followerSeeing(from: number, to: number, seq: number): string[] {
-    const r = rig({ ui: silentUI() });
-    r.match.versus = true;
-    r.match.netFollower = true;
-    const frame = (tick: number): Frame => ({
-      ballPos: { x: 0, y: 1, z: 0 },
-      ballVel: { x: 0, y: 0, z: 0 },
-      ballHeld: false,
-      selfPos: { x: -3, z: 0 },
-      opponentPos: { x: 3, z: 0 },
-      selfVel: { x: 0, z: 0 },
-      opponentVel: { x: 0, z: 0 },
-      selfClip: null,
-      opponentClip: "ChestKick",
-      opponentClipFrom: from,
-      opponentClipTo: to,
-      opponentClipSeq: seq,
-      tick,
-      score: [0, 0],
-      sets: [0, 0],
-      serveOwner: "player",
-      phase: "rally",
-    });
-    r.match.applySnapshot(frame(1), 0);
-    r.match.applySnapshot(frame(3), 0);
-    r.step(SIM_DT);
-    return r.ai.played;
-  }
-
-  it("plays a clip the host has only just started, rather than holding it back", () => {
-    // The render point is short of the window, which is what a drifting clock
-    // produces. There used to be no branch for it at all: the clip was neither
-    // played nor remembered, so it waited for the clock to drift into range
-    // and then appeared, out of its moment.
-    expect(followerSeeing(400, 450, 7)).toContain("ChestKick");
-  });
-
-  it("still refuses a clip that finished before this screen reached it", () => {
-    // A late join or a long stall. Replaying it out of time is worse than
-    // never showing it.
-    expect(followerSeeing(-400, -350, 8)).not.toContain("ChestKick");
-  });
-});
-
-/**
- * A character mid-touch belongs entirely to the host: nothing is being
- * predicted for it, so there is no prediction error to hide and no reason to
- * ease. Easing anyway is what stopped the limb ever arriving, because the
- * contact lunge darts half a metre onto the ball in a fifth of a second and a
- * quarter-second correction chasing it is always behind.
- */
-describe("a character the host fully owns", () => {
-  it("takes the host's position outright while mid-touch", () => {
-    const r = rig({ ui: silentUI() });
-    r.match.versus = true;
-    r.match.netFollower = true;
-    const frame = (tick: number, oppX: number): Frame => ({
-      ballPos: { x: 0, y: 1, z: 0 },
-      ballVel: { x: 0, y: 0, z: 0 },
-      ballHeld: false,
-      selfPos: { x: -3, z: 0 },
-      opponentPos: { x: oppX, z: 0 },
-      selfVel: { x: 0, z: 0 },
-      opponentVel: { x: 0, z: 0 },
-      selfClip: null,
-      opponentClip: "ChestKick",
-      // Wide enough that the clip is still running at the end of the test.
-      opponentClipFrom: 0,
-      opponentClipTo: 400,
-      opponentClipSeq: 4,
-      tick,
-      score: [0, 0],
-      sets: [0, 0],
-      serveOwner: "player",
-      phase: "rally",
-    });
-    for (const t of [1, 3]) r.match.applySnapshot(frame(t, 3), 0);
-    r.step(SIM_DT);
-    r.step(SIM_DT);
-    expect(r.ai.busy).toBe(true);
-    // Whatever gap this character arrived with is still washing out — see the
-    // note at the handover — so what is pinned here is the *motion*, not the
-    // placement. Measured from wherever it has got to.
-    const before = r.match.chars.ai.position.x;
-
-    // The lunge: half a metre onto the ball, over a handful of ticks. It has
-    // to arrive on time and at full size, because the ball is already flying
-    // to meet a foot that is going to be there. A correction chasing it is
-    // always behind, which is what left a reception playing out with the ball
-    // beyond the foot.
-    for (const t of [5, 7]) r.match.applySnapshot(frame(t, 3.5), 0);
-    r.step(SIM_DT);
-
-    expect(r.match.chars.ai.position.x - before).toBeGreaterThan(0.45);
-
-    // And the gap it arrived with washes out rather than being carried
-    // through the whole touch. Exponential, so it is a tail rather than a
-    // deadline: half a metre is the artificial worst case here, and the few
-    // centimetres a real prediction drifts are gone in a quarter of a second.
-    for (let i = 0; i < 30; i++) r.step(SIM_DT);
-    expect(Math.abs(r.match.chars.ai.position.x - 3.5)).toBeLessThan(0.01);
-  });
-});
 
 /**
  * A serve nobody plays is a match nobody can finish. Against another person
@@ -1119,54 +913,6 @@ describe("the last frames of a finished match", () => {
   });
 });
 
-/**
- * What a guest shows while the feed is not arriving.
- *
- * The render point freezes when the timeline starves, and a clip pinned to a
- * frozen clock is a player standing stock still in the middle of a kick. It is
- * the pose a joined player kept arriving at the service line still wearing.
- */
-describe("a stalled feed", () => {
-  const clipFrame = (tick: number): Frame => ({
-    ballPos: { x: 0, y: 1, z: 0 },
-    ballVel: { x: 0, y: 0, z: 0 },
-    ballHeld: false,
-    selfPos: { x: -3, z: 0 },
-    opponentPos: { x: 3, z: 0 },
-    selfVel: { x: 0, z: 0 },
-    opponentVel: { x: 0, z: 0 },
-    selfClip: null,
-    opponentClip: "ChestKick",
-    opponentClipFrom: 0,
-    opponentClipTo: 400,
-    opponentClipSeq: 9,
-    tick,
-    score: [0, 0],
-    sets: [0, 0],
-    serveOwner: "player",
-    phase: "rally",
-  });
-
-  it("lets a clip keep running rather than freezing it mid-pose", () => {
-    const r = rig({ ui: silentUI() });
-    r.match.versus = true;
-    r.match.netFollower = true;
-    for (const t of [1, 3]) r.match.applySnapshot(clipFrame(t), 0);
-    r.step(SIM_DT);
-    expect(r.ai.busy).toBe(true);
-
-    // Nothing more arrives. The timeline carries for a while, then freezes.
-    for (let i = 0; i < PLAYBACK_STALE_STEPS + PLAYBACK_MAX_EXTRAPOLATE_TICKS + 5; i++) {
-      r.step(SIM_DT);
-    }
-    const before = r.ai.actionFraction;
-    expect(before).not.toBeNull();
-
-    for (let i = 0; i < 10; i++) r.step(SIM_DT);
-
-    expect(r.ai.actionFraction!).toBeGreaterThan(before!);
-  });
-});
 
 /** The arrow that says which end the serve is coming from. */
 describe("the serve marker", () => {
@@ -1202,121 +948,7 @@ describe("the serve marker", () => {
   });
 });
 
-/**
- * Once a clip's window has passed there is nothing left to do about it. The
- * guest used to clear its key at that point, which sent the next step back
- * round to the "not played yet" branch — it skipped the clip, set the key
- * again, and came straight back here. A cancel every other step, each one
- * slamming the locomotion blend to full weight, which is a character standing
- * frozen and shivering instead of walking.
- */
-describe("a clip that outruns the tick clock", () => {
-  it("is not started again once it has finished", () => {
-    /*
-     * Two clocks. Babylon advances the clip off the render loop in wall time;
-     * the window is measured in simulation ticks, and the simulation caps its
-     * frame delta and drops the remainder. On a phone that stutters the
-     * animation runs on while the tick clock does not, so the clip finishes
-     * with the window still open.
-     *
-     * Restarting it then is a loop: the last sliver plays, ends, and is
-     * started again on the next frame, for as long as the window stays open.
-     * That is the winner's celebration going round for ever instead of
-     * finishing, and the same fault flickers a strike pose while the ball,
-     * which is on the tick clock, has not left yet.
-     */
-    const r = rig({ ui: silentUI() });
-    r.match.versus = true;
-    r.match.netFollower = true;
 
-    let plays = 0;
-    const original = r.ai.playAction.bind(r.ai);
-    (r.ai as { playAction: (clip: string, opts?: unknown) => boolean }).playAction = (
-      clip: string,
-      opts?: unknown
-    ) => {
-      plays++;
-      return original(clip, opts as Parameters<typeof original>[1]);
-    };
-
-    const frame = (tick: number): Frame => ({
-      ballPos: { x: 0, y: 1, z: 0 },
-      ballVel: { x: 0, y: 0, z: 0 },
-      ballHeld: false,
-      selfPos: { x: -3, z: 0 },
-      opponentPos: { x: 3, z: 0 },
-      selfVel: { x: 0, z: 0 },
-      opponentVel: { x: 0, z: 0 },
-      selfClip: null,
-      // A celebration, and a window far longer than the clip — which is what a
-      // host that has stopped stepping leaves behind at the final whistle.
-      opponentClip: "Celebration1",
-      opponentClipFrom: 0,
-      opponentClipTo: 600,
-      opponentClipSeq: 3,
-      tick,
-      score: [0, 0],
-      sets: [0, 0],
-      serveOwner: "player",
-      phase: "over",
-    });
-
-    for (let t = 1; t <= 200; t += 2) {
-      r.match.applySnapshot(frame(t), 0);
-      // The clip ends of its own accord, the way it does when the render loop
-      // has outrun the tick clock.
-      r.ai.finishActionEarly();
-      r.step(SIM_DT);
-    }
-
-    // Started once, and then left alone. Looping, this ran to a hundred.
-    expect(plays).toBeLessThanOrEqual(2);
-  });
-});
-
-describe("a clip whose window has passed", () => {
-  it("is cancelled once, not on every step", () => {
-    const r = rig({ ui: silentUI() });
-    r.match.versus = true;
-    r.match.netFollower = true;
-
-    let cancels = 0;
-    const original = r.ai.cancelActionToLoco.bind(r.ai);
-    (r.ai as { cancelActionToLoco: () => void }).cancelActionToLoco = () => {
-      cancels++;
-      original();
-    };
-
-    const frame = (tick: number): Frame => ({
-      ballPos: { x: 0, y: 1, z: 0 },
-      ballVel: { x: 0, y: 0, z: 0 },
-      ballHeld: false,
-      selfPos: { x: -3, z: 0 },
-      opponentPos: { x: 3, z: 0 },
-      selfVel: { x: 0, z: 0 },
-      opponentVel: { x: 0, z: 0 },
-      selfClip: null,
-      opponentClip: "ChestKick",
-      opponentClipFrom: 0,
-      opponentClipTo: 20,
-      opponentClipSeq: 12,
-      tick,
-      score: [0, 0],
-      sets: [0, 0],
-      serveOwner: "player",
-      phase: "rally",
-    });
-
-    // A live feed, carried well past the end of the window.
-    for (let t = 1; t <= 41; t += 2) {
-      r.match.applySnapshot(frame(t), 0);
-      r.step(SIM_DT);
-      r.step(SIM_DT);
-    }
-
-    expect(cancels).toBeLessThanOrEqual(1);
-  });
-});
 
 /**
  * A follower counts no points of its own, and reports them to the server at
@@ -1386,5 +1018,470 @@ describe("what a match was worth", () => {
     expect(seen.tally).toEqual([4, 6]);
     // The rallies belong to the match, not to a seat.
     expect(seen.rallies).toBe(3);
+  });
+});
+
+/**
+ * The guest playing the host's decisions: two real matches, with every frame
+ * and every decision crossing one ordered, delayed link, the way the relay's
+ * socket carries them. A message never overtakes one sent before it, so a slow
+ * one holds up everything behind it — which is exactly the case the old
+ * reorderable harness above could not show.
+ */
+describe("the guest plays the host's decisions", { timeout: 30_000 }, () => {
+  interface Wire {
+    host: Rig;
+    stepHost(input?: Partial<InputState>): void;
+    stepGuest(): void;
+    /** The host's ball at the end of each of its ticks. */
+    ball: { x: number; y: number; z: number; held: boolean }[];
+    /** Both of the host's characters at the end of each of its ticks. */
+    bodies: Record<"player" | "ai", { x: number; z: number; busy: boolean }>[];
+    /** Every launch the host published, as it published it, and the tick it left on. */
+    launches: (Extract<ReturnType<Rig["match"]["takeNetEvents"]>[number], { type: "launch" }> & { sentAt: number })[];
+    tick(): number;
+  }
+
+  function wire(host: Rig, guest: Rig, delay: number, jitter: () => number, lead: number): Wire {
+    host.match.netPublish = true;
+    guest.match.netFollower = true;
+    // As a session sets up its guest: drawing the host's past from a buffer.
+    guest.match.usePlaybackBuffer();
+    const cpu = new AIController(host.match, DIFFICULTIES.normal);
+    const inFlight: { due: number; apply: () => void }[] = [];
+    let lastDue = 0;
+    let tick = 0;
+    const ball: Wire["ball"] = [];
+    const bodies: Wire["bodies"] = [];
+    const launches: Wire["launches"] = [];
+    const send = (apply: () => void, spread: number) => {
+      lastDue = Math.max(lastDue, tick + delay + spread);
+      inFlight.push({ due: lastDue, apply });
+    };
+    return {
+      host,
+      ball,
+      bodies,
+      launches,
+      tick: () => tick,
+      stepHost(input = {}) {
+        host.match.update(SIM_DT, { ...idle, ...input }, (dt) => cpu.update(dt));
+        tick += 1;
+        const spread = jitter();
+        host.match.drainNet(tick);
+        const m = host.match;
+        const b = m.ball;
+        ball[tick] = { x: b.state.pos.x, y: b.state.pos.y, z: b.state.pos.z, held: b.held };
+        const body = (c: Rig["match"]["chars"]["player"]) => ({ x: c.position.x, z: c.position.z, busy: c.busy });
+        bodies[tick] = { player: body(m.chars.player), ai: body(m.chars.ai) };
+        for (const e of m.takeNetEvents()) {
+          if (e.type === "launch") {
+            launches.push({ ...e, sentAt: tick });
+            send(() => guest.match.queueLaunch(e), spread);
+          } else {
+            send(() => guest.match.queueClip(e), spread);
+          }
+        }
+        if (tick % 2 === 0) {
+          const frame: Frame = {
+            ballPos: { x: b.state.pos.x, y: b.state.pos.y, z: b.state.pos.z },
+            ballVel: { x: b.state.vel.x, y: b.state.vel.y, z: b.state.vel.z },
+            ballHeld: b.held,
+            selfPos: { x: m.chars.player.position.x, z: m.chars.player.position.z },
+            opponentPos: { x: m.chars.ai.position.x, z: m.chars.ai.position.z },
+            selfVel: { x: m.chars.player.velocity.x, z: m.chars.player.velocity.z },
+            opponentVel: { x: m.chars.ai.velocity.x, z: m.chars.ai.velocity.z },
+            selfClip: m.chars.player.currentActionClip,
+            opponentClip: m.chars.ai.currentActionClip,
+            tick,
+            score: [m.score.player, m.score.ai],
+            sets: [m.sets.player, m.sets.ai],
+            serveOwner: m.serveOwner,
+            phase: m.state,
+          };
+          send(() => guest.match.applySnapshot(frame, lead), spread);
+        }
+        while (inFlight.length > 0 && inFlight[0].due <= tick) inFlight.shift()!.apply();
+      },
+      stepGuest() {
+        guest.match.setPlaybackLead(lead);
+        guest.match.update(SIM_DT, idle, () => {});
+      },
+    };
+  }
+
+  /**
+   * Rallies with set-ups asked for, stepping both ends together — serving
+   * whenever the host's player is the one waiting to, so a lost point is
+   * followed by the next one rather than by a match standing still.
+   */
+  function rally(w: Wire, ticks: number, each: (i: number) => void): void {
+    for (let i = 0; i < ticks; i++) {
+      const m = w.host.match;
+      const serving = m.state === "serve_ready" && m.serveOwner === "player";
+      const input = serving && i % 30 === 0 ? { strikePressed: true } : i % 24 === 0 ? { popPressed: true } : {};
+      w.stepHost(input);
+      w.stepGuest();
+      each(i);
+    }
+  }
+
+  /** The host's ball at a fractional host instant, between its two ticks. */
+  const hostBallAt = (w: Wire, at: number) => {
+    const a = w.ball[Math.floor(at)];
+    const b = w.ball[Math.floor(at) + 1];
+    if (!a || !b) return null;
+    const f = at - Math.floor(at);
+    const l = (p: number, q: number) => p + (q - p) * f;
+    return { x: l(a.x, b.x), y: l(a.y, b.y), z: l(a.z, b.z), held: a.held || b.held };
+  };
+
+  const seeded = (seed: number, spread: number) => {
+    let s = seed;
+    return () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return Math.floor((s / 0x7fffffff) * spread);
+    };
+  };
+
+  it("flies the host's own flight, on the host's ticks", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    const delay = 4;
+    const w = wire(host, guest, delay, () => 0, delay);
+    const drawn: { at: number; x: number; y: number; z: number; d: number }[] = [];
+    rally(w, 3600, (i) => {
+      if (i < 200) return;
+      const at = guest.match.renderTick;
+      if (at === null) return;
+      const truth = hostBallAt(w, at);
+      if (!truth || truth.held || guest.match.ball.held) return;
+      const p = guest.match.ball.state.pos;
+      drawn.push({ at, x: p.x, y: p.y, z: p.z, d: Math.hypot(p.x - truth.x, p.y - truth.y, p.z - truth.z) });
+    });
+
+    // A decision the guest could only hear about after its tick — a toss, a
+    // deflection off a body, a touch with less notice than the trip — is
+    // replayed and faded in. Those windows are the only place the guest may
+    // differ from the host at all.
+    // Late includes arriving on its own tick: the guest's flight is always a
+    // tick ahead of the instant drawn, so it can draw between the two.
+    const late = w.launches.filter((l) => l.tick <= l.sentAt + delay).map((l) => l.tick);
+    // From the tick before: a deflection happens inside a host step, and the
+    // earliest a decision can take effect is the start of the next one.
+    const fading = (at: number) => late.some((t) => at >= t - 1 && at < t + 40);
+    const steady = drawn.filter((s) => !fading(s.at));
+    expect(steady.length).toBeGreaterThan(600);
+    // Everywhere else it is not approximately the host's flight: it is the same
+    // `stepBall` from the same decisions, to the centimetre.
+    expect(steady.filter((s) => s.d >= 0.01)).toEqual([]);
+    // And no decision went missing for a snapshot to catch.
+    expect(guest.match.guestBallStats.reanchors).toBe(0);
+    // Inside a fade the ball still moves like a ball: no step further than the
+    // physics speed cap could carry it, which is what a correction taken whole
+    // would be.
+    for (let i = 1; i < drawn.length; i++) {
+      if (Math.abs(drawn[i].at - drawn[i - 1].at - 1) > 0.1) continue;
+      const step = Math.hypot(drawn[i].x - drawn[i - 1].x, drawn[i].y - drawn[i - 1].y, drawn[i].z - drawn[i - 1].z);
+      expect(step).toBeLessThan(0.45);
+    }
+  });
+
+  it("sends each touch as exactly the launch the host then plays", () => {
+    // The host decides a kick at commit and fires it at contact. If those two
+    // ever differ the guest is flying a flight the host never had.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    const w = wire(host, guest, 4, () => 0, 4);
+    rally(w, 2400, () => {});
+
+    const kicks = w.launches.filter((l) => l.kick && l.tick <= w.tick());
+    expect(kicks.length).toBeGreaterThan(6);
+    for (const l of kicks) {
+      const s: BallState = {
+        pos: new Vector3(l.pos.x, l.pos.y, l.pos.z),
+        vel: new Vector3(l.vel.x, l.vel.y, l.vel.z),
+      };
+      stepBall(s, SIM_DT);
+      const truth = w.ball[l.tick];
+      expect(Math.hypot(s.pos.x - truth.x, s.pos.y - truth.y, s.pos.z - truth.z)).toBeLessThan(1e-6);
+    }
+  });
+
+  it("launches every touch with time to bend from the striking limb", () => {
+    // The old game teleported the ball onto the live bone at contact, which is
+    // a different place on every device; nearly half of all touches committed
+    // with the limb a quarter of a metre or more from the ball. Now the flight
+    // is bent onto the limb's measured point, and that point is the launch —
+    // for every touch with at least one tick left to bend over.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    const w = wire(host, guest, 4, () => 0, 4);
+    const hm = host.match as unknown as { reachableContact: (...a: unknown[]) => { ticks: number } };
+    const decided = hm.reachableContact.bind(host.match);
+    const notice: number[] = [];
+    hm.reachableContact = (...a: unknown[]) => {
+      const r = decided(...a);
+      notice.push(r.ticks);
+      return r;
+    };
+    const misses: string[] = [];
+    let bent = 0;
+    host.match.subscribe((e) => {
+      if (e.type !== "ball-launched" || e.action === "serve") return;
+      const ticks = notice.shift();
+      const limb = host[e.side].clipContactPoint(e.clip);
+      if (!limb || ticks === undefined || ticks < 2) return;
+      bent += 1;
+      const d = Vector3.Distance(limb, e.pos);
+      if (d > 0.01) misses.push(`${e.clip} ${d.toFixed(3)}`);
+    });
+    rally(w, 3600, () => {});
+    expect(bent).toBeGreaterThan(20);
+    expect(misses).toEqual([]);
+  });
+
+  it("follows a host running slower than real time, at its pace, without rewinding", () => {
+    // A host that cannot hold its match on real time runs fewer ticks than the
+    // guest steps. A clock that assumed one tick a step raced ahead of every
+    // frame and was snapped back; measured, sixteen per cent was chaos.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    const w = wire(host, guest, 5, seeded(3, 3), 5);
+    const clocks: number[] = [];
+    let owed = 0;
+    for (let i = 0; i < 4200; i++) {
+      owed += 0.75;
+      while (owed >= 1) {
+        owed -= 1;
+        const m = w.host.match;
+        const serving = m.state === "serve_ready" && m.serveOwner === "player";
+        w.stepHost(serving && i % 30 === 0 ? { strikePressed: true } : i % 24 === 0 ? { popPressed: true } : {});
+      }
+      w.stepGuest();
+      const at = guest.match.renderTick;
+      if (at !== null) clocks.push(at);
+    }
+    const settled = clocks.slice(900);
+    for (let i = 1; i < settled.length; i++) expect(settled[i]).toBeGreaterThanOrEqual(settled[i - 1]);
+    expect(guest.match.followerStats.rate).toBeCloseTo(0.75, 1);
+    // And the screen keeps the host's pace: over the settled stretch the clock
+    // covers what the host did, not a third more.
+    const covered = (settled[settled.length - 1] - settled[0]) / (settled.length - 1);
+    expect(covered).toBeGreaterThan(0.7);
+    expect(covered).toBeLessThan(0.8);
+  });
+
+  it("has every decision in hand before its tick when it draws from a buffer", () => {
+    // Drawn a measured interval behind the best-routed frame, a guest hears of
+    // a kick, a toss or a deflection before the instant it shows — so nothing
+    // is replayed into a flight already drawn, and no clip starts late.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    const w = wire(host, guest, 5, seeded(11, 5), 5);
+    rally(w, 3600, () => {});
+    const stats = guest.match.followerStats;
+    expect(w.launches.length).toBeGreaterThan(30);
+    expect(stats.lateClips).toBe(0);
+    expect(stats.replays).toBe(0);
+    expect(stats.reanchors).toBe(0);
+  });
+
+  it("keeps a running opponent on the host's position instead of trailing it", () => {
+    // The correction onto the timeline used to be all of the motion: a fixed
+    // fraction of the gap per step and nothing else, so a player running
+    // faster than that fraction covered settled a whole `speed × time` behind
+    // the one on the timeline and caught up in a lurch. Measured before the
+    // velocity was carried: 37 cm one tick in ten, and 90 at worst.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    const w = wire(host, guest, 4, () => 0, 4);
+    const drawn: { at: number; x: number; z: number }[] = [];
+    rally(w, 2700, (i) => {
+      const at = guest.match.renderTick;
+      if (i < 300 || at === null) return;
+      const p = guest.match.chars.ai.position;
+      drawn.push({ at, x: p.x, z: p.z });
+    });
+    const errors = drawn
+      .map((d) => {
+        const h = w.bodies[Math.round(d.at)];
+        return h ? Math.hypot(d.x - h.ai.x, d.z - h.ai.z) : null;
+      })
+      .filter((e): e is number => e !== null)
+      .sort((a, b) => a - b);
+    expect(errors.length).toBeGreaterThan(2000);
+    expect(errors[Math.floor(errors.length * 0.5)]).toBeLessThan(0.01);
+    expect(errors[Math.floor(errors.length * 0.9)]).toBeLessThan(0.2);
+  });
+
+  it("stands a player on the host's spot for the whole of a touch", () => {
+    // Mid-touch the host moves a player by the lunge and nothing else, so the
+    // spot is known exactly — and a player left wherever a 30 Hz feed had
+    // carried it was measured twenty centimetres off for a whole kick, with the
+    // ball arriving at the host's foot beside it.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    const w = wire(host, guest, 5, seeded(7, 4), 6);
+    const drawn: { at: number; side: "player" | "ai"; x: number; z: number }[] = [];
+    rally(w, 2700, (i) => {
+      const at = guest.match.renderTick;
+      if (i < 200 || at === null) return;
+      for (const side of ["player", "ai"] as const) {
+        const c = guest[side];
+        if (c.busy && !c.lunging) drawn.push({ at, side, x: c.position.x, z: c.position.z });
+      }
+    });
+    const settled = drawn.filter((d) => w.bodies[Math.round(d.at)]?.[d.side].busy);
+    expect(settled.length).toBeGreaterThan(100);
+    for (const d of settled) {
+      const h = w.bodies[Math.round(d.at)][d.side];
+      expect(Math.hypot(d.x - h.x, d.z - h.z), `${d.side} at ${d.at}`).toBeLessThan(0.03);
+    }
+  });
+
+  it("takes back a touch published ahead when the point ends before its contact", () => {
+    // A kick is sent at commit for the tick its limb will arrive on. If the
+    // point is over before then the host never plays it — and a guest left
+    // holding it would kick a ball nobody kicked.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    const w = wire(host, guest, 2, () => 0, 2);
+    let pending: Wire["launches"][number] | null = null;
+    for (let i = 0; i < 3000 && !pending; i++) {
+      w.stepHost(i === 180 ? { strikePressed: true } : i > 180 && i % 24 === 0 ? { popPressed: true } : {});
+      w.stepGuest();
+      pending = w.launches.find((l) => l.kick && l.tick > w.tick() + 2) ?? null;
+    }
+    expect(pending).not.toBeNull();
+    // The point ends under the wind-up: whatever rule ended it, the countdown
+    // reaches a touch that will not be played.
+    (host.match as unknown as { state: string }).state = "point";
+    while (w.tick() < pending!.tick + 10) {
+      w.stepHost();
+      w.stepGuest();
+    }
+
+    const word = w.launches.filter((l) => l.tick === pending!.tick);
+    expect(word.length).toBe(2);
+    expect(word[1].kick).toBe(false);
+    // The replacement is the ball as it really was at that tick: no kick in it.
+    const s: BallState = {
+      pos: new Vector3(word[1].pos.x, word[1].pos.y, word[1].pos.z),
+      vel: new Vector3(word[1].vel.x, word[1].vel.y, word[1].vel.z),
+    };
+    stepBall(s, SIM_DT);
+    const truth = w.ball[pending!.tick];
+    expect(Math.hypot(s.pos.x - truth.x, s.pos.y - truth.y, s.pos.z - truth.z)).toBeLessThan(1e-6);
+    // And the guest, told in time, flies the unkicked ball.
+    const at = guest.match.renderTick!;
+    const g = guest.match.ball.state.pos;
+    const h = hostBallAt(w, at);
+    if (!guest.match.ball.held && h && !h.held) {
+      expect(Math.hypot(g.x - h.x, g.y - h.y, g.z - h.z)).toBeLessThan(0.05);
+    }
+  });
+
+  it("lands every contact frame on the tick the host's ball turned, on a jittery link", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    const guest = rig({ ui: silentUI() });
+    /** When a started clip's limb meets the ball, and how long its wind-up had. */
+    const contactOf = (at: number, name: string, startFrac: number, speed: number) => {
+      const c = CLIPS[name];
+      if (!c || c.contact < 0 || c.contact / c.frames <= startFrac) return null;
+      const windup = ((c.contact / c.frames - startFrac) * c.frames) / speed;
+      return { at: at + windup, windup };
+    };
+    const hostContacts: { at: number; windup: number }[] = [];
+    const guestContacts: { at: number; windup: number }[] = [];
+    let hostTick = 0;
+    const watch = (r: Rig, clock: () => number, into: typeof hostContacts) => {
+      for (const side of ["player", "ai"] as const) {
+        const c = r[side];
+        const play = c.playAction.bind(c);
+        c.playAction = (name, opts = {}) => {
+          const ok = play(name, opts);
+          // Placed on the clock from its start tick when one is given — which is
+          // what a guest does with the host's — not from when it was called.
+          // And from the start a character actually uses, head frames floored.
+          const from = Math.max(opts.startFrac ?? 0, clipStartFraction(name));
+          const contact = ok ? contactOf(opts.startTick ?? clock(), name, from, opts.speed ?? 1) : null;
+          if (contact) into.push(contact);
+          return ok;
+        };
+      }
+    };
+    watch(host, () => hostTick + 1, hostContacts);
+    watch(guest, () => guest.match.renderTick ?? NaN, guestContacts);
+    // Five ticks there, plus up to four of jitter, and a lead that puts the
+    // guest's clock at about the host's.
+    const worstTrip = 5 + 4 + 2;
+    const w = wire(host, guest, 5, seeded(99, 5), 7);
+    rally(w, 3600, () => {
+      hostTick = w.tick();
+    });
+
+    // No contact is ever shown at the wrong moment: every limb the guest
+    // brings to the ball arrives on the tick the host's did, however late the
+    // decision was — a late wind-up is hurried or started further in, never
+    // slid past its contact.
+    expect(guestContacts.length).toBeGreaterThan(10);
+    for (const g of guestContacts) {
+      expect(hostContacts.some((h) => Math.abs(g.at - h.at) <= 1.01), `guest contact at ${g.at}`).toBe(true);
+    }
+    // And every touch whose wind-up outlasted the trip is shown. A shorter one
+    // was over before anyone could have been told; that is the one thing no
+    // design on a real link can put on time.
+    const reachable = hostContacts.filter((h) => h.windup > worstTrip);
+    expect(reachable.length).toBeGreaterThan(10);
+    for (const h of reachable) {
+      expect(guestContacts.some((g) => Math.abs(g.at - h.at) <= 1.01), `host contact at ${h.at}`).toBe(true);
+    }
+  });
+});
+
+describe("the end of an online match", () => {
+  it("sends the winner's celebration, which no clip table lists", () => {
+    // `CLIPS` holds the clips with a contact to time. The match-win
+    // celebrations meet no ball and are in no table, and publishing only what
+    // the table knew meant a guest's winner stood still at the final whistle.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const host = rig();
+    host.player.groups.set("EndOfGameVictory", { from: 0, to: 240 });
+    host.ai.groups.set("EndOfGameVictory", { from: 0, to: 240 });
+    host.match.netPublish = true;
+    const cpu = new AIController(host.match, DIFFICULTIES.normal);
+    const m = host.match as unknown as { score: { player: number; ai: number }; sets: { player: number; ai: number } };
+    const clips: string[] = [];
+    let tick = 0;
+    for (let i = 0; i < 20_000 && host.match.state !== "over"; i++) {
+      if (i === 10) {
+        m.score.player = WIN_SCORE - 1;
+        m.score.ai = WIN_SCORE - 1;
+        m.sets.player = SETS_TO_WIN - 1;
+        m.sets.ai = SETS_TO_WIN - 1;
+      }
+      const input = i === 180 ? { strikePressed: true } : i > 180 && i % 24 === 0 ? { popPressed: true } : {};
+      host.match.update(SIM_DT, { ...idle, ...input }, (dt) => cpu.update(dt));
+      tick += 1;
+      host.match.drainNet(tick);
+    }
+    host.match.drainNet(tick + 1);
+    for (const e of host.match.takeNetEvents()) if (e.type === "clip" && e.clip) clips.push(e.clip);
+
+    expect(host.match.state).toBe("over");
+    const winner = host.match.matchWinner!;
+    const celebrated = host[winner].currentActionClip;
+    expect(celebrated).toBe("EndOfGameVictory");
+    expect(clips).toContain("EndOfGameVictory");
   });
 });

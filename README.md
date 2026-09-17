@@ -1619,43 +1619,158 @@ The guest's world is mirrored so both players see themselves on the near side;
 `reframe` in `src/net/protocol.ts` rotates every message 180° about the
 vertical axis on the way in and out, and swaps the two seats with it.
 
-**A guest reads everything off one clock, and that clock is led forward to the
-instant the host is playing.** Arriving frames join `PlaybackBuffer` in
-`src/net/playback.ts` keyed by the host's tick, and the ball and both
-characters are read out together — one instant on screen, rather than a ball
-from one moment beside a player from another.
+**The faster device hosts.** The host runs the only match, so its device sets
+the pace for both screens — the same two emulators looked fine one way round
+and like chaos the other, depending only on which one hosted. Each peer measures
+its frame rate before the match and sends it on `setup` (`perf`), and
+`chooseAuthority` in `src/net/protocol.ts` gives the match to the faster one:
+symmetric by construction, a tie or a missing value keeping the relay's seats.
+The relay's seats still decide who mints a rematch's match id, and whose ball
+is used.
 
-The lead is not decoration. A guest's own character is predicted live, so a
-screen that showed the ball a fixed interval in the past was showing the two
-things a touch is timed between at two different moments: every press after the
-automatic first touch reached the host after the instant it was aimed at, and
-the joined player could receive the ball and do nothing else with it for a
-whole match. The lead comes from `conn.latencyTicks`, half the measured round
-trip, plus the snapshot grid and a capped jitter margin — `latencyTicks` and
-not the `TickAge` estimator, which reports age *above the best route it has
-seen* and so reads near zero on a steady link however far away the host is.
+**A match never drops time it can afford to catch up.** The render loop used to
+cap every frame at `MAX_FRAME_DT` (50 ms) and throw the rest away, so a device
+drawing fewer than twenty frames a second ran the match itself slower than real
+time. The simulation is cheap beside drawing a frame, so a match may now catch
+up to `MAX_CATCHUP_SECONDS` per frame; only longer stalls still drop. The
+connection stats overlay (a setting) shows frame rate, simulation speed and
+dropped time on both screens, which is what tells a slow device from a slow
+link.
 
-Between frames the ball is carried by the same pure `stepBall` both peers run,
-so the lead reproduces the host's physics rather than guessing at it. That is
-exact right up until somebody touches the ball, and a touch is the one thing in
-the lead a guest cannot compute — but it can see it coming. A clip window spans
-fraction 0 to fraction 1, and every striking clip has its contact frame written
-down, so the instant a limb meets the ball is arithmetic on numbers already on
-the wire. The flight stops there and waits rather than sailing through the
-foot, which is what used to send the ball past the player and then drag it
-backwards when the truth landed.
+**One clock: a match's animations are placed on simulation time.** Babylon used
+to play every clip on the render loop's own delta while the ball, the positions
+and the contact countdowns stepped in simulation ticks. They agreed only while a
+device kept up, and every correction in this netcode's history — restating clip
+windows, steering clips toward them, hurrying wind-ups — existed because they
+did not. A match character's clips are now *placed*: a start tick, a start frame
+and a rate, the frame at any tick being arithmetic (`src/animclock.ts`). Groups
+are paused and set frame by frame from `Character.update` — a paused group holds
+a frame and still blends by weight, which a group at speed zero does not.
+Locomotion loops are integrated by game time. The carousel, the viewer and the
+volume inspector keep Babylon's clock (`useSimClock`). The host places clips on
+its step count; a guest places the host's clips on the host's ticks, so the
+frame on its screen is the host's frame whenever the decision arrived.
 
-What is left over is still eased. The difference is carried into an offset
-which decays a fixed fraction per step (`BALL_CORRECT_SECONDS`), so the ball
-turns onto the true flight at once and the leftover distance melts away; an
-offset decays on its own rather than filtering the position, because a filter
-chasing a moving target settles at a permanent lag proportional to the ball's
-speed, which is the delay the lead exists to remove. Past `BALL_SNAP` it is
-taken whole — a new point or a reconnect, not a correction — and a held ball is
-never eased, because easing would drag it out of the hand carrying it.
+**A guest draws the host's past, at the host's pace.** Arriving frames join
+`PlaybackBuffer` in `src/net/playback.ts`, and the ball, both characters and
+every clip are read off its clock. That clock used to be led *ahead* to the
+instant the host was playing, which meant guessing — every kick, turn and bounce
+not yet reported was drawn wrong and corrected, and it was measured as players
+trailing and lurching and balls bending. A guest now draws a measured interval
+behind its best-routed frame (`usePlaybackBuffer`): a snapshot interval, the
+ninetieth percentile of arrival jitter and a tick, between `PLAYBACK_BUFFER_MIN`
+and `_MAX`. Remote characters are interpolated between real frames, and every
+decision is in hand before its tick. The clock runs at the host's *rate*, fitted
+over five seconds of arrivals (`fitRate`), so a host that cannot keep its match
+on real time looks slow rather than chaotic. The guest's own player is still
+predicted and instant, and the host judges its presses against the instant it
+was showing, a round trip plus the buffer back (`viewTick`).
+
+Leading was tried first, and for a reason: a guest drawn behind the host, with
+its own player drawn live, used to have every press after the first touch
+judged against a ball a trip later than the one it saw. The rewind (`viewTick`)
+is what made drawing behind playable.
+
+**That sum is where the clock should be, not what it is.** It used to be both:
+`newestTick + lead + steps since it arrived`, recomputed every step. That is a
+clock only while frames arrive on a perfect grid, and a phone's never do — one
+lands a step late, the next a step early, and every arrival re-anchored the
+sum. Measured under ordinary jitter, the instant on screen went backwards on one
+step in fourteen and jumped by as much as nine ticks, and the ball and every
+clip were drawn off it: most of what looked like unsteady physics on the guest
+was the clock. It now advances one tick a step and is aimed by the
+*best-routed* recent frame rather than the newest (`CLOCK_WINDOW_ARRIVALS`),
+because a late frame says only that the route was slow. Inside
+`CLOCK_DEADBAND_TICKS` it does not lean at all, and beyond it never more than
+`CLOCK_MAX_SLEW`. A first version leaned toward every arrival by up to eight
+per cent, which is invisible as speed and very visible as timing: the ball runs
+on this clock and the animations on the renderer's, so a seventy-tick wind-up
+became sixty-five on one and met a ball that had already gone. The lead it is
+set by is the one-way trip converted to *simulation* ticks at the host's speed —
+`latencyTicks` counts sixtieths of a second, and a match at 1.25 runs
+seventy-five ticks in one. It jumps forward when it is too far behind to lean
+(`CLOCK_SNAP_TICKS`) but not back: a clock ahead of the sum is almost always one that kept counting while
+frames were stuck behind a slow one on the socket, and when they all land at
+once the newest of them is still old — the clock was right, and snapping to the
+stale sum rewound the whole screen a quarter of a second after every hiccup.
+Only a gap no stall explains (`CLOCK_REWIND_TICKS`, a reconnect) is taken back.
+
+**Both phones play at the host's speed.** Gameplay speed is a per-device
+setting, and it sets how many simulation ticks a second of wall time holds and
+how fast every animation runs. A guest on 1.45 against a host on 1.25 stepped
+its playback clock sixteen per cent faster than the frames it was reading. The
+snapshot carries the host's `ts`, the guest adopts it for both the simulation
+and `scene.animationTimeScale` until the match ends, and a change made in
+settings mid-match is saved but only applied after it.
+
+**The host sends decisions, and the guest plays them itself.** Everything
+that moves on a guest's screen is either a decision somebody made or the
+consequence of one: a limb meets the ball, a body deflects it, a server tosses
+it, a clip starts. Between decisions the ball is nothing but `stepBall`, and the
+guest has the same code, the same models and the same clips as the host. So a
+guest is no longer *shown* the ball and the swings, re-placed thirty times a
+second from snapshots; the host sends each decision (protocol 5: `launch` and
+`clip`) and the guest flies and animates from them on its own clock
+(`src/net/guestball.ts`, `applyGuestClips` in `src/match.ts`).
+
+What crosses is the *outcome* of a decision, never its inputs. A guest that
+re-derived a kick from a direction and a power would disagree with the host
+within a touch: the clip choice sits on height thresholds, and the launch used
+to be read off the striking bone's position, which is wherever that device's
+animation happened to be. The earlier authority-handoff design above is what
+re-deriving looks like.
+
+**A kick is decided when it is committed, not when it lands.** `tryStrike` and
+`tryControlTouch` now work out the launch the moment the touch commits, from
+where the ball's natural flight and the lunge will put things on the contact
+tick (`beginContactLunge` steps the flight exactly as many times as `update`
+will before the countdown fires), and the contact countdown counts whole ticks
+so that tick is known at commit. The contact fires from that countdown only —
+the clip's own contact frame is on the render clock, and a launch that could
+come from either would leave on a tick nobody was told. This applies offline
+too: the ball now leaves from its planned contact point rather than being
+snapped onto the bone. If something knocks the ball off the path the decision
+was made for (`SHOT_PATH_TOLERANCE`), the contact is decided again and sent.
+
+The wind-up is the head start. A touch commits between a tenth and four tenths
+of a second before its limb arrives, and a trip between two phones is usually
+shorter than that, so the decision reaches the guest before its tick and the
+guest's ball turns on the same tick as the host's. A decision that arrives after
+its tick — a toss, a deflection, a touch with less notice than the trip — is
+applied where it belonged and the flight replayed from there, and the
+difference to what was on screen fades out over `GUEST_BALL_FADE_SECONDS`
+rather than jumping. That is the one part no design can put on time on a real
+link: a wind-up shorter than the trip was over before anyone could have been
+told.
+
+Every host step a body changed is published, not only the ones that fire a
+"body" event. A ball arriving inward bounces and says so; a ball resting or
+rolling against a player is pushed back out every substep in silence. The host
+compares its step with a collider-free one and publishes when they differ,
+flagged `settled` so the guest applies it to the end of that tick as well as
+the start of the next.
+
+Snapshots still carry the ball, as a check rather than a source. A snapshot that
+disagrees with the flown ball at its own tick by more than
+`GUEST_BALL_DIVERGENCE` means a decision went missing, and it becomes one. The
+session sends a step's decisions before that step's snapshot, so on an ordered
+socket the check can only fire for something genuinely missed; `reanchors` is
+counted, and the integration tests hold it at zero. The guest flies the ball
+without body colliders: a deflection is a decision the host sends, and a guest
+bouncing its own ball off the bodies it draws bounced it off strikers whose
+clip had not reached its screen yet — bodies the host exempts.
 
 **Characters ride the velocity the host reports for them**, not a difference of
-the positions it reports. The wire value is `Character.velocity`, already eased
+the positions it reports — and they are *moved* by it, with only the leftover
+error corrected over `FOLLOWER_CORRECT_SECONDS`. The correction used to be the
+whole of the motion: a fixed fraction of the gap to the timeline per step,
+which a player running faster than that fraction covers can never close. The
+one on screen settled a full `speed × time` behind the one on the timeline —
+measured at 37 cm one tick in ten and 90 at worst — and caught up in a lurch
+the moment they stopped or began a touch, which is what a guest saw as players
+teleporting.
+
+The wire value is `Character.velocity`, already eased
 on the way up and exactly zero the step a run reaches its target; a backward
 difference of two 30 Hz positions lags that stop by two ticks and then has the
 stale speed multiplied by the lead. That is what sent a joined player sailing
@@ -1664,28 +1779,52 @@ movement a reception is made of. The carry is capped at
 `MAX_CHAR_CARRY_METRES`, because extrapolating a body is a guess whose error
 grows with the square of how far it runs.
 
-**A clip plays at the rate the host played it at.** The host raises the rate on
-a touch — a strike at 1.3, a set-up at 1.25 — and encodes that by shortening
-the window, so `clipWindowSpeed` divides it back out. A guest that played every
-clip at 1.0 regardless reached the contact frame an eighth of a second after
-the ball had already gone, and then had the clip cut off three quarters of the
-way through and popped back to idle mid-follow-through. It is the single
-biggest reason the animation and the physics used to describe different
-moments.
+**A clip is started once and then simply played.** A `clip` decision says
+which clip, from which fraction, at which rate, on which tick, and the lunge
+that goes with it. The guest starts it when its clock reaches that tick and lets
+its own animation system play it to its own end, exactly as the host does — no
+window to hold it to, no steering, no re-seating, no cut-off when a window
+closes. A clip cut short on the host is its own decision (`clip: null`). The
+lunge is applied locally too, because the half-metre dart that puts a limb on
+the ball is far too quick for a 30 Hz position feed to draw.
 
-**And the window is restated every step from where the clip actually is.** It
-is stamped in simulation ticks and the clip is played by the renderer, and
-those are two different clocks: the fixed step caps its delta at
-`MAX_FRAME_DT` and drops the remainder, while an animation group advances on
-the frame's real delta. A device dropping frames runs its animations ahead of
-its own simulation, so a window predicted once at the clip's start stops
-containing the clip within a touch or two — and a window that no longer
-describes its clip is a clip the guest skips, or holds back until its own
-clock drifts into range and then plays out of its moment, usually at the next
-serve. `Character.actionFraction` reads the truth off the animatable, and
-`drainNet` re-derives the window from it. Identity moved to an instance
-number on the wire at the same time (`hostClipSeq`), because a window that
-moves can no longer be its own name.
+A clip also carries where the character stood when it began (`at`). The host
+moves a player mid-touch by the contact lunge and by nothing else, so for the
+whole of a clip that player's place is exactly known, and the guest glides its
+player onto it — along the lunge when there is one, otherwise over
+`GUEST_SETTLE_SECONDS` — before the limb meets the ball. Without it a player
+was kicked from wherever a 30 Hz feed had last carried them: measured twenty
+centimetres off for a whole kick after a direction change no frame had reported
+yet, with the ball arriving at the host's foot beside it. And a busy player is
+held there, not re-read from the timeline, whose carry past the end of a lunge
+overshot the spot by up to forty centimetres in a tick.
+
+Every clip is published, not only the touches. `CLIPS` lists the clips with a
+contact to time, and it used to be where a clip's length was read — so the
+match-win celebrations, which meet no ball and are in no table, were never
+sent, and the guest's winner stood still at the final whistle. The animation's
+own frame range is the length of anything the table does not know.
+
+A clip decision is made the instant the clip starts. It used to reach a guest
+drawing ahead a trip late, and was hurried or started part-way in; drawn from a
+buffer, it arrives before its tick and is simply placed.
+
+**Every touch meets its limb.** `reachableContact` decides at commit where the
+striking limb will be at the contact tick — the measured offset from the root,
+at the spot the lunge will stand the player, so no live skeleton is involved and
+both screens compute the same point — and bends the last `CONTACT_BEND_TICKS` of
+the flight onto it. The bend is published like the kick itself, and the kick
+launches from the limb. A touch with no tick left to bend over leaves from where
+the ball is. The old game instead teleported the ball onto the live bone, a
+different place on every device.
+
+Measured while doing this, and not yet fixed: across long rallies of both seats
+nearly half of all touches commit with the limb a quarter of a metre or more
+from the ball — a ball still above the limb it was chosen for, or one already at
+the body with a tick of notice. Refusing those took rallies from eleven touches
+a point to three, because positioning (`dropSpot` aims at chest height), the
+reach tests and the AI were all tuned around the teleport. Until that is
+reworked, big gaps show as a visible bend.
 
 **A press is judged against the ball the player was looking at.** The guest
 stamps every input frame with the host tick its screen was showing
@@ -1710,19 +1849,11 @@ name said it was busy. The name is now cleared wherever an action ends.
 restoring the locomotion weights `playAction` zeroed on the way in, so a clip
 that is stopped rather than allowed to finish leaves nothing driving the
 skeleton and the character frozen on the frame it was cut at. Offline that is
-rare, because clips almost always run to their own end. On a guest it is the
-*only* way a clip ever ends — the host's window says when — which is why a
-joined player was walked back to the service line still holding the pose of a
-kick. Both the guest and `stopSideAction` use `cancelActionToLoco` now.
-
-**And a clip is only held to that clock while the clock is moving.** When the
-feed starves the render point freezes, and a clip pinned to a frozen clock is a
-player standing stock still in the middle of a kick until the frames come back.
-While the timeline is carrying or frozen the clip runs on its own instead. Even
-when it is live, the correction has a tolerance (`CLIP_RESYNC_FRACTION`):
-seeking every step would hand every wobble in the host's own frame rate
-straight to this screen, and a small difference riding is what keeps a swing
-smooth between corrections.
+rare, because clips almost always run to their own end. On a guest steered by
+windows it was the *only* way a clip ever ended — the host's window said when —
+which is why a joined player was walked back to the service line still holding
+the pose of a kick. Both the guest and `stopSideAction` use `cancelActionToLoco`
+now, and a stop decision goes through it too.
 
 **A rematch ignores the finished match's last frames.** Both peers restart the
 moment it is agreed, for responsiveness, so whichever resets first spends a
@@ -1750,6 +1881,16 @@ screen does, because the other end is not a text field. The scoreboard then
 shows the name off the shirt where there is one, falling back to the name the
 relay verified. A kit nobody else can see is a kit worth nothing, and online is
 the only place there is anybody else to see it.
+
+**A serve is decided at the toss.** The toss and the strike used to be
+callbacks on the serve clip's own frames, which run on the render loop, so the
+tick a serve left on depended on how that device's frames fell. They are counts
+of simulation steps from the start of the clip now (`serveCountdown`), so the
+strike's tick is known at the toss — and the aim stops following the stick at
+the toss, so the serve itself is known there too and is sent a quarter of a
+second before it leaves (`serveVelocity`). That last part is a rule change,
+offline as well: the aim was live until contact, and the quarter-second the ball
+is in the air was the only part of it that could not be sent in time.
 
 **An arrow hangs over whoever is about to serve.** Two players on two phones
 cannot see the other pick the ball up, and which end the next serve comes from
@@ -1786,6 +1927,13 @@ reports which it is on every input frame (`portrait`), and `portraitFor(side)`
 in `src/match.ts` is what every rule asks — reading a guest's swipe as a stick
 aimed their every kick somewhere nobody asked for, and left their serve looking
 for a tap count that scheme never sends.
+
+**Each screen coaches its own seat.** The serve prompt and the first set-up
+tips were shown by the host whenever `versus` was on — which an online host
+always is — so the host was told how to aim a serve the guest was making, and
+the guest, which runs no rules, was told nothing. `hintsFor` now coaches the
+other seat only when both players share one screen, and a guest gives the same
+two lines to itself from the phase and possession its snapshots carry.
 
 A tap needs an answer only the host has, so the snapshot carries the two rules
 facts it turns on: `strikeable` and `touches`. Without them a follower's

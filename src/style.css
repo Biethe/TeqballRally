@@ -6408,3 +6408,21 @@ button.pad-focus {
 .friend-invite:disabled {
   opacity: 0.45;
 }
+
+/*
+ * Connection stats: a diagnostic, not part of the game's look. Small, in a
+ * corner the HUD does not use, and never in the way of a touch.
+ */
+#net-stats {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 60;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #d8ffd8;
+  font: 11px/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  white-space: pre;
+  pointer-events: none;
+}

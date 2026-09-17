@@ -18,6 +18,7 @@ import type { InputState } from "../input";
 import type { Side } from "../ball";
 import type { NetConnection } from "./connection";
 import { TickAge } from "./sync";
+import { PLAYBACK_BUFFER_MAX } from "./playback";
 import { MIN_EFFORT, MIN_RESERVE } from "../character";
 import {
   isValidEmote,
@@ -25,6 +26,9 @@ import {
   isValidInput,
   readLoft,
   readStrikeable,
+  readTimeScale,
+  isValidLaunch,
+  isValidClip,
   readTaps,
   readTouches,
   readViewTick,
@@ -142,6 +146,12 @@ export interface SessionHandlers {
    * one piece of code rather than two that can disagree.
    */
   onEmote?: (id: string, mine: boolean) => void;
+  /**
+   * Guest: the host's game speed arrived, or changed. The game loop adopts it
+   * for the rest of the match — see `SnapshotMessage.ts` for what two speeds
+   * on one match did.
+   */
+  onTimeScale?: (timeScale: number) => void;
 }
 
 export class OnlineSession {
@@ -179,6 +189,13 @@ export class OnlineSession {
    * (`newmatch` arriving after the local agreement) cannot reset twice.
    */
   private rematchStarted = false;
+  /**
+   * Host: the game speed this peer is running at, published in every
+   * snapshot. Kept current by the game loop, which owns the setting.
+   */
+  timeScale = 1;
+  /** Guest: the host speed last reported upward, so a change fires once. */
+  private hostTimeScale: number | null = null;
   /** Guest presses awaiting a simulation step on the host. */
   private pendingGuest = { strike: false, pop: false, confirm: false };
   /** Guest: the age of each arriving snapshot, measured off its tick stamp. */
@@ -206,6 +223,8 @@ export class OnlineSession {
     // The host publishes clip windows and contact events alongside snapshots;
     // a guest has nothing to publish.
     if (this.isHost) match.netPublish = true;
+    // A guest draws the host's past, from a buffer sized to its own link.
+    else match.usePlaybackBuffer();
     conn.setHandlers({
       onMessage: (msg) => this.onNetMessage(msg),
       // The relay broadcasts the fresh match id to both seats. Driving the
@@ -387,7 +406,10 @@ export class OnlineSession {
   private beginRematch(): void {
     if (this.rematch !== "asking" && this.rematch !== "asked") return;
     this.setRematch("none");
-    if (this.isHost) this.conn.newMatch();
+    // The relay's host seat, which is not always the peer running the match:
+    // the faster device runs it (`chooseAuthority`), but the relay only lets
+    // the seat it made host mint a match id.
+    if ((this.conn.role ?? this.role) === "host") this.conn.newMatch();
     // Restart this peer at once for responsiveness. The `newmatch` that
     // follows re-drives both seats idempotently, so neither can miss it.
     this.startRematch();
@@ -465,9 +487,12 @@ export class OnlineSession {
          * The round trip plus a snapshot interval is the whole of the delay a
          * press can honestly have suffered.
          */
+        // The guest draws a buffer behind its best-routed frame, which is itself
+        // a trip behind the host, and its press takes another trip to get here:
+        // the whole round trip plus the buffer, in this match's ticks.
+        const trip = this.conn.latencyTicks * (this.timeScale || 1);
         this.match.versusViewTick =
-          readViewTick(msg.viewTick, this.tick, this.conn.latencyTicks + 2 + this.snapJitter) ??
-          null;
+          readViewTick(msg.viewTick, this.tick, 2 * trip + PLAYBACK_BUFFER_MAX + 2 + this.snapJitter) ?? null;
         this.match.versusInput = {
           moveX: msg.moveX,
           moveZ: msg.moveZ,
@@ -502,6 +527,11 @@ export class OnlineSession {
         // by the total, so the ball and both players are drawn at the same
         // instant rather than the ball being shown half a trip in the past.
         this.snapJitter = this.snapAge.observe(this.tick - msg.tick);
+        const ts = readTimeScale(msg.ts);
+        if (ts !== undefined && ts !== this.hostTimeScale) {
+          this.hostTimeScale = ts;
+          this.handlers.onTimeScale?.(ts);
+        }
         const lead = this.leadTicks();
         this.match.applySnapshot({
           ballPos: msg.ballPos,
@@ -570,6 +600,38 @@ export class OnlineSession {
         return;
       }
 
+      // Guest: what the ball does, and from which tick. Flown locally.
+      case "launch": {
+        if (this.isHost || !isValidLaunch(msg)) return;
+        this.match.queueLaunch({
+          tick: msg.tick,
+          pos: msg.pos,
+          vel: msg.vel,
+          spin: msg.spin,
+          kick: msg.kick === true,
+          settled: msg.settled === true,
+        });
+        return;
+      }
+
+      // Guest: a clip started or was cut short. After reframe, "host" is this
+      // peer's own seat.
+      case "clip": {
+        if (this.isHost || !isValidClip(msg)) return;
+        this.match.queueClip({
+          tick: msg.tick,
+          side: msg.seat === "host" ? "player" : "ai",
+          clip: msg.clip,
+          startFrac: msg.startFrac,
+          speed: msg.speed,
+          seq: msg.seq,
+          at: msg.at,
+          lungeTo: msg.lungeTo,
+          lungeSeconds: msg.lungeSeconds,
+        });
+        return;
+      }
+
       // Guest: a contact to play when the playback clock reaches its tick.
       case "fx": {
         if (this.isHost || !isValidFx(msg)) return;
@@ -612,6 +674,47 @@ export class OnlineSession {
       for (const fx of this.match.drainNet(this.tick)) {
         this.conn.send(reframe({ t: "fx", tick: this.tick, kind: fx.kind, pos: fx.pos }, this.role));
       }
+      // The decisions the guest plays on its own clock — what the ball does and
+      // on which tick, which clip starts and where. Sent before the snapshot on
+      // the same step, so by the time a snapshot arrives every decision about
+      // the ticks it describes is already there: the guest's check against it
+      // can then only fire for something genuinely missed.
+      for (const e of this.match.takeNetEvents()) {
+        if (e.type === "launch") {
+          this.conn.send(
+            reframe(
+              {
+                t: "launch",
+                tick: e.tick,
+                pos: e.pos,
+                vel: e.vel,
+                spin: e.spin,
+                kick: e.kick || undefined,
+                settled: e.settled || undefined,
+              },
+              this.role
+            )
+          );
+        } else {
+          this.conn.send(
+            reframe(
+              {
+                t: "clip",
+                tick: e.tick,
+                seat: e.side === "player" ? "host" : "guest",
+                clip: e.clip,
+                startFrac: e.startFrac,
+                speed: e.speed,
+                seq: e.seq,
+                at: e.at,
+                lungeTo: e.lungeTo,
+                lungeSeconds: e.lungeSeconds,
+              },
+              this.role
+            )
+          );
+        }
+      }
       // The host holds the only match, so it publishes; the guest has nothing
       // authoritative to say beyond what its controls are doing.
       this.sinceMove += dt;
@@ -624,7 +727,7 @@ export class OnlineSession {
     } else {
       // Every step, because the route can change under a phone that is
       // walking between cells.
-      this.match.setPlaybackLead(this.leadTicks());
+      this.match.setPlaybackLead(this.playbackLeadTicks());
       this.sendInput();
     }
 
@@ -661,6 +764,31 @@ export class OnlineSession {
    */
   private leadTicks(): number {
     return this.conn.latencyTicks + 1 + Math.min(LEAD_JITTER_CAP_TICKS, this.snapJitter);
+  }
+
+  /**
+   * How far past its best-routed frame the guest's clock is set: the one-way
+   * trip, in simulation ticks.
+   *
+   * Not `leadTicks`, which also carries this particular frame's jitter — right
+   * for carrying one frame forward, wrong for a clock that reads the
+   * least-delayed of many (`PlaybackBuffer`), where it would count the jitter
+   * twice and wobble with every late arrival. And scaled by the game's speed:
+   * `latencyTicks` counts sixtieths of a second, but a match at 1.25 runs
+   * seventy-five ticks in one.
+   */
+  private playbackLeadTicks(): number {
+    return this.conn.latencyTicks * (this.hostTimeScale ?? this.timeScale);
+  }
+
+  /** What the connection stats overlay shows about the link. */
+  get stats(): { role: PeerRole; rttMs: number | null; latencyTicks: number; jitterTicks: number } {
+    return {
+      role: this.role,
+      rttMs: this.conn.rttMs,
+      latencyTicks: this.conn.latencyTicks,
+      jitterTicks: this.snapJitter,
+    };
   }
 
   /** Guest: the local player's controls, every step. */
@@ -817,6 +945,7 @@ export class OnlineSession {
           sets: [this.match.sets.player, this.match.sets.ai],
           serveOwner: this.match.serveOwner,
           phase: this.match.state,
+          ts: this.timeScale,
         },
         this.role
       )

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { STRIKE_BANDS, STRIKE_CEILING } from "../src/character";
-import { CHARACTERS, GROUND_Y, SIM_DT, TABLE, tableSurfaceY } from "../src/config";
+import { COURT, CHARACTERS, GROUND_Y, SIM_DT, TABLE, tableSurfaceY } from "../src/config";
 import { rig, type Rig } from "./rig";
 
 /**
@@ -27,6 +27,9 @@ const queued = (r: Rig): boolean =>
 function setUp(r: Rig, rel: number, opts: { touched?: boolean } = {}): void {
   const c = r.match.chars.player;
   c.position.set(-1.6, GROUND_Y, -0.4); // inside the smash range, strong-foot side
+  // A rally lifts the serve line off both players when the ball is served; a
+  // rally set up by hand has to do the same, or a lunge is clamped back to it.
+  c.minCourtX = COURT.minX;
   r.match.state = "rally";
   r.match.strikeableSide = "player";
   r.match.touchCount = opts.touched === false ? 0 : 1;
@@ -117,15 +120,17 @@ describe("what a flip does to the ball", () => {
       power: 0.95,
     });
 
-    // Caught on pace, not on any movement: the set-up ball is already drifting,
-    // and the contact steering nudges it again just before the strike. Nothing
-    // but a struck ball travels at eight metres a second.
+    // Caught from the launch itself. It used to be caught on pace — the first
+    // tick over eight metres a second — but the last ticks of a flight are now
+    // bent onto the striking limb, and a bend that closes a wide gap in a tenth
+    // of a second is fast too.
     let launched: { pos: Vector3; vel: Vector3 } | null = null;
-    for (let i = 0; i < 240 && !launched; i++) {
-      r.step(SIM_DT);
-      const v = r.match.ball.state.vel;
-      if (v.length() > 8) launched = { pos: r.match.ball.state.pos.clone(), vel: v.clone() };
-    }
+    r.match.subscribe((e) => {
+      if (e.type === "ball-launched" && e.action === "strike" && !launched) {
+        launched = { pos: e.pos.clone(), vel: e.vel.clone() };
+      }
+    });
+    for (let i = 0; i < 240 && !launched; i++) r.step(SIM_DT);
 
     expect(launched).not.toBeNull();
     const { pos, vel } = launched!;

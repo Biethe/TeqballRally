@@ -5,6 +5,9 @@ import { CLIPS, contactFraction, GROUND_Y, SIM_DT } from "../src/config";
 import { MAX_CATCHUP_TICKS } from "../src/net/protocol";
 import {
   BALL_SNAP,
+  CLOCK_MAX_SLEW,
+  CLOCK_REWIND_TICKS,
+  CLOCK_SNAP_TICKS,
   clipFractionAt,
   clipWindowSpeed,
   MAX_CHAR_CARRY_METRES,
@@ -324,19 +327,21 @@ describe("the guest playback timeline", () => {
     // this replaces; the ball turns onto the new flight at once and the
     // leftover distance melts away.
     const buf = new PlaybackBuffer();
+    // Frames on their grid, two steps apart, so the playback clock runs at
+    // exactly one tick a step and the truth below can be stepped in whole ones.
+    let before = null as ReturnType<PlaybackBuffer["advance"]>;
     for (let i = 0; i < 4; i++) {
       buf.push(sample(100 + i * 2));
       buf.advance();
-      buf.advance();
+      before = buf.advance();
     }
-    const before = buf.advance()!;
     // The host struck it: same place, opposite direction.
     const struck = sample(108);
     struck.ballVel = { x: -6, y: 4, z: 0 };
     buf.push(struck);
     const after = buf.advance()!;
 
-    const jump = Math.hypot(after.ball.x - before.ball.x, after.ball.y - before.ball.y);
+    const jump = Math.hypot(after.ball.x - before!.ball.x, after.ball.y - before!.ball.y);
     expect(jump).toBeLessThan(0.2);
     // The velocity is the truth immediately, so a landing marker predicts the
     // real flight even while the position is still catching up.
@@ -557,5 +562,83 @@ describe("clip windows", () => {
     expect(view).not.toBeNull();
     expect(view!.selfClip?.clip).toBe("RightFootKick");
     expect(view!.opponentClip?.clip).toBe("LeftHeadKick");
+  });
+});
+
+/**
+ * The playback clock.
+ *
+ * It used to be recomputed from the newest arrival every step, so it was only
+ * a clock while frames came on a perfect grid. Measured under ordinary phone
+ * jitter it went backwards on one step in fourteen and jumped as far as nine
+ * ticks — and the ball and every clip were drawn off it.
+ */
+describe("the playback clock", () => {
+  /**
+   * Frames every two host ticks, each delivered `delay` plus a seeded jitter
+   * late, in order — a socket never reorders — and one buffer step per host
+   * step. Returns the clock after every step.
+   */
+  function run(steps: number, delay: number, jitter: (i: number) => number, lead: number): number[] {
+    const buf = new PlaybackBuffer();
+    buf.setLead(lead);
+    const inFlight: { due: number; tick: number }[] = [];
+    let lastDue = 0;
+    const out: number[] = [];
+    for (let host = 1; host <= steps; host++) {
+      if (host % 2 === 0) {
+        lastDue = Math.max(lastDue, host + delay + jitter(host));
+        inFlight.push({ due: lastDue, tick: host });
+      }
+      while (inFlight.length > 0 && inFlight[0].due <= host) buf.push(sample(inFlight.shift()!.tick));
+      const v = buf.advance();
+      if (v) out.push(v.renderTick);
+    }
+    return out;
+  }
+
+  const seeded = (seed: number, spread: number) => {
+    let s = seed;
+    return () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return Math.floor((s / 0x7fffffff) * spread);
+    };
+  };
+
+  it("runs at one tick a step, give or take the lean, however the frames arrive", () => {
+    const next = seeded(4242, 7);
+    const clock = run(1200, 5, () => next(), 8);
+    const steps = clock.slice(60).map((t, i, a) => (i === 0 ? 1 : t - a[i - 1])).slice(1);
+    expect(Math.min(...steps)).toBeGreaterThanOrEqual(1 - CLOCK_MAX_SLEW - 1e-9);
+    expect(Math.max(...steps)).toBeLessThanOrEqual(1 + CLOCK_MAX_SLEW + 1e-9);
+  });
+
+  it("stays on the host's instant on a steady link", () => {
+    const clock = run(400, 4, () => 0, 4);
+    // Arrivals on the grid: a clock that lands exactly on the sum and stays.
+    const steps = clock.slice(20).map((t, i, a) => (i === 0 ? 1 : t - a[i - 1])).slice(1);
+    for (const d of steps) expect(d).toBeCloseTo(1, 9);
+  });
+
+  it("does not rewind when frames held up behind a slow one land together", () => {
+    // Twenty-odd ticks of nothing, then the backlog at once. The newest of
+    // them is still old, so newest-plus-lead says the host is behind where the
+    // clock already counted it to — and it was the clock that was right.
+    const clock = run(900, 5, (host) => (host % 300 === 0 ? 24 : 1), 7);
+    const steps = clock.slice(60).map((t, i, a) => (i === 0 ? 1 : t - a[i - 1])).slice(1);
+    expect(Math.min(...steps)).toBeGreaterThan(0);
+  });
+
+  it("jumps forward outright when it is too far behind to lean", () => {
+    const buf = new PlaybackBuffer();
+    buf.setLead(2);
+    feedEngaged(buf, 100, 8);
+    const before = buf.advance()!.renderTick;
+    // A reconnect: the next frames are a long way on.
+    buf.push(sample(200));
+    buf.push(sample(202));
+    const after = buf.advance()!.renderTick;
+    expect(after - before).toBeGreaterThan(CLOCK_SNAP_TICKS);
+    expect(CLOCK_REWIND_TICKS).toBeGreaterThan(CLOCK_SNAP_TICKS);
   });
 });

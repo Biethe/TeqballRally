@@ -151,6 +151,9 @@ export class ContactVolumeInspector {
 
   private enable(): void {
     this.enabled = true;
+    // The inspector scrubs clips by Babylon's own frame counter, so it takes
+    // the characters off the simulation's clock while it is open.
+    for (const char of this.getChars()) char.useSimClock(false);
     this.buildPanel();
     this.buildOverlays();
     this.syncCharacterOptions();
@@ -162,7 +165,10 @@ export class ContactVolumeInspector {
     this.enabled = false;
     // Hand any hijacked character back to its locomotion blend quietly — no
     // frame callbacks, so a paused strike never launches a ball on close.
-    for (const char of this.getChars()) char.cancelActionToLoco();
+    for (const char of this.getChars()) {
+      char.cancelActionToLoco();
+      char.useSimClock(true);
+    }
     this.disposeOverlays();
     this.panel?.remove();
     this.panel = null;

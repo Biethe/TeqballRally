@@ -8,6 +8,7 @@ import {
   predict,
   sampleFlight,
   solveLaunch,
+  stepBall,
   solveLaunchClearingNet,
   type BallEvent,
   type BodyCollider,
@@ -31,7 +32,6 @@ import {
   serveClipForAim,
   serveContactOffset,
   HEAD_CONTACT_PUSH,
-  CLIP_CONTACT_BONE,
   SERVE_CLIPS,
   SERVE_TOSS_HAND,
 } from "./character";
@@ -92,7 +92,8 @@ import { aiServePattern } from "./ai";
 import type { AudioManager } from "./audio";
 import { reconcile } from "./net/reconcile";
 import { MAX_CATCHUP_TICKS, type FxKind } from "./net/protocol";
-import { PlaybackBuffer, clipFractionAt, clipWindowSpeed, type ClipSample } from "./net/playback";
+import { PlaybackBuffer, type ClipSample } from "./net/playback";
+import { GuestBall, type LaunchEvent } from "./net/guestball";
 import {
   distanceToVolume,
   trajectoryVsVolume,
@@ -118,6 +119,46 @@ import {
  * Hints have to name what the player can actually do, and in portrait there is
  * no STRIKE button to press.
  */
+/**
+ * The velocity that carries a ball from `from` to `to` in exactly `ticks`
+ * physics steps, or null when the flight cannot be made to arrive there (a
+ * table or the net in the way).
+ *
+ * Solved by stepping the same `stepBall` the ball runs and correcting, rather
+ * than from the ballistic formula, because the formula is the continuous
+ * motion and the ball is a sequence of discrete steps: a few millimetres out
+ * over a tenth of a second, which is the difference between a ball that meets
+ * a foot and one that meets it on one screen and misses on the other.
+ */
+function velocityToArrive(from: Vector3, to: Vector3, ticks: number): Vector3 | null {
+  const time = ticks * SIM_DT;
+  const vel = new Vector3((to.x - from.x) / time, (to.y - from.y) / time + 0.5 * GRAVITY * time, (to.z - from.z) / time);
+  for (let i = 0; i < 6; i++) {
+    const s = { pos: from.clone(), vel: vel.clone() };
+    for (let k = 0; k < ticks; k++) stepBall(s, SIM_DT);
+    const miss = to.subtract(s.pos);
+    if (miss.length() < 1e-4) return vel;
+    vel.addInPlace(miss.scale(1 / time));
+  }
+  const s = { pos: from.clone(), vel: vel.clone() };
+  for (let k = 0; k < ticks; k++) stepBall(s, SIM_DT);
+  return Vector3.Distance(s.pos, to) <= 0.005 ? vel : null;
+}
+
+/** What to say to a player about to serve. */
+function serveHint(): string {
+  return portraitTouch()
+    ? "Swipe where you want to serve"
+    : "Aim with the stick · tap STRIKE for pace, hold to float it";
+}
+
+/** What to say to a player whose side the ball has just come to. */
+function possessionHint(): string {
+  return portraitTouch()
+    ? "Swipe up to lift it · down to drive it · fast for pace"
+    : "Hold STRIKE to aim and charge · release to kick";
+}
+
 function portraitTouch(): boolean {
   if (typeof window === "undefined") return false;
   const touch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
@@ -145,6 +186,39 @@ function isMatchState(v: string): v is MatchState {
  * rather than guessing from transient physics state, so it can stop on the
  * exact frame a lesson becomes relevant.
  */
+/**
+ * A decision an online host publishes for its guest to play on its own clock,
+ * in the host's seat names and the host's ticks. The session turns these into
+ * `LaunchMessage` and `ClipMessage`.
+ */
+export type HostNetEvent =
+  | {
+      type: "launch";
+      tick: number;
+      pos: { x: number; y: number; z: number };
+      vel: { x: number; y: number; z: number };
+      spin: number;
+      kick: boolean;
+      /** The state is also the end of the tick before. */
+      settled?: boolean;
+    }
+  | {
+      type: "clip";
+      tick: number;
+      side: Side;
+      clip: string | null;
+      startFrac?: number;
+      speed?: number;
+      seq?: number;
+      /** Where the character stood when the clip started. */
+      at?: { x: number; y: number; z: number };
+      lungeTo?: { x: number; y: number; z: number };
+      lungeSeconds?: number;
+    };
+
+/** A clip decision as the guest receives it, in its own seat names. */
+export type GuestClipEvent = Omit<Extract<HostNetEvent, { type: "clip" }>, "type">;
+
 export type MatchEvent =
   | { type: "serve-ready"; side: Side }
   | { type: "serve-committed"; side: Side }
@@ -202,6 +276,21 @@ const sign = (s: Side): number => (s === "player" ? -1 : 1);
 // (when the ball actually leaves). Small enough to feel responsive, long
 // enough for the wind-up to read.
 const STRIKE_LEAD = 0.15;
+/**
+ * How far the ball may be from where a committed touch expected it, at the
+ * contact tick, before the touch is decided again. The expectation is the same
+ * `stepBall` the ball itself runs, so an untouched flight arrives exactly; only
+ * something that genuinely moved the ball — a body in the way — gets near this.
+ */
+const SHOT_PATH_TOLERANCE = 0.01;
+/** Closer than this, the ball simply meets the limb where it is. */
+const CONTACT_EXACT = 0.005;
+/**
+ * The last ticks of a flight that may be bent onto the limb. About a tenth of a
+ * second: long enough that closing a quarter of a metre reads as the ball
+ * arriving, short enough that nothing before it changes.
+ */
+const CONTACT_BEND_TICKS = 8;
 const POP_LEAD = 0.12;
 const STRIKE_SPEED = 1.3;
 const POP_SPEED = 1.25;
@@ -305,10 +394,18 @@ const TABLE_BOUNCE_DEBOUNCE = 0.25;
  * and a mistake.
  */
 const LONG_RALLY_TOUCHES = 6;
-// Guest-side guards for the playback timeline: a gap beyond this is not a
-// correction but a cold start or a reset, and is taken outright; smaller
-// joins glide over FOLLOWER_BLEND_SECONDS.
+// Guest-side guard for the playback timeline: a gap beyond this is not a
+// correction but a cold start or a reset, and is taken outright.
 const FOLLOWER_SNAP = 3.0;
+/**
+ * How long a guest takes to close the gap between a character it is moving
+ * with the host's velocity and where the timeline says that character is.
+ *
+ * Only the error is left for it — the motion itself is carried — so it can be
+ * short enough that the two never visibly part, and still long enough that a
+ * new frame's correction is spread over several steps instead of landing in one.
+ */
+const FOLLOWER_CORRECT_SECONDS = 0.12;
 /**
  * How long a server has to play the ball before the point is given away.
  *
@@ -317,25 +414,12 @@ const FOLLOWER_SNAP = 3.0;
  * ends a stall without ever being something a player has to race.
  */
 export const SERVE_CLOCK_SECONDS = 8;
-/**
- * How far a guest's clip may drift from the host's before it is pulled back.
- *
- * A twelfth of a clip is about five frames of a kick: past that the swing and
- * the ball are visibly describing different moments, and under it a correction
- * costs more in jitter than the drift costs in truth.
- */
-const CLIP_RESYNC_FRACTION = 0.08;
 /** How much of it is counted down on screen. */
 export const SERVE_CLOCK_COUNTDOWN = 3;
-const FOLLOWER_BLEND_SECONDS = 0.25;
-/**
- * How long the drift left over at a handover takes to wash out, in seconds.
- *
- * Much shorter than a blend, because during a touch the host's position is the
- * truth and the remainder is an apology for having guessed. Long enough that a
- * tenth of a metre is spread over six frames instead of landing in one.
- */
-const FOLLOWER_HANDOFF_SECONDS = 0.1;
+/** The longest a guest takes to glide a character onto its spot for a clip. */
+const GUEST_SETTLE_SECONDS = 0.12;
+/** And the shortest: anything quicker is a jump, which is what this avoids. */
+const GUEST_SETTLE_MIN_SECONDS = 0.05;
 
 /** Position on a sampled flight at (or just after) time `t`, clipped to before any ground bounce. */
 function flightAt(flight: FlightSample[], t: number): Vector3 {
@@ -446,8 +530,35 @@ export class MatchController {
    * real progress every step — so identity needs saying rather than deducing.
    */
   private clipSeq = 0;
-  /** Clips started since the last drain; the session stamps them with its tick. */
-  private clipStarts: { side: Side; clip: string; startFrac: number; durTicks: number }[] = [];
+  /**
+   * Clips started and cut short since the last drain, in the order they
+   * happened — a stop followed by a start on one step must reach the guest in
+   * that order, or it stops the clip that just began. The session stamps them
+   * with its tick.
+   */
+  private clipOut: (
+    | {
+        kind: "start";
+        side: Side;
+        clip: string;
+        startFrac: number;
+        speed: number;
+        durTicks: number;
+        at: Vector3;
+        lunge?: { to: Vector3; seconds: number };
+      }
+    | { kind: "stop"; side: Side }
+  )[] = [];
+  /** Ball decisions since the last drain; `inTicks` counts from the drain's tick. */
+  private launchesOut: { inTicks: number; pos: Vector3; vel: Vector3; spin: number; kick: boolean }[] = [];
+  /** The ball left its flight this step for a reason a guest cannot compute. */
+  private ballChangedOut: false | { kick: boolean } = false;
+  /** Touches published ahead that will not happen after all, in ticks from the next drain. */
+  private cancelsOut: number[] = [];
+  /** Host ticks whose published launch was withdrawn, awaiting their moment. */
+  private cancelAt: number[] = [];
+  /** Decisions stamped by the last drain, waiting for the session to send. */
+  private netEventsOut: HostNetEvent[] = [];
   /** Contacts since the last drain, for the guest's fx stream (capped). */
   private fxQueue: { kind: FxKind; pos?: { x: number; y: number; z: number } }[] = [];
   /** Guest: inbound fx events awaiting their moment on the playback clock. */
@@ -596,7 +707,19 @@ export class MatchController {
    */
   private contactSync: {
     point: Vector3;
-    timeLeft?: number;
+    /**
+     * Whole simulation steps until the contact fires. Ticks rather than
+     * seconds so the contact's host tick is known the moment the touch is
+     * committed — which is what lets that tick be sent to a guest before it
+     * arrives. A float countdown fired on whichever step happened to take it
+     * below zero, and nobody could say which in advance.
+     */
+    ticksLeft?: number;
+    /**
+     * The bend that carries the ball onto the limb: applied when the countdown
+     * reaches `at` ticks left, from where the natural flight will be by then.
+     */
+    steer?: { at: number; pos: Vector3; vel: Vector3 };
     fire?: () => void;
   } | null = null;
 
@@ -795,16 +918,192 @@ export class MatchController {
    * ball position, and open the wind-up window (rule events suspend; the
    * release fires from the countdown in update()).
    */
-  private beginContactLunge(
+  /**
+   * Where a touch committed now would meet its ball, worked out before it is
+   * committed.
+   *
+   * Every part is decided, not observed: the tick the countdown will fire on,
+   * the ball's natural flight stepped exactly as many times as `update` will
+   * step it before then, where the lunge will stand the character, and where
+   * the striking limb will be at the contact frame from there
+   * (`clipContactPointAt` — a measured offset from the root, no live skeleton).
+   * So the host can refuse a touch that cannot reach, bend a flight that nearly
+   * does onto the limb, and send a guest the same bend before it happens.
+   */
+  private contactGeometry(
     char: Character,
     clip: string,
-    plan: { t: number; pos: Vector3 },
+    plan: { t: number; pos: Vector3 }
+  ): {
+    ticks: number;
+    lungeTo: Vector3 | null;
+    standAt: Vector3;
+    /** The ball's natural flight at the start of each tick until the contact. */
+    flight: { pos: Vector3; vel: Vector3 }[];
+    ballAt: Vector3;
+    limbAt: Vector3 | null;
+    gap: number;
+  } {
+    const ticks = Math.max(1, Math.ceil(plan.t / SIM_DT - 1e-6));
+    // The step this commit sits in counts only if the ball has not been
+    // stepped in it yet — a touch committed from input, before the physics, is
+    // one step further from its contact than one committed by the rules after.
+    const steps = ticks - 1 + (this.inUpdate && !this.ballSteppedThisUpdate ? 1 : 0);
+    const ahead = { pos: this.ball.state.pos.clone(), vel: this.ball.state.vel.clone() };
+    const flight = [{ pos: ahead.pos.clone(), vel: ahead.vel.clone() }];
+    for (let i = 0; i < steps; i++) {
+      stepBall(ahead, SIM_DT);
+      flight.push({ pos: ahead.pos.clone(), vel: ahead.vel.clone() });
+    }
+    const ballAt = ahead.pos.clone();
+    // The lunge carries the striking limb toward the ball as it will be on the
+    // contact tick — the measured limb point where there is one, the volume's
+    // centre otherwise — as far as this player can stretch.
+    const limbNow = char.clipContactPoint(clip) ?? char.contactVolumeTransform(clip)?.center ?? null;
+    const lungeTo = limbNow && plan.t >= 0.05 ? this.contactLungeTarget(char, limbNow, ballAt) : null;
+    const standAt = lungeTo ?? char.position.clone();
+    const limbAt = char.clipContactPointAt(clip, standAt);
+    const gap = limbAt ? Vector3.Distance(limbAt, ballAt) : 0;
+    return { ticks, lungeTo, standAt, flight, ballAt, limbAt, gap };
+  }
+
+  /**
+   * How a committed touch meets its ball: always at the striking limb.
+   *
+   * A limb within `CONTACT_EXACT` of the ball meets it where it is. Otherwise
+   * the last few ticks of the flight are bent onto the limb — decided here,
+   * applied by the countdown, and published like the kick itself, so the ball
+   * arrives at the foot on every screen and not only this one. With no ticks
+   * left to bend (a contact on the very next step), or a flight a table or the
+   * net will not let be bent, the ball leaves from where it is: placing it on
+   * the limb then is a jump of up to a metre in one frame, which reads worse
+   * than the gap it would hide.
+   *
+   * The old game did the placing unconditionally, onto the live bone, which is
+   * a different place on every device. Measured across long rallies of both
+   * seats, nearly half of all touches commit with the limb a quarter of a metre
+   * or more from the ball, and refusing them outright took rallies from eleven
+   * touches a point to three: players are steered to where the ball crosses
+   * chest height, not to where a limb can meet it. Until that positioning is
+   * reworked, every touch meets its limb, visibly and identically.
+   */
+  private reachableContact(
+    char: Character,
+    clip: string,
+    plan: { t: number; pos: Vector3 }
+  ): ReturnType<MatchController["contactGeometry"]> & {
+    /** Where the ball leaves from. */
+    launchAt: Vector3;
+    /** Where the ball will have got to by itself when the contact fires. */
+    arriveAt: Vector3;
+    steer: { at: number; pos: Vector3; vel: Vector3 } | null;
+  } {
+    const g = this.contactGeometry(char, clip, plan);
+    // A clip with no measured limb has no geometry to hold it to.
+    if (!g.limbAt || g.gap <= CONTACT_EXACT) return { ...g, launchAt: g.ballAt, arriveAt: g.ballAt, steer: null };
+    // Never bent on the commit's own step: the countdown only acts from the
+    // next one, so a contact on the very next tick has nothing left to bend.
+    const n = Math.min(CONTACT_BEND_TICKS, g.ticks - 1);
+    const from = n >= 1 ? g.flight[g.flight.length - 1 - n] : null;
+    const vel = from ? velocityToArrive(from.pos, g.limbAt, n) : null;
+    if (!from || !vel) return { ...g, launchAt: g.ballAt, arriveAt: g.ballAt, steer: null };
+    return { ...g, launchAt: g.limbAt.clone(), arriveAt: g.limbAt.clone(), steer: { at: n, pos: from.pos.clone(), vel } };
+  }
+
+  /**
+   * Start the lunge the geometry chose and open the wind-up window (rule events
+   * suspend; the release fires from the countdown in update()).
+   */
+  private beginContactLunge(
+    char: Character,
+    geometry: ReturnType<MatchController["reachableContact"]>,
+    plan: { t: number },
     fire: () => void
   ): void {
-    const worldVol = char.contactVolumeTransform(clip);
-    this.contactSync = { point: (worldVol?.center ?? plan.pos).clone(), timeLeft: plan.t, fire };
-    const target = worldVol && this.contactLungeTarget(char, worldVol.center, plan.pos);
-    if (target && plan.t >= 0.05) char.lungeTo(target, plan.t);
+    this.contactSync = {
+      point: geometry.launchAt.clone(),
+      ticksLeft: geometry.ticks,
+      steer: geometry.steer ?? undefined,
+      fire,
+    };
+    if (geometry.steer) {
+      this.publishAhead(geometry.ticks - geometry.steer.at, {
+        pos: geometry.steer.pos,
+        vel: geometry.steer.vel,
+        spin: this.ball.spinRate,
+        kick: false,
+      });
+    }
+    const target = geometry.lungeTo;
+    if (!target) return;
+    char.lungeTo(target, plan.t);
+    if (!this.netPublish) return;
+    const side: Side = char === this.chars.player ? "player" : "ai";
+    for (let i = this.clipOut.length - 1; i >= 0; i--) {
+      const e = this.clipOut[i];
+      if (e.kind === "start" && e.side === side) {
+        e.lunge = { to: target.clone(), seconds: plan.t };
+        break;
+      }
+    }
+  }
+
+  /**
+   * Publish a touch's launch, decided now, for the tick its contact will fire
+   * on. A guest that has this before that tick turns its ball on the same tick
+   * as this one — see `LaunchMessage`.
+   */
+  private publishShot(ticks: number, shot: { pos: Vector3; vel: Vector3; spin: number }): void {
+    this.publishAhead(ticks, { ...shot, kick: true });
+  }
+
+  /** Publish a launch `ticks` countdown steps ahead. See `publishShot`. */
+  private publishAhead(ticks: number, l: { pos: Vector3; vel: Vector3; spin: number; kick: boolean }): void {
+    if (!this.netPublish) return;
+    // Counted from the drain that will carry it. Inside `update` that drain
+    // stamps this very step, which the countdown does not count; from outside
+    // it (a tap between frames) it stamps the next step, which it does.
+    const inTicks = this.inUpdate ? ticks : ticks - 1;
+    this.launchesOut.push({ inTicks, pos: l.pos.clone(), vel: l.vel.clone(), spin: l.spin, kick: l.kick });
+  }
+
+  /**
+   * A touch published ahead of its contact will not happen: the point ended,
+   * or the serve was reset, before the limb arrived. The guest already holds a
+   * launch for that tick, so the ball's real state for it is sent when the tick
+   * comes — the later word on a tick wins on the guest.
+   */
+  private withdrawShot(ticksLeft: number): void {
+    if (!this.netPublish || ticksLeft <= 0) return;
+    this.cancelsOut.push(this.inUpdate ? ticksLeft : ticksLeft - 1);
+  }
+
+  /**
+   * The countdown reached a touch that will not be played. Its tick is this
+   * one, and the ball has not been stepped in it yet, so what it is right now
+   * is the start-of-tick state the guest should have instead.
+   */
+  private withdrawFiring(): void {
+    if (!this.netPublish) return;
+    const b = this.ball.state;
+    this.launchesOut.push({ inTicks: 0, pos: b.pos.clone(), vel: b.vel.clone(), spin: this.ball.spinRate, kick: false });
+  }
+
+  /** Withdraw whatever this match has published ahead and not yet played. */
+  private withdrawPendingShots(): void {
+    const cs = this.contactSync;
+    if (cs?.fire && cs.ticksLeft !== undefined) this.withdrawShot(cs.ticksLeft);
+    const sc = this.serveCountdown;
+    if (sc && sc.ticks >= sc.tossAt) this.withdrawShot(sc.contactAt - sc.ticks);
+  }
+
+  /**
+   * The ball just left its flight for a reason no guest can compute — a toss,
+   * a serve, a deflection off a body, a contact that had to be decided again.
+   * Its state at the end of this step is published as the start of the next.
+   */
+  private noteBallChanged(kick = false): void {
+    if (this.netPublish) this.ballChangedOut = { kick: kick || (this.ballChangedOut !== false && this.ballChangedOut.kick) };
   }
 
   /** Target root position that places a clip's interaction volume on `point`. */
@@ -1414,21 +1713,43 @@ export class MatchController {
    */
   private updateAsFollower(dt: number, input: InputState): void {
     this.matchClock += dt;
-    if (this.playback.consumeReengaged()) {
-      // The feed came back after starving: the timeline restarted wherever
-      // the host is now. Glide onto it instead of snapping the screen.
-      this.followerBlend.player = FOLLOWER_BLEND_SECONDS;
-      this.followerBlend.ai = FOLLOWER_BLEND_SECONDS;
-    }
+    // The feed coming back after a starvation restarts the timeline wherever
+    // the host is now. Nothing needs gliding onto it specially: characters are
+    // always corrected onto the timeline over `FOLLOWER_CORRECT_SECONDS`. The
+    // signal is still consumed, so the next starvation reports its own.
+    this.playback.consumeReengaged();
     const view = this.playback.advance(this.followerColliders());
+    // Game time as the host is passing it. A host that cannot keep its match on
+    // real time runs fewer ticks than this device steps, and everything the
+    // host moves — lunges, clips, carried positions — has to go at its pace.
+    const hostDt = dt * (view?.rate ?? 1);
     if (view) {
       // The instant this screen is showing, in the host's ticks. It rides out
       // on every input frame so a press is judged against the ball the player
       // was actually looking at when they made it.
       this.followerRenderTick = view.renderTick;
-      this.ball.held = view.ballHeld;
-      this.ball.state.pos.set(view.ball.x, view.ball.y, view.ball.z);
-      this.ball.state.vel.set(view.ballVel.x, view.ballVel.y, view.ballVel.z);
+      // Every clip on this screen is placed against the host's ticks, the
+      // same clock the ball below is flown on.
+      this.chars.player.setClockTick(view.renderTick);
+      this.chars.ai.setClockTick(view.renderTick);
+      // No bodies. The host sends every deflection as a decision, and a guest
+      // that bounced its own ball off the bodies it draws bounced it off a
+      // striker whose clip had not reached this screen yet — a body the host
+      // exempts, because on the host it is already mid-touch.
+      const flight = this.guestBall.advance(view.renderTick);
+      if (flight) {
+        // Flown here, from the host's decisions: the same `stepBall` the host
+        // runs, turning on the ticks the host turned it on.
+        this.ball.held = false;
+        this.ball.state.pos.set(flight.pos.x, flight.pos.y, flight.pos.z);
+        this.ball.state.vel.set(flight.vel.x, flight.vel.y, flight.vel.z);
+        this.ball.spinRate = flight.spin;
+        for (let i = 0; i < flight.kicks; i++) this.audio.playKick();
+      } else {
+        this.ball.held = view.ballHeld;
+        this.ball.state.pos.set(view.ball.x, view.ball.y, view.ball.z);
+        this.ball.state.vel.set(view.ballVel.x, view.ballVel.y, view.ballVel.z);
+      }
       // The mesh follows the timeline's position, and then rolls on the real
       // frame time. It used to be `update(0)` — no physics, which is right,
       // but a zero dt also makes the spin term exactly zero, so the ball slid
@@ -1437,12 +1758,7 @@ export class MatchController {
       this.ball.mesh?.position.copyFrom(this.ball.state.pos);
       this.ball.spinMesh(dt);
       this.fireDueFx(view.renderTick);
-      this.updateFollowerClips(
-        view.renderTick,
-        view.selfClip,
-        view.opponentClip,
-        view.mode === "buffered"
-      );
+      this.applyGuestClips(view.renderTick);
     }
     // The landing X is help the joined player needs as much as the host's;
     // it reads the same delayed ball state the ball itself is shown in, so
@@ -1460,9 +1776,17 @@ export class MatchController {
     if (this.followerSelfAnchor) {
       this.followerSelfAnchor.eta = Math.max(0, this.followerSelfAnchor.eta - dt);
     }
-    let selfPredicted = false;
     for (const side of ["player", "ai"] as Side[]) {
       const c = this.chars[side];
+
+      // A contact lunge started from a clip decision owns the feet until it
+      // lands, on this screen as on the host's. It is the half-metre dart that
+      // puts the limb on the ball in a fifth of a second — a 30 Hz position
+      // feed draws it as a lurch, or not at all.
+      if (this.guestEvents && c.lunging) {
+        c.update(hostDt);
+        continue;
+      }
 
       // Prediction, for this peer's own character only. Waiting for the host
       // to answer put a full round trip between pressing a direction and the
@@ -1481,14 +1805,6 @@ export class MatchController {
         this.followerPhase === "rally" &&
         !this.followerSelfLocked;
       if (predicting) {
-        selfPredicted = true;
-        // The stick has the feet back, so the remainder from the last handover
-        // is finished with. Cleared here as well as in the branches below,
-        // because this path leaves the loop early — and without it the flag
-        // stayed set for the rest of the match and the *next* touch handed
-        // over with no smoothing at all.
-        this.followerHandoff[side] = null;
-        this.followerHeld[side] = false;
         this.predictSelf(c, input, dt);
         if (this.followerSelfPose) {
           const fixed = reconcile(
@@ -1502,85 +1818,56 @@ export class MatchController {
         c.update(dt);
         continue;
       }
-      if (side === "player" && this.selfPredicting) {
-        // Prediction just let go of the feet — busy, locked, or the point
-        // ended — and the timeline takes over from wherever the prediction
-        // left the character. Glide rather than snap across the join.
-        this.followerBlend.player = FOLLOWER_BLEND_SECONDS;
-      }
-
       if (view) {
         const tv = side === "player" ? view.self : view.opponent;
         const gap = Math.hypot(tv.x - c.position.x, tv.z - c.position.z);
-        if (gap > FOLLOWER_SNAP || c.busy) {
-          /*
-           * The host's motion, exactly — but not the host's *place*, all at
-           * once.
-           *
-           * Mid-touch the timeline is the truth: the contact lunge darts half
-           * a metre onto the ball in a fifth of a second, and a quarter-second
-           * correction chasing it is always behind, which is what left a
-           * reception animation playing with the ball beyond the foot.
-           *
-           * Taking the position outright fixed that and introduced something
-           * else. Prediction has usually drifted by the time a touch starts,
-           * and handing over in one frame put the whole of that drift into one
-           * step — measured at half a metre in a single tick, which on screen
-           * is the player teleporting. It is the "moves on its own" that has
-           * nothing to do with the stick.
-           *
-           * So the difference is kept as an offset and bled off over a tenth
-           * of a second. Every frame is the host's position plus a shrinking
-           * remainder: the lunge keeps its shape and its timing, and the drift
-           * washes out instead of being thrown away in one frame.
-           *
-           * A gap too large to be drift is a reset or a cold start, and that
-           * is still taken whole — there is nothing there to smooth.
-           */
-          // Captured once, on the way in, and never again for as long as the
-          // host holds the feet. Re-reading it whenever the target moved would
-          // turn the remainder into a correction chasing the lunge — which is
-          // the exact lag taking the position outright was written to remove,
-          // and `tests/follower.test.ts` fails the moment it creeps back.
-          if (gap > FOLLOWER_SNAP) {
-            this.followerHandoff[side] = null;
-            this.followerHeld[side] = true;
-          } else if (!this.followerHeld[side]) {
-            this.followerHeld[side] = true;
-            this.followerHandoff[side] = { x: c.position.x - tv.x, z: c.position.z - tv.z };
-          }
-          const off = this.followerHandoff[side];
-          c.position.x = tv.x + (off?.x ?? 0);
-          c.position.z = tv.z + (off?.z ?? 0);
-          if (off) {
-            const keep = Math.max(0, 1 - dt / FOLLOWER_HANDOFF_SECONDS);
-            off.x *= keep;
-            off.z *= keep;
-            if (Math.hypot(off.x, off.z) < 0.005) this.followerHandoff[side] = null;
-          }
-          this.followerBlend[side] = 0;
-        } else if (this.followerBlend[side] > 0 || gap > 0.05) {
-          this.followerHandoff[side] = null;
-          this.followerHeld[side] = false;
-          this.followerBlend[side] = Math.max(0, this.followerBlend[side] - dt);
-          const fixed = reconcile({ x: c.position.x, z: c.position.z }, { x: tv.x, z: tv.z }, dt);
-          c.position.x = fixed.x;
-          c.position.z = fixed.z;
-        } else {
-          // The timeline is already smooth at 60 Hz: take it exactly. Easing
-          // toward it would only add a second, slower motion on top.
-          this.followerHandoff[side] = null;
-          this.followerHeld[side] = false;
+        if (gap > FOLLOWER_SNAP) {
+          // A reset or a cold start: nothing on screen to keep continuous.
           c.position.x = tv.x;
           c.position.z = tv.z;
+          c.velocity.set(tv.vx, 0, tv.vz);
+        } else if (c.busy) {
+          /*
+           * Mid-touch, the host does not move a player at all except by the
+           * contact lunge — and the lunge is played here, from the clip
+           * decision, by the branch above. So a busy player stands where the
+           * lunge left them.
+           *
+           * This used to take the timeline's position instead. But the
+           * timeline carries a frame forward by the velocity it reported, and
+           * a frame from mid-lunge reports the dart: carried past the end of
+           * it, the position overshot the spot the host had stopped on and was
+           * pulled back when the next frame arrived. Measured, that was a
+           * forty-centimetre step in a single tick while the host's player
+           * stood perfectly still.
+           */
+          c.velocity.setAll(0);
+        } else {
+          /*
+           * Moved with the host's velocity, and corrected by a fraction of
+           * whatever is left over.
+           *
+           * The correction used to be the whole of the motion: a fixed fraction
+           * of the gap to the timeline per step, with nothing moving the player
+           * in between. A player running at five metres a second moves further
+           * than that fraction covers, so the one on screen settled a full
+           * `speed × time` behind the one on the timeline — over a metre at a
+           * run — and closed it in one lurch the moment they stopped or began
+           * a touch. That lurch is the teleport. Carrying the velocity leaves
+           * the correction only the error to deal with, which is small.
+           */
+          c.position.x += tv.vx * hostDt;
+          c.position.z += tv.vz * hostDt;
+          const ex = tv.x - c.position.x;
+          const ez = tv.z - c.position.z;
+          const k = Math.min(1, dt / FOLLOWER_CORRECT_SECONDS);
+          c.position.x += ex * k;
+          c.position.z += ez * k;
+          c.velocity.set(tv.vx, 0, tv.vz);
         }
-        // Velocity comes from the timeline's own positions, so the locomotion
-        // blend describes the motion actually on screen.
-        c.velocity.set(tv.vx, 0, tv.vz);
       }
-      c.update(dt);
+      c.update(hostDt);
     }
-    this.selfPredicting = selfPredicted;
   }
 
   /**
@@ -1687,7 +1974,8 @@ export class MatchController {
     const remaining: typeof this.guestFx = [];
     for (const fx of this.guestFx) {
       if (fx.tick <= renderTick) {
-        if (fx.kind === "kick") this.audio.playKick();
+        // A kick is heard when the flown ball applies it, on its own tick.
+        if (fx.kind === "kick" && !this.guestEvents) this.audio.playKick();
       } else {
         remaining.push(fx);
       }
@@ -1696,141 +1984,85 @@ export class MatchController {
   }
 
   /**
-   * Play each side's action clip at the fraction its window gives the
-   * playback clock. Starting a clip here rather than on snapshot arrival is
-   * the whole of the animation sync: the guest's kick winds up and strikes at
-   * the same instant as the ball's launch, wherever in the clip the frame
-   * happened to arrive.
+   * Start or stop each clip the host decided on, once the playback clock
+   * reaches the tick it happened on.
+   *
+   * A clip is placed on the host's ticks from the tick the host started it, so
+   * the frame on this screen is the frame on the host's whenever the decision
+   * arrived: nothing to steer toward a window, nothing to hurry, nothing to
+   * re-seat. All of that existed to hold a clip to a clock it was never
+   * running on (see `src/animclock.ts`), and all of it was visible.
    */
-  private updateFollowerClips(
-    renderTick: number,
-    selfClip?: ClipSample | null,
-    opponentClip?: ClipSample | null,
-    /** The timeline is running on real frames, not carrying or frozen. */
-    live = true
-  ): void {
-    const clips = { player: selfClip, ai: opponentClip };
-    for (const side of ["player", "ai"] as Side[]) {
-      const w = clips[side] !== undefined ? clips[side] : this.followerClipWin[side];
-      const c = this.chars[side];
-      if (!w || !w.clip) {
-        // The host says this character is doing nothing, so it must be doing
-        // nothing — whether or not this screen believes it started the clip.
-        if (this.followerClipKey[side] || c.currentActionClip) {
-          c.cancelActionToLoco();
-          this.followerClipKey[side] = null;
-        }
+  private applyGuestClips(renderTick: number): void {
+    if (this.guestClips.length === 0) return;
+    const due: GuestClipEvent[] = [];
+    const later: GuestClipEvent[] = [];
+    for (const e of this.guestClips) (e.tick <= renderTick ? due : later).push(e);
+    if (due.length === 0) return;
+    this.guestClips = later;
+    // Arrival order, which is the order they happened in — a stop and the
+    // start that replaced it on one tick must not swap.
+    for (const e of due) {
+      const c = this.chars[e.side];
+      if (e.clip === null) {
+        if (c.currentActionClip) c.cancelActionToLoco();
         continue;
       }
-      const from = w.from ?? Number.NEGATIVE_INFINITY;
-      const to = w.to ?? Number.POSITIVE_INFINITY;
-      /*
-       * A clip with nothing to meet is simply played.
-       *
-       * Pinning an animation to the host's clock exists so the foot and the
-       * ball describe the same instant. A celebration, a stunt, a defeat has
-       * no contact at all — there is nothing for it to agree with, and all the
-       * pinning can do is fight this device's render loop: held back, hurried
-       * on, and cut off at a window that has nothing to do with how long the
-       * animation actually is. That is the victory backflip that never gets to
-       * its last frame.
-       *
-       * So these start once and run. The host's window still says which
-       * instance it is, which is all that is needed to avoid replaying one.
-       */
-      const freeRunning = contactFraction(w.clip) <= 0;
-      // Identity is the instance number when the host sends one. Keying on the
-      // window's start stopped working the moment the host began restating the
-      // window from the clip's real progress, because then the start moves
-      // every frame and every frame looks like a new clip.
-      const key = `${w.clip}@${w.seq ?? from}`;
-      if (this.followerClipKey[side] === key) {
-        if (freeRunning) continue;
-        if (renderTick >= to) {
-          // Over. Cancel what is playing, and keep the key: clearing it sent
-          // the next step back round to the "not played yet" branch, which
-          // skipped the clip, set the key again, and came straight back here —
-          // a cancel every other step, each one slamming the locomotion blend
-          // back to full weight. That is a character standing frozen and
-          // shivering rather than walking.
-          if (c.currentActionClip) c.cancelActionToLoco();
-          continue;
-        }
-        // Hold the clip to the playback clock rather than starting it once and
-        // letting it run. A guest's animation is presentation: it belongs to
-        // the host's clock, and this device's render loop is a different one,
-        // drifting from the fixed step whenever frames are being dropped.
-        //
-        // Only while that clock is actually moving. A starving feed freezes
-        // the render point, and a clip pinned to a frozen clock is a player
-        // standing stock still in the middle of a kick until the frames come
-        // back — which is the pose a joined player kept arriving at the
-        // service line still wearing.
-        //
-        // And only when it has drifted enough to be worth a correction.
-        // Seeking every step would hand every wobble in the host's own frame
-        // rate straight to this screen; letting a small difference ride is
-        // what keeps the swing smooth between corrections.
-        if (!live) continue;
-        const frac = clipFractionAt(from, to, renderTick);
-        if (c.currentActionClip !== w.clip) {
-          /*
-           * It ran itself off the end before the clock reached it.
-           *
-           * Which happens all the time, because these are two clocks. The clip
-           * is advanced by Babylon off the render loop in wall time; the
-           * window is measured in simulation ticks, and the simulation caps its
-           * frame delta and drops the remainder. On a phone that stutters — an
-           * emulator above all — the animation runs on and the tick clock does
-           * not, so the clip finishes with the window still open.
-           *
-           * Putting it back is right while there is real clip left to play.
-           * Doing it at the end is a loop: the last sliver plays, finishes,
-           * and is started again on the very next frame, over and over, for
-           * as long as the window stays open. That is the winner's celebration
-           * restarting for ever instead of finishing, and it is every bit as
-           * wrong on a kick — the strike pose flickering while the ball, which
-           * is on the tick clock, has not left yet.
-           *
-           * So: once, and only once. A clip that started before this screen
-           * reached its window is worth re-seating. A clip that has genuinely
-           * run out is worth leaving alone — the character stands for the rest
-           * of the window, which lasts a fraction of a second and is nothing
-           * beside a backflip going round for ever.
-           */
-          if (!this.followerClipReseated[side] && frac < 1 - CLIP_RESYNC_FRACTION) {
-            this.followerClipReseated[side] = true;
-            c.playAction(w.clip, { startFrac: frac, speed: clipWindowSpeed(w.clip, from, to) });
-          }
-          continue;
-        }
-        // Steered by rate, not jumped. Correcting with a seek meant yanking
-        // the animation backwards several times a second on any device whose
-        // render loop and tick clock disagree — a swing that judders, never
-        // appears to reach its last frame, and makes the ball it is meant to
-        // meet look wrong with it.
-        c.steerAction(frac, clipWindowSpeed(w.clip, from, to));
-        continue;
-      }
-      // A clip instance this screen has not played yet. Where in it the host
-      // is, clamped into the clip: a render point short of the window means
-      // the clip has only just started over there, and the head is where to
-      // begin. There used to be no branch for that at all — the clip was
-      // neither played nor remembered, so it sat waiting for the clock to
-      // drift into range and then appeared, out of its moment, usually at the
-      // next serve.
-      const frac = clipFractionAt(from, to, renderTick);
-      if (frac >= 1) {
-        // Genuinely finished before this screen ever reached it: a late join,
-        // or a stall long enough to have missed the whole thing. Remembered so
-        // it is never replayed out of time.
-        this.followerClipKey[side] = key;
-        continue;
-      }
-      c.playAction(w.clip, { startFrac: frac, speed: clipWindowSpeed(w.clip, from, to) });
-      this.followerClipKey[side] = key;
-      this.followerClipReseated[side] = false;
+      const group = c.groups.get(e.clip);
+      if (!group) continue;
+      const frames = CLIPS[e.clip]?.frames ?? group.to - group.from;
+      const speed = e.speed !== undefined && e.speed > 0 ? e.speed : 1;
+      const late = Math.max(0, renderTick - e.tick);
+      if (late > 1) this.lateGuestClips += 1;
+      const from = Math.max(e.startFrac ?? 0, clipStartFraction(e.clip));
+      const contact = contactFraction(e.clip);
+      // Over before this screen could show any of it.
+      if (frames > 0 && from + (late * speed) / frames >= 1) continue;
+      // A clip with nothing to meet — a celebration, a stunt, a defeat — starts
+      // from its beginning however late it is heard of: there is no ball it has
+      // to agree with, and placing it on the host's tick only cuts its start
+      // off. One with a contact is placed exactly, so the limb and the ball
+      // describe the same tick.
+      const startTick = contact > 0 ? e.tick : renderTick;
+      if (!c.playAction(e.clip, { startFrac: e.startFrac, speed, startTick })) continue;
+      const toContact = contact > from && frames > 0 ? ((contact - from) * frames) / speed - late : null;
+      this.startGuestLunge(c, e, late, toContact !== null && toContact > 0 ? toContact : null);
     }
+  }
+
+  /**
+   * Put a character where the host has it for the length of a clip.
+   *
+   * The host moves a player mid-touch by the contact lunge and by nothing
+   * else, so for the whole of a clip its place is exactly known: the end of
+   * the lunge, or where it stood when the clip began. This screen's player is
+   * usually somewhere near but not on that spot — it was carried along a
+   * velocity the host had already abandoned, a direction change that no frame
+   * had reported yet — and it used to stay wherever the clip found it. Twenty
+   * centimetres off, measured, for the whole of a kick: the ball arrived where
+   * the host's foot was, beside this one.
+   *
+   * So the clip carries both, and the character glides onto the right one
+   * before its contact: along the host's own lunge when there is one, less
+   * however late the decision arrived, and otherwise over a moment short
+   * enough to be done before the limb meets the ball.
+   */
+  private startGuestLunge(c: Character, e: GuestClipEvent, late: number, toContact: number | null): void {
+    const y = c.position.y;
+    if (e.lungeTo && e.lungeSeconds !== undefined) {
+      const left = e.lungeSeconds - late * SIM_DT;
+      if (left >= GUEST_SETTLE_MIN_SECONDS) {
+        c.lungeTo(new Vector3(e.lungeTo.x, y, e.lungeTo.z), left);
+        return;
+      }
+    }
+    const spot = e.lungeTo ?? e.at;
+    if (!spot) return;
+    const off = Math.hypot(spot.x - c.position.x, spot.z - c.position.z);
+    if (off < 0.005) return;
+    const window = toContact === null ? GUEST_SETTLE_SECONDS : Math.min(GUEST_SETTLE_SECONDS, toContact * SIM_DT);
+    const seconds = Math.max(GUEST_SETTLE_MIN_SECONDS, window);
+    c.lungeTo(new Vector3(spot.x, y, spot.z), seconds);
   }
 
   /**
@@ -1907,6 +2139,19 @@ export class MatchController {
    */
   private playback = new PlaybackBuffer();
   /**
+   * The guest's own ball, flown here from the host's decisions rather than
+   * placed from its snapshots. See `src/net/guestball.ts`.
+   */
+  private guestBall = new GuestBall();
+  /** Clip decisions waiting for the playback clock to reach their tick. */
+  private guestClips: GuestClipEvent[] = [];
+  /**
+   * The host sends decisions. Once it does, the ball and the clips come from
+   * them, and the snapshot-driven paths — the eased ball, the steered clip
+   * windows — stand down.
+   */
+  private guestEvents = false;
+  /**
    * A tap this guest made that the host has yet to hear about.
    *
    * One at a time, cleared as it is sent: a tap is a moment, and two of them
@@ -1923,28 +2168,6 @@ export class MatchController {
     player: null,
     ai: null,
   };
-  /** Clip instance ("name@from") playing or already passed, per side. */
-  private followerClipKey: Record<Side, string | null> = { player: null, ai: null };
-  /** Seconds of gliding onto the timeline left, per side. */
-  private followerBlend: Record<Side, number> = { player: 0, ai: 0 };
-  /**
-   * How far each character was from the host when the host took its feet, and
-   * how much of that is still being carried.
-   *
-   * See the note where it is set. Cleared on every path that is not the
-   * handover, so a stale remainder can never ride into an ordinary frame.
-   */
-  private followerHandoff: Record<Side, { x: number; z: number } | null> = {
-    player: null,
-    ai: null,
-  };
-  /** Whether the host currently owns each character's feet, so the remainder
-   * above is taken once on the way in rather than on every jump. */
-  private followerHeld: Record<Side, boolean> = { player: false, ai: false };
-  /** Whether the clip now playing has already been put back once. See above. */
-  private followerClipReseated: Record<Side, boolean> = { player: false, ai: false };
-  /** This peer's own character was predicted last step. */
-  private selfPredicting = false;
   /** Latest lead-carried self pose; the reconcile target while predicting. */
   private followerSelfPose: { x: number; z: number } | null = null;
   /** Host's match phase; prediction only runs during a rally. */
@@ -2048,6 +2271,11 @@ export class MatchController {
     this.playback.setLead(ticks);
   }
 
+  /** Draw the host's past from a measured buffer. See `PlaybackBuffer.usePlaybackBuffer`. */
+  usePlaybackBuffer(on = true): void {
+    this.playback.usePlaybackBuffer(on);
+  }
+
   applySnapshot(snap: {
     ballPos: { x: number; y: number; z: number };
     ballVel: { x: number; y: number; z: number };
@@ -2111,6 +2339,12 @@ export class MatchController {
     const prevPhase = this.followerPhase;
     const finishedNow = snap.phase === "over" && prevPhase !== "over" && this.state !== "over";
     this.followerPhase = snap.phase;
+    // This screen's serve, coached here: the host only coaches its own seat.
+    if (snap.phase === "serve_ready" && prevPhase !== "serve_ready" && snap.serveOwner === "player") {
+      this.ui.hint(serveHint());
+    } else if (prevPhase === "serve_ready" && snap.phase !== "serve_ready" && snap.serveOwner === "player") {
+      this.ui.hint(null);
+    }
     this.followerSelfLocked = snap.selfLocked === true;
     // The spot the host's assist is pulling this character toward, so the
     // prediction can pull toward the same one. `eta` is not on the wire and
@@ -2158,8 +2392,19 @@ export class MatchController {
       this.chars.ai.reserve
     );
     if (snap.strikeable !== undefined) {
+      const was = this.strikeableSide;
       this.strikeableSide =
         snap.strikeable === null ? null : snap.strikeable === "host" ? "player" : "ai";
+      // The same two coaching lines the host gives its own seat, given here
+      // for this one: the ball has come to this side, or it has left.
+      if (this.strikeableSide === "player" && was !== "player" && snap.phase === "rally") {
+        if (this.possessionHints < 2) {
+          this.possessionHints++;
+          this.ui.hint(possessionHint());
+        }
+      } else if (was === "player" && this.strikeableSide !== "player") {
+        this.ui.hint(null);
+      }
     }
     if (snap.touches !== undefined) this.touchCount = snap.touches;
     // What the match has been worth so far. A follower counts none of this
@@ -2233,6 +2478,9 @@ export class MatchController {
       selfClip,
       opponentClip,
     });
+    // The snapshot's ball checks the flown one, or ends its flight in a hand.
+    if (snap.ballHeld) this.guestBall.hold();
+    else this.guestBall.check(snap.tick, snap.ballPos, snap.ballVel);
 
     // The one object shown live: its reconcile target is carried forward by
     // the frame's age, so prediction corrects against where the host is now,
@@ -2299,47 +2547,107 @@ export class MatchController {
    * Called by the session once per host step.
    */
   drainNet(tick: number): { kind: FxKind; pos?: { x: number; y: number; z: number } }[] {
-    for (const cs of this.clipStarts) {
+    const plain = (v: Vector3) => ({ x: v.x, y: v.y, z: v.z });
+    for (const cs of this.clipOut) {
+      if (cs.kind === "stop") {
+        this.netEventsOut.push({ type: "clip", tick, side: cs.side, clip: null });
+        continue;
+      }
       const from = tick - cs.startFrac * cs.durTicks;
+      const seq = ++this.clipSeq;
       this.clipWindow[cs.side] = {
         clip: cs.clip,
         from,
         to: from + cs.durTicks,
         dur: cs.durTicks,
-        seq: ++this.clipSeq,
+        seq,
       };
+      this.netEventsOut.push({
+        type: "clip",
+        tick,
+        side: cs.side,
+        clip: cs.clip,
+        startFrac: cs.startFrac,
+        speed: cs.speed,
+        seq,
+        at: plain(cs.at),
+        lungeTo: cs.lunge ? plain(cs.lunge.to) : undefined,
+        lungeSeconds: cs.lunge?.seconds,
+      });
     }
-    this.clipStarts.length = 0;
-    // Restate every live window from where its clip actually is.
-    //
-    // The window is stamped in simulation ticks and the clip is played by the
-    // renderer, and those are two different clocks: the fixed step caps its
-    // delta at `MAX_FRAME_DT` and drops the remainder, while an animation
-    // group advances on the frame's real delta. A device dropping frames runs
-    // its animations ahead of its own simulation, so a window predicted once
-    // at the clip's start stops containing the clip within a touch or two.
-    //
-    // The guest reads that window to decide what to play and from where. Left
-    // to drift it hands over a window the render point has already passed, or
-    // has not reached — which is a touch that plays no animation, and an
-    // animation that appears out of nowhere at the next serve. Restating it
-    // costs one read of the animatable and cannot drift, because it is never
-    // more than one step old.
+    this.clipOut.length = 0;
+    // What already happened to the ball goes out before what is decided for
+    // later: a toss and the serve it will become leave on one step, and a guest
+    // with no flight yet should start from the toss rather than from a strike
+    // it cannot reach for another half-second.
+    if (this.ballChangedOut) {
+      const kick = this.ballChangedOut.kick;
+      this.ballChangedOut = false;
+      // A ball in a hand is not a flight; the snapshot's `held` covers it.
+      if (!this.ball.held) {
+        this.netEventsOut.push({
+          type: "launch",
+          tick: tick + 1,
+          pos: plain(this.ball.state.pos),
+          vel: plain(this.ball.state.vel),
+          spin: this.ball.spinRate,
+          kick,
+          settled: true,
+        });
+      }
+    }
+    for (const c of this.cancelsOut) this.cancelAt.push(tick + c);
+    this.cancelsOut.length = 0;
+    if (this.cancelAt.length > 0) {
+      const due = this.cancelAt.filter((c) => c <= tick + 1);
+      this.cancelAt = this.cancelAt.filter((c) => c > tick + 1);
+      // A ball back in a hand needs nothing: the guest ends every flight on the
+      // first snapshot that says so.
+      if (due.length > 0 && !this.ball.held) {
+        for (const c of due) {
+          this.netEventsOut.push({
+            type: "launch",
+            tick: Math.max(c, tick + 1),
+            pos: plain(this.ball.state.pos),
+            vel: plain(this.ball.state.vel),
+            spin: this.ball.spinRate,
+            kick: false,
+          });
+        }
+      }
+    }
+    for (const l of this.launchesOut) {
+      this.netEventsOut.push({
+        type: "launch",
+        tick: tick + l.inTicks,
+        pos: plain(l.pos),
+        vel: plain(l.vel),
+        spin: l.spin,
+        kick: l.kick,
+      });
+    }
+    this.launchesOut.length = 0;
+    // A window describes only the clip it was opened for. Clips are placed on
+    // the simulation's clock, so a window stamped at the start stays true for
+    // the whole clip and needs no restating — only closing when its clip goes.
     for (const side of ["player", "ai"] as Side[]) {
       const w = this.clipWindow[side];
-      if (!w) continue;
-      const c = this.chars[side];
-      if (c.currentActionClip !== w.clip) {
-        this.clipWindow[side] = null;
-        continue;
-      }
-      const frac = c.actionFraction;
-      if (frac === null) continue;
-      const from = tick - frac * w.dur;
-      this.clipWindow[side] = { ...w, from, to: from + w.dur };
+      if (w && this.chars[side].currentActionClip !== w.clip) this.clipWindow[side] = null;
     }
     const out = this.fxQueue;
     this.fxQueue = [];
+    return out;
+  }
+
+  /**
+   * Online host: the decisions the last drain stamped, for the session to
+   * send. Separate from the fx list `drainNet` returns because these are not
+   * capped or droppable — a guest missing one flies the wrong flight until a
+   * snapshot catches it.
+   */
+  takeNetEvents(): HostNetEvent[] {
+    const out = this.netEventsOut;
+    this.netEventsOut = [];
     return out;
   }
 
@@ -2360,6 +2668,51 @@ export class MatchController {
     this.guestFx.push(entry);
   }
 
+  /** Guest: the host decided what the ball does on a tick. */
+  queueLaunch(l: LaunchEvent): void {
+    this.guestEvents = true;
+    // A flight that starts from a hand on this screen — a toss — leaves from
+    // the hand, however late the decision was.
+    const p = this.ball.state.pos;
+    this.guestBall.queue(l, undefined, this.ball.held ? { x: p.x, y: p.y, z: p.z } : undefined);
+  }
+
+  /**
+   * Guest: the host started or cut short a clip on a tick. Held until the
+   * playback clock gets there, so the wind-up starts when it started there.
+   */
+  queueClip(e: GuestClipEvent): void {
+    this.guestEvents = true;
+    // A burst of decisions is a handful per touch. Past this something is
+    // wrong upstream, and the oldest are the ones least worth playing.
+    if (this.guestClips.length >= 32) this.guestClips.shift();
+    this.guestClips.push(e);
+  }
+
+  /**
+   * Guest diagnostics: how often a snapshot caught the flown ball out, and how
+   * often a decision arrived after its tick and had to be replayed.
+   */
+  get guestBallStats(): { reanchors: number; replays: number } {
+    return { reanchors: this.guestBall.reanchors, replays: this.guestBall.replays };
+  }
+
+  /** Guest diagnostics for the connection stats overlay. */
+  get followerStats(): {
+    clock: number | null;
+    target: number | null;
+    lead: number;
+    rate: number;
+    buffer: number | null;
+    replays: number;
+    reanchors: number;
+    lateClips: number;
+  } {
+    return { ...this.playback.stats, ...this.guestBallStats, lateClips: this.lateGuestClips };
+  }
+  /** Clip decisions that reached this screen after their tick. Diagnostics. */
+  private lateGuestClips = 0;
+
   /**
    * Start a seat's action clip and, when publishing, record the tick window
    * the guest needs to play it at the right fraction of the right instant.
@@ -2377,19 +2730,31 @@ export class MatchController {
   ): boolean {
     const played = this.chars[side].playAction(clip, opts);
     if (played && this.netPublish) {
-      const frames = CLIPS[clip]?.frames;
-      if (frames) {
-        const durTicks = frames / (opts.speed ?? 1);
+      // Every clip is published, not only the touches. `CLIPS` lists the clips
+      // with a contact to time, and it used to be the only place a length was
+      // read from — so the match-win celebrations, which are in no table
+      // because they meet no ball, were never sent at all, and the guest's
+      // winner stood still at the end of the match. The animation's own range
+      // is the length of anything the table does not know.
+      const group = this.chars[side].groups.get(clip);
+      const frames = CLIPS[clip]?.frames ?? (group ? group.to - group.from : 0);
+      if (frames > 0) {
+        const speed = opts.speed ?? 1;
+        const durTicks = frames / speed;
         // The same floor playAction applies, so the window describes the clip
         // as actually started; a loop has no fraction to begin at.
         const startFrac = opts.loop ? 0 : Math.max(opts.startFrac ?? 0, clipStartFraction(clip));
-        this.clipStarts.push({ side, clip, startFrac, durTicks });
+        const at = this.chars[side].position.clone();
+        this.clipOut.push({ kind: "start", side, clip, startFrac, speed, durTicks, at });
       }
     }
     return played;
   }
 
   private stopSideAction(side: Side): void {
+    // Only a clip actually cut short is news. One that ended by itself ended
+    // by itself on the guest too, on the same clip length.
+    if (this.netPublish && this.chars[side].currentActionClip) this.clipOut.push({ kind: "stop", side });
     // Back onto the feet, not merely stopped: `playAction` zeroed the
     // locomotion weights on the way in, and stopping without restoring them
     // leaves the character frozen on the frame it was cut at.
@@ -2423,6 +2788,7 @@ export class MatchController {
     this.victoryPos = null;
     this.victoryTarget = null;
     this.servePhase = "idle";
+    this.serveCountdown = null;
     // Back to neutral: a shape asked for on the last serve must not ride into
     // this one, and the CPU never asks for one at all.
     this.serveShot = { power: 0.5, loft: 1 };
@@ -2440,6 +2806,7 @@ export class MatchController {
     this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
+    this.withdrawPendingShots();
     this.contactSync = null;
     this.pendingTouch = null;
     this.moveTarget = null;
@@ -2597,6 +2964,11 @@ export class MatchController {
 
   private updatePlayerServeAim(input: InputState, allowClipChange: boolean): void {
     if (this.serveOwner !== "player") return;
+    // Final from the toss. The ball in the air is a serve already decided —
+    // decided then so an online guest can be sent it before it leaves rather
+    // than a trip after (see `startServe`); the quarter-second between toss
+    // and strike was the only part of the aim that could not be.
+    if (this.servePhase === "toss") return;
     this.serveAim = { fwd: input.moveX, lat: input.moveZ };
     if (allowClipChange) this.updateServeClipFromAim(input.moveZ);
   }
@@ -2604,6 +2976,7 @@ export class MatchController {
   /** Versus mode: the second human's held aim while they own the serve. */
   private updateVersusServeAim(allowClipChange: boolean): void {
     if (!this.versus || this.serveOwner !== "ai") return;
+    if (this.servePhase === "toss") return;
     const v = this.versusInput;
     // versusInput is court-space; the ai side attacks -x and its own left is -z.
     this.serveAim = { fwd: -v.moveX, lat: v.moveZ };
@@ -2627,38 +3000,63 @@ export class MatchController {
     const airTime = Math.max(0.25, (contactF - tossF) * durSec);
     this.state = "serve_anim";
     this.ui.hint(null);
-    this.playSideAction(this.serveOwner, clip, {
-      speed: 1.0,
-      callbacks: [
-        {
-          frac: tossF,
-          fn: () => {
-            // Toss: a real ballistic arc from the hand that rises, peaks and
-            // falls onto the striking limb exactly at the contact frame.
-            const from = this.serveHandPos(server);
-            let to =
-              server.clipContactPoint(clip) ??
-              server.position.add(serveContactOffset(clip, server.forward, server.height));
-            // Head serves: the measured point is the Head bone origin, inside
-            // the skull — land the ball on the forehead instead.
-            if (clip.startsWith("HeadServe")) to = to.add(server.forward.scale(HEAD_CONTACT_PUSH));
-            this.contactSync = { point: to.clone() };
-            this.servePhase = "toss";
-            this.ball.place(from);
-            this.ball.launch(solveLaunch(from, to, airTime));
-          },
-        },
-        {
-          frac: contactF,
-          fn: () => this.launchServe(),
-        },
-      ],
-    });
+    this.playSideAction(this.serveOwner, clip, { speed: 1.0 });
+    /*
+     * The toss and the strike, on the simulation's clock.
+     *
+     * They were callbacks on the clip's own frames, which run on the render
+     * loop — so the tick a serve left on depended on how this device's frames
+     * happened to fall, and nobody could say in advance which it would be. As
+     * counts of steps from here, the strike's tick is known at the toss, and so
+     * is the serve itself (see `serveVelocity`): a guest can be told the whole
+     * flight a quarter of a second before it leaves, instead of a trip after.
+     */
+    const startF = clipStartFraction(clip);
+    const tossAt = Math.max(1, Math.round(((tossF - startF) * durSec) / SIM_DT));
+    const contactAt = tossAt + Math.max(1, Math.round(((contactF - tossF) * durSec) / SIM_DT));
+    this.serveCountdown = {
+      ticks: 0,
+      tossAt,
+      contactAt,
+      toss: () => {
+        // Toss: a real ballistic arc from the hand that rises, peaks and
+        // falls onto the striking limb exactly at the contact frame.
+        const from = this.serveHandPos(server);
+        let to =
+          server.clipContactPoint(clip) ??
+          server.position.add(serveContactOffset(clip, server.forward, server.height));
+        // Head serves: the measured point is the Head bone origin, inside
+        // the skull — land the ball on the forehead instead.
+        if (clip.startsWith("HeadServe")) to = to.add(server.forward.scale(HEAD_CONTACT_PUSH));
+        this.contactSync = { point: to.clone() };
+        this.servePhase = "toss";
+        this.ball.place(from);
+        this.ball.launch(solveLaunch(from, to, airTime));
+        this.noteBallChanged();
+        // The aim stops following the stick at the toss (see
+        // `updatePlayerServeAim`), so the serve this contact will play is
+        // already decided: published now, for the tick it leaves on.
+        this.publishShot(contactAt - tossAt, { pos: to, vel: this.serveVelocity(to), spin: 1 });
+      },
+      contact: () => this.launchServe(true),
+    };
   }
 
-  private launchServe(): void {
-    const contactPoint = this.consumeContactPoint();
-    if (contactPoint) this.ball.state.pos.copyFrom(contactPoint);
+  /** Steps since the serve clip started, and the steps its toss and strike fire on. */
+  private serveCountdown: {
+    ticks: number;
+    tossAt: number;
+    contactAt: number;
+    toss: () => void;
+    contact: () => void;
+  } | null = null;
+
+  /**
+   * The serve's launch velocity from the contact point, with the aim and shape
+   * as they stand. Pure of side effects, so the toss can decide it ahead of the
+   * strike and the strike plays exactly what was decided.
+   */
+  private serveVelocity(from: Vector3): Vector3 {
     const recv = other(this.serveOwner);
     const server = this.chars[this.serveOwner];
     // Same aim mapping as rally strikes. The landing drifts toward the aimed
@@ -2677,7 +3075,7 @@ export class MatchController {
     const spray = 0.5 * sprayAmp * (1 - 0.7 * Math.min(1, Math.abs(aim.lat))) * Math.sign(aim.lat);
     const tz = Math.max(-0.62, Math.min(0.62, spot.z + spray));
     const target = new Vector3(tx, tableSurfaceY(tx) + 0.02, tz);
-    const dist = Vector3.Distance(this.ball.state.pos, target);
+    const dist = Vector3.Distance(from, target);
     // Foot serves fly faster and flatter than head serves.
     const power = (SERVE_POWER[this.serveClip] ?? 1) * server.def.power * ff.power * server.def.serve;
     // What the server asked for, on top of what their clip and traits give.
@@ -2700,16 +3098,21 @@ export class MatchController {
       SERVE_CLEARANCE.max,
       Math.max(SERVE_CLEARANCE.min, SERVE_CLEARANCE.base * arc)
     );
-    const v = capLaunchApex(
-      this.ball.state.pos,
-      solveLaunchClearingNet(
-        this.ball.state.pos,
-        target,
-        ((0.55 + dist * 0.07) * shot.loft) / paced,
-        clearance
-      ),
+    return capLaunchApex(
+      from,
+      solveLaunchClearingNet(from, target, ((0.55 + dist * 0.07) * shot.loft) / paced, clearance),
       GROUND_Y + 2 * server.height
     );
+  }
+
+  /**
+   * Strike the serve. `published` when the toss already sent this launch to a
+   * guest; otherwise — no clip to toss with — it is news, sent as it happens.
+   */
+  private launchServe(published = false): void {
+    const contactPoint = this.consumeContactPoint();
+    if (contactPoint) this.ball.state.pos.copyFrom(contactPoint);
+    const v = this.serveVelocity(this.ball.state.pos);
     this.struckPace[this.serveOwner] = Math.hypot(v.x, v.z);
     this.servePhase = "launched";
     this.lastHitter = this.serveOwner;
@@ -2717,6 +3120,7 @@ export class MatchController {
     this.touchCount = 0;
     this.resetAimSpot(this.serveOwner);
     this.ball.launch(v);
+    if (!published) this.noteBallChanged(true);
     this.audio.playKick();
     this.state = "rally";
     this.chars.player.minCourtX = COURT.minX;
@@ -3050,21 +3454,6 @@ export class MatchController {
       return true;
     }
 
-    this.lastHitter = side;
-    this.strikeableSide = null;
-    this.touchCount = 0;
-    this.resetAimSpot(side);
-    this.pointTouches++;
-    this.autoSetupRun[side] = false;
-    this.autoRunArrived[side] = false;
-    this.leashSlack[side] = Infinity;
-    if (side === "player") this.ui.hint(null);
-    // Portrait has no tap sequence the bar can track, so the bar echoes the
-    // power this kick committed at — the swipe's one visible consequence.
-    if (side === "player" && this.portraitControls && !this.versus) {
-      this.meterEcho = { power, frames: 45 };
-    }
-
     // Pick the clip from where the ball will NATURALLY be around contact time
     // — its flight is sampled, never altered; the character goes to the ball.
     const flight = sampleFlight(this.ball.state, CONTACT_WINDOW.max + 0.05);
@@ -3096,6 +3485,25 @@ export class MatchController {
     // they were already well placed — `chooseStrike` falls back to a foot kick
     // otherwise. Earned rather than automatic-looking.
     const plan = this.planContact(c, clip, STRIKE_SPEED, flight, timingSlip);
+    // Where the limb meets this ball, decided before anything about the
+    // possession changes. See `reachableContact`.
+    const at = c.groups.has(clip) ? this.reachableContact(c, clip, plan) : null;
+
+    this.lastHitter = side;
+    this.strikeableSide = null;
+    this.touchCount = 0;
+    this.resetAimSpot(side);
+    this.pointTouches++;
+    this.autoSetupRun[side] = false;
+    this.autoRunArrived[side] = false;
+    this.leashSlack[side] = Infinity;
+    if (side === "player") this.ui.hint(null);
+    // Portrait has no tap sequence the bar can track, so the bar echoes the
+    // power this kick committed at — the swipe's one visible consequence.
+    if (side === "player" && this.portraitControls && !this.versus) {
+      this.meterEcho = { power, frames: 45 };
+    }
+
     // How well this contact was met, decided before a frame of it has played
     // and never revisited: the same approach to the same ball always earns the
     // same touch. A clean strike goes where it was aimed; a scrappy one keeps
@@ -3105,37 +3513,27 @@ export class MatchController {
     const quality = plan.quality * volleyFactor;
     const graded = strikeShape(quality);
     this.lastPart[side] = bodyPartOf(clip) ?? this.lastPart[side];
-    // The ball leaves at the planned contact moment, from wherever its natural
-    // flight put it — the lunge carried the limb there, so the visual contact
-    // and the launch coincide. Fired by the countdown in update(); the
-    // animation callback is only a fallback (hence the idempotence guard).
-    let fired = false;
-    const launch = () => {
-      if (fired) return;
-      fired = true;
-      this.contactSync = null;
-      if (this.state !== "rally") return; // safety: the point ended mid-wind-up
-      // Align ball to striking limb's actual world position at contact
-      const boneName = CLIP_CONTACT_BONE[clip];
-      const limbNode = boneName ? c.findNode(boneName) : null;
-      if (limbNode) {
-        const contactPos = limbNode.getAbsolutePosition().clone();
-        if (clip.includes("Head")) {
-          contactPos.addInPlace(c.forward.scale(HEAD_CONTACT_PUSH));
-        } else {
-          contactPos.addInPlace(c.forward.scale(BALL_RADIUS * 0.4));
-        }
-        if (Vector3.Distance(this.ball.state.pos, contactPos) < 0.45) {
-          this.ball.state.pos.copyFrom(contactPos);
-        }
-      }
-
+    /*
+     * What this contact does to the ball, decided now rather than when the limb
+     * arrives.
+     *
+     * It used to be worked out at the contact frame, from the ball snapped onto
+     * the striking bone. The bone's position is wherever this device's
+     * animation happens to be, which is a different place on two phones — so a
+     * guest could never have computed the same shot, and could only be told it
+     * after it had happened, a trip too late to turn its ball on time. Decided
+     * here, from where the ball's natural flight and the lunge will put things
+     * at the contact tick, the shot is a fact the moment the touch commits, and
+     * the wind-up is the head start that carries it to the other screen before
+     * the ball leaves.
+     */
+    const shoot = (ballPos: Vector3, standAt: Vector3): { pos: Vector3; vel: Vector3; spin: number; meter: number } => {
       // Where it was aimed, plus the spread that aim earned. The stretch term
       // is how far the striker had to reach for the contact: a ball taken at
       // arm's length is not struck as cleanly as one met in front.
       const ff = footFactor(c.def, clip);
-      const chest = c.position.add(new Vector3(0, c.height * 0.55, 0));
-      const stretch = Vector3.Distance(chest, this.ball.state.pos) / PLAYER_REACH;
+      const chest = standAt.add(new Vector3(0, c.height * 0.55, 0));
+      const stretch = Vector3.Distance(chest, ballPos) / PLAYER_REACH;
       const radius =
         spreadRadius({
           power,
@@ -3146,7 +3544,7 @@ export class MatchController {
       // Where it actually lands: the aim displaced by the contact's own
       // geometry, so the same shot lands the same way twice and every miss is
       // the striker's to learn from.
-      const landed = landingDeviation(aim.target, this.ball.state.pos, radius, {
+      const landed = landingDeviation(aim.target, ballPos, radius, {
         power,
         sense: plan.sense,
         lateral,
@@ -3158,7 +3556,7 @@ export class MatchController {
       const onTable = Math.abs(wanted.x) <= TABLE.halfLen && Math.abs(wanted.z) <= TABLE.halfWid;
       const surfaceY = onTable ? tableSurfaceY(wanted.x) : GROUND_Y;
       const target = new Vector3(wanted.x, surfaceY + 0.02, wanted.z);
-      const dist = Vector3.Distance(this.ball.state.pos, target);
+      const dist = Vector3.Distance(ballPos, target);
       // Stronger kicks fly flatter and faster (shorter flight time).
       let kickPower = (KICK_POWER[clip] ?? 1) * c.def.power * ff.power * graded.power;
       kickPower *= 0.72 + 0.5 * power;
@@ -3167,9 +3565,9 @@ export class MatchController {
       // over the net while a high contact is hit down. Kicks taken close to
       // the table flatten (there is no runway for a lob), deep ones float a
       // touch more, and each clip's KICK_LOFT nudges it again.
-      const relH = (this.ball.state.pos.y - GROUND_Y) / c.height;
+      const relH = (ballPos.y - GROUND_Y) / c.height;
       const clipLoft = KICK_LOFT[clip] ?? 1;
-      const prox = Math.min(1, Math.max(0, (Math.abs(this.ball.state.pos.x) - TABLE.halfLen) / 2.2));
+      const prox = Math.min(1, Math.max(0, (Math.abs(ballPos.x) - TABLE.halfLen) / 2.2));
       // `aim.loft` is what a portrait swipe asked for — up drills the ball,
       // down floats it — and 1 leaves the arc entirely to the power and the
       // contact, which is what a charged landscape kick sends.
@@ -3183,7 +3581,7 @@ export class MatchController {
       // range the ball has to go up, however hard it was asked for. Applied
       // to the arc rather than to the input, so a player who swipes flat out
       // from the back still gets their pace — as a lob.
-      loft = Math.max(loft, loftFloor(c.position.x));
+      loft = Math.max(loft, loftFloor(standAt.x));
       // The smash: a foot volley or backflip taken while the ball is still
       // high, or a header right at the table, flies near-flat and straight and
       // only skims the net.
@@ -3216,25 +3614,56 @@ export class MatchController {
       // off the intended line it ended up. Both halves of a good shot, in the
       // one short word the existing flash already shows — no new dial, no
       // timing bar, nothing to read mid-rally.
-      if (side === "player" && !this.versus) {
-        const online = Math.max(0, 1 - Vector3.Distance(wanted, aim.target) / SPREAD.max);
-        this.ui.meterResult?.(Math.min(quality, 0.5 * quality + 0.5 * online));
+      const online = Math.max(0, 1 - Vector3.Distance(wanted, aim.target) / SPREAD.max);
+      const v = solveLaunchClearingNet(ballPos, target, flight, clearance);
+      // Smashes visibly spin faster.
+      return { pos: ballPos.clone(), vel: v, spin: 0.7 + relH, meter: Math.min(quality, 0.5 * quality + 0.5 * online) };
+    };
+
+    // The ball leaves at the planned contact tick. Fired by the countdown in
+    // update() and nothing else: the clip's own contact frame is on the render
+    // clock, and a launch that could come from either would leave on a tick a
+    // guest was never told.
+    let shot: ReturnType<typeof shoot> | null = null;
+    let fired = false;
+    // Where the ball should be when this fires, if nothing touches it first.
+    const arriveAt = at?.arriveAt ?? null;
+    const launch = () => {
+      if (fired) return;
+      fired = true;
+      this.contactSync = null;
+      if (this.state !== "rally") {
+        // Safety: the point ended mid-wind-up. The guest was told this touch
+        // happens on this tick; tell it the ball's own state instead.
+        this.withdrawFiring();
+        return;
       }
-      const v = solveLaunchClearingNet(this.ball.state.pos, target, flight, clearance);
-      this.struckPace[side] = Math.hypot(v.x, v.z);
-      this.ball.launch(v, 0.7 + relH); // smashes visibly spin faster
+      // Something moved the ball off the flight the shot was decided for — a
+      // deflection off the other body, mostly. The decision described a ball
+      // that is not here, so it is made again from the one that is, and sent.
+      let s = shot;
+      if (!s || !arriveAt || Vector3.Distance(arriveAt, this.ball.state.pos) > SHOT_PATH_TOLERANCE) {
+        s = shoot(this.ball.state.pos.clone(), c.position.clone());
+        this.noteBallChanged(true);
+      }
+      if (side === "player" && !this.versus) this.ui.meterResult?.(s.meter);
+      this.ball.state.pos.copyFrom(s.pos);
+      this.struckPace[side] = Math.hypot(s.vel.x, s.vel.z);
+      this.ball.launch(s.vel, s.spin);
       this.audio.playKick();
-      this.emitLaunch(side, "strike", clip, 0.7 + relH);
+      this.emitLaunch(side, "strike", clip, s.spin);
       this.emit({ type: "touch-committed", side, action: "strike", afterSetup: popped });
     };
 
     const played = this.playSideAction(side, clip, {
       startFrac: plan.startFrac,
       speed: STRIKE_SPEED,
-      callbacks: [{ frac: contactFraction(clip), fn: launch }],
     });
-    if (played) this.beginContactLunge(c, clip, plan, launch);
-    else launch();
+    if (played && at) {
+      this.beginContactLunge(c, at, plan, launch);
+      shot = shoot(at.launchAt, at.standAt);
+      this.publishShot(at.ticks, shot);
+    } else launch();
     return true;
   }
 
@@ -3269,16 +3698,6 @@ export class MatchController {
     // it only applies to the reception itself.
     const incomingPace = this.touchCount === 0 ? this.struckPace[other(side)] : 0;
 
-    this.touchCount++;
-    this.pointTouches++;
-    if (side === "player") {
-      this.ui.hint(null);
-      // Committing to a set-up spends any destination the player had stored:
-      // a tap made while chasing the ball meant "be there for this ball", and
-      // once the ball has been played it is stale.
-      this.moveTarget = null;
-    }
-
     // Clip choice and timing use the ball's sampled natural flight; the
     // character lunges to meet it (see tryStrike). The part that played the
     // last touch is barred, so a possession is a sequence of different limbs
@@ -3298,6 +3717,19 @@ export class MatchController {
       forceNearest: this.runLocked(side),
     });
     const plan = this.planContact(c, clip, POP_SPEED, flight, timingSlip);
+    // Decided before the touch is counted, as in `tryStrike`.
+    const at = c.groups.has(clip) ? this.reachableContact(c, clip, plan) : null;
+
+    this.touchCount++;
+    this.pointTouches++;
+    if (side === "player") {
+      this.ui.hint(null);
+      // Committing to a set-up spends any destination the player had stored:
+      // a tap made while chasing the ball meant "be there for this ball", and
+      // once the ball has been played it is stale.
+      this.moveTarget = null;
+    }
+
     const part = bodyPartOf(clip) ?? "foot";
     // What this limb does with this contact: the part decides the character of
     // the ball, the grade decides how much of what was asked for survives —
@@ -3307,33 +3739,9 @@ export class MatchController {
     const shape = setupShape(part, quality, plan.sense);
     this.lastPart[side] = part;
 
-    // Pop the ball at the planned contact moment so it rises and comes down
-    // at the aimed spot (clamped to this side's half of the court). Fired by
-    // the countdown in update(); the animation callback is only a fallback.
-    let fired = false;
-    const pop = () => {
-      if (fired) return;
-      fired = true;
-      this.contactSync = null;
-      if (this.state !== "rally") return;
-      // Align ball to control touch limb's actual world position at contact
-      const boneName = CLIP_CONTACT_BONE[clip];
-      const limbNode = boneName ? c.findNode(boneName) : null;
-      if (limbNode) {
-        const contactPos = limbNode.getAbsolutePosition().clone();
-        if (clip.includes("Head")) {
-          contactPos.addInPlace(c.forward.scale(HEAD_CONTACT_PUSH));
-        } else if (clip.includes("Chest")) {
-          contactPos.addInPlace(c.forward.scale(BALL_RADIUS * 0.6));
-        } else {
-          contactPos.addInPlace(c.forward.scale(BALL_RADIUS * 0.4));
-        }
-        if (Vector3.Distance(this.ball.state.pos, contactPos) < 0.45) {
-          this.ball.state.pos.copyFrom(contactPos);
-        }
-      }
-
-      const pos = this.ball.state.pos;
+    // Where the set-up goes, decided at commit from where the ball and the
+    // player will be at the contact tick — for the reason `tryStrike` gives.
+    const lift = (pos: Vector3, standAt: Vector3): { pos: Vector3; vel: Vector3; spin: number } => {
       const len = Math.hypot(aimX, aimZ);
       let target: Vector3;
       if (len > 0.2) {
@@ -3349,11 +3757,11 @@ export class MatchController {
         // meant to travel. Signed by the contact, so it is a consequence and
         // not a coin toss.
         const drift = carry * shape.drift;
-        target = c.position.add(
+        target = standAt.add(
           new Vector3(ux * carry + uz * drift, 0, uz * carry - ux * drift)
         );
       } else {
-        target = c.position.add(c.forward.scale(0.5 * TABLE_SCALE * shape.carry));
+        target = standAt.add(c.forward.scale(0.5 * TABLE_SCALE * shape.carry));
       }
       // Further to travel, longer in the air: a set-up played across the court
       // has to hang long enough for its own player to arrive under it. How high
@@ -3376,10 +3784,32 @@ export class MatchController {
         own * Math.min(COURT.maxX - 0.2, Math.max(TABLE.halfLen + 0.25, own * target.x));
       target.z = Math.max(-COURT.maxZ + 0.2, Math.min(COURT.maxZ - 0.2, target.z));
       const v = new Vector3((target.x - pos.x) / t, vy, (target.z - pos.z) / t);
-      this.struckPace[side] = Math.hypot(v.x, v.z);
-      this.ball.launch(v, 0.45); // a set-up pop floats with little spin
+      // A set-up pop floats with little spin.
+      return { pos: pos.clone(), vel: v, spin: 0.45 };
+    };
+
+    // Fired by the countdown in update() alone; see `tryStrike`.
+    let popped: ReturnType<typeof lift> | null = null;
+    let fired = false;
+    const arriveAt = at?.arriveAt ?? null;
+    const pop = () => {
+      if (fired) return;
+      fired = true;
+      this.contactSync = null;
+      if (this.state !== "rally") {
+        this.withdrawFiring();
+        return;
+      }
+      let s = popped;
+      if (!s || !arriveAt || Vector3.Distance(arriveAt, this.ball.state.pos) > SHOT_PATH_TOLERANCE) {
+        s = lift(this.ball.state.pos.clone(), c.position.clone());
+        this.noteBallChanged(true);
+      }
+      this.ball.state.pos.copyFrom(s.pos);
+      this.struckPace[side] = Math.hypot(s.vel.x, s.vel.z);
+      this.ball.launch(s.vel, s.spin);
       this.audio.playKick();
-      this.emitLaunch(side, "pop", clip, 0.45);
+      this.emitLaunch(side, "pop", clip, s.spin);
       // The feet are owned by the run to the drop until the arrival. Where the
       // drop is comes from the ball's live flight (`computeAnchor`), not from
       // where this touch meant to put it, so a set-up that came off the body
@@ -3398,10 +3828,11 @@ export class MatchController {
     const played = this.playSideAction(side, clip, {
       startFrac: plan.startFrac,
       speed: POP_SPEED,
-      callbacks: [{ frac: contactFraction(clip), fn: pop }],
     });
-    if (played) {
-      this.beginContactLunge(c, clip, plan, pop);
+    if (played && at) {
+      this.beginContactLunge(c, at, plan, pop);
+      popped = lift(at.launchAt, at.standAt);
+      this.publishShot(at.ticks, popped);
     } else pop();
     return true;
   }
@@ -3442,13 +3873,9 @@ export class MatchController {
           this.kickAim[e.side] = { taps: 0, held: 0 };
           this.receptionAim = { player: null, ai: null };
           this.emit({ type: "possession-start", side: e.side });
-          if ((e.side === "player" || this.versus) && this.possessionHints < 2) {
+          if (this.hintsFor(e.side) && this.possessionHints < 2) {
             this.possessionHints++;
-            this.ui.hint(
-              portraitTouch()
-                ? "Swipe up to lift it · down to drive it · fast for pace"
-                : "Hold STRIKE to aim and charge · release to kick"
-            );
+            this.ui.hint(possessionHint());
           }
         }
         break;
@@ -3487,6 +3914,20 @@ export class MatchController {
 
   private possessionHints = 0;
 
+  /**
+   * Whether this screen coaches a seat.
+   *
+   * Its own seat always. The other seat only when both players share this
+   * screen — a second controller on the couch. An online host is `versus` too,
+   * and used to take that as a reason to coach both seats, which put "aim with
+   * the stick" on the host's screen for a serve the guest was making, while the
+   * guest — who runs no rules — was told nothing at all. The guest now coaches
+   * itself from the phase and possession the snapshot carries.
+   */
+  private hintsFor(side: Side): boolean {
+    return side === "player" || (this.versus && !this.netPublish);
+  }
+
   private awardPoint(winner: Side, reason: string): void {
     // The serve clock ends a point that never became a rally, so that state
     // counts too. Nothing else awards from anywhere but a rally.
@@ -3503,6 +3944,7 @@ export class MatchController {
     this.struckPace = { player: 0, ai: 0 };
     this.leashSlack = { player: Infinity, ai: Infinity };
     this.lastPart = { player: null, ai: null };
+    this.withdrawPendingShots();
     this.contactSync = null;
     this.pendingTouch = null;
     this.anchor = { player: null, ai: null };
@@ -3682,28 +4124,31 @@ export class MatchController {
     }
     this.stopSideAction("player");
     this.stopSideAction("ai");
-    this.clipStarts.length = 0;
+    this.clipOut.length = 0;
+    this.launchesOut.length = 0;
+    this.ballChangedOut = false;
+    this.cancelsOut.length = 0;
+    this.cancelAt = [];
+    this.netEventsOut = [];
     this.fxQueue.length = 0;
     this.guestFx.length = 0;
     // A rematch over a socket is a fresh match on the same rigs: the follower's
     // view of the previous one — poses, clips, the final phase — must not
     // carry across, or a stale "Defeat" keeps playing into the first serve.
     this.playback.reset();
+    this.guestBall.reset();
+    this.guestClips = [];
+    this.guestEvents = false;
     // Two seconds of 30 Hz frames: longer than any trip, short enough that a
     // rematch the other end never started still comes back to life.
     this.followerAwaitingRestart = this.netFollower ? 60 : 0;
     this.followerSelfPose = null;
     this.followerSelfAnchor = null;
-    this.followerHandoff = { player: null, ai: null };
-    this.followerHeld = { player: false, ai: false };
     this.followerRenderTick = null;
     this.versusViewTick = null;
     this.ballHistory = [];
     this.guestFx = [];
     this.followerClipWin = { player: null, ai: null };
-    this.followerClipKey = { player: null, ai: null };
-    this.followerBlend = { player: 0, ai: 0 };
-    this.selfPredicting = false;
     this.followerPhase = "";
     this.followerSelfLocked = false;
     this.followerMarkerIn = 0;
@@ -3725,6 +4170,35 @@ export class MatchController {
   // ---------------------------------------------------------------- update
 
   update(dt: number, input: InputState, aiUpdate: (dt: number) => void): void {
+    this.inUpdate = true;
+    this.ballSteppedThisUpdate = false;
+    // The clock every clip in this match is placed on. Set before anything in
+    // the step can start a clip, so a clip started on tick N is at its first
+    // frame on tick N. Held while a lesson freezes the match, so its poses
+    // hold too; a follower's clock is the host's, set from the timeline.
+    if (!this.netFollower && !this.tutorialFrozen) {
+      this.simTick += 1;
+      this.chars.player.setClockTick(this.simTick);
+      this.chars.ai.setClockTick(this.simTick);
+    }
+    try {
+      this.updateMatch(dt, input, aiUpdate);
+    } finally {
+      this.inUpdate = false;
+    }
+  }
+
+  /**
+   * Inside `update`, and whether the ball has been stepped yet this step.
+   * Together they say how many physics steps separate a touch committed now
+   * from its contact — see `beginContactLunge` and `publishShot`.
+   */
+  private inUpdate = false;
+  private ballSteppedThisUpdate = false;
+  /** Steps this match has simulated: the clock its clips are placed on. */
+  private simTick = 0;
+
+  private updateMatch(dt: number, input: InputState, aiUpdate: (dt: number) => void): void {
     if (this.tutorialFrozen) return;
     // Online guest: the host owns the rules, so running them here too would
     // produce a second, disagreeing match. Only presentation advances.
@@ -3740,10 +4214,38 @@ export class MatchController {
     // Committed rally touch: release the ball on the planned-contact countdown
     // (frame-exact). The ball follows its natural trajectory to the interaction
     // volume — no magnetic steering or snapping.
+    const sc = this.serveCountdown;
+    if (sc) {
+      sc.ticks += 1;
+      if (this.state !== "serve_anim") {
+        // The point was reset under the serve; nothing left to toss.
+        // Tossed on an earlier step, so the strike was already published.
+        if (sc.ticks > sc.tossAt) this.withdrawShot(sc.contactAt - sc.ticks);
+        this.serveCountdown = null;
+      } else {
+        if (sc.ticks === sc.tossAt) sc.toss();
+        if (sc.ticks >= sc.contactAt) {
+          this.serveCountdown = null;
+          sc.contact();
+        }
+      }
+    }
     const cs = this.contactSync;
-    if (cs?.fire && cs.timeLeft !== undefined) {
-      cs.timeLeft -= dt;
-      if (cs.timeLeft <= 0) {
+    if (cs?.fire && cs.ticksLeft !== undefined) {
+      cs.ticksLeft -= 1;
+      // The bend onto the limb, from where the natural flight has got to. A
+      // ball knocked off that path meanwhile is left alone: the contact is
+      // decided again when it fires, and sent.
+      if (cs.steer && cs.ticksLeft === cs.steer.at) {
+        if (Vector3.Distance(this.ball.state.pos, cs.steer.pos) <= SHOT_PATH_TOLERANCE) {
+          // The whole state, not only the new velocity: it is the state a guest
+          // takes, and a ball left a few millimetres off it would arrive a few
+          // millimetres off the limb on one screen only.
+          this.ball.state.pos.copyFrom(cs.steer.pos);
+          this.ball.state.vel.copyFrom(cs.steer.vel);
+        }
+      }
+      if (cs.ticksLeft <= 0) {
         cs.fire();
       }
     }
@@ -3765,7 +4267,25 @@ export class MatchController {
           return { side: s, base: c.position, height: c.height, radius: c.height * BODY_RADIUS };
         });
     }
+    // What the ball would have done with no bodies in the way, to compare. A
+    // body moves the ball in two ways and only one of them says so: a ball
+    // arriving inward bounces and fires a "body" event, but a ball resting or
+    // rolling against a player is pushed back out of them every substep in
+    // silence. A guest flies its ball without bodies, so every push has to be
+    // sent — and the only reliable test for "a body did something" is that the
+    // step came out different from the one without them.
+    const bare =
+      this.netPublish && colliders && colliders.length > 0 && !this.ball.held
+        ? { pos: this.ball.state.pos.clone(), vel: this.ball.state.vel.clone() }
+        : null;
     this.ball.update(dt, (e) => this.pendingEvents.push(e), colliders);
+    this.ballSteppedThisUpdate = true;
+    if (bare) {
+      stepBall(bare, dt);
+      if (!bare.pos.equalsWithEpsilon(this.ball.state.pos, 1e-9) || !bare.vel.equalsWithEpsilon(this.ball.state.vel, 1e-9)) {
+        this.noteBallChanged();
+      }
+    }
     for (const e of this.pendingEvents) {
       this.onBallEvent(e);
       // The guest hears/sees contacts on its playback clock; kick events ride
@@ -3791,12 +4311,7 @@ export class MatchController {
         if (d === 0) {
           this.state = "serve_ready";
           this.timer = 0;
-          if (this.serveOwner === "player" || this.versus)
-            this.ui.hint(
-              portraitTouch()
-                ? "Swipe where you want to serve"
-                : "Aim with the stick · tap STRIKE for pace, hold to float it"
-            );
+          if (this.hintsFor(this.serveOwner)) this.ui.hint(serveHint());
           this.emit({ type: "serve-ready", side: this.serveOwner });
         }
         break;

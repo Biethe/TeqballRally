@@ -54,20 +54,34 @@ not after discovering a problem. Currently 10007 / 0.1.3.
 ## Online play
 
 Host-authoritative with client-side prediction: one peer runs the whole match
-and sends a full snapshot at 30 Hz, the other sends controls and renders what it
-is told. `reframe` in `src/net/protocol.ts` is the single place the guest's
+and sends a full snapshot at 30 Hz, the other sends controls. The guest does not
+render the ball or the clips from snapshots: the host sends each *decision*
+(`launch`, `clip`) and the guest flies and animates from them on its own clock
+— `src/net/guestball.ts`. Snapshots carry bodies, score and phase, and check the
+flown ball. `reframe` in `src/net/protocol.ts` is the single place the guest's
 mirrored world lives. The README's "Online play" section is long and worth
 reading before touching any of it.
 
-**`PROTOCOL_VERSION` (currently 4) must match between both clients and the
+**Every host-side change to the ball during play must be published** —
+`publishShot` for a touch decided ahead, `noteBallChanged` for anything decided
+as it happens. Miss one and the guest flies a flight the host never had until a
+snapshot catches it; `the guest plays the host's decisions` in
+`tests/follower.test.ts` holds re-anchors at zero and fails when that happens.
+
+**`PROTOCOL_VERSION` (currently 6) must match between both clients and the
 relay**, which refuses to seat peers on different versions. Bumping it means
 every phone needs the new build, and the relay needs redeploying — the two
 halves always ship together.
 
-Two clocks are not one, and conflating them caused most of the guest's visual
-bugs: the simulation steps at a fixed `SIM_DT` with its frame delta capped,
-while Babylon advances animations on the render loop. Anything that measures a
-clip in simulation ticks has to be corrected from the clip's real progress.
+There is one clock. A match's animations are *placed* on simulation ticks
+(`src/animclock.ts`, `Character.useSimClock`), not played by Babylon — two clocks
+caused most of the guest's visual bugs. Never add a match clip that runs on the
+render loop, and never time anything in a match against wall time.
+
+The faster device hosts (`chooseAuthority`, `perf` on `setup`), and a guest draws
+the host's past from a measured buffer at the host's rate (`PlaybackBuffer`).
+Turn on "Connection stats" in settings before judging an online match on a
+device: frame rate and simulation speed say whether a device is keeping up.
 
 ## Purchases
 
