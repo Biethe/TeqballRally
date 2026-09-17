@@ -77,6 +77,60 @@
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  /* No scrollbars anywhere in this UI.
+
+     A scrollbar is a desktop chrome element sitting on top of a game that is
+     played full-screen on a phone: it draws a grey rail down the edge of a
+     card, it moves when the content does, and on a screen where everything
+     else is drawn deliberately it reads as something showing through from
+     underneath. The champions menu and the career list had already solved it
+     one container at a time; stating it once here means a scroller added
+     later cannot forget, which is how the legal viewer arrived with one.
+
+     Scrolling itself is untouched — touch, wheel, trackpad and keyboard all
+     behave exactly as before. Only the rail is gone, and content that runs
+     past the fold is cut mid-line at the edge, which is the affordance the
+     champions list uses to say there is more. */
+  scrollbar-width: none; /* Firefox, and the modern standard */
+  -ms-overflow-style: none; /* the old Edge/IE pair of the same idea */
+}
+
+*::-webkit-scrollbar {
+  /* Chromium and WebKit, which is every browser this actually ships in: the
+     Android System WebView, and Safari for anyone playing in a browser. */
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Everything that scrolls, allowed to be scrolled by a finger.
+
+   `body` sets `touch-action: none`, because a rally is played by dragging on
+   the screen and the browser must not read those drags as panning the page.
+   That verdict is inherited by the whole subtree, menus included: an element
+   with `overflow-y: auto` and 35 000 pixels of content inside it sits there
+   and refuses the finger, which is how a privacy policy ends at the bottom of
+   the first screen with no way to reach the rest of it. A wheel and a
+   keyboard still worked, which is why it survived — nothing this is tested on
+   has a finger.
+
+   `pan-y` gives back vertical panning and nothing else, so a sideways drag is
+   still the game's to interpret. Only these containers get it; the play
+   surface keeps `none`. One rule rather than a line in each, because the next
+   scrolling panel should not have to remember. */
+#menu-screen,
+.settings-rows,
+.legal-content-card,
+.standings-shell .standings-rows,
+#emote-picker,
+.champions-scroll,
+.career-list,
+#result-screen,
+#restore-screen,
+#season-screen,
+.tutorial-card,
+.screen:not(.hidden):not(#hud):not(#intro-clip) {
+  touch-action: pan-y;
 }
 
 html,
