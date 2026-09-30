@@ -873,7 +873,7 @@ ASSET_BUNDLE_URL=… ASSET_BUNDLE_KEY=… npm run assets:fetch   # get the art
 ASSET_BUNDLE_KEY=… npm run assets:pack                       # publish a new bundle
 ```
 
-`assets.manifest.json` **is** committed. It is paths, sizes and SHA-256 digests
+`assets/manifest.json` **is** committed. It is paths, sizes and SHA-256 digests
 — it gives up nothing, and it turns a truncated download into an error at fetch
 time instead of a texture that silently never appears. The Exo 2 fonts and
 `meshopt_decoder.js` stay committed too: an OFL font and a public third-party
@@ -2110,7 +2110,7 @@ day" into "online play is broken".
 Everything below can be done from a mobile browser.
 
 1. **Host the relay.** Sign in to a container host with GitHub, create a service
-   from this repository, and let `render.yaml` configure it. Wait for the
+   from this repository, and let `server/render.yaml` configure it. Wait for the
    `wss://…` URL, and confirm `https://…/healthz` answers `{"ok":true}`.
 2. **Tell the app where it is.** GitHub → Settings → Secrets and variables →
    Actions → Variables → new repository variable `VITE_RELAY_URL`, set to the
@@ -2416,7 +2416,7 @@ npx cap sync android
 `.github/workflows/deploy.yml` chains the two so they cannot drift; a build made
 by hand has to pass the variable by hand.
 
-Firestore's composite indexes are declared in `firestore.indexes.json` and are
+Firestore's composite indexes are declared in `server/firestore.indexes.json` and are
 not optional — the queries fail outright without them:
 
 ```bash
@@ -2435,15 +2435,11 @@ npx firebase-tools deploy --only firestore:indexes
 - `tests/` — Vitest unit tests for the pure gameplay maths.
 - `scripts/` — headless-Chromium helpers for the parts unit tests cannot reach.
 - `docs/` — the notes that are not this file: `Animation.txt` (the rig's frame
-  numbers, which `tests/config.test.ts` parses), `TUNING.md`, `PURCHASES.md`,
-  and the handover note.
+  numbers, which `tests/config.test.ts` parses), `TUNING.md`, and `PURCHASES.md`.
 
-The repository holds the game and nothing else. The Figma Make exports the
-menus were drawn from (`revamp_ui/`, `figma_export/`) and the harness scratch
-from getting Chromium to run without ALSA (`.verify-logs/`) stay on disk and
-out of git: none of them is read by a build, and a lockfile for a second
-application — or a compiled `.so` — in here is a thing somebody has to work out
-is not load-bearing.
+The repository holds the game and nothing else. Figma Make exports, raw mocap
+dumps and one-off zips live in `scratch/` (gitignored) if they are on disk at
+all: none of them is read by a build.
 
 A release bundle carries no source maps, no comments and no `console` calls:
 esbuild drops the lot (`vite.config.ts`). The maps are the point — a map hands

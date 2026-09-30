@@ -62,6 +62,7 @@ raw/
 assets/*
 !assets/fonts/
 !assets/meshopt_decoder.js
+!assets/manifest.json
 # ...and the brand mark, which is this app's own icon and not licensed art —
 # the same image is already committed as the Android launcher icon. It lives
 # here because `publicDir` is `assets/`, so anything the page asks for by URL
@@ -95,6 +96,20 @@ figma_export/
 
 # Editor/agent local settings.
 .qoder/
+
+# Agent/editor scratch that is not the game.
+.claude/
+
+# Vite's unused publicDir alternative. `publicDir` is `assets/`; files here
+# never reach a build, and an empty folder at the root is just noise.
+public/
+
+# Leftover empty directory from an older accounts store path.
+store/
+
+# Machine-local dumps (raw mocap, Figma zips, one-off bundles) that used to
+# sit at the repository root. The game does not read them.
+scratch/
 
 # The legal pages. Same reason as the brand icon above: `publicDir` is
 # `assets/`, so anything the page must serve by URL lives here — and the art

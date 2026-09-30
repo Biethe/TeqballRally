@@ -23,7 +23,7 @@ import { join, relative, sep } from "node:path";
 import { encryptAsset, ART_SOURCE_DIR } from "./scramble.mjs";
 
 const OUT = process.argv[2] ?? "art-bundle.teq";
-const MANIFEST = "assets.manifest.json";
+const MANIFEST = "assets/manifest.json";
 const KEY = process.env.ASSET_BUNDLE_KEY;
 
 // The bundle sits in private storage, but "private storage" is a setting

@@ -25,7 +25,7 @@ import { decryptAsset, ART_SOURCE_DIR } from "./scramble.mjs";
 const URL_ = process.env.ASSET_BUNDLE_URL;
 const KEY = process.env.ASSET_BUNDLE_KEY;
 const TOKEN = process.env.ASSET_BUNDLE_TOKEN;
-const MANIFEST = "assets.manifest.json";
+const MANIFEST = "assets/manifest.json";
 
 if (!URL_ || !KEY) {
   console.error(

@@ -29,7 +29,7 @@ must live under `assets/`. Files in `public/` never reach the build at all.
 decoder and `assets/figma/icon.png`) and comes from a private bundle via
 `npm run assets:fetch`. **The bundle is a snapshot**: a file added to `assets/`
 after the last pack is missing from every build made anywhere but the machine
-that added it, and `assets.manifest.json` lists what is actually in there.
+that added it, and `assets/manifest.json` lists what is actually in there.
 
 **Anything configured only on this machine will be silently wrong in CI.** This
 has happened three times: the relay URL, the brand icon, and the RevenueCat key.

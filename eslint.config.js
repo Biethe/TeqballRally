@@ -12,6 +12,7 @@ export default tseslint.config(
       "node_modules/**",
       ".firebase/**",
       "assets/**",
+      "scratch/**",
       "server/rules.mjs",
       // Gradle's output, which contains Capacitor's own bundled native-bridge.js.
       // It is gitignored, but it exists on any machine that has built an APK,
