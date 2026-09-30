@@ -303,6 +303,7 @@ const PURCHASE_POLL_TRIES = 6;
  * only difference between what they drive and what ships.
  */
 const EXPOSE_INTERNALS = import.meta.env.DEV || import.meta.env.VITE_HARNESS === "1";
+const SHOW_NET_STATS = import.meta.env.VITE_HARNESS === "1";
 
 /** How one match should be set up and what to do when it ends. */
 interface MatchOpts {
@@ -1020,8 +1021,11 @@ async function boot(): Promise<void> {
     // the network from one that looks wrong because a device cannot keep up —
     // which is a question a player does not have and cannot act on. It was a
     // toggle in the gameplay settings; a build carries it now, or does not.
-    // `npm run build:harness` is the one that does.
-    statsOverlay.show(EXPOSE_INTERNALS && match ? netStatsLines() : null, performance.now() / 1000);
+    // `npm run build:harness` is the one that does — and only that one, not
+    // `npm run dev` as well: the dev server is where the game gets looked at
+    // as a player would see it, and the readout was mistaken there for
+    // something shipping.
+    statsOverlay.show(SHOW_NET_STATS && match ? netStatsLines() : null, performance.now() / 1000);
     const renderStarted = performance.now();
     gs.scene.render();
     frameRenderMs += performance.now() - renderStarted;

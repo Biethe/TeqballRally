@@ -4,9 +4,46 @@
     "ignore": [
       "firebase.json",
       "**/.*",
-      "**/node_modules/**"
+      "**/node_modules/**",
+      "**/source-animations/**"
     ],
     "headers": [
+      {
+        "source": "/",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "index.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "assets/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public,max-age=31536000,immutable"
+          }
+        ]
+      },
+      {
+        "source": "**/*.teq",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public,max-age=86400"
+          }
+        ]
+      },
       {
         "source": "**/*.glb",
         "headers": [
@@ -26,6 +63,15 @@
         ]
       },
       {
+        "source": "**/*.wav",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public,max-age=86400"
+          }
+        ]
+      },
+      {
         "source": "meshopt_decoder.js",
         "headers": [
           {
@@ -33,6 +79,12 @@
             "value": "public,max-age=86400"
           }
         ]
+      }
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
       }
     ]
   }

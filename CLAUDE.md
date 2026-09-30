@@ -4,10 +4,11 @@ A browser-based 3D teqball game (Babylon.js, TypeScript, Vite), packaged for
 Android with Capacitor, shipping to a Google Play closed test. The server is a
 match relay and accounts API in one Node process on Cloud Run.
 
-**`README.md` is the living doc.** It explains why things are the way they are,
-and it is kept current — when you change behaviour it describes, change it too.
+**`docs/DESIGN.md` is the living doc.** It explains why things are the way they
+are, and it is kept current — when you change behaviour it describes, change it too.
 This file is the other half: the things that are not obvious from the code and
-that cost a session to rediscover.
+that cost a session to rediscover. `README.md` is only the public front page —
+what the game is and how to get it — and stays short.
 
 ## Before you finish anything
 
@@ -68,7 +69,7 @@ render the ball or the clips from snapshots: the host sends each *decision*
 (`launch`, `clip`) and the guest flies and animates from them on its own clock
 — `src/net/guestball.ts`. Snapshots carry bodies, score and phase, and check the
 flown ball. `reframe` in `src/net/protocol.ts` is the single place the guest's
-mirrored world lives. The README's "Online play" section is long and worth
+mirrored world lives. The design doc's "Online play" section is long and worth
 reading before touching any of it.
 
 **Every host-side change to the ball during play must be published** —
@@ -121,12 +122,15 @@ gets no products however correct the console is.
 
 ```bash
 REVENUECAT_WEBHOOK_SECRET='…' ./server/deploy.sh    # Cloud Run, europe-west9
+VITE_ASSET_KEY='…' npm run deploy:web               # Firebase Hosting, testers
 ```
 
-Releases are built by GitHub Actions, not locally, because the asset key and the
-signing key are repository secrets. The workflow publishes the debug APK as a
-GitHub Release and the signed AAB as a run **artifact** — different places, which
-is confusing the first time.
+The browser tester is **https://teqopen-4c7ae.web.app**. Releases are built by
+GitHub Actions, not locally, because the asset key and the signing key are
+repository secrets. The Android workflow publishes the debug APK as a GitHub
+Release and the signed AAB as a run **artifact** — different places, which is
+confusing the first time. The web workflow publishes the same protected `dist/`
+to Hosting.
 
 Do not judge the service by `/healthz`; some networks intercept it. Use
 `curl https://…/api/leaderboard`.
@@ -136,7 +140,7 @@ Do not judge the service by `/healthz`; some networks intercept it. Use
 Do not relitigate these without asking:
 
 - **No subscriptions.** Money buys the arena and coins; everything else is
-  earned. See the README's economy section.
+  earned. See the design doc's economy section.
 - **AI rivals never appear on the leaderboard.** They fill an empty quick-match
   queue (`src/rivals.ts`) and that is all. The leaderboard is where players
   measure themselves against each other and it stays real.

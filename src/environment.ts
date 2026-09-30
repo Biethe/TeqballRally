@@ -398,9 +398,9 @@ function applyPlacement(
  * Seat people on the benches the venue models already contain.
  *
  * The three outdoor grounds share a scene template with eight benches, and
- * their positions are measured from the model rather than guessed — see the
- * README. Everyone here uses a seated pose, which is why those figures are
- * kept at all: on flat ground they look like they have fallen over, and on a
+ * their positions are measured from the model rather than guessed — see
+ * docs/DESIGN.md. Everyone here uses a seated pose, which is why those figures
+ * are kept at all: on flat ground they look like they have fallen over, and on a
  * bench they are the only ones that work.
  */
 function placeOnBenches(

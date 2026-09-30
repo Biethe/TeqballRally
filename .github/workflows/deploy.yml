@@ -45,6 +45,11 @@ on:
         required: false
         default: true
         type: boolean
+      build_web:
+        description: "Also publish the browser build to Firebase Hosting"
+        required: false
+        default: true
+        type: boolean
 
 # Never cancel a deploy that is already running: a half-finished Cloud Run
 # rollout is a worse state than a queued one.
@@ -177,6 +182,18 @@ jobs:
     # Without this a called workflow gets no secrets at all, and the build it
     # makes would fall back to the Test Store key and unprotected assets — the
     # two things the guards in there exist to stop.
+    secrets: inherit
+    with:
+      relay_url: ${{ needs.deploy.outputs.wss }}
+
+  # Same chaining for the hosted client: a relay that speaks a new protocol
+  # with a web build still on the old one is two testers who cannot find each
+  # other. Firebase Hosting is https://teqopen-4c7ae.web.app.
+  web:
+    name: Web
+    needs: deploy
+    if: ${{ inputs.build_web }}
+    uses: ./.github/workflows/web.yml
     secrets: inherit
     with:
       relay_url: ${{ needs.deploy.outputs.wss }}

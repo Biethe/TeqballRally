@@ -6,7 +6,7 @@ The approach below changed. The guest no longer draws the ball and the swings
 from snapshots: the host sends each **decision** — `launch` (the state the ball
 takes, and the host tick it takes it on) and `clip` (a clip started or cut
 short, with its lunge) — and the guest flies and animates from them on its own
-clock. Protocol 5; the relay needs redeploying with the clients. The README's
+clock. Protocol 5; the relay needs redeploying with the clients. The design doc's
 "Online play" section has the reasoning; `src/net/guestball.ts` is the guest's
 ball. What this changed, measured with the recipe below on a phone-like link
 (5 ticks each way, 0–4 jitter, 1% spikes of 20, ordered delivery):
@@ -109,7 +109,7 @@ is sound and the rules are right; what is wrong is what the **second phone**
 shows. The ball does not fly smoothly, and the reception, preparation and
 kicking animations do not play smoothly or all the way through.
 
-Read `README.md` for the design and `CLAUDE.md` for the repo's traps. This file
+Read `docs/DESIGN.md` for the design and `CLAUDE.md` for the repo's traps. This file
 is only about the guest's display: what is known, what has been ruled out, what
 is still broken, and how to measure any of it.
 

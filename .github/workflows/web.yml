@@ -1,0 +1,137 @@
+name: Deploy web
+
+# Builds the game and publishes it to Firebase Hosting so testers can open
+# https://teqopen-4c7ae.web.app and play in a browser. Same art, same relay,
+# same protocol as the APK — a hosted client and a phone can play each other.
+#
+# The point of doing it here rather than from a laptop is the same as the
+# Android workflow: the asset key never leaves GitHub's secret store, and a
+# build that forgot it cannot quietly ship the models in the clear.
+#
+# ---------------------------------------------------------------------------
+# Setting it up (once)
+#
+# Uses the same Google Cloud credentials as `.github/workflows/deploy.yml`.
+# The service account also needs to be able to write Hosting releases:
+#
+#      roles/firebasehosting.admin
+#
+# Hosting lives in the same `teqopen-4c7ae` project as Cloud Run and
+# Firestore. The default site URL is https://teqopen-4c7ae.web.app.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      relay_url:
+        description: "Match relay (blank = repo variable, then the default below)"
+        required: false
+        type: string
+  # Called by `deploy.yml` with the URL of the server it has just deployed, so
+  # the hosted client cannot end up on a protocol the relay no longer speaks.
+  workflow_call:
+    inputs:
+      relay_url:
+        description: "Match relay to bake into the build"
+        required: false
+        type: string
+
+env:
+  # Same last-resort as android.yml: a hosted build with no relay still loads,
+  # but online play would then guess the page origin and talk to Firebase
+  # Hosting, which cannot proxy WebSockets. PRODUCTION_RELAY_URL in the client
+  # is this same address; keep them in lockstep.
+  DEFAULT_RELAY: wss://teqrallly-rpvbgjr3wa-od.a.run.app
+  FIREBASE_PROJECT: teqopen-4c7ae
+
+concurrency:
+  group: web-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  hosting:
+    name: Firebase Hosting
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check the credentials are there before anything slow runs
+        run: |
+          if [ -n "${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}" ]; then
+            echo "Authenticating by workload identity federation."
+          elif [ -n "${{ secrets.GCP_CREDENTIALS }}" ]; then
+            echo "Authenticating with a service account key."
+          else
+            echo "::error::No Google Cloud credentials configured. See the setup notes at the top of .github/workflows/deploy.yml."
+            exit 1
+          fi
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          credentials_json: ${{ !vars.GCP_WORKLOAD_IDENTITY_PROVIDER && secrets.GCP_CREDENTIALS || '' }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch the art bundle
+        env:
+          ASSET_BUNDLE_URL: ${{ secrets.ASSET_BUNDLE_URL }}
+          ASSET_BUNDLE_KEY: ${{ secrets.ASSET_BUNDLE_KEY }}
+          ASSET_BUNDLE_TOKEN: ${{ secrets.ASSET_BUNDLE_TOKEN || github.token }}
+        run: npm run assets:fetch
+
+      - name: Production build
+        env:
+          VITE_RELAY_URL: ${{ inputs.relay_url || vars.VITE_RELAY_URL || env.DEFAULT_RELAY }}
+          VITE_ASSET_KEY: ${{ secrets.VITE_ASSET_KEY }}
+        run: |
+          if [ -z "$VITE_RELAY_URL" ]; then
+            echo "::warning::No relay configured — online play will show as unavailable."
+          else
+            echo "Relay: $VITE_RELAY_URL"
+          fi
+          if [ -z "$VITE_ASSET_KEY" ]; then
+            echo "::error::VITE_ASSET_KEY is not set — refusing to host a build with unprotected assets."
+            exit 1
+          fi
+          npm run build
+
+      - name: No readable art in the build output
+        run: |
+          leaked=$(find dist/models dist/textures dist/venues dist/video dist/audio \
+                     -type f ! -name '*.teq' ! -name '.gitkeep' 2>/dev/null || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::These shipped unencrypted:"; echo "$leaked"; exit 1
+          fi
+          if [ -e dist/source-animations ]; then
+            echo "::error::Raw source animations reached dist/."; exit 1
+          fi
+          echo "All art in dist/ is encrypted."
+
+      - name: Deploy to Firebase Hosting
+        run: npx --yes firebase-tools deploy --only hosting --project "$FIREBASE_PROJECT" --non-interactive
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Web deployed"
+            echo
+            echo "- Play: https://${FIREBASE_PROJECT}.web.app"
+            echo "- Also: https://${FIREBASE_PROJECT}.firebaseapp.com"
+            echo "- Commit: \`${GITHUB_SHA:0:7}\`"
+            echo
+            echo "Relay: \`${{ inputs.relay_url || vars.VITE_RELAY_URL || env.DEFAULT_RELAY }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
