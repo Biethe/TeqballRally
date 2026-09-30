@@ -179,6 +179,39 @@ export function moveForView(
 }
 
 /**
+ * Pads the browser is willing to show *this frame*.
+ *
+ * `GamepadList` is array-like and in some browsers not iterable, so this walks
+ * by index. Chrome also returns four `null` slots before a pad button has been
+ * pressed — fingerprinting — and those stay out.
+ */
+export function liveGamepads(
+  list: ArrayLike<Gamepad | null> | null | undefined
+): Gamepad[] {
+  if (!list) return [];
+  const out: Gamepad[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Portrait tap-to-place, which owns the axes. A live pad is the real
+ * controller even on a phone, so it wins: otherwise a Bluetooth pad on a
+ * narrow window would steer nothing while the match waited for taps.
+ */
+export function tapSteeringActive(opts: {
+  isTouch: boolean;
+  isPortrait: boolean;
+  online: boolean;
+  hasPad: boolean;
+}): boolean {
+  return opts.isTouch && opts.isPortrait && !opts.online && !opts.hasPad;
+}
+
+/**
  * Whether this machine should get the on-screen stick and buttons.
  *
  * Chrome puts `ontouchstart` on `window` even on a desktop with no
@@ -193,6 +226,28 @@ export function looksLikeTouchDevice(hints: {
   coarsePointer: boolean;
 }): boolean {
   return hints.maxTouchPoints > 0 && hints.coarsePointer;
+}
+
+/**
+ * Chrome (and the spec) hide pads until the player presses a button on one,
+ * to stop `getGamepads()` being a fingerprint. That press often happens on
+ * the loading screen, before `new Input()` has attached anything. Listening
+ * at module load catches it, and a later constructor listener still hides
+ * the overlay.
+ */
+let padHeard = false;
+if (typeof window !== "undefined") {
+  const notePad = (): void => {
+    padHeard = true;
+    try {
+      navigator.getGamepads?.();
+    } catch {
+      // Permissions-Policy `gamepad=()` throws SecurityError. Polling sees
+      // the same empty list; crashing the module would take the whole game
+      // down with it.
+    }
+  };
+  window.addEventListener("gamepadconnected", notePad);
 }
 
 export class Input {
@@ -809,10 +864,13 @@ export class Input {
   }
 
   private static connectedPads(): Gamepad[] {
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    const out: Gamepad[] = [];
-    for (const p of pads) if (p && p.connected) out.push(p);
-    return out;
+    let raw: ArrayLike<Gamepad | null> | null = null;
+    try {
+      raw = navigator.getGamepads?.() ?? null;
+    } catch {
+      return [];
+    }
+    return liveGamepads(raw);
   }
 
   /**
@@ -922,7 +980,7 @@ export class Input {
 
   /** True if at least one gamepad is connected (for enabling the versus mode). */
   hasGamepad(): boolean {
-    return this.padSeen || Input.connectedPads().length > 0;
+    return padHeard || this.padSeen || Input.connectedPads().length > 0;
   }
 
   /** The first connected pad's reported name, for diagnostics in the UI. */

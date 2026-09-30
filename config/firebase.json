@@ -21,6 +21,15 @@
         ]
       },
       {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Permissions-Policy",
+            "value": "gamepad=*"
+          }
+        ]
+      },
+      {
         "source": "index.html",
         "headers": [
           {

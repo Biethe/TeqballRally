@@ -34,6 +34,11 @@ export default defineConfig({
   },
   server: {
     host: true,
+    // Same as Firebase Hosting: Chrome will not expose pads if the document
+    // is not allowed to use the `gamepad` policy.
+    headers: {
+      "Permissions-Policy": "gamepad=*",
+    },
   },
   // What a release hands to anyone who opens the bundle.
   //

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { CameraMode } from "../src/config";
 import { consumeInput, latchInput, newLatch, type InputState,
   looksLikeTouchDevice,
+  liveGamepads,
+  tapSteeringActive,
   moveForView,
 } from "../src/input";
 
@@ -190,6 +192,47 @@ describe("looksLikeTouchDevice", () => {
     // and pad machine, same as the desktop case the overlay was blocking.
     expect(
       looksLikeTouchDevice({ maxTouchPoints: 10, coarsePointer: false })
+    ).toBe(false);
+  });
+});
+
+describe("liveGamepads", () => {
+  it("walks an array-like list by index, the way GamepadList is shaped", () => {
+    // GamepadList is not always iterable. for...of on it throws in some
+    // browsers, which would take down the render loop the first frame a pad
+    // existed — and look exactly like "the joystick does nothing".
+    const list = {
+      length: 4,
+      0: null,
+      1: { id: "pad", index: 1 } as Gamepad,
+      2: null,
+      3: null,
+    };
+    expect(liveGamepads(list).map((p) => p.id)).toEqual(["pad"]);
+  });
+
+  it("treats a missing list as no pads", () => {
+    expect(liveGamepads(null)).toEqual([]);
+    expect(liveGamepads(undefined)).toEqual([]);
+  });
+});
+
+describe("tapSteeringActive", () => {
+  it("is off when a pad is live, even on a portrait phone", () => {
+    expect(
+      tapSteeringActive({ isTouch: true, isPortrait: true, online: false, hasPad: true })
+    ).toBe(false);
+  });
+
+  it("is on for a portrait phone with no pad", () => {
+    expect(
+      tapSteeringActive({ isTouch: true, isPortrait: true, online: false, hasPad: false })
+    ).toBe(true);
+  });
+
+  it("is off on a desktop, pad or not", () => {
+    expect(
+      tapSteeringActive({ isTouch: false, isPortrait: false, online: false, hasPad: false })
     ).toBe(false);
   });
 });

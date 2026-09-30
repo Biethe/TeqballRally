@@ -60,6 +60,7 @@ import {
   consumeInput,
   latchInput,
   newLatch,
+  tapSteeringActive,
   type InputState,
 } from "./input";
 import { UI, type SettingRow } from "./ui";
@@ -917,7 +918,12 @@ async function boot(): Promise<void> {
       // touch screen — a narrow desktop window has a keyboard, and taking its
       // movement away would leave the player rooted to the spot.
       // Never online: see `rotateOnline`.
-      match.tapSteering = input.isTouch && input.isPortrait && !session;
+      match.tapSteering = tapSteeringActive({
+        isTouch: input.isTouch,
+        isPortrait: input.isPortrait,
+        online: !!session,
+        hasPad: input.hasGamepad(),
+      });
       match.portraitControls = match.tapSteering;
       const placement = input.pollTapPlacement();
       if (placement && !freecam) {
