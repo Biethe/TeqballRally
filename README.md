@@ -48,7 +48,7 @@ npm run dev          # then open the URL it prints
 
 ## Demo
 
-Demo video: *coming soon* <!-- YouTube link goes here -->
+[Demo video](https://youtu.be/7pNp-_qSm34)
 
 ---
 
