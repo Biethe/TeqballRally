@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CameraMode } from "../src/config";
 import { consumeInput, latchInput, newLatch, type InputState,
+  looksLikeTouchDevice,
   moveForView,
 } from "../src/input";
 
@@ -165,6 +166,31 @@ describe("which way the screen points in each view", () => {
         6
       );
     }
+  });
+});
+
+describe("looksLikeTouchDevice", () => {
+  it("does not treat desktop Chrome as a phone", () => {
+    // Chrome puts ontouchstart on window even with no touchscreen. That is
+    // why the hosted build drew the Android stick over a USB pad. We ignore
+    // ontouchstart; zero touch points and a fine pointer is a desktop.
+    expect(
+      looksLikeTouchDevice({ maxTouchPoints: 0, coarsePointer: false })
+    ).toBe(false);
+  });
+
+  it("treats a phone as touch", () => {
+    expect(
+      looksLikeTouchDevice({ maxTouchPoints: 5, coarsePointer: true })
+    ).toBe(true);
+  });
+
+  it("does not draw the overlay on a touchscreen laptop with a mouse", () => {
+    // maxTouchPoints > 0 but the primary pointer is still a mouse: a keyboard
+    // and pad machine, same as the desktop case the overlay was blocking.
+    expect(
+      looksLikeTouchDevice({ maxTouchPoints: 10, coarsePointer: false })
+    ).toBe(false);
   });
 });
 

@@ -118,6 +118,26 @@ function extensionOf(path: string): string {
   return dot === -1 ? "" : clean.slice(dot).toLowerCase();
 }
 
+/**
+ * A short public stamp of the passphrase, for cache identity only.
+ *
+ * Encrypted files keep a stable path (`/models/x.glb.teq`). A hosted build
+ * that is re-sealed with a new key then looks like the old files to a
+ * browser that cached them for a day — and AES-GCM fails as a bare
+ * `OperationError`, which is the red screen testers just hit. Putting this
+ * on the query string makes a new key a new URL. It is not a secret: the
+ * passphrase is already in the JavaScript.
+ */
+export function assetCacheToken(passphrase: string): string {
+  // FNV-1a, 32-bit. Cheap, stable, and plenty to distinguish two keys.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < passphrase.length; i++) {
+    h ^= passphrase.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+}
+
 /** Whether this build serves this path encrypted. */
 export function isProtectedAsset(path: string): boolean {
   return (PROTECTED_EXTENSIONS as readonly string[]).includes(extensionOf(path));
@@ -131,7 +151,8 @@ export function isProtectedAsset(path: string): boolean {
  * meshopt decoder — is returned untouched in both.
  */
 export function sourceUrl(path: string): string {
-  return PROTECTED && isProtectedAsset(path) ? `${path}${PROTECTED_EXT}` : path;
+  if (!(PROTECTED && isProtectedAsset(path))) return path;
+  return `${path}${PROTECTED_EXT}?k=${assetCacheToken(PASSPHRASE)}`;
 }
 
 /**
@@ -169,7 +190,20 @@ export async function decryptAsset(file: ArrayBuffer): Promise<ArrayBuffer> {
   const bytes = new Uint8Array(file);
   const iv = bytes.subarray(0, IV_BYTES);
   const body = bytes.subarray(IV_BYTES);
-  return crypto.subtle.decrypt({ name: "AES-GCM", iv }, await assetKey(), body);
+  try {
+    return await crypto.subtle.decrypt({ name: "AES-GCM", iv }, await assetKey(), body);
+  } catch (err) {
+    // Wrong key or a truncated/cached file: WebCrypto throws DOMException
+    // `OperationError` with no message, which is what the startup overlay
+    // then showed as a stack and nothing else.
+    const name = err instanceof DOMException ? err.name : "";
+    if (name === "OperationError" || name === "InvalidAccessError") {
+      throw new Error(
+        "Could not decrypt an asset. This is usually a file cached from an older build — hard-refresh the page (Ctrl+Shift+R)."
+      );
+    }
+    throw err;
+  }
 }
 
 /**

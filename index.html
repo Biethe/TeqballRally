@@ -62,7 +62,19 @@
           );
         });
         window.addEventListener("unhandledrejection", function (e) {
-          show("Unhandled rejection", String((e.reason && e.reason.stack) || e.reason));
+          var reason = e.reason;
+          var text;
+          if (reason && typeof reason === "object") {
+            var name = reason.name ? String(reason.name) : "";
+            var msg = reason.message ? String(reason.message) : "";
+            var stack = reason.stack ? String(reason.stack) : "";
+            text = ((name ? name + ": " : "") + msg).trim() || String(reason);
+            if (stack && stack.indexOf(text) !== 0) text += "\n\n" + stack;
+            else if (stack) text = stack;
+          } else {
+            text = String(reason);
+          }
+          show("Unhandled rejection", text);
         });
         // Nothing drawn after 30 s is a hang rather than a thrown error, and it
         // needs saying too — the loading screen alone cannot tell them apart.

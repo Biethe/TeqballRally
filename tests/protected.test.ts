@@ -5,6 +5,7 @@ import {
   IV_BYTES,
   PROTECTED_EXT,
   PROTECTED_EXTENSIONS,
+  assetCacheToken,
   sourceUrl,
   TAG_BYTES,
 } from "../src/protected";
@@ -69,6 +70,15 @@ describe("encrypting an asset", () => {
     );
 
     expect([...new Uint8Array(opened)]).toEqual([...original]);
+  });
+
+  it("names a failed decrypt instead of a bare OperationError", async () => {
+    const sealed = encryptAsset(model(), "not-the-test-key");
+    await expect(
+      browserDecrypt(
+        sealed.buffer.slice(sealed.byteOffset, sealed.byteOffset + sealed.byteLength) as ArrayBuffer
+      )
+    ).rejects.toThrow(/cached from an older build/i);
   });
 
   it("leaves nothing of the glTF header to recognise", () => {
@@ -177,5 +187,13 @@ describe("resolving an asset path", () => {
     for (const path of ["/models/x.glb", "/textures/grass.webp", "/fonts/exo2-latin.woff2"]) {
       expect(sourceUrl(path)).toBe(path);
     }
+  });
+
+  it("stamps two passphrases as different cache tokens", () => {
+    // Same path, new key: the query string must change, or a browser that
+    // cached yesterday's .teq feeds it to today's decrypt and throws
+    // OperationError with no message.
+    expect(assetCacheToken("one-key")).not.toBe(assetCacheToken("another-key"));
+    expect(assetCacheToken("one-key")).toBe(assetCacheToken("one-key"));
   });
 });

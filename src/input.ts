@@ -178,6 +178,23 @@ export function moveForView(
   return { moveX: -sy, moveZ: -sx };
 }
 
+/**
+ * Whether this machine should get the on-screen stick and buttons.
+ *
+ * Chrome puts `ontouchstart` on `window` even on a desktop with no
+ * touchscreen, which is how the hosted web build drew the Android overlay
+ * over a keyboard and a USB pad. `maxTouchPoints` alone is not enough either:
+ * a laptop with a touch panel but a mouse as the primary pointer is still a
+ * keyboard/pad machine. Coarse pointer plus at least one touch point is a
+ * phone or tablet.
+ */
+export function looksLikeTouchDevice(hints: {
+  maxTouchPoints: number;
+  coarsePointer: boolean;
+}): boolean {
+  return hints.maxTouchPoints > 0 && hints.coarsePointer;
+}
+
 export class Input {
   private keys = new Set<string>();
   private strikeQueued = false;
@@ -219,6 +236,12 @@ export class Input {
   private joyVec = { x: 0, y: 0 };
 
   readonly isTouch: boolean;
+  /**
+   * Last value from `setTouchControlsEnabled`. The overlay only shows when
+   * this is true *and* no physical pad is live — a Bluetooth pad on a phone
+   * is the real controller, not the Android stick drawn on top of it.
+   */
+  private touchHudWanted = false;
   private joyBase: HTMLDivElement | null = null;
   private joyKnob: HTMLDivElement | null = null;
   private touchLayer: HTMLDivElement | null = null;
@@ -246,7 +269,10 @@ export class Input {
   private static readonly AIM_HOLD = 0.5;
 
   constructor(uiRoot: HTMLElement) {
-    this.isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    this.isTouch = looksLikeTouchDevice({
+      maxTouchPoints: navigator.maxTouchPoints,
+      coarsePointer: window.matchMedia("(pointer: coarse)").matches,
+    });
 
     window.addEventListener("keydown", (e) => {
       if (e.repeat) return;
@@ -295,10 +321,12 @@ export class Input {
 
     window.addEventListener("gamepadconnected", (e) => {
       this.padSeen = true;
+      this.syncTouchLayer();
       console.log("[gamepad] connected:", e.gamepad.id);
     });
     window.addEventListener("gamepaddisconnected", (e) => {
       this.hatIdleByPad.delete(e.gamepad.index);
+      this.syncTouchLayer();
       console.log("[gamepad] disconnected:", e.gamepad.id);
     });
 
@@ -369,10 +397,24 @@ export class Input {
 
   /** Hide the touch layer while a screen needs direct canvas interaction (model viewer). */
   setTouchControlsEnabled(enabled: boolean): void {
+    this.touchHudWanted = enabled;
+    this.syncTouchLayer();
+  }
+
+  /**
+   * Show the on-screen stick only on a real touch device, only while the HUD
+   * asked for it, and only while no physical pad is plugged in. Chrome hides
+   * pads until a button is pressed, so this is also called from `poll` — the
+   * connect event is not the only way a pad appears.
+   */
+  private syncTouchLayer(): void {
     if (!this.touchLayer) return;
-    if (!enabled) this.resetTouchState();
-    this.touchLayer.style.display = enabled ? "" : "none";
-    this.touchLayer.setAttribute("aria-hidden", String(!enabled));
+    const show = this.isTouch && this.touchHudWanted && Input.connectedPads().length === 0;
+    const showing = this.touchLayer.style.display !== "none";
+    if (show === showing) return;
+    if (!show) this.resetTouchState();
+    this.touchLayer.style.display = show ? "" : "none";
+    this.touchLayer.setAttribute("aria-hidden", String(!show));
   }
 
   private buildTouchControls(uiRoot: HTMLElement): void {
@@ -708,6 +750,9 @@ export class Input {
 
   /** Poll and consume one frame of the player's input. Screen-space: x right, y down. */
   poll(cameraMode: CameraMode = "court"): InputState {
+    // A pad Chrome had been hiding becomes visible on the first button press,
+    // which may not have gone through `gamepadconnected` yet this frame.
+    this.syncTouchLayer();
     if (this.portrait) this.pumpGestures();
     // A tap sequence whose window closed between frames commits here, rather
     // than waiting for a press that may never come.
@@ -892,6 +937,7 @@ export class Input {
    * own edge state so it never steals gameplay presses.
    */
   pollMenuNav(): { up: boolean; down: boolean; confirm: boolean; back: boolean } {
+    this.syncTouchLayer();
     let up = false;
     let down = false;
     let confirm = false;
