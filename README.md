@@ -49,9 +49,3 @@ npm run dev          # then open the URL it prints
 ## Demo
 
 [Demo video](https://youtu.be/7pNp-_qSm34)
-
----
-
-Developers: the design and the reasons behind it are in
-[`docs/DESIGN.md`](docs/DESIGN.md). Working notes that are not the public
-front page live in [`docs/CLAUDE.md`](docs/CLAUDE.md).

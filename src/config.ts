@@ -584,7 +584,7 @@ export function tableSurfaceY(x: number): number {
   return GROUND_Y + TABLE.hCenter - TABLE.curveK * x * x;
 }
 
-// Animation metadata transcribed from docs/Animation.txt (Blender frame numbers).
+// Animation metadata transcribed from tests/Animation.txt (Blender frame numbers).
 // `contact` is the ball-contact frame, `toss` the ball-leaves-hand frame (serves only).
 export interface ClipInfo {
   contact: number;
@@ -609,7 +609,7 @@ export const CLIPS: Record<string, ClipInfo> = {
   JogForward: { contact: -1, frames: 72 },
   JogStrafeLeft: { contact: -1, frames: 41 },
   JogStrafeRight: { contact: -1, frames: 40 },
-  // See the note at the top of docs/Animation.txt: locomotion uses the InPlace
+  // See the note at the top of tests/Animation.txt: locomotion uses the InPlace
   // strafes because movement is integrated from velocity, and a clip that
   // travels as well would move the character twice.
   JogStrafeLeftInPlace: { contact: -1, frames: 30 },

@@ -122,10 +122,10 @@ describe("clip timing helpers", () => {
   });
 });
 
-describe("CLIPS mirrors docs/Animation.txt", () => {
-  // docs/Animation.txt is the authored source for the rig's frame numbers and says
+describe("CLIPS mirrors tests/Animation.txt", () => {
+  // tests/Animation.txt is the authored source for the rig's frame numbers and says
   // the runtime copy lives in src/config.ts. Parse it and hold the two in sync.
-  const doc = readFileSync(fileURLToPath(new URL("../docs/Animation.txt", import.meta.url)), "utf8");
+  const doc = readFileSync(fileURLToPath(new URL("./Animation.txt", import.meta.url)), "utf8");
 
   const documented = new Map<string, { contact: number; toss?: number; frames: number }>();
   for (const line of doc.split("\n")) {

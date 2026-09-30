@@ -111,6 +111,10 @@ store/
 # sit at the repository root. The game does not read them.
 scratch/
 
+# Working papers. DESIGN.md, TUNING, purchases notes, legal drafts — they stay
+# on this machine. The clip sheet the tests parse is `tests/Animation.txt`.
+docs/
+
 # The legal pages. Same reason as the brand icon above: `publicDir` is
 # `assets/`, so anything the page must serve by URL lives here — and the art
 # bundle is a snapshot, so a file added after the last pack is missing from
