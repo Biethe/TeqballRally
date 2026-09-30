@@ -6,7 +6,7 @@ compete in a cup or league, or take on another player online.
 ## Platforms
 
 - **Web browser.** Open **https://teqopen-4c7ae.web.app** — no install.
-- **Android.** It is in a closed test on Google Play right now.
+- **Android.** It is in production review on Google Play right now.
 
 You can play with a keyboard, a gamepad or a touchscreen, holding your phone
 either upright or sideways. Purchases (the arena, coin packs) only complete in
