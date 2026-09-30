@@ -51,7 +51,9 @@ if [ -e dist/source-animations ]; then
 fi
 
 echo "→ firebase hosting ($PROJECT)"
-npx --yes firebase-tools deploy --only hosting --config config/firebase.json --project "$PROJECT" --non-interactive
+# firebase.json lives at the repo root on purpose. Hosting refuses a public
+# directory outside the folder that contains the config, and `dist/` is here.
+npx --yes firebase-tools deploy --only hosting --project "$PROJECT" --non-interactive
 
 echo
 echo "deployed: https://${PROJECT}.web.app"

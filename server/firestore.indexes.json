@@ -6,7 +6,7 @@
     "tests/firestore.test.ts answers every query happily, so the first time these",
     "were missed was in production, as a 500 on the leaderboard.",
     "",
-    "Deploy with:  npx firebase-tools deploy --only firestore:indexes --config config/firebase.json",
+    "Deploy with:  npx firebase-tools deploy --only firestore:indexes",
     "Building takes a few minutes; queries fail with code 9 until it finishes."
   ],
   "indexes": [

@@ -122,7 +122,7 @@ jobs:
           echo "All art in dist/ is encrypted."
 
       - name: Deploy to Firebase Hosting
-        run: npx --yes firebase-tools deploy --only hosting --config config/firebase.json --project "$FIREBASE_PROJECT" --non-interactive
+        run: npx --yes firebase-tools deploy --only hosting --project "$FIREBASE_PROJECT" --non-interactive
 
       - name: Summarise
         run: |
