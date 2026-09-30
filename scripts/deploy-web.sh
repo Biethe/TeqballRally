@@ -51,7 +51,7 @@ if [ -e dist/source-animations ]; then
 fi
 
 echo "→ firebase hosting ($PROJECT)"
-npx --yes firebase-tools deploy --only hosting --project "$PROJECT" --non-interactive
+npx --yes firebase-tools deploy --only hosting --config config/firebase.json --project "$PROJECT" --non-interactive
 
 echo
 echo "deployed: https://${PROJECT}.web.app"

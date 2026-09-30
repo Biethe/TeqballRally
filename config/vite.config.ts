@@ -1,9 +1,28 @@
 /// <reference types="vitest" />
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
+// This file lives in `config/` so the repository root is the game, not a pile
+// of tool configs. Vite still serves from the repo root: `index.html` and
+// `assets/` stay where they are, because that is the page and the publicDir.
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
 export default defineConfig({
+  root: repoRoot,
   test: {
     testTimeout: 15_000,
+    include: ["tests/**/*.test.ts"],
+    environment: "node",
+    env: {
+      // `src/protected.ts` reads its passphrase from the bundle at build time
+      // and has no fallback, because a fallback is the value a release
+      // actually ships with. The cross-boundary round trip in
+      // `tests/protected.test.ts` — Node encrypts, WebCrypto decrypts — needs
+      // the game half to hold the same passphrase the test half passes in, so
+      // it is supplied here rather than defaulted in the source.
+      VITE_ASSET_KEY: "a-passphrase-for-the-tests",
+    },
   },
   // Serve the existing repo asset folder as static files: /models/..., /audio/...
   publicDir: "assets",

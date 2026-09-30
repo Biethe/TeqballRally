@@ -1,6 +1,14 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import js from "@eslint/js";
 import globals from "globals";
 import tseslint from "typescript-eslint";
+
+// This file lives in `config/`. ESLint still resolves `files` and `ignores`
+// against the working directory we lint from (the repo root), so the globs
+// below are written that way. `tsconfig.json` is up there too — type-aware
+// linting has to look at `repoRoot`, not this folder.
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export default tseslint.config(
   {
@@ -25,12 +33,12 @@ export default tseslint.config(
 
   // Game and test sources: TypeScript, type-aware rules on.
   {
-    files: ["src/**/*.ts", "tests/**/*.ts", "*.config.ts"],
+    files: ["src/**/*.ts", "tests/**/*.ts", "config/**/*.ts", "capacitor.config.ts"],
     extends: [js.configs.recommended, ...tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: {
         projectService: true,
-        tsconfigRootDir: import.meta.dirname,
+        tsconfigRootDir: repoRoot,
       },
     },
     rules: {
@@ -66,7 +74,7 @@ export default tseslint.config(
 
   // Vite/Vitest config files run in Node.
   {
-    files: ["*.config.ts", "*.config.js"],
+    files: ["config/**/*.ts", "capacitor.config.ts"],
     languageOptions: {
       globals: globals.node,
     },

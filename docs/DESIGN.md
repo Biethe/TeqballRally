@@ -2388,7 +2388,7 @@ steps, if you need them:
 ```bash
 npx firebase-tools login
 VITE_ASSET_KEY='…' npm run build
-npx firebase-tools deploy --only hosting --project teqopen-4c7ae
+npx firebase-tools deploy --only hosting --config config/firebase.json --project teqopen-4c7ae
 ```
 
 The relay lives on Cloud Run (`server/deploy.sh`), currently at
@@ -2420,7 +2420,7 @@ Firestore's composite indexes are declared in `server/firestore.indexes.json` an
 not optional — the queries fail outright without them:
 
 ```bash
-npx firebase-tools deploy --only firestore:indexes
+npx firebase-tools deploy --only firestore:indexes --config config/firebase.json
 ```
 
 ## Project notes
@@ -2434,15 +2434,18 @@ npx firebase-tools deploy --only firestore:indexes
 - `assets/` — compressed GLB models, audio, and the local Meshopt decoder.
 - `tests/` — Vitest unit tests for the pure gameplay maths.
 - `scripts/` — headless-Chromium helpers for the parts unit tests cannot reach.
-- `docs/` — the notes that are not this file: `Animation.txt` (the rig's frame
-  numbers, which `tests/config.test.ts` parses), `TUNING.md`, and `PURCHASES.md`.
+- `config/` — Vite, ESLint and Firebase Hosting. The tools are told where
+  to look by `package.json`; they do not have to sit at the repository root.
+- `docs/` — the notes that are not this file: `CLAUDE.md` (the traps that
+  cost a session to rediscover), `Animation.txt` (the rig's frame numbers,
+  which `tests/config.test.ts` parses), `TUNING.md`, and `PURCHASES.md`.
 
 The repository holds the game and nothing else. Figma Make exports, raw mocap
 dumps and one-off zips live in `scratch/` (gitignored) if they are on disk at
 all: none of them is read by a build.
 
 A release bundle carries no source maps, no comments and no `console` calls:
-esbuild drops the lot (`vite.config.ts`). The maps are the point — a map hands
+esbuild drops the lot (`config/vite.config.ts`). The maps are the point — a map hands
 back the original TypeScript, file names and prose comments included, which is
 the whole client. The one thing that still speaks up in a shipped build is the
 startup reporter in `index.html`, which is a separate classic script and the
